@@ -4,7 +4,14 @@ import { join } from "node:path";
 import { z } from "zod";
 
 import { syncDirectory, writeDurableExclusive } from "./durable.js";
+import {
+  sha256Evidence,
+  validateCurrentPresentationBinding,
+  validateOrdinaryGateEvidence,
+} from "./evidence.js";
+import { withProjectLease } from "./lock.js";
 import { validateProjectRoot } from "./paths.js";
+import { readOwnedRegularFile } from "./safe-file.js";
 import {
   ProjectManifestSchema,
   type ProjectManifest,
@@ -35,6 +42,10 @@ export type WriteProjectOperations = {
   ) => Promise<void> | void;
   promote?: (stagingPath: string, manifestPath: string) => Promise<void>;
 };
+
+export type ProjectUpdater = (
+  manifest: ProjectManifest,
+) => ProjectManifest | Promise<ProjectManifest>;
 
 export const sha256 = (value: Buffer | string): string =>
   createHash("sha256").update(value).digest("hex");
@@ -201,13 +212,11 @@ export async function readProject(root: string): Promise<ProjectManifest> {
   return (await ownedProject(root)).manifest;
 }
 
-export async function writeProject(
-  root: string,
-  manifest: ProjectManifest,
+async function persistProject(
+  owned: { root: string; manifest: ProjectManifest },
+  valid: ProjectManifest,
   operations: WriteProjectOperations = {},
 ): Promise<void> {
-  const valid = ProjectManifestSchema.parse(manifest);
-  const owned = await ownedProject(root);
   if (valid.projectId !== owned.manifest.projectId) {
     throw new Error("project directory is not owned by SuperPPT");
   }
@@ -219,6 +228,35 @@ export async function writeProject(
     throw new Error(
       "immutable artifact evidence requires an exact revision snapshot",
     );
+  }
+
+  for (const gate of valid.gates.slice(owned.manifest.gates.length)) {
+    if (gate.gate === "outline" || gate.gate === "slide-specs" || gate.gate === "style-sample") {
+      try {
+        if (gate.revisionId !== valid.currentRevision.id) {
+          throw new Error("ordinary gate revision must be current");
+        }
+        const evidence = await validateOrdinaryGateEvidence(owned.root, valid, gate);
+        if (!sameJson(evidence.manifest, valid)) {
+          throw new Error("ordinary gate snapshot manifest must exactly match the publication");
+        }
+        await validateCurrentPresentationBinding(owned.root, evidence.descriptor.presentation);
+        for (const [path, expected] of Object.entries(gate.artifactHashes)) {
+          if (sha256Evidence(await readOwnedRegularFile(owned.root, path)) !== expected) {
+            throw new Error("ordinary gate artifact is not current");
+          }
+        }
+      } catch (error: unknown) {
+        throw new Error("ordinary gate evidence is invalid", { cause: error });
+      }
+    }
+  }
+  const ordinarySnapshotPaths = valid.gates
+    .filter((gate) => gate.gate === "outline" || gate.gate === "slide-specs" || gate.gate === "style-sample")
+    .map((gate) => gate.snapshotPath)
+    .filter((path): path is string => path !== undefined);
+  if (new Set(ordinarySnapshotPaths).size !== ordinarySnapshotPaths.length) {
+    throw new Error("ordinary gate evidence snapshot paths must be unique");
   }
 
   const staging = join(owned.root, `.superppt.${randomUUID()}.staging.json`);
@@ -233,4 +271,37 @@ export async function writeProject(
   await operations.checkpoint?.("manifest-promoted", staging);
   await syncDirectory(owned.root);
   await operations.checkpoint?.("parent-synced", staging);
+}
+
+export async function writeProject(
+  root: string,
+  manifest: ProjectManifest,
+  operations: WriteProjectOperations = {},
+): Promise<void> {
+  const valid = ProjectManifestSchema.parse(manifest);
+  const expected = await ownedProject(root);
+  await withProjectLease(expected.root, "state", async (canonicalRoot) => {
+    const current = await ownedProject(canonicalRoot);
+    if (!sameJson(current.manifest, expected.manifest)) {
+      throw new Error("stale project manifest base; retry through updateProject");
+    }
+    await persistProject(current, valid, operations);
+  });
+}
+
+export async function updateProject(
+  root: string,
+  updater: ProjectUpdater,
+  operations: WriteProjectOperations = {},
+): Promise<ProjectManifest> {
+  let result: ProjectManifest | undefined;
+  const owned = await ownedProject(root);
+  await withProjectLease(owned.root, "state", async (canonicalRoot) => {
+    const current = await ownedProject(canonicalRoot);
+    const proposed = await updater(structuredClone(current.manifest));
+    const valid = ProjectManifestSchema.parse(proposed);
+    await persistProject(current, valid, operations);
+    result = valid;
+  });
+  return result!;
 }

@@ -72,7 +72,7 @@ export async function loadValidatedPlan(
   ) {
     throw new Error("spec IDs must exactly match outline IDs");
   }
-  const artifacts: Record<string, Buffer> = { "outline.json": validated.artifacts["outline.json"]! };
+  const artifacts: Record<string, Buffer> = { ...validated.artifacts };
   const specs: SlideSpec[] = [];
   for (const slide of [...validated.outline.slides].sort((left, right) => left.order - right.order)) {
     const key = `slides/${slide.id}/spec.json`;

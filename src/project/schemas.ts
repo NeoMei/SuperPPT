@@ -55,8 +55,15 @@ export const GateSchema = z.object({
     "slide-preview",
   ]),
   revisionId: z.string().uuid(),
+  approvalId: z.string().uuid().optional(),
   artifactHashes: z.record(z.string(), Sha256Schema),
   snapshotPath: z.string().min(1).optional(),
+  snapshotManifestSha256: Sha256Schema.optional(),
+  presentation: z.object({
+    kind: z.enum(["planning-views", "style-sample"]),
+    publicationPath: z.string().startsWith("revisions/"),
+    descriptorSha256: Sha256Schema,
+  }).strict().optional(),
   confirmedAt: z.string().datetime(),
 }).strict();
 

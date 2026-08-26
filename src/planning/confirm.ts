@@ -1,15 +1,24 @@
 import { randomUUID } from "node:crypto";
 import { lstat, mkdir, realpath } from "node:fs/promises";
-import { dirname, join, relative, sep } from "node:path";
+import { dirname, join, sep } from "node:path";
 
 import { syncDirectory, writeDurableExclusive } from "../project/durable.js";
+import {
+  addDescriptorIntegrity,
+  GateSnapshotDescriptorSchema,
+  type PresentationBinding,
+  sha256Evidence,
+  snapshotManifestEvidenceHash,
+  validateOrdinaryGateEvidence,
+} from "../project/evidence.js";
 import { withPlanningLock, type ProjectLockOptions } from "../project/lock.js";
 import { promoteExclusive } from "../project/promotion.js";
 import { localProjectPath, readOwnedRegularFile, type SafeReadOperations } from "../project/safe-file.js";
-import { readProject, sha256, writeProject } from "../project/store.js";
 import type { ProjectManifest } from "../project/schemas.js";
+import { readProject, updateProject } from "../project/store.js";
 import { loadValidatedOutline, loadValidatedPlan } from "./load.js";
 import { StyleSelectionSchema } from "./schemas.js";
+import { requireCurrentPlanPresentation, requireCurrentStylePresentation } from "./views.js";
 
 export type PlanningGate = "outline" | "slide-specs" | "style-sample";
 export type ApprovalCheckpoint = "snapshot-published" | "manifest-published";
@@ -20,7 +29,6 @@ export type ApprovalOptions = {
   };
   lock?: ProjectLockOptions;
 };
-
 export type GateSnapshot = {
   manifest: ProjectManifest;
   artifacts: Record<string, Buffer>;
@@ -32,7 +40,6 @@ const previous: Record<PlanningGate, PlanningGate | null> = {
   "slide-specs": "outline",
   "style-sample": "slide-specs",
 };
-
 export const STYLE_SAMPLE_ARTIFACTS = [
   "style/selection.json",
   "style/sample/prompt.txt",
@@ -43,33 +50,29 @@ export function toPortableProjectPath(value: string): string {
   return value.replaceAll("\\", "/");
 }
 
+function sameJson(left: unknown, right: unknown): boolean {
+  return JSON.stringify(left) === JSON.stringify(right);
+}
+
 function assertPlanningGate(gate: string): asserts gate is PlanningGate {
   if (!(gate in previous)) throw new Error(`invalid planning gate: ${gate}`);
 }
 
 function approvalOptions(value: ApprovalOptions | undefined): ApprovalOptions {
   if (value === undefined) return {};
-  if (!value || typeof value !== "object" || Array.isArray(value)) {
-    throw new Error("invalid approval options");
-  }
-  if (Object.keys(value).some((key) => !["operations", "lock"].includes(key))) {
-    throw new Error("invalid approval options");
-  }
-  if (value.operations) {
-    if (
-      typeof value.operations !== "object"
-      || Object.keys(value.operations).some((key) => !["checkpoint", "afterArtifactOpened"].includes(key))
-      || (value.operations.checkpoint !== undefined && typeof value.operations.checkpoint !== "function")
-      || (value.operations.afterArtifactOpened !== undefined && typeof value.operations.afterArtifactOpened !== "function")
-    ) throw new Error("invalid approval options");
-  }
-  if (value.lock) {
-    if (
-      typeof value.lock !== "object"
-      || Object.keys(value.lock).some((key) => !["staleAfterMs", "waitTimeoutMs", "retryMs"].includes(key))
-      || Object.values(value.lock).some((item) => item !== undefined && (typeof item !== "number" || item < 0))
-    ) throw new Error("invalid approval options");
-  }
+  if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("invalid approval options");
+  if (Object.keys(value).some((key) => !["operations", "lock"].includes(key))) throw new Error("invalid approval options");
+  if (value.operations && (
+    typeof value.operations !== "object"
+    || Object.keys(value.operations).some((key) => !["checkpoint", "afterArtifactOpened"].includes(key))
+    || (value.operations.checkpoint !== undefined && typeof value.operations.checkpoint !== "function")
+    || (value.operations.afterArtifactOpened !== undefined && typeof value.operations.afterArtifactOpened !== "function")
+  )) throw new Error("invalid approval options");
+  if (value.lock && (
+    typeof value.lock !== "object"
+    || Object.keys(value.lock).some((key) => !["staleAfterMs", "waitTimeoutMs", "retryMs"].includes(key))
+    || Object.values(value.lock).some((item) => item !== undefined && (typeof item !== "number" || item < 0))
+  )) throw new Error("invalid approval options");
   return value;
 }
 
@@ -80,9 +83,7 @@ async function ensureDirectory(path: string): Promise<void> {
     if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
   }
   const info = await lstat(path);
-  if (info.isSymbolicLink() || !info.isDirectory()) {
-    throw new Error(`unsafe revision snapshot directory: ${path}`);
-  }
+  if (info.isSymbolicLink() || !info.isDirectory()) throw new Error(`unsafe revision snapshot directory: ${path}`);
 }
 
 async function ensureDirectoryTree(root: string, projectPath: string): Promise<string> {
@@ -95,9 +96,7 @@ async function ensureDirectoryTree(root: string, projectPath: string): Promise<s
 }
 
 function hashArtifacts(artifacts: Record<string, Buffer>): Record<string, string> {
-  return Object.fromEntries(
-    Object.entries(artifacts).map(([path, bytes]) => [toPortableProjectPath(path), sha256(bytes)]),
-  );
+  return Object.fromEntries(Object.entries(artifacts).map(([path, bytes]) => [toPortableProjectPath(path), sha256Evidence(bytes)]));
 }
 
 async function gateArtifacts(
@@ -106,16 +105,13 @@ async function gateArtifacts(
   operations: SafeReadOperations,
 ): Promise<Record<string, Buffer>> {
   if (gate === "outline") return (await loadValidatedOutline(root, operations)).artifacts;
-  if (gate === "slide-specs") return (await loadValidatedPlan(root, operations)).artifacts;
-
+  if (gate === "slide-specs") {
+    const all = (await loadValidatedPlan(root, operations)).artifacts;
+    return Object.fromEntries(Object.entries(all).filter(([path]) => path !== "brief.json"));
+  }
   const plan = await loadValidatedPlan(root, operations);
   const selectionBytes = await readOwnedRegularFile(root, STYLE_SAMPLE_ARTIFACTS[0], operations);
-  let selection: ReturnType<typeof StyleSelectionSchema.parse>;
-  try {
-    selection = StyleSelectionSchema.parse(JSON.parse(selectionBytes.toString("utf8")));
-  } catch (error: unknown) {
-    throw new Error("style selection must be valid", { cause: error });
-  }
+  const selection = StyleSelectionSchema.parse(JSON.parse(selectionBytes.toString("utf8")));
   if (!plan.outline.slides.some((slide) => slide.id === selection.representativeSlideId)) {
     throw new Error("representative slide must exist in current outline");
   }
@@ -133,6 +129,16 @@ async function gateArtifacts(
   };
 }
 
+async function currentPresentation(
+  root: string,
+  gate: PlanningGate,
+  hashes: Record<string, string>,
+): Promise<PresentationBinding> {
+  return gate === "style-sample"
+    ? requireCurrentStylePresentation(root, hashes)
+    : requireCurrentPlanPresentation(root, hashes);
+}
+
 async function gateCurrentWithManifest(
   root: string,
   gate: PlanningGate,
@@ -141,58 +147,67 @@ async function gateCurrentWithManifest(
   const required = previous[gate];
   if (required && !await gateCurrentWithManifest(root, required, manifest)) return false;
   const approved = [...manifest.gates].reverse().find((item) => item.gate === gate);
-  if (!approved || !approved.snapshotPath || Object.keys(approved.artifactHashes).length === 0) return false;
-  for (const [path, expected] of Object.entries(approved.artifactHashes)) {
-    try {
-      if (sha256(await readOwnedRegularFile(root, path)) !== expected) return false;
-    } catch {
-      return false;
+  if (!approved || Object.keys(approved.artifactHashes).length === 0) return false;
+  try {
+    const evidence = await validateOrdinaryGateEvidence(root, manifest, approved);
+    for (const [path, expected] of Object.entries(approved.artifactHashes)) {
+      if (sha256Evidence(await readOwnedRegularFile(root, path)) !== expected) return false;
     }
+    return sameJson(
+      await currentPresentation(root, gate, approved.artifactHashes),
+      evidence.descriptor.presentation,
+    );
+  } catch {
+    return false;
   }
-  return true;
 }
 
 async function publishSnapshot(
   root: string,
   gate: PlanningGate,
+  approvalId: string,
   snapshotPath: string,
   manifest: ProjectManifest,
   artifacts: Record<string, Buffer>,
+  presentation: PresentationBinding,
 ): Promise<void> {
   const parentPath = dirname(snapshotPath).split(sep).join("/");
   const parent = await ensureDirectoryTree(root, parentPath);
   const staging = join(parent, `.${gate}-${randomUUID()}.staging`);
   await mkdir(staging, { mode: 0o700 });
+  const manifestBytes = Buffer.from(`${JSON.stringify(manifest, null, 2)}\n`);
+  const hashes = hashArtifacts(artifacts);
+  const descriptor = GateSnapshotDescriptorSchema.parse(addDescriptorIntegrity({
+    schemaVersion: 1 as const,
+    projectId: manifest.projectId,
+    gate,
+    revisionId: manifest.currentRevision.id,
+    approvalId,
+    snapshotPath,
+    manifestSha256: sha256Evidence(manifestBytes),
+    artifactHashes: hashes,
+    artifactSizes: Object.fromEntries(Object.entries(artifacts).map(([path, bytes]) => [path, bytes.length])),
+    presentation,
+  }));
   const directories = new Set<string>([staging]);
-  try {
-    await writeDurableExclusive(join(staging, "superppt.json"), `${JSON.stringify(manifest, null, 2)}\n`);
-    await writeDurableExclusive(join(staging, "snapshot.json"), `${JSON.stringify({
-      schemaVersion: 1,
-      gate,
-      revisionId: manifest.currentRevision.id,
-      artifactHashes: hashArtifacts(artifacts),
-    }, null, 2)}\n`);
-    for (const [projectPath, bytes] of Object.entries(artifacts)) {
-      const destination = join(staging, "artifacts", localProjectPath(projectPath));
-      const directory = dirname(destination);
-      await mkdir(directory, { recursive: true, mode: 0o700 });
-      let cursor = directory;
-      while (cursor.startsWith(staging) && cursor !== staging) {
-        directories.add(cursor);
-        cursor = dirname(cursor);
-      }
-      await writeDurableExclusive(destination, bytes);
+  await writeDurableExclusive(join(staging, "superppt.json"), manifestBytes);
+  await writeDurableExclusive(join(staging, "snapshot.json"), `${JSON.stringify(descriptor, null, 2)}\n`);
+  for (const [projectPath, bytes] of Object.entries(artifacts)) {
+    const destination = join(staging, "artifacts", localProjectPath(projectPath));
+    await mkdir(dirname(destination), { recursive: true, mode: 0o700 });
+    let cursor = dirname(destination);
+    while (cursor.startsWith(staging) && cursor !== staging) {
+      directories.add(cursor);
+      cursor = dirname(cursor);
     }
-    for (const directory of [...directories].sort((left, right) => right.length - left.length)) {
-      await syncDirectory(directory);
-    }
-    await syncDirectory(parent);
-    await promoteExclusive(staging, join(root, localProjectPath(snapshotPath)));
-    await syncDirectory(parent);
-  } catch (error: unknown) {
-    // A failed staging tree is retained as immutable diagnostic evidence.
-    throw error;
+    await writeDurableExclusive(destination, bytes);
   }
+  for (const directory of [...directories].sort((left, right) => right.length - left.length)) {
+    await syncDirectory(directory);
+  }
+  await syncDirectory(parent);
+  await promoteExclusive(staging, join(root, localProjectPath(snapshotPath)));
+  await syncDirectory(parent);
 }
 
 export async function assertGateCurrent(root: string, gate: PlanningGate): Promise<boolean> {
@@ -208,44 +223,59 @@ export async function approveGate(
   assertPlanningGate(gate);
   const options = approvalOptions(rawOptions);
   await withPlanningLock(root, async (canonicalRoot) => {
-    const manifest = await readProject(canonicalRoot);
-    const required = previous[gate];
-    if (required && !await gateCurrentWithManifest(canonicalRoot, required, manifest)) {
-      throw new Error(`${required} gate must be current`);
-    }
-    const artifacts = await gateArtifacts(canonicalRoot, gate, {
-      afterOpen: options.operations?.afterArtifactOpened,
-    });
-    if (required && !await gateCurrentWithManifest(canonicalRoot, required, manifest)) {
-      throw new Error(`${required} gate must be current`);
-    }
-    const approvalId = randomUUID();
-    const snapshotPath = toPortableProjectPath(join(
-      "revisions",
-      manifest.currentRevision.id,
-      "gates",
-      `${gate}-${approvalId}`,
-    ));
-    const next: ProjectManifest = {
-      ...manifest,
-      gates: [...manifest.gates, {
+    await updateProject(canonicalRoot, async (manifest) => {
+      const required = previous[gate];
+      if (required && !await gateCurrentWithManifest(canonicalRoot, required, manifest)) {
+        throw new Error(`${required} gate must be current`);
+      }
+      const artifacts = await gateArtifacts(canonicalRoot, gate, {
+        afterOpen: options.operations?.afterArtifactOpened,
+      });
+      const hashes = hashArtifacts(artifacts);
+      const presentation = await currentPresentation(canonicalRoot, gate, hashes);
+      if (required && !await gateCurrentWithManifest(canonicalRoot, required, manifest)) {
+        throw new Error(`${required} gate must be current`);
+      }
+      const approvalId = randomUUID();
+      const snapshotPath = toPortableProjectPath(join(
+        "revisions",
+        manifest.currentRevision.id,
+        "gates",
+        `${gate}-${approvalId}`,
+      ));
+      const gateRecord: ProjectManifest["gates"][number] = {
         gate,
         revisionId: manifest.currentRevision.id,
-        artifactHashes: hashArtifacts(artifacts),
+        approvalId,
+        artifactHashes: hashes,
         snapshotPath,
+        presentation,
         confirmedAt: new Date().toISOString(),
-      }],
-    };
-    await publishSnapshot(canonicalRoot, gate, snapshotPath, next, artifacts);
-    await options.operations?.checkpoint?.("snapshot-published");
-    if (required && !await gateCurrentWithManifest(canonicalRoot, required, manifest)) {
-      throw new Error(`${required} gate must be current`);
-    }
-    const currentArtifacts = await gateArtifacts(canonicalRoot, gate, {});
-    if (JSON.stringify(hashArtifacts(currentArtifacts)) !== JSON.stringify(hashArtifacts(artifacts))) {
-      throw new Error(`${gate} gate artifacts changed during approval`);
-    }
-    await writeProject(canonicalRoot, next);
+      };
+      const provisional: ProjectManifest = {
+        ...manifest,
+        gates: [...manifest.gates, gateRecord],
+      };
+      const nextGate = {
+        ...gateRecord,
+        snapshotManifestSha256: snapshotManifestEvidenceHash(provisional, approvalId),
+      };
+      const next: ProjectManifest = {
+        ...manifest,
+        gates: [...manifest.gates, nextGate],
+      };
+      await publishSnapshot(canonicalRoot, gate, approvalId, snapshotPath, next, artifacts, presentation);
+      await options.operations?.checkpoint?.("snapshot-published");
+      if (required && !await gateCurrentWithManifest(canonicalRoot, required, manifest)) {
+        throw new Error(`${required} gate must be current`);
+      }
+      const current = hashArtifacts(await gateArtifacts(canonicalRoot, gate, {}));
+      if (!sameJson(current, hashes)) throw new Error(`${gate} gate artifacts changed during approval`);
+      if (!sameJson(await currentPresentation(canonicalRoot, gate, hashes), presentation)) {
+        throw new Error(`${gate} presentation changed during approval`);
+      }
+      return next;
+    });
     await options.operations?.checkpoint?.("manifest-published");
   }, options.lock);
 }
@@ -254,16 +284,11 @@ export async function readGateSnapshot(root: string, gate: PlanningGate): Promis
   assertPlanningGate(gate);
   const manifest = await readProject(root);
   const approved = [...manifest.gates].reverse().find((item) => item.gate === gate);
-  if (!approved?.snapshotPath) throw new Error(`${gate} gate has no revision snapshot`);
-  const manifestBytes = await readOwnedRegularFile(root, `${approved.snapshotPath}/superppt.json`);
-  const snapshotManifest = (await import("../project/schemas.js")).ProjectManifestSchema.parse(
-    JSON.parse(manifestBytes.toString("utf8")),
-  );
-  const artifacts: Record<string, Buffer> = {};
-  for (const [path, expected] of Object.entries(approved.artifactHashes)) {
-    const bytes = await readOwnedRegularFile(root, `${approved.snapshotPath}/artifacts/${path}`);
-    if (sha256(bytes) !== expected) throw new Error(`gate snapshot hash mismatch: ${path}`);
-    artifacts[path] = bytes;
+  if (!approved) throw new Error(`${gate} gate has no revision snapshot`);
+  try {
+    const evidence = await validateOrdinaryGateEvidence(root, manifest, approved);
+    return { manifest: evidence.manifest, artifacts: evidence.artifacts, snapshotPath: approved.snapshotPath! };
+  } catch (error: unknown) {
+    throw new Error("snapshot descriptor or tree is invalid", { cause: error });
   }
-  return { manifest: snapshotManifest, artifacts, snapshotPath: approved.snapshotPath };
 }

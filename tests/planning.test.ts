@@ -10,9 +10,11 @@ import { approveGate, assertGateCurrent, readGateSnapshot, toPortableProjectPath
 import { normalizeInput } from "../src/planning/intake.js";
 import { renderBrief, renderOutline, renderSlideSpec } from "../src/planning/render.js";
 import { BriefSchema, OutlineSchema, SlideSpecSchema } from "../src/planning/schemas.js";
-import { publishPlanViews, readPublishedPlanViews, recoverPlanViews } from "../src/planning/views.js";
+import { publishPlanViews, publishStyleSample, readPublishedPlanViews, recoverPlanViews } from "../src/planning/views.js";
 import { initializeProject } from "../src/project/initialize.js";
-import { readProject, writeProject } from "../src/project/store.js";
+import { addDescriptorIntegrity, sha256Evidence } from "../src/project/evidence.js";
+import { withProjectLease } from "../src/project/lock.js";
+import { readProject, updateProject, writeProject } from "../src/project/store.js";
 
 const execFileAsync = promisify(execFile);
 const PROJECT_ID = "00000000-0000-4000-8000-000000000101";
@@ -92,8 +94,10 @@ async function writeValidStyleSample(root: string): Promise<void> {
 }
 
 async function approveAll(root: string): Promise<void> {
+  await publishPlanViews(root);
   await approveGate(root, "outline");
   await approveGate(root, "slide-specs");
+  await publishStyleSample(root);
   await approveGate(root, "style-sample");
 }
 
@@ -132,6 +136,19 @@ test("fails closed when a Markdown pathname is swapped after its handle opens", 
     }),
     /changed while reading/,
   );
+  await assert.rejects(access(join(root, "source", "original.md")), { code: "ENOENT" });
+});
+
+test("fails closed on same-inode truncate and rewrite after opening", async (t) => {
+  const root = await project(t, "superppt-input-in-place-");
+  const parent = await temporaryParent(t, "superppt-in-place-source-");
+  const source = join(parent, "source.md");
+  await writeFile(source, "original");
+  await assert.rejects(normalizeInput(root, { kind: "markdown", path: source }, {
+    async afterSourceOpened() {
+      await writeFile(source, "replaced");
+    },
+  }), /changed while reading/);
   await assert.rejects(access(join(root, "source", "original.md")), { code: "ENOENT" });
 });
 
@@ -210,6 +227,7 @@ test("rejects invalid empty, target-count, must-cover, spec, and style contracts
   const specRoot = join(await temporaryParent(t, "superppt-invalid-spec-"), "project");
   await initializeProject({ root: specRoot, title: "Spec" });
   await writeValidPlan(specRoot);
+  await publishPlanViews(specRoot);
   await approveGate(specRoot, "outline");
   await writeFile(join(specRoot, "slides", SLIDE_IDS[1], "spec.json"), JSON.stringify({ ...spec(1), title: "Wrong" }));
   await assert.rejects(approveGate(specRoot, "slide-specs"), /must match outline/);
@@ -218,6 +236,7 @@ test("rejects invalid empty, target-count, must-cover, spec, and style contracts
   await initializeProject({ root: styleRoot, title: "Style" });
   await writeValidPlan(styleRoot);
   await writeValidStyleSample(styleRoot);
+  await publishPlanViews(styleRoot);
   await approveGate(styleRoot, "outline");
   await approveGate(styleRoot, "slide-specs");
   await writeFile(join(styleRoot, "style", "selection.json"), JSON.stringify({ schemaVersion: 1, styleId: "cinematic-tech", representativeSlideId: PROJECT_ID }));
@@ -265,6 +284,7 @@ test("fails closed when a fixed gate artifact is swapped after opening", async (
 test("stores portable keys and revision-owned immutable approval snapshots", async (t) => {
   const root = await project(t, "superppt-gate-snapshot-");
   await writeValidPlan(root);
+  await publishPlanViews(root);
   assert.equal(toPortableProjectPath("slides\\id\\spec.json"), "slides/id/spec.json");
   await approveGate(root, "outline");
   const firstGate = (await readProject(root)).gates[0]!;
@@ -288,6 +308,7 @@ test("stores portable keys and revision-owned immutable approval snapshots", asy
 test("retains snapshot evidence if manifest publication fails", async (t) => {
   const root = await project(t, "superppt-gate-snapshot-fail-");
   await writeValidPlan(root);
+  await publishPlanViews(root);
   await assert.rejects(approveGate(root, "outline", {
     operations: { checkpoint(step) { if (step === "snapshot-published") throw new Error("injected after snapshot"); } },
   }), /injected after snapshot/);
@@ -299,22 +320,58 @@ test("retains snapshot evidence if manifest publication fails", async (t) => {
 test("serializes concurrent approvals without lost gate updates", async (t) => {
   const root = await project(t, "superppt-gate-concurrent-");
   await writeValidPlan(root);
+  await publishPlanViews(root);
   await Promise.all([approveGate(root, "outline"), approveGate(root, "outline")]);
   const gates = (await readProject(root)).gates;
   assert.equal(gates.length, 2);
   assert.equal(new Set(gates.map(({ snapshotPath }) => snapshotPath)).size, 2);
 });
 
-test("recovers an abandoned stale planning lock without deleting its evidence", async (t) => {
+test("recovers an abandoned unique planning lease request without reusing its name", async (t) => {
   const root = await project(t, "superppt-stale-lock-");
   await writeValidPlan(root);
-  const lock = join(root, ".superppt-planning.lock");
-  await mkdir(lock);
-  await writeFile(join(lock, "owner.json"), JSON.stringify({ version: 1, id: "00000000-0000-4000-8000-000000000999", pid: 99999999, acquiredAt: "2000-01-01T00:00:00.000Z" }));
-  await utimes(lock, new Date("2000-01-01T00:00:00.000Z"), new Date("2000-01-01T00:00:00.000Z"));
+  await publishPlanViews(root);
+  const leaseRoot = join(root, ".superppt-leases", "planning");
+  await mkdir(leaseRoot, { recursive: true });
+  const crashed = join(leaseRoot, "00000000-0000-4000-8000-000000000999.active.json");
+  await writeFile(crashed, JSON.stringify({
+    version: 1,
+    id: "00000000-0000-4000-8000-000000000999",
+    token: "00000000-0000-4000-8000-000000000998",
+    pid: 99999999,
+    createdAt: "2000-01-01T00:00:00.000Z",
+  }));
+  await utimes(crashed, new Date("2000-01-01T00:00:00.000Z"), new Date("2000-01-01T00:00:00.000Z"));
   await approveGate(root, "outline", { lock: { staleAfterMs: 1 } });
   assert.equal((await readProject(root)).gates.length, 1);
-  assert.ok((await readdir(join(root, ".superppt-locks"))).some((name) => name.endsWith(".stale")));
+  assert.ok((await readdir(leaseRoot)).includes("00000000-0000-4000-8000-000000000999.stale.json"));
+});
+
+test("unique request leases prevent adversarial takeover and concurrent owners", async (t) => {
+  const root = await project(t, "superppt-lease-mutual-exclusion-");
+  const leaseRoot = join(root, ".superppt-leases", "adversarial");
+  await mkdir(leaseRoot, { recursive: true });
+  const crashed = join(leaseRoot, "00000000-0000-4000-8000-000000000997.active.json");
+  await writeFile(crashed, JSON.stringify({
+    version: 1,
+    id: "00000000-0000-4000-8000-000000000997",
+    token: "00000000-0000-4000-8000-000000000996",
+    pid: 99999999,
+    createdAt: "2000-01-01T00:00:00.000Z",
+  }));
+  await utimes(crashed, new Date("2000-01-01T00:00:00.000Z"), new Date("2000-01-01T00:00:00.000Z"));
+  let owners = 0;
+  let maximumOwners = 0;
+  await Promise.all(Array.from({ length: 4 }, () => withProjectLease(root, "adversarial", async () => {
+    owners += 1;
+    maximumOwners = Math.max(maximumOwners, owners);
+    await new Promise<void>((resolve) => setTimeout(resolve, 15));
+    owners -= 1;
+  }, { staleAfterMs: 1 })));
+  assert.equal(maximumOwners, 1);
+  const evidence = await readdir(leaseRoot);
+  assert.ok(evidence.includes("00000000-0000-4000-8000-000000000997.stale.json"));
+  assert.equal(evidence.filter((name) => name.endsWith(".completed.json")).length, 4);
 });
 
 test("publishes review views as one authoritative revision tree", async (t) => {
@@ -358,9 +415,148 @@ test("view publication failures expose only an old or new complete authoritative
   assert.ok((await readdir(join(root, ".superppt-view-journals"))).some((name) => name.endsWith(".completed")));
 });
 
+test("gate approval is bound to the exact authoritative plan and style publications", async (t) => {
+  const root = await project(t, "superppt-presentation-binding-");
+  await writeValidPlan(root);
+  await assert.rejects(approveGate(root, "outline"), /authoritative planning publication is required/);
+  await publishPlanViews(root);
+  const originalBrief = await readFile(join(root, "brief.json"));
+  await writeFile(join(root, "brief.json"), JSON.stringify(brief));
+  await assert.rejects(approveGate(root, "outline"), /do not match authoritative planning publication/);
+  await writeFile(join(root, "brief.json"), originalBrief);
+  await approveGate(root, "outline");
+  await approveGate(root, "slide-specs");
+
+  await writeValidStyleSample(root);
+  await assert.rejects(approveGate(root, "style-sample"), /authoritative style sample publication is required/);
+  await publishStyleSample(root);
+  await writeFile(join(root, "style", "sample", "prompt.txt"), "changed after presentation\n");
+  await assert.rejects(approveGate(root, "style-sample"), /do not match authoritative style sample publication/);
+});
+
+test("rejects forged ordinary gates submitted directly through writeProject", async (t) => {
+  const root = await project(t, "superppt-forged-gate-");
+  const manifest = await readProject(root);
+  await assert.rejects(writeProject(root, {
+    ...manifest,
+    gates: [...manifest.gates, {
+      gate: "outline",
+      revisionId: manifest.currentRevision.id,
+      artifactHashes: { "brief.json": "a".repeat(64), "outline.json": "b".repeat(64) },
+      snapshotPath: `revisions/${manifest.currentRevision.id}/gates/outline-00000000-0000-4000-8000-000000000888`,
+      confirmedAt: new Date().toISOString(),
+    }],
+  }), /ordinary gate evidence/);
+  assert.deepEqual((await readProject(root)).gates, []);
+
+  await writeValidPlan(root);
+  await publishPlanViews(root);
+  await approveGate(root, "outline");
+  const approved = await readProject(root);
+  await assert.rejects(writeProject(root, {
+    ...approved,
+    gates: [...approved.gates, approved.gates[0]!],
+  }), /ordinary gate evidence/);
+  assert.equal((await readProject(root)).gates.length, 1);
+});
+
+test("snapshot descriptor corruption makes a gate stale and recovery reject", async (t) => {
+  const root = await project(t, "superppt-corrupt-snapshot-");
+  await writeValidPlan(root);
+  await publishPlanViews(root);
+  await approveGate(root, "outline");
+  const gate = (await readProject(root)).gates[0]!;
+  await writeFile(join(root, ...gate.snapshotPath!.split("/"), "snapshot.json"), "{}\n");
+  assert.equal(await assertGateCurrent(root, "outline"), false);
+  await assert.rejects(readGateSnapshot(root, "outline"), /snapshot descriptor/);
+});
+
+test("recomputed snapshot self-hashes cannot hide manifest tampering", async (t) => {
+  const root = await project(t, "superppt-rehashed-snapshot-");
+  await writeValidPlan(root);
+  await publishPlanViews(root);
+  await approveGate(root, "outline");
+  const gate = (await readProject(root)).gates[0]!;
+  const snapshotRoot = join(root, ...gate.snapshotPath!.split("/"));
+  const manifestPath = join(snapshotRoot, "superppt.json");
+  const descriptorPath = join(snapshotRoot, "snapshot.json");
+  const snapshotManifest = JSON.parse(await readFile(manifestPath, "utf8")) as Record<string, unknown>;
+  snapshotManifest.title = "tampered snapshot title";
+  const manifestBytes = Buffer.from(`${JSON.stringify(snapshotManifest, null, 2)}\n`);
+  const descriptor = JSON.parse(await readFile(descriptorPath, "utf8")) as Record<string, unknown>;
+  delete descriptor.descriptorSha256;
+  descriptor.manifestSha256 = sha256Evidence(manifestBytes);
+  await writeFile(manifestPath, manifestBytes);
+  await writeFile(descriptorPath, `${JSON.stringify(addDescriptorIntegrity(descriptor), null, 2)}\n`);
+  assert.equal(await assertGateCurrent(root, "outline"), false);
+  await assert.rejects(readGateSnapshot(root, "outline"), /snapshot descriptor|tree/);
+});
+
+test("authoritative view reader validates immutable descriptor and exact coverage", async (t) => {
+  const first = await project(t, "superppt-corrupt-publication-");
+  await writeValidPlan(first);
+  const publication = await publishPlanViews(first);
+  await rm(join(first, ...publication.publicationPath.split("/"), "slides", SLIDE_IDS[1], "spec.md"));
+  await assert.rejects(readPublishedPlanViews(first), /regular file|incomplete|coverage/);
+
+  const second = join(await temporaryParent(t, "superppt-altered-pointer-"), "project");
+  await initializeProject({ root: second, title: "Pointer" });
+  await writeValidPlan(second);
+  await publishPlanViews(second);
+  const pointerPath = join(second, "planning-views.json");
+  const pointer = JSON.parse(await readFile(pointerPath, "utf8")) as { viewHashes: Record<string, string> };
+  delete pointer.viewHashes[`slides/${SLIDE_IDS[1]}/spec.md`];
+  await writeFile(pointerPath, `${JSON.stringify(pointer, null, 2)}\n`);
+  await assert.rejects(readPublishedPlanViews(second), /descriptor integrity|descriptor identity|coverage/);
+});
+
+test("concurrent non-planning manifest update and gate approval preserve both changes", async (t) => {
+  const root = await project(t, "superppt-state-concurrency-");
+  await writeValidPlan(root);
+  await publishPlanViews(root);
+  await Promise.all([
+    updateProject(root, (manifest) => ({ ...manifest, title: "Concurrent title", stage: "outline" })),
+    approveGate(root, "outline"),
+  ]);
+  const manifest = await readProject(root);
+  assert.equal(manifest.title, "Concurrent title");
+  assert.equal(manifest.stage, "outline");
+  assert.equal(manifest.gates.filter(({ gate }) => gate === "outline").length, 1);
+});
+
+test("authoritative publication serializes against project state writers", async (t) => {
+  const root = await project(t, "superppt-publication-state-concurrency-");
+  await writeValidPlan(root);
+  let reachedSnapshot!: () => void;
+  const snapshotReached = new Promise<void>((resolve) => { reachedSnapshot = resolve; });
+  let releasePublication!: () => void;
+  const publicationReleased = new Promise<void>((resolve) => { releasePublication = resolve; });
+  const publication = publishPlanViews(root, {
+    operations: {
+      async checkpoint(step) {
+        if (step === "snapshot-published") {
+          reachedSnapshot();
+          await publicationReleased;
+        }
+      },
+    },
+  });
+  await snapshotReached;
+  let updateFinished = false;
+  const update = updateProject(root, (manifest) => ({ ...manifest, title: "After publication" }))
+    .then(() => { updateFinished = true; });
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  assert.equal(updateFinished, false);
+  releasePublication();
+  await Promise.all([publication, update]);
+  assert.equal((await readProject(root)).title, "After publication");
+  assert.equal((await readPublishedPlanViews(root)).slides[SLIDE_IDS[1]], renderSlideSpec(spec(1)));
+});
+
 test("manifest writes reject removing persisted gate history", async (t) => {
   const root = await project(t, "superppt-gate-prefix-");
   await writeValidPlan(root);
+  await publishPlanViews(root);
   await approveGate(root, "outline");
   const manifest = await readProject(root);
   await assert.rejects(writeProject(root, { ...manifest, gates: [] }), /gate history must remain an exact prefix/);

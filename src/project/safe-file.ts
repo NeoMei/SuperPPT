@@ -1,4 +1,4 @@
-import { constants, type Stats } from "node:fs";
+import { constants, type BigIntStats } from "node:fs";
 import { lstat, open, realpath } from "node:fs/promises";
 import { isAbsolute, relative, resolve, sep } from "node:path";
 
@@ -6,17 +6,24 @@ export type SafeReadOperations = {
   afterOpen?: (path: string) => Promise<void> | void;
 };
 
-function sameFile(left: Stats, right: Stats): boolean {
+function sameFile(left: BigIntStats, right: BigIntStats): boolean {
   return left.dev === right.dev && left.ino === right.ino;
+}
+
+function sameContentVersion(left: BigIntStats, right: BigIntStats): boolean {
+  return sameFile(left, right)
+    && left.size === right.size
+    && left.mtimeNs === right.mtimeNs
+    && left.ctimeNs === right.ctimeNs;
 }
 
 export async function readRegularFileNoFollow(
   path: string,
   operations: SafeReadOperations = {},
 ): Promise<Buffer> {
-  let before: Stats;
+  let before: BigIntStats;
   try {
-    before = await lstat(path);
+    before = await lstat(path, { bigint: true });
   } catch (error: unknown) {
     throw new Error(`planning artifact must be a regular file: ${path}`, { cause: error });
   }
@@ -27,14 +34,20 @@ export async function readRegularFileNoFollow(
   const noFollow = process.platform === "win32" ? 0 : (constants.O_NOFOLLOW ?? 0);
   const handle = await open(path, constants.O_RDONLY | noFollow);
   try {
-    await operations.afterOpen?.(path);
-    const opened = await handle.stat();
-    if (!opened.isFile() || !sameFile(before, opened)) {
+    const opened = await handle.stat({ bigint: true });
+    if (!opened.isFile() || !sameContentVersion(before, opened)) {
       throw new Error(`planning artifact changed while reading: ${path}`);
     }
+    await operations.afterOpen?.(path);
     const value = await handle.readFile();
-    const after = await lstat(path);
-    if (after.isSymbolicLink() || !after.isFile() || !sameFile(opened, after)) {
+    const afterOpen = await handle.stat({ bigint: true });
+    const after = await lstat(path, { bigint: true });
+    if (
+      after.isSymbolicLink()
+      || !after.isFile()
+      || !sameContentVersion(opened, afterOpen)
+      || !sameContentVersion(afterOpen, after)
+    ) {
       throw new Error(`planning artifact changed while reading: ${path}`);
     }
     return value;
