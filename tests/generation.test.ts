@@ -1,8 +1,10 @@
 import assert from "node:assert/strict";
 import { execFile, spawn } from "node:child_process";
+import { closeSync, constants, openSync } from "node:fs";
 import { access, chmod, lstat, mkdir, mkdtemp, readFile, readdir, realpath, rename, stat, symlink, unlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { isAbsolute, join } from "node:path";
+import { Writable } from "node:stream";
 import test, { type TestContext } from "node:test";
 import { promisify } from "node:util";
 import sharp from "sharp";
@@ -413,6 +415,77 @@ test("uses process groups on POSIX and a Job Object branch on Windows", () => {
   assert.deepEqual(bridgeContainmentPolicy("darwin"), { detached: true, killProcessGroup: true, windowsJobObject: false });
   assert.deepEqual(bridgeContainmentPolicy("linux"), { detached: true, killProcessGroup: true, windowsJobObject: false });
   assert.deepEqual(bridgeContainmentPolicy("win32"), { detached: false, killProcessGroup: false, windowsJobObject: true });
+});
+
+test("bridge and provider descendants exit when the parent-liveness pipe reaches EOF", async (t) => {
+  const root = await directory(t, "superppt-parent-pipe-");
+  const modulePath = join(root, "provider.py");
+  const inputPath = join(root, "prompt.txt");
+  const targetPath = join(root, "raw.png");
+  const bridgeMarker = join(root, "bridge.pid");
+  const descendantMarker = join(root, "descendant.pid");
+  await writeFile(inputPath, "PARENT_PIPE_PRIVATE_SENTINEL", { mode: 0o600 });
+  await chmod(inputPath, 0o600);
+  await writeFile(modulePath, [
+    "import os",
+    "import subprocess",
+    "import sys",
+    "import time",
+    "def gen(prompt, out_path, retries=0):",
+    " open(os.environ['SUPERPPT_BRIDGE_PID_MARKER'], 'w').write(str(os.getpid()))",
+    " code = \"import os,time; open(os.environ['SUPERPPT_DESCENDANT_PID_MARKER'], 'w').write(str(os.getpid())); time.sleep(60)\"",
+    " subprocess.Popen([sys.executable, '-c', code])",
+    " while True: time.sleep(1)",
+    "",
+  ].join("\n"));
+  await writeFile(targetPath, "", { mode: 0o600 });
+  const inputFd = openSync(inputPath, constants.O_RDONLY);
+  const moduleFd = openSync(modulePath, constants.O_RDONLY);
+  const targetFd = openSync(targetPath, constants.O_RDWR);
+  const policy = bridgeContainmentPolicy();
+  const child = spawn("python3", [
+    runner,
+    "generate",
+    modulePath,
+    "gen",
+    "@fd:3",
+    process.platform === "win32" ? targetPath : "/dev/fd/5",
+  ], {
+    windowsHide: true,
+    detached: policy.detached,
+    stdio: ["ignore", "ignore", "ignore", inputFd, moduleFd, targetFd, "pipe"],
+    env: {
+      ...process.env,
+      SUPERPPT_BRIDGE_MODULE_FD: "4",
+      SUPERPPT_BRIDGE_PID_MARKER: bridgeMarker,
+      SUPERPPT_DESCENDANT_PID_MARKER: descendantMarker,
+    },
+  });
+  closeSync(inputFd);
+  closeSync(moduleFd);
+  closeSync(targetFd);
+  let bridgePid = 0;
+  let descendantPid = 0;
+  try {
+    await waitFor(async () => {
+      try {
+        bridgePid = Number(await readFile(bridgeMarker, "utf8"));
+        descendantPid = Number(await readFile(descendantMarker, "utf8"));
+        return processExists(bridgePid) && processExists(descendantPid);
+      } catch { return false; }
+    }, 15_000);
+    const streams: readonly unknown[] = child.stdio;
+    const parentLiveness = streams[6];
+    assert.ok(parentLiveness instanceof Writable);
+    parentLiveness.destroy();
+    await waitFor(async () => !processExists(bridgePid) && !processExists(descendantPid), 3_000);
+  } finally {
+    if (child.pid && processExists(child.pid)) {
+      if (policy.killProcessGroup) process.kill(-child.pid, "SIGKILL");
+      else child.kill("SIGKILL");
+    }
+    if (descendantPid > 0 && processExists(descendantPid)) process.kill(descendantPid, "SIGKILL");
+  }
 });
 
 test("uses a private review request and rejects non-exact reviewer JSON", async (t) => {

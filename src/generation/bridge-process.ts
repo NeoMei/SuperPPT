@@ -1,7 +1,7 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import { closeSync, constants, fstatSync, lstatSync, openSync } from "node:fs";
 import type { Stats } from "node:fs";
-import type { Writable } from "node:stream";
+import { Writable } from "node:stream";
 
 const MAX_BRIDGE_OUTPUT = 1024 * 1024;
 
@@ -21,6 +21,16 @@ function terminateBridge(child: ChildProcess): void {
     try { process.kill(-child.pid, "SIGKILL"); return; } catch { /* fall through */ }
   }
   child.kill("SIGKILL");
+}
+
+function extraWritable(child: ChildProcess, index: number): Writable {
+  const streams: readonly unknown[] = child.stdio;
+  const stream = streams[index];
+  if (!(stream instanceof Writable)) {
+    terminateBridge(child);
+    throw new Error("provider bridge containment unavailable");
+  }
+  return stream;
 }
 
 function sameIdentity(left: Stats, right: Stats): boolean {
@@ -69,21 +79,24 @@ export async function runBridge(options: {
       ], {
         windowsHide: true,
         detached: policy.detached,
-        stdio: ["ignore", "pipe", "pipe", policy.windowsJobObject ? "pipe" : options.inputFd, moduleFd, options.targetFd],
+        stdio: ["ignore", "pipe", "pipe", policy.windowsJobObject ? "pipe" : options.inputFd, moduleFd, options.targetFd, "pipe"],
         env: {
           ...process.env,
           SUPERPPT_BRIDGE_MODULE_FD: "4",
-          SUPERPPT_BRIDGE_PARENT_PID: String(process.pid),
           ...(options.maximumTargetBytes === undefined ? {} : {
             SUPERPPT_BRIDGE_MAX_OUTPUT_BYTES: String(options.maximumTargetBytes),
           }),
         },
       });
       if (policy.windowsJobObject) {
-        const privatePipe = child.stdio[3] as Writable;
+        const privatePipe = extraWritable(child, 3);
         privatePipe.on("error", () => undefined);
         privatePipe.end(options.inputValue);
       }
+      // The parent owns the only write end. Parent exit (normal or forced)
+      // closes it in the OS; the bridge treats EOF as an unconditional death signal.
+      const parentLiveness = extraWritable(child, 6);
+      parentLiveness.on("error", () => undefined);
       const stdout: Buffer[] = [];
       let stdoutBytes = 0;
       let overflow = false;

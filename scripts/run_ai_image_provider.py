@@ -16,7 +16,6 @@ from pathlib import Path
 import stat
 import sys
 import threading
-import time
 import types
 
 try:
@@ -100,10 +99,7 @@ def configure_windows_job():
     _windows_job = job
 
 
-def configure_parent_death():
-    expected = int(os.environ["SUPERPPT_BRIDGE_PARENT_PID"])
-    if expected <= 1:
-        raise RuntimeError("provider parent identity is invalid")
+def configure_parent_liveness():
     configure_windows_job()
     if sys.platform.startswith("linux"):
         signal = __import__("signal")
@@ -111,15 +107,17 @@ def configure_parent_death():
         libc = ctypes.CDLL(None, use_errno=True)
         if libc.prctl(1, signal.SIGTERM, 0, 0, 0) != 0:  # PR_SET_PDEATHSIG
             raise RuntimeError("provider parent-death containment unavailable")
-    if os.getppid() != expected:
-        kill_process_family()
 
-    def watch_parent():
-        while os.getppid() == expected:
-            time.sleep(0.025)
-        kill_process_family()
+    os.fstat(6)
 
-    threading.Thread(target=watch_parent, name="superppt-parent-watch", daemon=True).start()
+    def watch_parent_pipe():
+        try:
+            while os.read(6, 1):
+                pass
+        finally:
+            kill_process_family()
+
+    threading.Thread(target=watch_parent_pipe, name="superppt-parent-pipe", daemon=True).start()
 
 
 def regular_private_file(path_string):
@@ -199,7 +197,7 @@ def main(argv):
     if len(argv) != 6 or argv[1] not in {"generate", "review"}:
         raise RuntimeError("invalid provider bridge invocation")
     mode, module_path, callable_name, private_path, target = argv[1:]
-    configure_parent_death()
+    configure_parent_liveness()
     private = regular_private_file(private_path)
     function = getattr(load_module(module_path), callable_name)
     if not callable(function):
