@@ -22,6 +22,7 @@ import { approveGate } from "../src/planning/confirm.js";
 import { publishPlanViews } from "../src/planning/views.js";
 import { initializeProject } from "../src/project/initialize.js";
 import {
+  commitApprovedImpactRevision,
   readProject,
   updateProject,
   writeProject,
@@ -175,18 +176,6 @@ async function writeApprovedOutline(
   await approveGate(root, "outline");
 }
 
-async function setBriefArtifact(root: string): Promise<void> {
-  const bytes = await readFile(join(root, "brief.json"));
-  await updateProject(root, (manifest) => ({
-    ...manifest,
-    brief: {
-      path: "brief.json",
-      sha256: createHash("sha256").update(bytes).digest("hex"),
-      revisionId: manifest.currentRevision.id,
-    },
-  }));
-}
-
 async function advanceWithBriefArtifact(root: string, brief: typeof approvedBrief): Promise<void> {
   const plan = await publishImpactPlan(root, { kind: "brief", title: brief.title });
   await approveImpact(root, plan.sha256);
@@ -209,7 +198,6 @@ async function authenticatedRollbackVersions(
 }> {
   const root = await project(t, prefix);
   await writeApprovedOutline(root);
-  await setBriefArtifact(root);
   const targetId = (await readProject(root)).currentRevision.id;
   const targetFiles = new Map([
     ["brief.json", await readFile(join(root, "brief.json"))],
@@ -227,16 +215,20 @@ async function authenticatedRollbackVersions(
     })),
   };
   await advanceWithBriefArtifact(root, v2Brief);
-  await writeApprovedOutline(root, approvedBrief, v2Outline);
+  await writeApprovedOutline(root, v2Brief, v2Outline);
   const current = await readProject(root);
+  const beforeFiles = new Map([
+    ["brief.json", await readFile(join(root, "brief.json"))],
+    ["outline.json", await readFile(join(root, "outline.json"))],
+  ]);
+  const firstPath = [...targetFiles.keys()].sort()[0]!;
+  assert.equal(firstPath, "brief.json");
+  assert.notDeepEqual(beforeFiles.get(firstPath), targetFiles.get(firstPath));
   return {
     root,
     targetId,
     current,
-    beforeFiles: new Map([
-      ["brief.json", await readFile(join(root, "brief.json"))],
-      ["outline.json", await readFile(join(root, "outline.json"))],
-    ]),
+    beforeFiles,
     targetFiles,
   };
 }
@@ -459,7 +451,6 @@ test("rolls back by appending a new revision while preserving the full ledger", 
 test("restores authenticated fixed planning artifacts from the rollback target", async (t) => {
   const root = await project(t, "superppt-rollback-artifacts-");
   await writeApprovedOutline(root);
-  await setBriefArtifact(root);
   const v1Brief = await readFile(join(root, "brief.json"));
   const v1Outline = await readFile(join(root, "outline.json"));
   const targetId = (await readProject(root)).currentRevision.id;
@@ -477,9 +468,9 @@ test("restores authenticated fixed planning artifacts from the rollback target",
     })),
   };
   await advanceWithBriefArtifact(root, v2Brief);
-  await writeApprovedOutline(root, approvedBrief, v2Outline);
+  await writeApprovedOutline(root, v2Brief, v2Outline);
   const before = await readProject(root);
-  assert.deepEqual(await readFile(join(root, "brief.json")), v1Brief);
+  assert.notDeepEqual(await readFile(join(root, "brief.json")), v1Brief);
   assert.notDeepEqual(await readFile(join(root, "outline.json")), v1Outline);
 
   await rollbackToRevision(root, targetId);
@@ -489,7 +480,7 @@ test("restores authenticated fixed planning artifacts from the rollback target",
   assert.deepEqual(await readFile(join(root, "outline.json")), v1Outline);
   assert.equal(rolledBack.revisions.length, before.revisions.length + 1);
   assert.deepEqual(rolledBack.gates, before.gates);
-  assert.equal(rolledBack.brief?.sha256, createHash("sha256").update(v1Brief).digest("hex"));
+  assert.equal(rolledBack.brief, null);
 });
 
 test("recovers rollback journals at every durable crash boundary", async (t) => {
@@ -698,7 +689,6 @@ test("rejects tampered, extra-entry, and linked rollback journals while reads st
 test("rejects corrupted target planning snapshots before restoring any bytes", async (t) => {
   const root = await project(t, "superppt-rollback-artifacts-corrupt-");
   await writeApprovedOutline(root);
-  await setBriefArtifact(root);
   const targetId = (await readProject(root)).currentRevision.id;
   const plan = await publishImpactPlan(root, { kind: "outline-order" });
   await approveImpact(root, plan.sha256);
@@ -706,7 +696,7 @@ test("rejects corrupted target planning snapshots before restoring any bytes", a
 
   const v2Brief = { ...approvedBrief, title: "Corruption-safe V2" };
   await advanceWithBriefArtifact(root, v2Brief);
-  await writeApprovedOutline(root, approvedBrief, approvedOutline);
+  await writeApprovedOutline(root, v2Brief, approvedOutline);
   const before = await readProject(root);
   const briefBefore = await readFile(join(root, "brief.json"));
   const target = JSON.parse(await readFile(
@@ -845,6 +835,32 @@ test("serializes concurrent apply so exactly one revision is appended", async (t
   assert.equal(results.filter((result) => result.status === "fulfilled").length, 1);
   assert.equal(results.filter((result) => result.status === "rejected").length, 1);
   assert.equal((await readProject(root)).revisions.length, 2);
+});
+
+test("direct impact commit holds the pending-evidence lease through revision publication", async (t) => {
+  const root = await project(t, "superppt-impact-commit-atomic-");
+  const plan = await publishImpactPlan(root, { kind: "brief", title: "Committed" });
+  await approveImpact(root, plan.sha256);
+  let replacement: Promise<Awaited<ReturnType<typeof publishImpactPlan>>> | undefined;
+  await commitApprovedImpactRevision(root, plan, plan.change, {
+    revisionSnapshotCheckpoint: async (step) => {
+      if (step === "descriptor-written") {
+        replacement = publishImpactPlan(root, { kind: "style" });
+        const result = await Promise.race([
+          replacement.then(() => "replaced" as const),
+          new Promise<"blocked">((resolve) => setTimeout(() => resolve("blocked"), 150)),
+        ]);
+        assert.equal(result, "blocked", "pending evidence replacement bypassed the revision-impact lease");
+      }
+    },
+  });
+  assert.ok(replacement);
+  const nextPlan = await replacement;
+  const current = await readProject(root);
+  assert.equal(nextPlan.baseRevisionId, current.currentRevision.id);
+  assert.notEqual(nextPlan.baseRevisionId, plan.baseRevisionId);
+  const pending = JSON.parse(await readFile(join(root, "revisions", "pending-impact.json"), "utf8"));
+  assert.equal(pending.baseRevisionId, current.currentRevision.id);
 });
 
 test("allows a new approved impact after the prior approval was applied", async (t) => {

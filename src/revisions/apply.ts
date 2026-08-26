@@ -195,9 +195,7 @@ export async function applyRevision(
   const change = ChangeRequestSchema.parse(rawChange);
   if (!sameJson(plan.change, change)) throw new Error("impact plan change does not match apply request");
 
-  await withProjectLease(root, "revision-impact", async (canonicalRoot) => {
-    await commitApprovedImpactRevision(canonicalRoot, plan, change, options.operations);
-  });
+  await commitApprovedImpactRevision(root, plan, change, options.operations);
 }
 
 export async function recoverRollbackTransaction(

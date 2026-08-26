@@ -411,7 +411,7 @@ export async function readProjectForRollbackRecovery(root: string): Promise<{
   return ownedProject(root);
 }
 
-export async function commitApprovedImpactRevision(
+async function commitApprovedImpactRevisionLocked(
   root: string,
   rawPlan: ImpactPlan,
   rawChange: ChangeRequest,
@@ -490,6 +490,21 @@ export async function commitApprovedImpactRevision(
     result = valid;
   });
   if (!result) throw new Error("approved impact revision was not committed");
+}
+
+export async function commitApprovedImpactRevision(
+  root: string,
+  rawPlan: ImpactPlan,
+  rawChange: ChangeRequest,
+  evidenceOperations?: RevisionEvidenceOperations,
+): Promise<void> {
+  await withProjectLease(root, "revision-impact", (canonicalRoot) =>
+    commitApprovedImpactRevisionLocked(
+      canonicalRoot,
+      rawPlan,
+      rawChange,
+      evidenceOperations,
+    ));
 }
 
 export async function beginProjectRollbackTransaction(
