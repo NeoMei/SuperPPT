@@ -1,5 +1,14 @@
+import { access } from "node:fs/promises";
+import { fileURLToPath } from "node:url";
+
 import { preflightDependencies } from "./dependencies/preflight.js";
 import { resolveDependencies } from "./dependencies/resolve.js";
+import {
+  describeProjectGeneration,
+  generateProject,
+  recordManualQa,
+  retryProjectPage,
+} from "./generation/batch.js";
 import { approveGate, type PlanningGate } from "./planning/confirm.js";
 import { normalizeInput, type InputRequest } from "./planning/intake.js";
 import { publishPlanViews, publishStyleSample } from "./planning/views.js";
@@ -83,16 +92,36 @@ function planningGate(value: string): PlanningGate {
   throw new Error(`invalid planning gate: ${value}`);
 }
 
+async function configuredDependencies() {
+  const aiRoot = process.env.SUPERPPT_AI_IMAGE_TO_PPT_SOURCE;
+  const editableRoot = process.env.SUPERPPT_IMAGE_TO_EDITABLE_PPTX_SOURCE;
+  if (!aiRoot || !editableRoot) {
+    throw new Error("both dependency source overrides are required by the initial CLI");
+  }
+  return resolveDependencies({ aiRoot, editableRoot });
+}
+
+async function providerRunner(): Promise<string> {
+  const candidates = [
+    fileURLToPath(new URL("../scripts/run_ai_image_provider.py", import.meta.url)),
+    fileURLToPath(new URL("../../scripts/run_ai_image_provider.py", import.meta.url)),
+  ];
+  for (const candidate of candidates) {
+    try { await access(candidate); return candidate; } catch { /* try compiled layout */ }
+  }
+  throw new Error("provider bridge is missing");
+}
+
+function concurrency(value: string): number {
+  if (!/^[1-8]$/.test(value)) throw new Error("concurrency must be between 1 and 8");
+  return Number(value);
+}
+
 async function main(argv: string[]): Promise<void> {
   const command = argv[0];
   if (command === "preflight") {
-    const aiRoot = process.env.SUPERPPT_AI_IMAGE_TO_PPT_SOURCE;
-    const editableRoot = process.env.SUPERPPT_IMAGE_TO_EDITABLE_PPTX_SOURCE;
-    if (!aiRoot || !editableRoot) {
-      throw new Error("both dependency source overrides are required by the initial CLI");
-    }
     const report = await preflightDependencies(
-      await resolveDependencies({ aiRoot, editableRoot }),
+      await configuredDependencies(),
     );
     outputJson(report);
     if (!report.ok) {
@@ -191,6 +220,47 @@ async function main(argv: string[]): Promise<void> {
     const revisionId = options.get("--revision")!;
     await rollbackToRevision(options.get("--project")!, revisionId);
     outputJson({ revisionId, rolledBack: true });
+    return;
+  }
+
+  if (command === "generate") {
+    const options = exactFlags(argv.slice(1), ["--project", "--concurrency"]);
+    const root = options.get("--project")!;
+    const resolved = await configuredDependencies();
+    const runner = await providerRunner();
+    const plan = await describeProjectGeneration({ root, ai: resolved.ai });
+    outputJson({ event: "generation-plan", ...plan });
+    outputJson(await generateProject({
+      root,
+      ai: resolved.ai,
+      runner,
+      concurrency: concurrency(options.get("--concurrency")!),
+    }));
+    return;
+  }
+
+  if (command === "record-qa") {
+    const options = exactFlags(argv.slice(1), ["--project", "--slide", "--input"]);
+    const resolved = await configuredDependencies();
+    const quality = await recordManualQa({
+      root: options.get("--project")!,
+      slideId: options.get("--slide")!,
+      input: options.get("--input")!,
+      ai: resolved.ai,
+    });
+    outputJson({ slideId: options.get("--slide")!, quality });
+    return;
+  }
+
+  if (command === "retry-page") {
+    const options = exactFlags(argv.slice(1), ["--project", "--slide"]);
+    const root = options.get("--project")!;
+    const slideId = options.get("--slide")!;
+    const resolved = await configuredDependencies();
+    const runner = await providerRunner();
+    const plan = await describeProjectGeneration({ root, ai: resolved.ai, selectedIds: new Set([slideId]) });
+    outputJson({ event: "generation-plan", ...plan });
+    outputJson(await retryProjectPage({ root, slideId, ai: resolved.ai, runner }));
     return;
   }
 
