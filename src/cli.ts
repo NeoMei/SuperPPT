@@ -1,5 +1,25 @@
+import { randomUUID } from "node:crypto";
+import {
+  lstat,
+  readFile,
+  readdir,
+  rename,
+  rm,
+} from "node:fs/promises";
+import { dirname, isAbsolute, join, relative, resolve } from "node:path";
+
 import { preflightDependencies } from "./dependencies/preflight.js";
 import { resolveDependencies } from "./dependencies/resolve.js";
+import { approveGate, type PlanningGate } from "./planning/confirm.js";
+import { normalizeInput, type InputRequest } from "./planning/intake.js";
+import { renderBrief, renderOutline, renderSlideSpec } from "./planning/render.js";
+import {
+  BriefSchema,
+  OutlineSchema,
+  SlideSpecSchema,
+  type SlideSpec,
+} from "./planning/schemas.js";
+import { syncDirectory, writeDurableExclusive } from "./project/durable.js";
 import { initializeProject } from "./project/initialize.js";
 import { readProject } from "./project/store.js";
 
@@ -29,8 +49,158 @@ function exactFlags(argv: string[], expected: string[]): Map<string, string> {
   return parsed;
 }
 
+function selectedFlags(
+  argv: string[],
+  required: string[],
+  allowed: string[],
+): Map<string, string> {
+  const parsed = flags(argv);
+  for (const key of parsed.keys()) {
+    if (!allowed.includes(key)) throw new Error(`unknown CLI flag: ${key}`);
+  }
+  if (required.some((key) => !parsed.has(key))) {
+    throw new Error(`required CLI flags: ${required.join(" ")}`);
+  }
+  return parsed;
+}
+
 function outputJson(value: unknown): void {
   process.stdout.write(`${JSON.stringify(value, null, 2)}\n`);
+}
+
+function parseJson(value: string, label: string): unknown {
+  try {
+    return JSON.parse(value);
+  } catch (error: unknown) {
+    throw new Error(`${label} must contain valid JSON`, { cause: error });
+  }
+}
+
+async function readJson(path: string): Promise<unknown> {
+  const info = await lstat(path);
+  if (info.isSymbolicLink() || !info.isFile()) {
+    throw new Error(`planning artifact must be a regular file: ${path}`);
+  }
+  return parseJson(await readFile(path, "utf8"), path);
+}
+
+async function writeDurableReplacement(path: string, value: string): Promise<void> {
+  const directory = dirname(path);
+  const staging = join(directory, `.superppt.${randomUUID()}.view`);
+  try {
+    await writeDurableExclusive(staging, value);
+    await rename(staging, path);
+    await syncDirectory(directory);
+  } catch (error: unknown) {
+    await rm(staging, { force: true }).catch(() => undefined);
+    throw error;
+  }
+}
+
+async function validatePlan(root: string): Promise<{ slideCount: number }> {
+  await readProject(root);
+  const brief = BriefSchema.parse(await readJson(join(root, "brief.json")));
+  const outline = OutlineSchema.parse(await readJson(join(root, "outline.json")));
+  const slidesRoot = join(root, "slides");
+  const slidesRootInfo = await lstat(slidesRoot);
+  if (slidesRootInfo.isSymbolicLink() || !slidesRootInfo.isDirectory()) {
+    throw new Error("slide workspace must be a regular directory");
+  }
+  const entries = await readdir(slidesRoot, { withFileTypes: true });
+  const specs: Array<{ directory: string; value: SlideSpec }> = [];
+  for (const entry of entries) {
+    if (entry.isSymbolicLink()) {
+      throw new Error(`slide directory must not be a symbolic link: ${entry.name}`);
+    }
+    if (!entry.isDirectory()) continue;
+    const directory = join(slidesRoot, entry.name);
+    const directoryInfo = await lstat(directory);
+    if (directoryInfo.isSymbolicLink() || !directoryInfo.isDirectory()) {
+      throw new Error(`slide directory must be a regular directory: ${entry.name}`);
+    }
+    const value = SlideSpecSchema.parse(await readJson(join(directory, "spec.json")));
+    if (value.slideId !== entry.name) {
+      throw new Error(`slide spec ID must match its directory: ${entry.name}`);
+    }
+    specs.push({ directory, value });
+  }
+  const outlineIds = outline.slides.map((slide) => slide.id).sort();
+  const specIds = specs.map(({ value }) => value.slideId).sort();
+  if (
+    outlineIds.length !== specIds.length
+    || outlineIds.some((id, index) => id !== specIds[index])
+  ) {
+    throw new Error("spec IDs must exactly match outline IDs");
+  }
+
+  await writeDurableReplacement(join(root, "brief.md"), renderBrief(brief));
+  await writeDurableReplacement(join(root, "outline.md"), renderOutline(outline));
+  await Promise.all(specs.map(({ directory, value }) =>
+    writeDurableReplacement(join(directory, "spec.md"), renderSlideSpec(value))
+  ));
+  return { slideCount: specs.length };
+}
+
+function inputRequest(options: Map<string, string>): InputRequest {
+  const inputs = ["--description", "--text", "--markdown"]
+    .filter((key) => options.has(key));
+  if (inputs.length !== 1) throw new Error("ingest requires exactly one input flag");
+  const key = inputs[0]!;
+  if (key === "--markdown") {
+    return { kind: "markdown", path: options.get(key)! };
+  }
+  return {
+    kind: key === "--description" ? "description" : "text",
+    value: options.get(key)!,
+  };
+}
+
+function planningGate(value: string): PlanningGate {
+  if (value === "outline" || value === "slide-specs" || value === "style-sample") {
+    return value;
+  }
+  throw new Error(`invalid planning gate: ${value}`);
+}
+
+async function regularFiles(root: string): Promise<string[]> {
+  const result: string[] = [];
+  for (const entry of await readdir(root, { withFileTypes: true })) {
+    const path = join(root, entry.name);
+    if (entry.isSymbolicLink()) throw new Error(`gate artifact path is unsafe: ${path}`);
+    if (entry.isDirectory()) result.push(...await regularFiles(path));
+    else if (entry.isFile()) result.push(path);
+  }
+  return result.sort();
+}
+
+async function defaultGateArtifacts(root: string, gate: PlanningGate): Promise<string[]> {
+  if (gate === "outline") return [join(root, "brief.json"), join(root, "outline.json")];
+  if (gate === "slide-specs") {
+    const outline = OutlineSchema.parse(await readJson(join(root, "outline.json")));
+    return [
+      join(root, "outline.json"),
+      ...outline.slides
+        .sort((left, right) => left.order - right.order)
+        .map((slide) => join(root, "slides", slide.id, "spec.json")),
+    ];
+  }
+  return regularFiles(join(root, "style", "sample"));
+}
+
+function explicitArtifacts(root: string, raw: string): string[] {
+  const parsed = parseJson(raw, "--artifacts");
+  if (!Array.isArray(parsed) || parsed.length === 0 || !parsed.every((item) => typeof item === "string" && item.length > 0)) {
+    throw new Error("--artifacts must be a non-empty JSON string array");
+  }
+  return parsed.map((path) => {
+    if (isAbsolute(path)) return path;
+    const absolute = resolve(root, path);
+    const projectPath = relative(root, absolute);
+    if (projectPath.startsWith("..") || isAbsolute(projectPath)) {
+      throw new Error(`gate artifact is outside project: ${path}`);
+    }
+    return absolute;
+  });
 }
 
 async function main(argv: string[]): Promise<void> {
@@ -63,6 +233,44 @@ async function main(argv: string[]): Promise<void> {
   if (command === "status") {
     const options = exactFlags(argv.slice(1), ["--project"]);
     outputJson(await readProject(options.get("--project")!));
+    return;
+  }
+
+  if (command === "ingest") {
+    const options = selectedFlags(
+      argv.slice(1),
+      ["--project"],
+      ["--project", "--description", "--text", "--markdown"],
+    );
+    outputJson({
+      source: await normalizeInput(
+        options.get("--project")!,
+        inputRequest(options),
+      ),
+    });
+    return;
+  }
+
+  if (command === "validate-plan") {
+    const options = exactFlags(argv.slice(1), ["--project"]);
+    outputJson(await validatePlan(options.get("--project")!));
+    return;
+  }
+
+  if (command === "approve") {
+    const options = selectedFlags(
+      argv.slice(1),
+      ["--project", "--gate"],
+      ["--project", "--gate", "--artifacts"],
+    );
+    const root = options.get("--project")!;
+    await readProject(root);
+    const gate = planningGate(options.get("--gate")!);
+    const artifacts = options.has("--artifacts")
+      ? explicitArtifacts(root, options.get("--artifacts")!)
+      : await defaultGateArtifacts(root, gate);
+    await approveGate(root, gate, artifacts);
+    outputJson({ gate, current: true });
     return;
   }
 
