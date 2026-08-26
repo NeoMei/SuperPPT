@@ -1,0 +1,21 @@
+{
+  "name": "superppt",
+  "version": "0.1.0",
+  "description": "Create high-detail image-first PPTX decks and revise selected pages as editable slides.",
+  "author": { "name": "NeoMei", "url": "https://github.com/NeoMei" },
+  "homepage": "https://github.com/NeoMei/SuperPPT#readme",
+  "repository": "https://github.com/NeoMei/SuperPPT",
+  "license": "MIT",
+  "keywords": ["pptx", "presentation", "image-generation", "editable-slides", "codex-plugin"],
+  "skills": "./skills/",
+  "interface": {
+    "displayName": "SuperPPT",
+    "shortDescription": "Create polished image-first decks with editable page revisions.",
+    "longDescription": "Turn a description, pasted text, or Markdown into a confirmed high-detail deck, then revise selected pages through editable reconstruction or targeted regeneration.",
+    "developerName": "NeoMei",
+    "category": "Productivity",
+    "capabilities": ["Write"],
+    "websiteURL": "https://github.com/NeoMei/SuperPPT",
+    "defaultPrompt": "Create a polished presentation from my content with SuperPPT."
+  }
+}

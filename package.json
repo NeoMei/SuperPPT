@@ -1,0 +1,27 @@
+{
+  "name": "superppt",
+  "version": "0.1.0",
+  "description": "Create high-detail image-first PPTX decks with versioned planning and editable page revisions.",
+  "private": true,
+  "type": "module",
+  "engines": { "node": ">=22.6" },
+  "scripts": {
+    "test": "node --import tsx --test \"tests/*.test.ts\"",
+    "lint:types": "tsc -p tsconfig.json --noEmit",
+    "build": "tsc -p tsconfig.json",
+    "test:compiled": "node --experimental-detect-module --test \"dist/tests/*.test.js\"",
+    "cli": "tsx src/cli.ts"
+  },
+  "dependencies": {
+    "pdf-lib": "^1.17.1",
+    "pptxgenjs": "^4.0.1",
+    "sharp": "^0.35.3",
+    "zod": "^4.0.0"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "jszip": "^3.10.1",
+    "tsx": "^4.20.0",
+    "typescript": "^5.9.0"
+  }
+}

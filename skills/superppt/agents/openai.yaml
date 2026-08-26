@@ -1,0 +1,4 @@
+interface:
+  display_name: "SuperPPT"
+  short_description: "Create polished image-first decks with editable revisions"
+  default_prompt: "Create a polished presentation from my content with SuperPPT."
