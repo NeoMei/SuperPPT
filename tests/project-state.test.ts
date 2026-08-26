@@ -319,6 +319,45 @@ test("does not clobber an unowned target raced into initialization promotion", a
   await access(join(parent, evidence[0]!, "superppt.json"));
 });
 
+test("Windows atomically promotes a new project directory", {
+  skip: process.platform !== "win32",
+}, async (t) => {
+  const parent = await temporaryParent(t, "superppt-win-promote-");
+  const root = join(parent, "demo");
+
+  const manifest = await initializeProject({ root, title: "Windows Demo" });
+
+  assert.equal((await readProject(root)).projectId, manifest.projectId);
+  await access(join(root, ".superppt-project.json"));
+});
+
+test("Windows atomic promotion preserves a raced target", {
+  skip: process.platform !== "win32",
+}, async (t) => {
+  const parent = await temporaryParent(t, "superppt-win-race-");
+  const root = join(parent, "demo");
+  const sentinel = join(root, "sentinel.bin");
+  const bytes = Buffer.from([255, 0, 127, 64]);
+
+  await assert.rejects(initializeProject({
+    root,
+    title: "Windows race",
+    operations: {
+      async beforeExclusivePromote() {
+        await mkdir(root);
+        await writeFile(sentinel, bytes);
+      },
+    },
+  }), /already exists|EEXIST/);
+
+  assert.deepEqual(await readFile(sentinel), bytes);
+  assert.deepEqual(await readdir(root), ["sentinel.bin"]);
+  assert.equal(
+    (await readdir(parent)).filter((name) => name.endsWith(".failed-run")).length,
+    1,
+  );
+});
+
 test("keeps old manifest bytes and staged evidence when a durable write fails", async (t) => {
   const parent = await temporaryParent(t, "superppt-write-fail-");
   const root = join(parent, "demo");
@@ -448,6 +487,26 @@ test("accepts a chained revision append and advances currentRevision to its tail
   const reopened = await readProject(root);
   assert.deepEqual(reopened.revisions, [...first.revisions, next]);
   assert.deepEqual(reopened.currentRevision, next);
+});
+
+test("rejects appending a revision while retaining the old currentRevision", async (t) => {
+  const parent = await temporaryParent(t, "superppt-revision-old-current-");
+  const root = join(parent, "demo");
+  const first = await initializeProject({ root, title: "Demo" });
+  const next = {
+    id: "00000000-0000-4000-8000-000000000105",
+    number: 2,
+    createdAt: new Date().toISOString(),
+    parentId: first.currentRevision.id,
+  };
+  const before = await readFile(join(root, "superppt.json"), "utf8");
+
+  await assert.rejects(writeProject(root, {
+    ...first,
+    revisions: [...first.revisions, next],
+  }), /currentRevision.*appended tail/);
+
+  assert.equal(await readFile(join(root, "superppt.json"), "utf8"), before);
 });
 
 test("requires an exact planned revision snapshot before dropping old artifact evidence", async (t) => {

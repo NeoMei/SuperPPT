@@ -68,15 +68,12 @@ function assertRevisionEvolution(
     prior = revision;
   }
 
-  const currentUnchanged = sameJson(
-    next.currentRevision,
-    previous.currentRevision,
-  );
-  const currentIsNewTail = appended.length > 0
-    && sameJson(next.currentRevision, appended.at(-1));
-  if (!currentUnchanged && !currentIsNewTail) {
+  const currentValid = appended.length === 0
+    ? sameJson(next.currentRevision, previous.currentRevision)
+    : sameJson(next.currentRevision, appended.at(-1));
+  if (!currentValid) {
     throw new Error(
-      "immutable revision history permits currentRevision to remain or advance to the appended tail",
+      "immutable revision history requires currentRevision to remain unchanged or equal the appended tail",
     );
   }
 }

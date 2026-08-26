@@ -16,6 +16,9 @@ export async function writeDurableExclusive(
 }
 
 export async function syncDirectory(path: string): Promise<void> {
+  // Windows directory handles cannot be fsynced through node:fs; promotion
+  // uses MoveFileExW with MOVEFILE_WRITE_THROUGH instead.
+  if (process.platform === "win32") return;
   const handle = await open(path, "r");
   try {
     await handle.sync();
