@@ -270,6 +270,14 @@ test("style publication requires a catalog style and a decodable 16:9 PNG", asyn
 
   await writeFile(join(root, "style", "sample", "sample.png"), Buffer.from("not a png"));
   await assert.rejects(publishStyleSample(root), /decodable PNG/);
+
+  const complete = await sharp({
+    create: { width: 1600, height: 900, channels: 3, background: "#102030" },
+  }).png().toBuffer();
+  const truncated = complete.subarray(0, complete.length - 64);
+  assert.equal((await sharp(truncated).metadata()).format, "png", "regression fixture must retain a valid PNG header");
+  await writeFile(join(root, "style", "sample", "sample.png"), truncated);
+  await assert.rejects(publishStyleSample(root), /decodable PNG/);
 });
 
 test("rejects symlink and non-file fixed gate artifacts without following them", async (t) => {

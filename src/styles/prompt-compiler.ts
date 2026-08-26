@@ -27,37 +27,46 @@ const PromptSpecSchema = z.object({
 
 export type CompiledPrompt = { text: string; sha256: string };
 
-const list = (items: string[]): string => items.map((item) => `- ${item}`).join("\n");
+function canonicalJson(value: unknown): string {
+  if (value === null || typeof value !== "object") return JSON.stringify(value);
+  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(",")}]`;
+  const record = value as Record<string, unknown>;
+  return `{${Object.keys(record).sort().map((key) => `${JSON.stringify(key)}:${canonicalJson(record[key])}`).join(",")}}`;
+}
+
+const field = (label: string, value: unknown): string => `${label} (canonical JSON): ${canonicalJson(value)}`;
 
 export function compilePrompt(input: { spec: PromptSpec | SlideSpec; style: StyleRecipe; director: VisualDirector }): CompiledPrompt {
   const spec = PromptSpecSchema.parse(input.spec);
   const style = StyleRecipeSchema.parse(input.style);
   const director = VisualDirectorSchema.parse(input.director);
+  const payload = { director, spec, style };
   const text = [
     "Use case: productivity-visual",
     "Asset type: premium 16:9 presentation slide",
-    `Page role: ${spec.role}`,
-    `Slide title (verbatim): "${spec.title}"`,
-    `Core message: ${spec.coreMessage}`,
-    `Style recipe: ${style.id} — ${style.name}`,
+    field("Page role", spec.role),
+    field("Slide title (verbatim)", spec.title),
+    field("Core message", spec.coreMessage),
+    field("Style recipe", { id: style.id, name: style.name }),
     `Style consistency: preserve this exact recipe across the deck while adapting only the page-role composition.`,
-    `Primary visual subject: ${spec.visualSubject}`,
-    `Composition: ${spec.composition}; ${style.compositionRules.join("; ")}; ${style.pageVariants[spec.role]}`,
-    `Foreground:\n${list(director.foreground)}`,
-    `Midground:\n${list(director.midground)}`,
-    `Background:\n${list(director.background)}`,
-    `Micro details:\n${list(director.microDetails)}`,
-    `Reading order:\n${list(director.readingOrder)}`,
-    `Text safe area: ${director.textSafeArea}`,
-    `Relationships:\n${list(spec.relationships)}`,
-    `Palette: ${style.palette.join(", ")}`,
-    `Materials: ${style.materials.join(", ")}`,
-    `Lighting: ${style.lighting.join(", ")}`,
-    `Medium: ${style.medium.join(", ")}`,
-    `Typography: ${style.typography.join(", ")}`,
-    `Detail language: ${style.detailLanguage.join(", ")}`,
-    `Text (verbatim):\n${list(spec.requiredText.map((value) => `"${value}"`))}`,
-    `Avoid:\n${list([...style.forbidden, ...spec.forbidden])}`,
+    field("Primary visual subject", spec.visualSubject),
+    field("Composition", { page: spec.composition, rules: style.compositionRules, variant: style.pageVariants[spec.role] }),
+    field("Foreground", director.foreground),
+    field("Midground", director.midground),
+    field("Background", director.background),
+    field("Micro details", director.microDetails),
+    field("Reading order", director.readingOrder),
+    field("Text safe area", director.textSafeArea),
+    field("Relationships", spec.relationships),
+    field("Palette", style.palette),
+    field("Materials", style.materials),
+    field("Lighting", style.lighting),
+    field("Medium", style.medium),
+    field("Typography", style.typography),
+    field("Detail language", style.detailLanguage),
+    field("Text (verbatim)", spec.requiredText),
+    field("Avoid", [...style.forbidden, ...spec.forbidden]),
+    `BEGIN SUPERPPT CANONICAL INPUT\n${canonicalJson(payload)}\nEND SUPERPPT CANONICAL INPUT`,
     "Final self-check: preserve one dominant focal point, clear hierarchy, rich foreground/midground/background detail, exact required copy, exact 16:9 composition, and no logo or watermark.",
   ].join("\n\n");
   return { text, sha256: createHash("sha256").update(text).digest("hex") };

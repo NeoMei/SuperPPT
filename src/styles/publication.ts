@@ -20,7 +20,9 @@ export async function validateStylePublication(
   let width: number | undefined;
   let height: number | undefined;
   try {
-    ({ format, width, height } = await sharp(sample, { failOn: "error" }).metadata());
+    const image = sharp(sample, { failOn: "error" });
+    ({ format, width, height } = await image.metadata());
+    await image.clone().raw().toBuffer();
   } catch (error: unknown) {
     throw new Error("style sample must be a decodable PNG", { cause: error });
   }
