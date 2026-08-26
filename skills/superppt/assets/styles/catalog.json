@@ -1,0 +1,506 @@
+{
+  "catalogVersion": 1,
+  "selectionMode": "single",
+  "styles": [
+    {
+      "id": "ink-future",
+      "name": "水墨未来",
+      "preview": "previews/ink-future.jpg",
+      "palette": [
+        "carbon black",
+        "rice-paper ivory",
+        "mineral cyan"
+      ],
+      "materials": [
+        "fibrous xuan paper",
+        "metallic ink"
+      ],
+      "lighting": [
+        "misty backlight",
+        "silver edge glow"
+      ],
+      "medium": [
+        "Chinese ink painting",
+        "precision technical illustration"
+      ],
+      "typography": [
+        "restrained Song-style title",
+        "small modern annotation"
+      ],
+      "detailLanguage": [
+        "dry-brush circuitry",
+        "layered ink mist",
+        "microscopic seal marks"
+      ],
+      "compositionRules": [
+        "asymmetric void and density",
+        "one ink focal mass",
+        "flowing visual current"
+      ],
+      "forbidden": [
+        "tourist poster",
+        "cartoon panda",
+        "random calligraphy"
+      ],
+      "pageVariants": {
+        "cover": "one iconic hero scene with generous title-safe atmosphere",
+        "section": "one transitional visual threshold with a single chapter cue",
+        "content": "layered explanatory scene with one focal subject and supporting evidence",
+        "process": "directional sequence with unmistakable start, transitions, and outcome",
+        "comparison": "balanced opposing regions with a visible shared evaluation axis",
+        "data": "integrated evidence field where charts belong to the scene rather than float above it",
+        "summary": "converging visual synthesis with one memorable closing image"
+      }
+    },
+    {
+      "id": "scientific-atlas",
+      "name": "科学图鉴",
+      "preview": "previews/scientific-atlas.jpg",
+      "palette": [
+        "bone white",
+        "specimen green",
+        "cobalt blue"
+      ],
+      "materials": [
+        "archival paper",
+        "glass specimen plate"
+      ],
+      "lighting": [
+        "museum daylight",
+        "fine raking light"
+      ],
+      "medium": [
+        "natural-history plate",
+        "scientific cutaway illustration"
+      ],
+      "typography": [
+        "engraved serif heading",
+        "precise specimen labels"
+      ],
+      "detailLanguage": [
+        "cross-section anatomy",
+        "calibration ticks",
+        "hand-inked micro labels"
+      ],
+      "compositionRules": [
+        "central specimen hierarchy",
+        "numbered evidence clusters",
+        "disciplined annotation routes"
+      ],
+      "forbidden": [
+        "school worksheet",
+        "clip art",
+        "unlabeled decoration"
+      ],
+      "pageVariants": {
+        "cover": "one iconic hero scene with generous title-safe atmosphere",
+        "section": "one transitional visual threshold with a single chapter cue",
+        "content": "layered explanatory scene with one focal subject and supporting evidence",
+        "process": "directional sequence with unmistakable start, transitions, and outcome",
+        "comparison": "balanced opposing regions with a visible shared evaluation axis",
+        "data": "integrated evidence field where charts belong to the scene rather than float above it",
+        "summary": "converging visual synthesis with one memorable closing image"
+      }
+    },
+    {
+      "id": "isometric-miniature",
+      "name": "三维微缩",
+      "preview": "previews/isometric-miniature.jpg",
+      "palette": [
+        "warm stone",
+        "oxidized teal",
+        "signal orange"
+      ],
+      "materials": [
+        "cast resin",
+        "brushed aluminum"
+      ],
+      "lighting": [
+        "soft studio key",
+        "miniature practical lights"
+      ],
+      "medium": [
+        "isometric diorama",
+        "high-end product visualization"
+      ],
+      "typography": [
+        "compact geometric title",
+        "physical wayfinding labels"
+      ],
+      "detailLanguage": [
+        "tiny operators",
+        "cable conduits",
+        "machined panel seams"
+      ],
+      "compositionRules": [
+        "single miniature world",
+        "readable vertical strata",
+        "controlled 30-degree perspective"
+      ],
+      "forbidden": [
+        "toy-like plastic",
+        "empty cubes",
+        "flat icon grid"
+      ],
+      "pageVariants": {
+        "cover": "one iconic hero scene with generous title-safe atmosphere",
+        "section": "one transitional visual threshold with a single chapter cue",
+        "content": "layered explanatory scene with one focal subject and supporting evidence",
+        "process": "directional sequence with unmistakable start, transitions, and outcome",
+        "comparison": "balanced opposing regions with a visible shared evaluation axis",
+        "data": "integrated evidence field where charts belong to the scene rather than float above it",
+        "summary": "converging visual synthesis with one memorable closing image"
+      }
+    },
+    {
+      "id": "cinematic-editorial",
+      "name": "电影编辑",
+      "preview": "previews/cinematic-editorial.jpg",
+      "palette": [
+        "charcoal",
+        "paper cream",
+        "editorial crimson"
+      ],
+      "materials": [
+        "matte photographic paper",
+        "fine film grain"
+      ],
+      "lighting": [
+        "dramatic window light",
+        "soft negative fill"
+      ],
+      "medium": [
+        "cinematic photography",
+        "premium magazine layout"
+      ],
+      "typography": [
+        "large editorial serif",
+        "quiet grotesk captions"
+      ],
+      "detailLanguage": [
+        "contact-sheet fragments",
+        "subtle crop marks",
+        "tonal fabric detail"
+      ],
+      "compositionRules": [
+        "one photographic thesis",
+        "editorial tension",
+        "clear reading rhythm"
+      ],
+      "forbidden": [
+        "stock-photo collage",
+        "busy magazine cover",
+        "fake brand marks"
+      ],
+      "pageVariants": {
+        "cover": "one iconic hero scene with generous title-safe atmosphere",
+        "section": "one transitional visual threshold with a single chapter cue",
+        "content": "layered explanatory scene with one focal subject and supporting evidence",
+        "process": "directional sequence with unmistakable start, transitions, and outcome",
+        "comparison": "balanced opposing regions with a visible shared evaluation axis",
+        "data": "integrated evidence field where charts belong to the scene rather than float above it",
+        "summary": "converging visual synthesis with one memorable closing image"
+      }
+    },
+    {
+      "id": "swiss-avantgarde",
+      "name": "先锋瑞士",
+      "preview": "previews/swiss-avantgarde.jpg",
+      "palette": [
+        "warm white",
+        "absolute black",
+        "vermilion"
+      ],
+      "materials": [
+        "uncoated paper",
+        "screen-print ink"
+      ],
+      "lighting": [
+        "flat gallery light",
+        "sharp paper shadow"
+      ],
+      "medium": [
+        "Swiss editorial design",
+        "constructivist print composition"
+      ],
+      "typography": [
+        "oversized grotesk type",
+        "micro-grid captions"
+      ],
+      "detailLanguage": [
+        "registration crosses",
+        "halftone image fields",
+        "hairline grid coordinates"
+      ],
+      "compositionRules": [
+        "radical asymmetric grid",
+        "high contrast scale",
+        "precise negative space"
+      ],
+      "forbidden": [
+        "generic corporate template",
+        "rounded cards",
+        "decorative gradients"
+      ],
+      "pageVariants": {
+        "cover": "one iconic hero scene with generous title-safe atmosphere",
+        "section": "one transitional visual threshold with a single chapter cue",
+        "content": "layered explanatory scene with one focal subject and supporting evidence",
+        "process": "directional sequence with unmistakable start, transitions, and outcome",
+        "comparison": "balanced opposing regions with a visible shared evaluation axis",
+        "data": "integrated evidence field where charts belong to the scene rather than float above it",
+        "summary": "converging visual synthesis with one memorable closing image"
+      }
+    },
+    {
+      "id": "cinematic-tech",
+      "name": "电影科技",
+      "preview": "previews/cinematic-tech.jpg",
+      "palette": [
+        "midnight blue",
+        "electric cyan",
+        "restrained coral"
+      ],
+      "materials": [
+        "smoked glass",
+        "brushed metal"
+      ],
+      "lighting": [
+        "volumetric key light",
+        "cyan rim light"
+      ],
+      "medium": [
+        "cinematic concept art",
+        "photoreal 3D"
+      ],
+      "typography": [
+        "clear title safe area",
+        "precise sans serif"
+      ],
+      "detailLanguage": [
+        "fine circuitry",
+        "particle paths",
+        "micro-etched labels"
+      ],
+      "compositionRules": [
+        "one dominant focal point",
+        "layered depth",
+        "controlled information zones"
+      ],
+      "forbidden": [
+        "neon gamer UI",
+        "hologram clutter",
+        "unreadable microtext"
+      ],
+      "pageVariants": {
+        "cover": "one iconic hero scene with generous title-safe atmosphere",
+        "section": "one transitional visual threshold with a single chapter cue",
+        "content": "layered explanatory scene with one focal subject and supporting evidence",
+        "process": "directional sequence with unmistakable start, transitions, and outcome",
+        "comparison": "balanced opposing regions with a visible shared evaluation axis",
+        "data": "integrated evidence field where charts belong to the scene rather than float above it",
+        "summary": "converging visual synthesis with one memorable closing image"
+      }
+    },
+    {
+      "id": "luxury-photographic",
+      "name": "奢华摄影",
+      "preview": "previews/luxury-photographic.jpg",
+      "palette": [
+        "obsidian",
+        "champagne",
+        "deep emerald"
+      ],
+      "materials": [
+        "satin metal",
+        "polished stone"
+      ],
+      "lighting": [
+        "sculpted studio light",
+        "warm reflected glow"
+      ],
+      "medium": [
+        "luxury still life",
+        "architectural photography"
+      ],
+      "typography": [
+        "refined high-contrast serif",
+        "spaced small capitals"
+      ],
+      "detailLanguage": [
+        "stone veining",
+        "controlled reflections",
+        "fine textile weave"
+      ],
+      "compositionRules": [
+        "hero-object staging",
+        "calm premium spacing",
+        "photographic depth planes"
+      ],
+      "forbidden": [
+        "jewelry advertisement cliché",
+        "gold overload",
+        "generic office portrait"
+      ],
+      "pageVariants": {
+        "cover": "one iconic hero scene with generous title-safe atmosphere",
+        "section": "one transitional visual threshold with a single chapter cue",
+        "content": "layered explanatory scene with one focal subject and supporting evidence",
+        "process": "directional sequence with unmistakable start, transitions, and outcome",
+        "comparison": "balanced opposing regions with a visible shared evaluation axis",
+        "data": "integrated evidence field where charts belong to the scene rather than float above it",
+        "summary": "converging visual synthesis with one memorable closing image"
+      }
+    },
+    {
+      "id": "tactile-craft",
+      "name": "材质手作",
+      "preview": "previews/tactile-craft.jpg",
+      "palette": [
+        "clay white",
+        "indigo thread",
+        "saffron"
+      ],
+      "materials": [
+        "handmade paper",
+        "stitched textile"
+      ],
+      "lighting": [
+        "north-window daylight",
+        "warm table bounce"
+      ],
+      "medium": [
+        "paper sculpture",
+        "editorial craft photography"
+      ],
+      "typography": [
+        "humanist serif title",
+        "hand-set label strips"
+      ],
+      "detailLanguage": [
+        "torn fiber edges",
+        "visible stitches",
+        "embossed symbols"
+      ],
+      "compositionRules": [
+        "one crafted centerpiece",
+        "layered paper depth",
+        "material-led hierarchy"
+      ],
+      "forbidden": [
+        "children's scrapbook",
+        "messy glue marks",
+        "random stickers"
+      ],
+      "pageVariants": {
+        "cover": "one iconic hero scene with generous title-safe atmosphere",
+        "section": "one transitional visual threshold with a single chapter cue",
+        "content": "layered explanatory scene with one focal subject and supporting evidence",
+        "process": "directional sequence with unmistakable start, transitions, and outcome",
+        "comparison": "balanced opposing regions with a visible shared evaluation axis",
+        "data": "integrated evidence field where charts belong to the scene rather than float above it",
+        "summary": "converging visual synthesis with one memorable closing image"
+      }
+    },
+    {
+      "id": "architectural-blueprint",
+      "name": "建筑蓝图",
+      "preview": "previews/architectural-blueprint.jpg",
+      "palette": [
+        "blueprint navy",
+        "chalk white",
+        "safety amber"
+      ],
+      "materials": [
+        "vellum",
+        "anodized aluminum"
+      ],
+      "lighting": [
+        "cool drafting-table light",
+        "precise edge illumination"
+      ],
+      "medium": [
+        "architectural drawing",
+        "technical axonometric rendering"
+      ],
+      "typography": [
+        "condensed technical title",
+        "monospaced dimension notes"
+      ],
+      "detailLanguage": [
+        "section hatches",
+        "dimension chains",
+        "component callouts"
+      ],
+      "compositionRules": [
+        "governing structural axis",
+        "measured modular grid",
+        "clear section-to-detail hierarchy"
+      ],
+      "forbidden": [
+        "illegible CAD screenshot",
+        "random engineering numbers",
+        "flat wireframe only"
+      ],
+      "pageVariants": {
+        "cover": "one iconic hero scene with generous title-safe atmosphere",
+        "section": "one transitional visual threshold with a single chapter cue",
+        "content": "layered explanatory scene with one focal subject and supporting evidence",
+        "process": "directional sequence with unmistakable start, transitions, and outcome",
+        "comparison": "balanced opposing regions with a visible shared evaluation axis",
+        "data": "integrated evidence field where charts belong to the scene rather than float above it",
+        "summary": "converging visual synthesis with one memorable closing image"
+      }
+    },
+    {
+      "id": "narrative-fantasy",
+      "name": "叙事幻想",
+      "preview": "previews/narrative-fantasy.jpg",
+      "palette": [
+        "twilight violet",
+        "moonlit silver",
+        "ember orange"
+      ],
+      "materials": [
+        "weathered stone",
+        "translucent crystal"
+      ],
+      "lighting": [
+        "moonlit atmosphere",
+        "warm narrative beacon"
+      ],
+      "medium": [
+        "narrative concept art",
+        "matte-painting realism"
+      ],
+      "typography": [
+        "elegant storybook serif",
+        "restrained cartographic labels"
+      ],
+      "detailLanguage": [
+        "symbolic constellations",
+        "weathered map lines",
+        "miniature story events"
+      ],
+      "compositionRules": [
+        "one narrative journey",
+        "foreground-to-horizon progression",
+        "symbolic evidence landmarks"
+      ],
+      "forbidden": [
+        "game loading screen",
+        "fantasy character poster",
+        "ornamental noise"
+      ],
+      "pageVariants": {
+        "cover": "one iconic hero scene with generous title-safe atmosphere",
+        "section": "one transitional visual threshold with a single chapter cue",
+        "content": "layered explanatory scene with one focal subject and supporting evidence",
+        "process": "directional sequence with unmistakable start, transitions, and outcome",
+        "comparison": "balanced opposing regions with a visible shared evaluation axis",
+        "data": "integrated evidence field where charts belong to the scene rather than float above it",
+        "summary": "converging visual synthesis with one memorable closing image"
+      }
+    }
+  ]
+}

@@ -1,0 +1,112 @@
+import assert from "node:assert/strict";
+import test from "node:test";
+import { readFile } from "node:fs/promises";
+import { dirname, join } from "node:path";
+import sharp from "sharp";
+import { loadStyleCatalog, selectRepresentativeSlide } from "../src/styles/catalog.js";
+import { compilePrompt } from "../src/styles/prompt-compiler.js";
+import { StyleCatalogSchema } from "../src/styles/schemas.js";
+
+const catalogPath = "skills/superppt/assets/styles/catalog.json";
+const promptSpec = { title: "AI Agent 协作系统", role: "content" as const, coreMessage: "Specialists cooperate", requiredText: ["AI Agent 协作系统"], visualSubject: "central orchestration core", composition: "one focal hub with six satellites", relationships: ["hub routes work"], forbidden: ["watermark"] };
+const promptStyle = { id: "cinematic-tech", name: "电影科技", palette: ["midnight blue", "cyan", "restrained coral"], materials: ["smoked glass", "brushed metal"], lighting: ["volumetric key light", "cyan rim light"], medium: ["cinematic concept art", "photoreal 3D"], typography: ["clear title safe area", "precise sans serif"], detailLanguage: ["fine circuitry", "particle paths", "micro etched labels"], compositionRules: ["one dominant focal point", "layered depth", "controlled information zones"], forbidden: ["neon gamer UI"], pageVariants: { cover: "hero system core", section: "single transition portal", content: "deep layered system scene", process: "luminous directional route", comparison: "balanced opposing chambers", data: "integrated analytical observatory", summary: "converging outcome horizon" } };
+const promptDirector = { foreground: ["tool tokens"], midground: ["six specialist agents"], background: ["subtle data observatory"], microDetails: ["memory shards", "evaluation traces"], readingOrder: ["title", "hub", "six agents"], textSafeArea: "top 18 percent" };
+
+test("ships exactly ten unique single-select styles with real 16:9 JPEG previews", async () => {
+  const catalog = await loadStyleCatalog(catalogPath);
+  const expectedIds = [
+    "ink-future", "scientific-atlas", "isometric-miniature", "cinematic-editorial", "swiss-avantgarde",
+    "cinematic-tech", "luxury-photographic", "tactile-craft", "architectural-blueprint", "narrative-fantasy",
+  ];
+  assert.equal(catalog.styles.length, 10);
+  assert.equal(new Set(catalog.styles.map((style) => style.id)).size, catalog.styles.length);
+  assert.deepEqual(catalog.styles.map((style) => style.id), expectedIds);
+  assert.equal(catalog.selectionMode, "single");
+
+  for (const style of catalog.styles) {
+    assert.match(style.preview, /^previews\/[a-z0-9-]+\.jpg$/);
+    const previewPath = join(dirname(catalogPath), style.preview);
+    const bytes = await readFile(previewPath);
+    const metadata = await sharp(bytes).metadata();
+    assert.ok(bytes.length > 10_000, `${style.id} preview must contain substantial image data`);
+    assert.equal(metadata.format, "jpeg", `${style.id} preview must be a JPEG`);
+    assert.equal(metadata.width, 1600, `${style.id} preview width`);
+    assert.equal(metadata.height, 900, `${style.id} preview height`);
+  }
+});
+
+test("catalog schema rejects duplicate style IDs", () => {
+  const recipe = {
+    id: "duplicate", name: "Duplicate", preview: "previews/duplicate.jpg",
+    palette: ["a", "b", "c"], materials: ["a", "b"], lighting: ["a", "b"], medium: ["a", "b"],
+    typography: ["a", "b"], detailLanguage: ["a", "b", "c"], compositionRules: ["a", "b", "c"],
+    forbidden: ["watermark"],
+    pageVariants: { cover: "a", section: "b", content: "c", process: "d", comparison: "e", data: "f", summary: "g" },
+  };
+  assert.throws(() => StyleCatalogSchema.parse({
+    catalogVersion: 1,
+    selectionMode: "single",
+    styles: Array.from({ length: 8 }, () => recipe),
+  }), /unique/);
+});
+
+test("every style is a complete high-detail recipe for every supported page role", async () => {
+  const catalog = await loadStyleCatalog(catalogPath);
+  const roles = ["cover", "section", "content", "process", "comparison", "data", "summary"];
+
+  for (const style of catalog.styles) {
+    assert.ok(style.palette.length >= 3, `${style.id} palette`);
+    assert.ok(style.materials.length >= 2, `${style.id} materials`);
+    assert.ok(style.lighting.length >= 2, `${style.id} lighting`);
+    assert.ok(style.medium.length >= 2, `${style.id} medium`);
+    assert.ok(style.typography.length >= 2, `${style.id} typography`);
+    assert.ok(style.detailLanguage.length >= 3, `${style.id} detail language`);
+    assert.ok(style.compositionRules.length >= 3, `${style.id} composition rules`);
+    assert.deepEqual(Object.keys(style.pageVariants).sort(), [...roles].sort());
+  }
+});
+
+test("selects a representative content-rich page rather than a cover", () => {
+  const slides = [
+    { id: "1", role: "cover", requiredText: ["Title"], relationships: [] },
+    { id: "2", role: "content", requiredText: ["Title", "A", "B"], relationships: ["A leads to B"] },
+  ];
+  const selected = selectRepresentativeSlide(slides);
+  assert.equal(selected.id, "2");
+  assert.deepEqual(slides.map(({ id }) => id), ["1", "2"], "selection must not mutate deck order");
+});
+
+test("rejects representative selection from an empty deck", () => {
+  assert.throws(() => selectRepresentativeSlide([]), /empty deck/);
+});
+
+test("compiles hierarchy, visual richness, exact copy, consistency, and negative constraints", () => {
+  const result = compilePrompt({
+    spec: promptSpec,
+    style: promptStyle,
+    director: promptDirector,
+  });
+  for (const required of ["one dominant focal point", "foreground", "midground", "background", "watermark", "neon gamer UI", "Final self-check", "Style consistency"]) assert.match(result.text, new RegExp(required, "i"));
+  assert.match(result.text, /Text \(verbatim\)/i);
+  assert.match(result.text, /Style recipe: cinematic-tech/i);
+  assert.match(result.text, /"AI Agent 协作系统"/);
+  assert.match(result.sha256, /^[a-f0-9]{64}$/);
+  assert.deepEqual(result, compilePrompt({
+    spec: promptSpec,
+    style: promptStyle,
+    director: promptDirector,
+  }));
+});
+
+test("compiler accepts a complete SlideSpec object", () => {
+  assert.doesNotThrow(() => compilePrompt({
+    spec: {
+      ...promptSpec,
+      schemaVersion: 1,
+      slideId: "00000000-0000-4000-8000-000000000202",
+      sourceRefs: ["L3-L6"],
+    },
+    style: promptStyle,
+    director: promptDirector,
+  }));
+});

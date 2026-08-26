@@ -21,6 +21,7 @@ import { readProject } from "../project/store.js";
 import { loadValidatedPlan } from "./load.js";
 import { renderBrief, renderOutline, renderSlideSpec } from "./render.js";
 import { StyleSelectionSchema, type StyleSelection } from "./schemas.js";
+import { validateStylePublication } from "../styles/publication.js";
 
 export type ViewCheckpoint = "snapshot-published" | "authority-published" | "convenience-written";
 export type PublishPlanOptions = {
@@ -238,15 +239,9 @@ async function styleArtifacts(root: string): Promise<{
   const plan = await loadValidatedPlan(root);
   const values = Object.fromEntries(await Promise.all(STYLE_KEYS.map(async (path) => [path, await readOwnedRegularFile(root, path)])));
   const selection = StyleSelectionSchema.parse(JSON.parse(values[STYLE_KEYS[0]]!.toString("utf8")));
-  if (!plan.outline.slides.some((slide) => slide.id === selection.representativeSlideId)) {
-    throw new Error("representative slide must exist in current outline");
-  }
   if (!values[STYLE_KEYS[1]]!.toString("utf8").trim()) throw new Error("style sample prompt must not be empty");
-  const png = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
   const sample = values[STYLE_KEYS[2]]!;
-  if (sample.length <= png.length || !sample.subarray(0, png.length).equals(png)) {
-    throw new Error("style sample must be a non-empty PNG file");
-  }
+  await validateStylePublication(plan.specs, selection, sample);
   return { values, selection };
 }
 

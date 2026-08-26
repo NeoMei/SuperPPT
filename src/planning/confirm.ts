@@ -19,6 +19,7 @@ import { readProject, updateProject } from "../project/store.js";
 import { loadValidatedOutline, loadValidatedPlan } from "./load.js";
 import { StyleSelectionSchema } from "./schemas.js";
 import { requireCurrentPlanPresentation, requireCurrentStylePresentation } from "./views.js";
+import { validateStylePublication } from "../styles/publication.js";
 
 export type PlanningGate = "outline" | "slide-specs" | "style-sample";
 export type ApprovalCheckpoint = "snapshot-published" | "manifest-published";
@@ -112,16 +113,10 @@ async function gateArtifacts(
   const plan = await loadValidatedPlan(root, operations);
   const selectionBytes = await readOwnedRegularFile(root, STYLE_SAMPLE_ARTIFACTS[0], operations);
   const selection = StyleSelectionSchema.parse(JSON.parse(selectionBytes.toString("utf8")));
-  if (!plan.outline.slides.some((slide) => slide.id === selection.representativeSlideId)) {
-    throw new Error("representative slide must exist in current outline");
-  }
   const prompt = await readOwnedRegularFile(root, STYLE_SAMPLE_ARTIFACTS[1], operations);
   if (!prompt.toString("utf8").trim()) throw new Error("style sample prompt must not be empty");
   const sample = await readOwnedRegularFile(root, STYLE_SAMPLE_ARTIFACTS[2], operations);
-  const png = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
-  if (sample.length <= png.length || !sample.subarray(0, png.length).equals(png)) {
-    throw new Error("style sample must be a non-empty PNG file");
-  }
+  await validateStylePublication(plan.specs, selection, sample);
   return {
     [STYLE_SAMPLE_ARTIFACTS[0]]: selectionBytes,
     [STYLE_SAMPLE_ARTIFACTS[1]]: prompt,

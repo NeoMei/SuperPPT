@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test, { type TestContext } from "node:test";
 import { promisify } from "node:util";
+import sharp from "sharp";
 
 import { approveGate, assertGateCurrent, readGateSnapshot, toPortableProjectPath } from "../src/planning/confirm.js";
 import { normalizeInput } from "../src/planning/intake.js";
@@ -90,7 +91,9 @@ async function writeValidStyleSample(root: string): Promise<void> {
     representativeSlideId: SLIDE_IDS[1],
   }, null, 2)}\n`);
   await writeFile(join(root, "style", "sample", "prompt.txt"), "one focal point\n");
-  await writeFile(join(root, "style", "sample", "sample.png"), Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 1]));
+  await writeFile(join(root, "style", "sample", "sample.png"), await sharp({
+    create: { width: 1600, height: 900, channels: 3, background: "#102030" },
+  }).png().toBuffer());
 }
 
 async function approveAll(root: string): Promise<void> {
@@ -241,6 +244,32 @@ test("rejects invalid empty, target-count, must-cover, spec, and style contracts
   await approveGate(styleRoot, "slide-specs");
   await writeFile(join(styleRoot, "style", "selection.json"), JSON.stringify({ schemaVersion: 1, styleId: "cinematic-tech", representativeSlideId: PROJECT_ID }));
   await assert.rejects(approveGate(styleRoot, "style-sample"), /representative slide must exist/);
+});
+
+test("style publication requires a catalog style and a decodable 16:9 PNG", async (t) => {
+  const root = await project(t, "superppt-style-semantics-");
+  await writeValidPlan(root);
+  await writeValidStyleSample(root);
+
+  await writeFile(join(root, "style", "selection.json"), JSON.stringify({
+    schemaVersion: 1,
+    styleId: "not-a-built-in-style",
+    representativeSlideId: SLIDE_IDS[1],
+  }));
+  await assert.rejects(publishStyleSample(root), /unknown built-in style/);
+
+  await writeFile(join(root, "style", "selection.json"), JSON.stringify({
+    schemaVersion: 1,
+    styleId: "cinematic-tech",
+    representativeSlideId: SLIDE_IDS[1],
+  }));
+  await writeFile(join(root, "style", "sample", "sample.png"), await sharp({
+    create: { width: 800, height: 800, channels: 3, background: "#102030" },
+  }).png().toBuffer());
+  await assert.rejects(publishStyleSample(root), /16:9/);
+
+  await writeFile(join(root, "style", "sample", "sample.png"), Buffer.from("not a png"));
+  await assert.rejects(publishStyleSample(root), /decodable PNG/);
 });
 
 test("rejects symlink and non-file fixed gate artifacts without following them", async (t) => {
