@@ -1,0 +1,17 @@
+{
+  "contractVersion": 1,
+  "dependencies": [
+    {
+      "skill": "ai-image-to-ppt",
+      "override": "SUPERPPT_AI_IMAGE_TO_PPT_SOURCE",
+      "required": ["SKILL.md", "scripts"],
+      "capabilityManifest": "references/capabilities.json"
+    },
+    {
+      "skill": "image-to-editable-pptx",
+      "override": "SUPERPPT_IMAGE_TO_EDITABLE_PPTX_SOURCE",
+      "minimumVersion": "0.1.0",
+      "required": ["package.json", "skills/image-to-editable-pptx/SKILL.md"]
+    }
+  ]
+}
