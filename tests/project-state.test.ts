@@ -22,6 +22,7 @@ import { promisify } from "node:util";
 
 import { initializeProject } from "../src/project/initialize.js";
 import { readProject, writeProject } from "../src/project/store.js";
+import { publishRevisionSnapshot } from "../src/revisions/snapshot.js";
 
 const execFileAsync = promisify(execFile);
 const PROJECT_ID = "00000000-0000-4000-8000-000000000001";
@@ -587,17 +588,8 @@ test("requires an exact planned revision snapshot before dropping old artifact e
   );
   await unlink(join(root, "revisions"));
 
-  const snapshotDirectory = join(
-    root,
-    "revisions",
-    persisted.currentRevision.id,
-  );
-  await mkdir(snapshotDirectory, { recursive: true });
-  await writeFile(
-    join(snapshotDirectory, "superppt.json"),
-    `${JSON.stringify(persisted, null, 2)}\n`,
-    { flag: "wx", mode: 0o600 },
-  );
+  await mkdir(join(root, "revisions"));
+  await publishRevisionSnapshot(root, persisted);
   await writeProject(root, dropsArtifact);
   assert.equal((await readProject(root)).brief, null);
 });

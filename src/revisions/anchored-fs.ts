@@ -19,6 +19,13 @@ import koffi from "koffi";
 export type RevisionEvidenceOperations = {
   afterRevisionsDirectoryOpened?: () => Promise<void> | void;
   afterPlanningArtifactRestored?: (path: string) => Promise<void> | void;
+  revisionSnapshotCheckpoint?: (
+    step: "manifest-written" | "descriptor-written" | "published",
+  ) => Promise<void> | void;
+  beforePlanningArtifactWrite?: (path: string, index: number) => Promise<void> | void;
+  rollbackCheckpoint?: (
+    step: "journal-published" | "files-written" | "manifest-published",
+  ) => Promise<void> | void;
 };
 
 type NativeAt = {

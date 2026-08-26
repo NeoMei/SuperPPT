@@ -19,6 +19,7 @@ import {
   applyRevision,
   approveImpact,
   publishImpactPlan,
+  recoverRollbackTransaction,
   rollbackToRevision,
 } from "./revisions/apply.js";
 import {
@@ -142,6 +143,14 @@ async function main(argv: string[]): Promise<void> {
   if (command === "status") {
     const options = exactFlags(argv.slice(1), ["--project"]);
     outputJson(await readProject(options.get("--project")!));
+    return;
+  }
+
+  if (command === "recover-rollback") {
+    const options = exactFlags(argv.slice(1), ["--project"]);
+    outputJson({
+      recovered: await recoverRollbackTransaction(options.get("--project")!),
+    });
     return;
   }
 

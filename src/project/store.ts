@@ -11,12 +11,14 @@ import {
 } from "./evidence.js";
 import { withProjectLease } from "./lock.js";
 import { validateProjectRoot } from "./paths.js";
+import { assertNoPendingRollbackTransaction } from "./rollback-guard.js";
 import { readOwnedRegularFile } from "./safe-file.js";
 import {
   ProjectManifestSchema,
   type ProjectManifest,
 } from "./schemas.js";
 import { validateImpactGateEvidence } from "../revisions/impact.js";
+import { hasExactRevisionSnapshot } from "../revisions/snapshot.js";
 
 export const MARKER = ".superppt-project.json";
 export const MANIFEST = "superppt.json";
@@ -134,31 +136,6 @@ function preservesArtifactEvidence(
   return true;
 }
 
-async function hasExactRevisionSnapshot(
-  root: string,
-  manifest: ProjectManifest,
-): Promise<boolean> {
-  const snapshotPath = join(
-    root,
-    "revisions",
-    manifest.currentRevision.id,
-    MANIFEST,
-  );
-  try {
-    await requireRegularDirectory(join(root, "revisions"));
-    await requireRegularDirectory(
-      join(root, "revisions", manifest.currentRevision.id),
-    );
-    await requireRegularFile(snapshotPath);
-    const snapshot = ProjectManifestSchema.parse(
-      JSON.parse(await readFile(snapshotPath, "utf8")),
-    );
-    return sameJson(snapshot, manifest);
-  } catch {
-    return false;
-  }
-}
-
 export function createOwnershipMarker(
   projectId: string,
   canonicalRoot: string,
@@ -179,17 +156,11 @@ async function requireRegularFile(path: string): Promise<void> {
   }
 }
 
-async function requireRegularDirectory(path: string): Promise<void> {
-  const info = await lstat(path);
-  if (info.isSymbolicLink() || !info.isDirectory()) {
-    throw new Error("immutable history directory is unsafe");
-  }
-}
-
 async function ownedProject(root: string): Promise<{
   root: string;
   manifest: ProjectManifest;
   baseIdentity: string;
+  manifestBytes: Buffer;
 }> {
   const canonical = await validateProjectRoot(root);
   try {
@@ -208,7 +179,7 @@ async function ownedProject(root: string): Promise<{
     if (marker.projectId !== manifest.projectId) {
       throw new Error("marker project mismatch");
     }
-    return { root: canonical, manifest, baseIdentity: sha256(manifestBytes) };
+    return { root: canonical, manifest, baseIdentity: sha256(manifestBytes), manifestBytes };
   } catch {
     throw new Error("project directory is not owned by SuperPPT");
   }
@@ -216,6 +187,7 @@ async function ownedProject(root: string): Promise<{
 
 export async function readProject(root: string): Promise<ReadProjectManifest> {
   const owned = await ownedProject(root);
+  await assertNoPendingRollbackTransaction(owned.root);
   Object.defineProperty(owned.manifest, PROJECT_BASE_IDENTITY, {
     value: owned.baseIdentity,
     enumerable: true,
@@ -299,6 +271,7 @@ export async function writeProject(
 ): Promise<void> {
   const valid = ProjectManifestSchema.parse(manifest);
   const expected = await ownedProject(root);
+  await assertNoPendingRollbackTransaction(expected.root);
   const baseIdentity = (manifest as ProjectManifest & {
     [PROJECT_BASE_IDENTITY]?: unknown;
   })[PROJECT_BASE_IDENTITY];
@@ -307,6 +280,7 @@ export async function writeProject(
   }
   await withProjectLease(expected.root, "state", async (canonicalRoot) => {
     const current = await ownedProject(canonicalRoot);
+    await assertNoPendingRollbackTransaction(current.root);
     if (current.baseIdentity !== baseIdentity) {
       throw new Error("stale project manifest base; retry through updateProject");
     }
@@ -321,9 +295,42 @@ export async function updateProject(
 ): Promise<ProjectManifest> {
   let result: ProjectManifest | undefined;
   const owned = await ownedProject(root);
+  await assertNoPendingRollbackTransaction(owned.root);
   await withProjectLease(owned.root, "state", async (canonicalRoot) => {
     const current = await ownedProject(canonicalRoot);
+    await assertNoPendingRollbackTransaction(current.root);
     const proposed = await updater(structuredClone(current.manifest));
+    const valid = ProjectManifestSchema.parse(proposed);
+    await persistProject(current, valid, operations);
+    result = valid;
+  });
+  return result!;
+}
+
+export async function readProjectForRollbackRecovery(root: string): Promise<{
+  root: string;
+  manifest: ProjectManifest;
+  manifestBytes: Buffer;
+  baseIdentity: string;
+}> {
+  return ownedProject(root);
+}
+
+export async function updateProjectWithRollbackTransaction(
+  root: string,
+  updater: (
+    manifest: ProjectManifest,
+    baseIdentity: string,
+  ) => ProjectManifest | Promise<ProjectManifest>,
+  operations: WriteProjectOperations = {},
+): Promise<ProjectManifest> {
+  let result: ProjectManifest | undefined;
+  const expected = await ownedProject(root);
+  await assertNoPendingRollbackTransaction(expected.root);
+  await withProjectLease(expected.root, "state", async (canonicalRoot) => {
+    const current = await ownedProject(canonicalRoot);
+    await assertNoPendingRollbackTransaction(current.root);
+    const proposed = await updater(structuredClone(current.manifest), current.baseIdentity);
     const valid = ProjectManifestSchema.parse(proposed);
     await persistProject(current, valid, operations);
     result = valid;

@@ -6,6 +6,7 @@ import {
   mkdir,
   mkdtemp,
   readFile,
+  readdir,
   realpath,
   rename,
   rm,
@@ -25,6 +26,7 @@ import {
   applyRevision,
   approveImpact,
   publishImpactPlan,
+  recoverRollbackTransaction,
   rollbackToRevision,
 } from "../src/revisions/apply.js";
 import { moveFileDurable } from "../src/revisions/anchored-fs.js";
@@ -32,6 +34,7 @@ import {
   ImpactPlanSchema,
   planImpact,
 } from "../src/revisions/impact.js";
+import { publishRevisionSnapshot } from "../src/revisions/snapshot.js";
 
 const PROJECT_ID = "00000000-0000-4000-8000-000000000301";
 const A = "00000000-0000-4000-8000-000000000401";
@@ -182,12 +185,7 @@ async function setBriefArtifact(root: string): Promise<void> {
 
 async function advanceWithBriefArtifact(root: string, brief: typeof approvedBrief): Promise<void> {
   const current = await readProject(root);
-  const snapshotDirectory = join(root, "revisions", current.currentRevision.id);
-  await mkdir(snapshotDirectory, { recursive: true });
-  await writeFile(
-    join(snapshotDirectory, "superppt.json"),
-    `${JSON.stringify(current, null, 2)}\n`,
-  );
+  await publishRevisionSnapshot(root, current);
   const bytes = Buffer.from(`${JSON.stringify(brief, null, 2)}\n`);
   await writeFile(join(root, "brief.json"), bytes);
   await updateProject(root, (manifest) => {
@@ -208,6 +206,58 @@ async function advanceWithBriefArtifact(root: string, brief: typeof approvedBrie
       },
     };
   });
+}
+
+function revisionSnapshotRoot(root: string, revisionId: string): string {
+  return join(root, "revisions", revisionId, "manifest-snapshot");
+}
+
+async function authenticatedRollbackVersions(
+  t: TestContext,
+  prefix: string,
+): Promise<{
+  root: string;
+  targetId: string;
+  current: Awaited<ReturnType<typeof readProject>>;
+  beforeFiles: Map<string, Buffer>;
+  targetFiles: Map<string, Buffer>;
+}> {
+  const root = await project(t, prefix);
+  await writeApprovedOutline(root);
+  await setBriefArtifact(root);
+  const targetId = (await readProject(root)).currentRevision.id;
+  const targetFiles = new Map([
+    ["brief.json", await readFile(join(root, "brief.json"))],
+    ["outline.json", await readFile(join(root, "outline.json"))],
+  ]);
+  const plan = await publishImpactPlan(root, { kind: "outline-order" });
+  await approveImpact(root, plan.sha256);
+  await applyRevision(root, plan, plan.change);
+  const v2Brief = { ...approvedBrief, title: `${prefix} V2` };
+  const v2Outline = {
+    ...approvedOutline,
+    slides: approvedOutline.slides.map((slide) => ({
+      ...slide,
+      title: `${slide.title} ${prefix} V2`,
+    })),
+  };
+  await advanceWithBriefArtifact(root, v2Brief);
+  await writeApprovedOutline(root, v2Brief, v2Outline);
+  const current = await readProject(root);
+  return {
+    root,
+    targetId,
+    current,
+    beforeFiles: new Map([
+      ["brief.json", await readFile(join(root, "brief.json"))],
+      ["outline.json", await readFile(join(root, "outline.json"))],
+    ]),
+    targetFiles,
+  };
+}
+
+async function rawManifest(root: string) {
+  return JSON.parse(await readFile(join(root, "superppt.json"), "utf8"));
 }
 
 test("plans local and global invalidation while preserving order-only images", async (t) => {
@@ -303,7 +353,7 @@ test("publishes a fixed-path plan and requires a real exact-base approval before
   assert.equal(applied.exports.pptx, null);
 
   const snapshot = JSON.parse(await readFile(
-    join(root, "revisions", before.currentRevision.id, "superppt.json"),
+    join(revisionSnapshotRoot(root, before.currentRevision.id), "superppt.json"),
     "utf8",
   ));
   assert.deepEqual(snapshot, JSON.parse(JSON.stringify(approved)));
@@ -414,7 +464,7 @@ test("rolls back by appending a new revision while preserving the full ledger", 
   assert.deepEqual(rolledBack.slides, before.slides);
   assert.deepEqual(
     JSON.parse(await readFile(
-      join(root, "revisions", changed.currentRevision.id, "superppt.json"),
+      join(revisionSnapshotRoot(root, changed.currentRevision.id), "superppt.json"),
       "utf8",
     )),
     JSON.parse(JSON.stringify(changed)),
@@ -457,40 +507,162 @@ test("restores authenticated fixed planning artifacts from the rollback target",
   assert.equal(rolledBack.brief?.sha256, createHash("sha256").update(v1Brief).digest("hex"));
 });
 
-test("rolls back every restored planning artifact if restoration fails", async (t) => {
-  const root = await project(t, "superppt-rollback-artifacts-atomic-");
-  await writeApprovedOutline(root);
-  await setBriefArtifact(root);
-  const targetId = (await readProject(root)).currentRevision.id;
-  const plan = await publishImpactPlan(root, { kind: "outline-order" });
-  await approveImpact(root, plan.sha256);
-  await applyRevision(root, plan, plan.change);
+test("recovers rollback journals at every durable crash boundary", async (t) => {
+  const crashes = [
+    { name: "before-files", checkpoint: "journal-published", after: false },
+    { name: "after-files", checkpoint: "files-written", after: false },
+    { name: "after-manifest", checkpoint: "manifest-published", after: true },
+  ] as const;
+  for (const crash of crashes) {
+    const fixture = await authenticatedRollbackVersions(t, `superppt-rollback-${crash.name}-`);
+    await assert.rejects(rollbackToRevision(fixture.root, fixture.targetId, {
+      operations: {
+        rollbackCheckpoint: (step) => {
+          if (step === crash.checkpoint) throw new Error(`crash ${crash.name}`);
+        },
+      },
+    }), new RegExp(`crash ${crash.name}`));
+    await assert.rejects(readProject(fixture.root), /pending rollback transaction/);
+    await assert.rejects(execFileAsync(process.execPath, [
+      "--import", "tsx", "src/cli.ts", "status", "--project", fixture.root,
+    ], { cwd: process.cwd() }), /pending rollback transaction/);
+    const pendingManifest = await rawManifest(fixture.root);
+    assert.equal(
+      pendingManifest.currentRevision.id === fixture.current.currentRevision.id,
+      !crash.after,
+    );
 
-  const v2Brief = { ...approvedBrief, title: "Atomic V2" };
-  const v2Outline = {
-    ...approvedOutline,
-    slides: approvedOutline.slides.map((slide) => ({
-      ...slide,
-      title: `${slide.title} Atomic V2`,
-    })),
+    await recoverRollbackTransaction(fixture.root);
+    const recovered = await readProject(fixture.root);
+    assert.equal(
+      recovered.currentRevision.id === fixture.current.currentRevision.id,
+      !crash.after,
+    );
+    const expected = crash.after ? fixture.targetFiles : fixture.beforeFiles;
+    for (const [path, bytes] of expected) {
+      assert.deepEqual(await readFile(join(fixture.root, path)), bytes);
+    }
+    await assert.rejects(access(join(fixture.root, "revisions", "rollback-transaction")), { code: "ENOENT" });
+  }
+});
+
+test("keeps a partial rollback fail-closed across persistent writes and later converges", async (t) => {
+  const fixture = await authenticatedRollbackVersions(t, "superppt-rollback-persistent-");
+  const persistentFailure = {
+    beforePlanningArtifactWrite: (_path: string, index: number) => {
+      if (index === 1) throw new Error("permission denied persistently");
+    },
   };
-  await advanceWithBriefArtifact(root, v2Brief);
-  await writeApprovedOutline(root, v2Brief, v2Outline);
-  const before = await readProject(root);
-  const briefBefore = await readFile(join(root, "brief.json"));
-  const outlineBefore = await readFile(join(root, "outline.json"));
+  await assert.rejects(rollbackToRevision(fixture.root, fixture.targetId, {
+    operations: persistentFailure,
+  }), /permission denied persistently/);
+  assert.deepEqual(await readFile(join(fixture.root, "brief.json")), fixture.targetFiles.get("brief.json"));
+  assert.deepEqual(await readFile(join(fixture.root, "outline.json")), fixture.beforeFiles.get("outline.json"));
+  await assert.rejects(readProject(fixture.root), /pending rollback transaction/);
+  await assert.rejects(
+    recoverRollbackTransaction(fixture.root, { operations: persistentFailure }),
+    /permission denied persistently/,
+  );
+  await assert.rejects(readProject(fixture.root), /pending rollback transaction/);
 
-  await assert.rejects(rollbackToRevision(root, targetId, {
+  await recoverRollbackTransaction(fixture.root);
+  const recovered = await readProject(fixture.root);
+  assert.equal(recovered.currentRevision.id, fixture.current.currentRevision.id);
+  for (const [path, bytes] of fixture.beforeFiles) {
+    assert.deepEqual(await readFile(join(fixture.root, path)), bytes);
+  }
+
+  await rollbackToRevision(fixture.root, fixture.targetId);
+  const rolledBack = await readProject(fixture.root);
+  assert.equal(rolledBack.revisions.length, fixture.current.revisions.length + 1);
+  for (const [path, bytes] of fixture.targetFiles) {
+    assert.deepEqual(await readFile(join(fixture.root, path)), bytes);
+  }
+});
+
+test("rollback automatically recovers a prior mid-file journal before retrying", async (t) => {
+  const fixture = await authenticatedRollbackVersions(t, "superppt-rollback-auto-recover-");
+  await assert.rejects(rollbackToRevision(fixture.root, fixture.targetId, {
     operations: {
-      afterPlanningArtifactRestored: () => {
-        throw new Error("injected restore failure");
+      beforePlanningArtifactWrite: (_path, index) => {
+        if (index === 1) throw new Error("mid-files crash");
       },
     },
-  }), /injected restore failure/);
+  }), /mid-files crash/);
+  await rollbackToRevision(fixture.root, fixture.targetId);
+  const rolledBack = await readProject(fixture.root);
+  assert.equal(rolledBack.revisions.length, fixture.current.revisions.length + 1);
+  for (const [path, bytes] of fixture.targetFiles) {
+    assert.deepEqual(await readFile(join(fixture.root, path)), bytes);
+  }
+});
 
-  assert.equal((await readProject(root)).currentRevision.id, before.currentRevision.id);
-  assert.deepEqual(await readFile(join(root, "brief.json")), briefBefore);
-  assert.deepEqual(await readFile(join(root, "outline.json")), outlineBefore);
+test("same-target retry after manifest publication recovers without a duplicate revision", async (t) => {
+  const fixture = await authenticatedRollbackVersions(t, "superppt-rollback-after-manifest-retry-");
+  await assert.rejects(rollbackToRevision(fixture.root, fixture.targetId, {
+    operations: {
+      rollbackCheckpoint: (step) => {
+        if (step === "manifest-published") throw new Error("cleanup crash");
+      },
+    },
+  }), /cleanup crash/);
+  const appended = await rawManifest(fixture.root);
+  assert.equal(appended.revisions.length, fixture.current.revisions.length + 1);
+
+  await rollbackToRevision(fixture.root, fixture.targetId);
+  const recovered = await readProject(fixture.root);
+  assert.equal(recovered.revisions.length, fixture.current.revisions.length + 1);
+  assert.equal(recovered.currentRevision.id, appended.currentRevision.id);
+});
+
+test("CLI explicitly recovers a pending rollback transaction", async (t) => {
+  const fixture = await authenticatedRollbackVersions(t, "superppt-rollback-cli-recover-");
+  await assert.rejects(rollbackToRevision(fixture.root, fixture.targetId, {
+    operations: {
+      rollbackCheckpoint: (step) => {
+        if (step === "journal-published") throw new Error("leave pending for CLI");
+      },
+    },
+  }), /leave pending for CLI/);
+  const recovered = await execFileAsync(process.execPath, [
+    "--import", "tsx", "src/cli.ts", "recover-rollback", "--project", fixture.root,
+  ], { cwd: process.cwd() });
+  assert.equal(recovered.stderr, "");
+  assert.deepEqual(JSON.parse(recovered.stdout), { recovered: true });
+  assert.equal((await readProject(fixture.root)).currentRevision.id, fixture.current.currentRevision.id);
+});
+
+test("rejects tampered, extra-entry, and linked rollback journals while reads stay closed", async (t) => {
+  async function pending(prefix: string): Promise<string> {
+    const fixture = await authenticatedRollbackVersions(t, prefix);
+    await assert.rejects(rollbackToRevision(fixture.root, fixture.targetId, {
+      operations: {
+        rollbackCheckpoint: (step) => {
+          if (step === "journal-published") throw new Error("leave journal");
+        },
+      },
+    }), /leave journal/);
+    return fixture.root;
+  }
+
+  const tampered = await pending("superppt-rollback-journal-tampered-");
+  const activeTampered = join(tampered, "revisions", "rollback-transaction");
+  await writeFile(join(activeTampered, "journal.json"), "{}\n");
+  await assert.rejects(recoverRollbackTransaction(tampered), /rollback journal.*invalid/i);
+  await assert.rejects(readProject(tampered), /pending rollback transaction/);
+
+  const extra = await pending("superppt-rollback-journal-extra-");
+  await writeFile(join(extra, "revisions", "rollback-transaction", "extra.json"), "{}\n");
+  await assert.rejects(recoverRollbackTransaction(extra), /rollback journal.*tree/i);
+  await assert.rejects(readProject(extra), /pending rollback transaction/);
+
+  const linked = await pending("superppt-rollback-journal-linked-");
+  const activeLinked = join(linked, "revisions", "rollback-transaction");
+  const owned = `${activeLinked}.owned`;
+  await rename(activeLinked, owned);
+  await symlink(owned, activeLinked);
+  await assert.rejects(recoverRollbackTransaction(linked), /rollback journal.*unsafe/i);
+  await assert.rejects(readProject(linked), /pending rollback transaction/);
 });
 
 test("rejects corrupted target planning snapshots before restoring any bytes", async (t) => {
@@ -508,7 +680,7 @@ test("rejects corrupted target planning snapshots before restoring any bytes", a
   const before = await readProject(root);
   const briefBefore = await readFile(join(root, "brief.json"));
   const target = JSON.parse(await readFile(
-    join(root, "revisions", targetId, "superppt.json"),
+    join(revisionSnapshotRoot(root, targetId), "superppt.json"),
     "utf8",
   ));
   const outlineGate = target.gates.find((gate: { gate: string }) => gate.gate === "outline");
@@ -676,19 +848,19 @@ test("rejects missing, corrupt, linked, current, and non-ledger rollback targets
   }
 
   const missing = await changedProject("superppt-rollback-missing-");
-  await rm(join(missing.root, "revisions", missing.targetId, "superppt.json"));
+  await rm(revisionSnapshotRoot(missing.root, missing.targetId), { recursive: true });
   const missingBefore = await readProject(missing.root);
-  await assert.rejects(rollbackToRevision(missing.root, missing.targetId), /missing or unsafe/);
+  await assert.rejects(rollbackToRevision(missing.root, missing.targetId), /missing, unsafe, or unauthentic/);
   assert.equal((await readProject(missing.root)).currentRevision.id, missingBefore.currentRevision.id);
 
   const corrupt = await changedProject("superppt-rollback-corrupt-");
-  await writeFile(join(corrupt.root, "revisions", corrupt.targetId, "superppt.json"), "{}\n");
+  await writeFile(join(revisionSnapshotRoot(corrupt.root, corrupt.targetId), "superppt.json"), "{}\n");
   const corruptBefore = await readProject(corrupt.root);
-  await assert.rejects(rollbackToRevision(corrupt.root, corrupt.targetId), /snapshot is corrupt/);
+  await assert.rejects(rollbackToRevision(corrupt.root, corrupt.targetId), /missing, unsafe, or unauthentic/);
   assert.equal((await readProject(corrupt.root)).currentRevision.id, corruptBefore.currentRevision.id);
 
   const linked = await changedProject("superppt-rollback-linked-");
-  const linkedPath = join(linked.root, "revisions", linked.targetId, "superppt.json");
+  const linkedPath = join(revisionSnapshotRoot(linked.root, linked.targetId), "superppt.json");
   const outsideDirectory = await realpath(await mkdtemp(join(tmpdir(), "superppt-rollback-outside-")));
   t.after(async () => rm(outsideDirectory, { recursive: true, force: true }));
   const outside = join(outsideDirectory, "superppt.json");
@@ -696,7 +868,7 @@ test("rejects missing, corrupt, linked, current, and non-ledger rollback targets
   await rm(linkedPath);
   await symlink(outside, linkedPath);
   const linkedBefore = await readProject(linked.root);
-  await assert.rejects(rollbackToRevision(linked.root, linked.targetId), /missing or unsafe/);
+  await assert.rejects(rollbackToRevision(linked.root, linked.targetId), /missing, unsafe, or unauthentic/);
   assert.equal((await readProject(linked.root)).currentRevision.id, linkedBefore.currentRevision.id);
 
   const illegal = await changedProject("superppt-rollback-illegal-");
@@ -719,11 +891,59 @@ test("refuses to overwrite a conflicting immutable current snapshot during rollb
   await approveImpact(root, plan.sha256);
   await applyRevision(root, plan, plan.change);
   const current = await readProject(root);
-  const currentDirectory = join(root, "revisions", current.currentRevision.id);
+  const currentDirectory = revisionSnapshotRoot(root, current.currentRevision.id);
   await mkdir(currentDirectory, { recursive: true });
   await writeFile(join(currentDirectory, "superppt.json"), "{}\n");
   await assert.rejects(rollbackToRevision(root, targetId), /immutable revision snapshot differs/);
   assert.equal((await readProject(root)).currentRevision.id, current.currentRevision.id);
+});
+
+test("authenticates revision snapshot descriptors and exact trees before rollback", async (t) => {
+  const root = await project(t, "superppt-rollback-snapshot-auth-");
+  const targetId = (await readProject(root)).currentRevision.id;
+  const plan = await publishImpactPlan(root, { kind: "brief", title: "After" });
+  await approveImpact(root, plan.sha256);
+  await applyRevision(root, plan, plan.change);
+  const before = await readProject(root);
+  const snapshotRoot = revisionSnapshotRoot(root, targetId);
+  const snapshot = JSON.parse(await readFile(join(snapshotRoot, "superppt.json"), "utf8"));
+  await writeFile(join(snapshotRoot, "superppt.json"), `${JSON.stringify({
+    ...snapshot,
+    title: "Schema-valid forged title",
+  }, null, 2)}\n`);
+
+  await assert.rejects(rollbackToRevision(root, targetId), /snapshot.*authentic|hash mismatch/i);
+  assert.equal((await readProject(root)).currentRevision.id, before.currentRevision.id);
+
+  const extraRoot = await project(t, "superppt-rollback-snapshot-extra-");
+  const extraTarget = (await readProject(extraRoot)).currentRevision.id;
+  const extraPlan = await publishImpactPlan(extraRoot, { kind: "brief", title: "After" });
+  await approveImpact(extraRoot, extraPlan.sha256);
+  await applyRevision(extraRoot, extraPlan, extraPlan.change);
+  await writeFile(join(revisionSnapshotRoot(extraRoot, extraTarget), "extra.json"), "{}\n");
+  await assert.rejects(rollbackToRevision(extraRoot, extraTarget), /snapshot.*unauthentic/i);
+});
+
+test("retries safely after a crash leaves only a partial snapshot staging tree", async (t) => {
+  const root = await project(t, "superppt-snapshot-partial-");
+  const plan = await publishImpactPlan(root, { kind: "brief", title: "After" });
+  await approveImpact(root, plan.sha256);
+  await assert.rejects(applyRevision(root, plan, plan.change, {
+    operations: {
+      revisionSnapshotCheckpoint: (step) => {
+        if (step === "manifest-written") throw new Error("snapshot crash");
+      },
+    },
+  }), /snapshot crash/);
+  assert.equal((await readProject(root)).revisions.length, 1);
+  await assert.rejects(access(revisionSnapshotRoot(root, plan.baseRevisionId)), { code: "ENOENT" });
+
+  await applyRevision(root, plan, plan.change);
+  assert.equal((await readProject(root)).revisions.length, 2);
+  assert.deepEqual(
+    (await readdir(revisionSnapshotRoot(root, plan.baseRevisionId))).sort(),
+    ["snapshot.json", "superppt.json"],
+  );
 });
 
 test("fails closed if revisions is swapped to a symlink during pending, snapshot, or rollback access", async (t) => {
@@ -757,7 +977,7 @@ test("fails closed if revisions is swapped to a symlink during pending, snapshot
   t.after(async () => rm(applyOutside, { recursive: true, force: true }));
   await assert.rejects(applyRevision(applyRoot, plan, plan.change, {
     operations: { afterRevisionsDirectoryOpened: () => swapRevisions(applyRoot, applyOutside) },
-  }), /changed while accessing revision evidence|immutable artifact evidence|missing or unsafe/);
+  }), /changed while accessing revision evidence|immutable artifact evidence|missing.*unsafe|ENOTDIR/);
   assert.deepEqual(await readFile(join(applyOutside, "superppt.json"), "utf8").catch(() => null), null);
 
   const rollbackRoot = await project(t, "superppt-rollback-read-race-");
@@ -769,7 +989,7 @@ test("fails closed if revisions is swapped to a symlink during pending, snapshot
   t.after(async () => rm(rollbackOutside, { recursive: true, force: true }));
   await assert.rejects(rollbackToRevision(rollbackRoot, targetId, {
     operations: { afterRevisionsDirectoryOpened: () => swapRevisions(rollbackRoot, rollbackOutside) },
-  }), /changed while accessing revision evidence|immutable artifact evidence|missing or unsafe/);
+  }), /changed while accessing revision evidence|immutable artifact evidence|missing.*unsafe|ENOTDIR/);
   assert.deepEqual(await readFile(join(rollbackOutside, "superppt.json"), "utf8").catch(() => null), null);
 });
 
