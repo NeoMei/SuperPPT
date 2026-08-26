@@ -4,6 +4,11 @@ import { fileURLToPath } from "node:url";
 import { preflightDependencies } from "./dependencies/preflight.js";
 import { resolveDependencies } from "./dependencies/resolve.js";
 import {
+  assembleProject,
+  readProjectAcceptance,
+  recordClientAcceptance,
+} from "./deck/assemble.js";
+import {
   describeProjectGeneration,
   generateProject,
   recordManualQa,
@@ -251,13 +256,13 @@ async function main(argv: string[]): Promise<void> {
   if (command === "record-qa") {
     const options = exactFlags(argv.slice(1), ["--project", "--slide", "--input"]);
     const resolved = await configuredDependencies();
-    const quality = await recordManualQa({
+    const result = await recordManualQa({
       root: options.get("--project")!,
       slideId: options.get("--slide")!,
       input: options.get("--input")!,
       ai: resolved.ai,
     });
-    outputJson({ slideId: options.get("--slide")!, quality });
+    outputJson(result);
     return;
   }
 
@@ -270,6 +275,31 @@ async function main(argv: string[]): Promise<void> {
     const plan = await describeProjectGeneration({ root, ai: resolved.ai, selectedIds: new Set([slideId]) });
     outputJson({ event: "generation-plan", ...plan });
     outputJson(await retryProjectPage({ root, slideId, ai: resolved.ai, runner }));
+    return;
+  }
+
+  if (command === "assemble") {
+    const options = exactFlags(argv.slice(1), ["--project"]);
+    const resolved = await configuredDependencies();
+    outputJson(await assembleProject({
+      root: options.get("--project")!,
+      providerId: resolved.ai.defaultProvider,
+    }));
+    return;
+  }
+
+  if (command === "acceptance") {
+    const options = exactFlags(argv.slice(1), ["--project"]);
+    outputJson(await readProjectAcceptance(options.get("--project")!));
+    return;
+  }
+
+  if (command === "acceptance-record") {
+    const options = exactFlags(argv.slice(1), ["--project", "--input"]);
+    outputJson(await recordClientAcceptance(
+      options.get("--project")!,
+      options.get("--input")!,
+    ));
     return;
   }
 
