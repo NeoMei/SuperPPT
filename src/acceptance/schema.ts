@@ -42,6 +42,16 @@ export const AcceptanceSchema = z.object({
   deliveryComplete: z.boolean(),
   clientAcceptance: ClientAcceptanceSchema,
 }).strict().superRefine((value, context) => {
+  const editablePageIds = value.slides
+    .filter((slide) => slide.mode === "editable")
+    .map((slide) => slide.id);
+  if (JSON.stringify(value.editablePageIds) !== JSON.stringify(editablePageIds)) {
+    context.addIssue({
+      code: "custom",
+      path: ["editablePageIds"],
+      message: "editablePageIds must exactly match editable slides",
+    });
+  }
   const complete = value.clientAcceptance.application !== null
     && value.clientAcceptance.opened
     && value.clientAcceptance.edited

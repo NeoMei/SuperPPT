@@ -207,6 +207,10 @@ async function gatesForRevision(root: string, manifest: ProjectManifest): Promis
   };
 }
 
+function currentSlideMode(slide: ProjectManifest["slides"][number]): "image" | "editable" {
+  return slide.status === "editable" ? "editable" : "image";
+}
+
 async function projectPages(root: string, manifest: ProjectManifest): Promise<{
   pages: DeckPage[];
   records: Array<{ id: string; order: number; mode: "image" | "editable"; status: string; path: string; sha256: string }>;
@@ -222,7 +226,7 @@ async function projectPages(root: string, manifest: ProjectManifest): Promise<{
     return {
       id: slide.id,
       order: slide.order,
-      mode: slide.status === "editable" ? "editable" as const : "image" as const,
+      mode: currentSlideMode(slide),
       status: slide.status,
       path: artifact.path,
       sha256: artifact.sha256,
@@ -582,13 +586,20 @@ async function validateAcceptanceCurrent(root: string, manifest: ProjectManifest
   }
   const slides = [...manifest.slides].sort((left, right) => left.order - right.order);
   if (slides.length !== acceptance.slides.length) throw new Error("acceptance evidence is not current");
+  const currentEditablePageIds: string[] = [];
   for (const [index, evidence] of acceptance.slides.entries()) {
     const slide = slides[index]!;
+    const mode = currentSlideMode(slide);
+    if (evidence.mode !== mode) throw new Error("acceptance slide mode is not current");
+    if (mode === "editable") currentEditablePageIds.push(slide.id);
     if (evidence.id !== slide.id || evidence.order !== slide.order || evidence.finalRenderSha256 !== slide.finalRender?.sha256) {
       throw new Error("acceptance evidence is not current");
     }
     const bytes = await readOwnedRegularFile(root, slide.finalRender.path);
     if (createHash("sha256").update(bytes).digest("hex") !== evidence.finalRenderSha256) throw new Error("acceptance evidence is not current");
+  }
+  if (JSON.stringify(acceptance.editablePageIds) !== JSON.stringify(currentEditablePageIds)) {
+    throw new Error("acceptance editable page identity is not current");
   }
   for (const kind of ["pptx", "pdf", "montage"] as const) {
     const artifact = manifest.exports[kind];

@@ -14,6 +14,7 @@ Implemented revision-bound assembly for SuperPPT image decks. PPTX creation now 
 - Added full slide-identity binding, strict canonical artifact paths, physical hash validation, refusal to overwrite unowned/tampered destinations, and quarantine when a same-revision render changes after output promotion.
 - Provider identity is authenticated from every page's accepted attempt ledger; caller/default provider values are not part of the assembly API or CLI.
 - Added acceptance schema/building plus `acceptance`, and explicit `acceptance-record`. Delivery recording never replaces old evidence: it atomically publishes fixed-name immutable `acceptance-record.json`, then performs one manifest-pointer update. A crash leaves only a harmless orphan; retry re-parses the 0600 client input and deterministically recomputes the entire expected record instead of trusting a side journal. `deliveryComplete` is true only when application selection, opened, edited, saved, reopened, and confirmation time are explicitly present and revision/gates/provider/slides/exports still match current physical evidence.
+- Acceptance mode validation uses the same slide-status derivation as assembly, and requires both every `slides[].mode` and the ordered `editablePageIds` list to match current slide state. A same-revision ready-to-editable transition therefore invalidates prior completed delivery evidence even when render bytes are unchanged.
 - Added CLI routes: `assemble`, `acceptance`, and `acceptance-record`.
 
 ## TDD and safety coverage
@@ -30,6 +31,7 @@ Implemented revision-bound assembly for SuperPPT image decks. PPTX creation now 
 - partial build failure, post-promotion crash recovery, concurrent assembly, real controlled stale-revision transition, same-revision render replacement, unowned destination, output tampering, and canonical-path recovery;
 - unbound/fake PPTX rejection, attempt-ledger provider binding and tamper rejection, and deterministic PDF/montage byte binding;
 - explicit all-true acceptance recording, hard-crash retry after immutable record promotion, coordinated orphan-record rewrite rejection, and current-evidence enforcement;
+- acceptance schema self-consistency plus same-revision status-only image-to-editable invalidation;
 - injected runtime portability with platform-specific `PATH` delimiter and no machine path embedded in source/tests;
 - strict CLI route exposure.
 
@@ -38,11 +40,11 @@ The initial focused run failed because the deck modules did not exist. The CLI r
 ## Verification evidence
 
 - Artifact-operation marker: executed successfully exactly once before the first real authoring run with `create`, expected output count `1`, format `pptx`.
-- Focused tests: `node --import tsx --test tests/deck.test.ts` -> 21 passed, 0 failed.
-- Full source tests: `npm test` -> 154 tests, 152 passed, 2 Windows-only skipped, 0 failed.
+- Focused tests: `node --import tsx --test tests/deck.test.ts` -> 22 passed, 0 failed.
+- Full source tests: `npm test` -> 155 tests, 153 passed, 2 Windows-only skipped, 0 failed.
 - Type check: `npm run lint:types` -> passed.
 - Build: `npm run build` -> passed.
-- Compiled tests: `npm run test:compiled` -> 154 tests, 152 passed, 2 Windows-only skipped, 0 failed.
+- Compiled tests: `npm run test:compiled` -> 155 tests, 153 passed, 2 Windows-only skipped, 0 failed.
 - Diff hygiene: `git diff --check` -> clean.
 - Prohibited implementation scan: no `pptxgenjs`, PptxGenJS, `python-pptx`, or `python_pptx` in Task 8 production files; no machine-specific runtime path is embedded in production code.
 
@@ -72,4 +74,4 @@ npm run test:compiled
 
 ## Scope boundary
 
-This hardening commit contains only Task 8 files: `src/cli.ts`, `src/deck/assemble.ts`, `src/deck/montage.ts`, `src/deck/pdf.ts`, `src/deck/pptx.ts`, `tests/deck.test.ts`, and this report. Task 6/7 sources and tests are excluded.
+The Task 8 hardening commits contain only Task 8 files: `src/acceptance/schema.ts`, `src/cli.ts`, `src/deck/assemble.ts`, `src/deck/montage.ts`, `src/deck/pdf.ts`, `src/deck/pptx.ts`, `tests/deck.test.ts`, and this report. Task 6/7/9 sources, fixtures, and tests are excluded.

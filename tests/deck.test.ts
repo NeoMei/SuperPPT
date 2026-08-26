@@ -340,6 +340,10 @@ test("builds revision-bound initial acceptance with physical artifact hashes", a
     assert.equal(evidence.path, path);
     assert.equal(evidence.sha256, createHash("sha256").update(await readFile(path)).digest("hex"));
   }
+  assert.throws(() => AcceptanceSchema.parse({
+    ...acceptance,
+    slides: acceptance.slides.map((slide) => ({ ...slide, mode: "editable" as const })),
+  }), /editablePageIds must exactly match editable slides/);
 });
 
 test("refuses stale gates, non-ready pages, duplicate order, and render tampering in acceptance", async (t) => {
@@ -522,6 +526,36 @@ test("records delivery only from explicit all-true current client evidence", asy
   const pptx = join(fixture.root, (await readProject(fixture.root)).exports.pptx!.path);
   await writeFile(pptx, "tampered after acceptance");
   await assert.rejects(recordClientAcceptance(fixture.root, evidence), /acceptance evidence is not current/);
+});
+
+test("invalidates completed acceptance when a same-revision slide becomes editable", async (t) => {
+  const fixture = await readyProject(t);
+  await assembleProject({
+    root: fixture.root,
+    operations: { buildOutputs: fakeOutputs },
+  });
+  const evidence = join(fixture.root, "accepted-mode-change.json");
+  await writeFile(evidence, `${JSON.stringify({
+    application: "WPS",
+    opened: true,
+    edited: true,
+    saved: true,
+    reopened: true,
+    confirmedAt: new Date().toISOString(),
+  })}\n`, { mode: 0o600 });
+  const completed = await recordClientAcceptance(fixture.root, evidence);
+  assert.equal(completed.deliveryComplete, true);
+  assert.deepEqual(completed.editablePageIds, []);
+
+  await updateProject(fixture.root, (manifest) => ({
+    ...manifest,
+    slides: manifest.slides.map((slide, index) => index === 0 ? {
+      ...slide,
+      status: "editable" as const,
+    } : slide),
+  }));
+
+  await assert.rejects(readProjectAcceptance(fixture.root), /acceptance slide mode is not current/);
 });
 
 test("exposes assemble, acceptance, and acceptance-record as strict CLI routes", async (t) => {
