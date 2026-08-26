@@ -7,6 +7,16 @@ export const RevisionSchema = z.object({
   number: z.number().int().positive(),
   createdAt: z.string().datetime(),
   parentId: z.string().uuid().nullable(),
+  parentSnapshotDescriptorSha256: Sha256Schema.optional(),
+  rollbackTransactionDescriptorSha256: Sha256Schema.optional(),
+}).strict();
+
+export const RollbackTransactionMarkerSchema = z.object({
+  transactionId: z.string().uuid(),
+  baseRevisionId: z.string().uuid(),
+  targetRevisionId: z.string().uuid(),
+  rollbackRevisionId: z.string().uuid(),
+  descriptorSha256: Sha256Schema,
 }).strict();
 
 export const ArtifactSchema = z.object({
@@ -108,6 +118,7 @@ export const ProjectManifestSchema = z.object({
   ]),
   currentRevision: RevisionSchema,
   revisions: z.array(RevisionSchema).min(1),
+  rollbackTransaction: RollbackTransactionMarkerSchema.optional(),
   gates: z.array(GateSchema),
   brief: ArtifactSchema.nullable(),
   outline: ArtifactSchema.nullable(),

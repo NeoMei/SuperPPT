@@ -129,7 +129,7 @@ export async function publishRevisionSnapshot(
   root: string,
   rawManifest: ProjectManifest,
   operations?: RevisionEvidenceOperations,
-): Promise<void> {
+): Promise<RevisionSnapshotDescriptor> {
   const manifest = ProjectManifestSchema.parse(rawManifest);
   const bytes = Buffer.from(`${JSON.stringify(manifest, null, 2)}\n`);
   const descriptor = descriptorFor(manifest, bytes);
@@ -138,7 +138,7 @@ export async function publishRevisionSnapshot(
     if (!existing.bytes.equals(bytes) || JSON.stringify(existing.descriptor) !== JSON.stringify(descriptor)) {
       throw new Error(`immutable revision snapshot differs: ${manifest.currentRevision.id}`);
     }
-    return;
+    return existing.descriptor;
   } catch (error: unknown) {
     if (!missing(error)) {
       if ((error as Error).message.startsWith("immutable revision snapshot differs")) throw error;
@@ -181,6 +181,7 @@ export async function publishRevisionSnapshot(
       revision.close();
     }
   });
+  return descriptor;
 }
 
 export async function hasExactRevisionSnapshot(

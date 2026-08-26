@@ -4,9 +4,11 @@ import { z } from "zod";
 import { withProjectLease } from "../project/lock.js";
 import { ProjectManifestSchema, type ProjectManifest } from "../project/schemas.js";
 import {
+  beginProjectRollbackTransaction,
+  finishProjectRollbackTransaction,
   readProject,
   updateProject,
-  updateProjectWithRollbackTransaction,
+  updateProjectWithRevisionAppend,
 } from "../project/store.js";
 import {
   ChangeRequestSchema,
@@ -115,8 +117,8 @@ async function snapshotRevision(
   root: string,
   manifest: ProjectManifest,
   operations?: RevisionEvidenceOperations,
-): Promise<void> {
-  await publishRevisionSnapshot(root, manifest, operations);
+): Promise<string> {
+  return (await publishRevisionSnapshot(root, manifest, operations)).descriptorSha256;
 }
 
 function assertExactPlanBase(manifest: ProjectManifest, plan: ImpactPlan): void {
@@ -227,19 +229,20 @@ export async function applyRevision(
   await withProjectLease(root, "revision-impact", async (canonicalRoot) => {
     const pending = await readPendingImpactEvidence(canonicalRoot);
     if (!sameJson(pending.plan, plan)) throw new Error("pending impact evidence does not match apply request");
-    await updateProject(canonicalRoot, async (manifest) => {
+    await updateProjectWithRevisionAppend(canonicalRoot, async (manifest) => {
       if (manifest.currentRevision.id !== plan.baseRevisionId) {
         throw new Error("impact plan is stale for the current base revision");
       }
       await requireApprovedPlan(canonicalRoot, manifest, plan);
       await assertCurrentRevisionPlanningEvidence(canonicalRoot, manifest);
       await assertManifestArtifactReferences(canonicalRoot, manifest);
-      await snapshotRevision(canonicalRoot, manifest, options.operations);
+      const parentSnapshotDescriptorSha256 = await snapshotRevision(canonicalRoot, manifest, options.operations);
       const nextRevision = {
         id: randomUUID(),
         number: manifest.currentRevision.number + 1,
         createdAt: new Date().toISOString(),
         parentId: manifest.currentRevision.id,
+        parentSnapshotDescriptorSha256,
       };
       const stale = new Set(plan.staleSlideIds);
       return {
@@ -271,9 +274,9 @@ async function readRollbackTarget(
   root: string,
   revisionId: string,
   operations?: RevisionEvidenceOperations,
-): Promise<ProjectManifest> {
+): Promise<Awaited<ReturnType<typeof readRevisionSnapshot>>> {
   try {
-    return (await readRevisionSnapshot(root, revisionId, operations)).manifest;
+    return await readRevisionSnapshot(root, revisionId, operations);
   } catch (error: unknown) {
     throw new Error(`rollback revision snapshot is missing, unsafe, or unauthentic: ${revisionId}`, { cause: error });
   }
@@ -299,14 +302,16 @@ export async function rollbackToRevision(
       && recovered.outcome === "after"
       && recovered.targetRevisionId === revisionId
     ) return;
-    let journal: Awaited<ReturnType<typeof publishRollbackJournal>> | undefined;
-    await updateProjectWithRollbackTransaction(canonicalRoot, async (current, baseIdentity) => {
+    let published: Awaited<ReturnType<typeof publishRollbackJournal>> | undefined;
+    let targetArtifacts: Awaited<ReturnType<typeof authenticatedPlanningArtifacts>> | undefined;
+    await beginProjectRollbackTransaction(canonicalRoot, async (current, baseIdentity) => {
       if (revisionId === current.currentRevision.id) {
         throw new Error("rollback target must be an earlier revision");
       }
       const targetIndex = current.revisions.findIndex((revision) => revision.id === revisionId);
       if (targetIndex < 0) throw new Error("rollback target is not in the project revision ledger");
-      const target = await readRollbackTarget(canonicalRoot, revisionId, options.operations);
+      const targetSnapshot = await readRollbackTarget(canonicalRoot, revisionId, options.operations);
+      const target = targetSnapshot.manifest;
       const targetPrefix = current.revisions.slice(0, targetIndex + 1);
       if (
         target.projectId !== current.projectId
@@ -316,41 +321,75 @@ export async function rollbackToRevision(
       ) {
         throw new Error("rollback target snapshot is not a legal project revision prefix");
       }
-      const targetArtifacts = await authenticatedPlanningArtifacts(canonicalRoot, target);
+      const targetChild = current.revisions[targetIndex + 1];
+      if (
+        !targetChild
+        || targetChild.parentId !== revisionId
+        || targetChild.parentSnapshotDescriptorSha256 !== targetSnapshot.descriptor.descriptorSha256
+      ) throw new Error("rollback target snapshot descriptor anchor mismatch");
+      targetArtifacts = await authenticatedPlanningArtifacts(canonicalRoot, target);
       await assertManifestArtifactReferences(canonicalRoot, target, targetArtifacts);
       await assertCurrentRevisionPlanningEvidence(canonicalRoot, current);
       await assertManifestArtifactReferences(canonicalRoot, current);
-      await snapshotRevision(canonicalRoot, current, options.operations);
-      const rollbackRevision = {
+      const parentSnapshotDescriptorSha256 = await snapshotRevision(canonicalRoot, current, options.operations);
+      const rollbackRevisionBase = {
         id: randomUUID(),
         number: current.currentRevision.number + 1,
         createdAt: new Date().toISOString(),
         parentId: current.currentRevision.id,
+        parentSnapshotDescriptorSha256,
       };
-      const rollbackManifest = ProjectManifestSchema.parse({
-        ...target,
-        currentRevision: rollbackRevision,
-        revisions: [...current.revisions, rollbackRevision],
-        gates: current.gates,
-      });
       const before = await readProjectFileSet(canonicalRoot, [...targetArtifacts.keys()]);
-      journal = await publishRollbackJournal({
+      published = await publishRollbackJournal({
         root: canonicalRoot,
         current,
         baseManifestSha256: baseIdentity,
         targetRevisionId: revisionId,
-        rollbackManifest,
+        rollbackRevisionId: rollbackRevisionBase.id,
+        rollbackManifest: (transactionAnchorSha256) => {
+          const rollbackRevision = {
+            ...rollbackRevisionBase,
+            rollbackTransactionDescriptorSha256: transactionAnchorSha256,
+          };
+          return ProjectManifestSchema.parse({
+            ...target,
+            currentRevision: rollbackRevision,
+            revisions: [...current.revisions, rollbackRevision],
+            gates: current.gates,
+          });
+        },
         before,
         after: targetArtifacts,
         operations: options.operations,
       });
       await options.operations?.rollbackCheckpoint?.("journal-published");
-      await writeProjectFileSet(canonicalRoot, targetArtifacts, options.operations);
-      await options.operations?.rollbackCheckpoint?.("files-written");
-      return rollbackManifest;
+      return ProjectManifestSchema.parse({
+        ...current,
+        rollbackTransaction: {
+          transactionId: published.journal.transactionId,
+          baseRevisionId: current.currentRevision.id,
+          targetRevisionId: revisionId,
+          rollbackRevisionId: rollbackRevisionBase.id,
+          descriptorSha256: published.journal.transactionAnchorSha256,
+        },
+      });
+    });
+    if (!published || !targetArtifacts) throw new Error("rollback journal was not published");
+    await options.operations?.rollbackCheckpoint?.("marker-published");
+    await writeProjectFileSet(canonicalRoot, targetArtifacts, options.operations);
+    await options.operations?.rollbackCheckpoint?.("files-written");
+    const completed = published.rollbackManifest;
+    await finishProjectRollbackTransaction(canonicalRoot, (current) => {
+      if (!sameJson(current.rollbackTransaction, {
+        transactionId: published!.journal.transactionId,
+        baseRevisionId: published!.journal.baseRevisionId,
+        targetRevisionId: published!.journal.targetRevisionId,
+        rollbackRevisionId: published!.journal.rollbackRevisionId,
+        descriptorSha256: published!.journal.transactionAnchorSha256,
+      })) throw new Error("rollback transaction marker changed before commit");
+      return completed;
     });
     await options.operations?.rollbackCheckpoint?.("manifest-published");
-    if (!journal) throw new Error("rollback journal was not published");
-    await finalizeRollbackJournal(canonicalRoot, journal.transactionId, options.operations);
+    await finalizeRollbackJournal(canonicalRoot, published.journal.transactionId, options.operations);
   });
 }

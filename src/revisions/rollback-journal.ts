@@ -8,7 +8,10 @@ import {
   hasPendingRollbackTransaction,
 } from "../project/rollback-guard.js";
 import { ProjectManifestSchema, type ProjectManifest } from "../project/schemas.js";
-import { readProjectForRollbackRecovery } from "../project/store.js";
+import {
+  abortProjectRollbackTransaction,
+  readProjectForRollbackRecovery,
+} from "../project/store.js";
 import {
   type AnchoredDirectory,
   type RevisionEvidenceOperations,
@@ -38,6 +41,7 @@ const JournalBaseSchema = z.object({
   baseManifestSha256: HashSchema,
   targetRevisionId: z.string().uuid(),
   rollbackRevisionId: z.string().uuid(),
+  transactionAnchorSha256: HashSchema,
   rollbackManifestSha256: HashSchema,
   rollbackManifestSize: z.number().int().nonnegative(),
   files: z.array(FileEntrySchema),
@@ -67,8 +71,14 @@ type ReadJournal = {
   after: Map<string, Buffer>;
 };
 
+type RollbackManifestFactory = (transactionAnchorSha256: string) => ProjectManifest;
+
 function sameList(left: readonly string[], right: readonly string[]): boolean {
   return JSON.stringify(left) === JSON.stringify(right);
+}
+
+function manifestBytes(manifest: ProjectManifest): Buffer {
+  return Buffer.from(`${JSON.stringify(ProjectManifestSchema.parse(manifest), null, 2)}\n`);
 }
 
 function safeProjectPath(path: string): boolean {
@@ -87,6 +97,12 @@ function addIntegrity(base: z.infer<typeof JournalBaseSchema>): RollbackJournal 
     ...base,
     descriptorSha256: sha256Evidence(JSON.stringify(base)),
   });
+}
+
+function transactionAnchor(base: Omit<z.infer<typeof JournalBaseSchema>,
+  "transactionAnchorSha256" | "rollbackManifestSha256" | "rollbackManifestSize"
+>): string {
+  return sha256Evidence(JSON.stringify(base));
 }
 
 function readBlob(
@@ -116,6 +132,15 @@ function readJournalDirectory(directory: AnchoredDirectory): ReadJournal {
   if (descriptorSha256 !== sha256Evidence(JSON.stringify(base))) {
     throw new Error("rollback journal descriptor integrity is invalid");
   }
+  const {
+    transactionAnchorSha256,
+    rollbackManifestSha256: _rollbackManifestSha256,
+    rollbackManifestSize: _rollbackManifestSize,
+    ...anchorBase
+  } = base;
+  if (transactionAnchorSha256 !== transactionAnchor(anchorBase)) {
+    throw new Error("rollback journal transaction anchor integrity is invalid");
+  }
   const paths = journal.files.map((entry) => entry.path);
   if (
     paths.some((path) => !safeProjectPath(path))
@@ -144,6 +169,8 @@ function readJournalDirectory(directory: AnchoredDirectory): ReadJournal {
     || rollbackManifest.currentRevision.parentId !== journal.baseRevisionId
     || rollbackManifest.currentRevision.number !== journal.baseRevisionNumber + 1
     || rollbackManifest.revisions.at(-1)?.id !== journal.rollbackRevisionId
+    || rollbackManifest.currentRevision.rollbackTransactionDescriptorSha256 !== journal.transactionAnchorSha256
+    || rollbackManifest.rollbackTransaction
     || !rollbackManifest.revisions.some((revision) => revision.id === journal.targetRevisionId)
   ) throw new Error("rollback journal planned manifest identity is invalid");
 
@@ -168,11 +195,12 @@ export async function publishRollbackJournal(options: {
   current: ProjectManifest;
   baseManifestSha256: string;
   targetRevisionId: string;
-  rollbackManifest: ProjectManifest;
+  rollbackRevisionId: string;
+  rollbackManifest: RollbackManifestFactory;
   before: ReadonlyMap<string, Buffer | null>;
   after: ReadonlyMap<string, Buffer>;
   operations?: RevisionEvidenceOperations;
-}): Promise<RollbackJournal> {
+}): Promise<{ journal: RollbackJournal; rollbackManifest: ProjectManifest }> {
   if (await hasPendingRollbackTransaction(options.root)) {
     throw new Error("a rollback transaction is already pending");
   }
@@ -195,22 +223,30 @@ export async function publishRollbackJournal(options: {
   ) {
     throw new Error("rollback journal before and after file sets must match exactly");
   }
-  const rollbackBytes = Buffer.from(`${JSON.stringify(ProjectManifestSchema.parse(options.rollbackManifest), null, 2)}\n`);
-  const base = JournalBaseSchema.parse({
+  const transactionId = randomUUID();
+  const createdAt = new Date().toISOString();
+  const anchorBase = {
     schemaVersion: 1,
     kind: "rollback-transaction",
-    transactionId: randomUUID(),
+    transactionId,
     projectId: options.current.projectId,
     journalPath: `revisions/${ACTIVE_ROLLBACK_TRANSACTION}`,
     baseRevisionId: options.current.currentRevision.id,
     baseRevisionNumber: options.current.currentRevision.number,
     baseManifestSha256: options.baseManifestSha256,
     targetRevisionId: options.targetRevisionId,
-    rollbackRevisionId: options.rollbackManifest.currentRevision.id,
+    rollbackRevisionId: options.rollbackRevisionId,
+    files: entries,
+    createdAt,
+  } as const;
+  const transactionAnchorSha256 = transactionAnchor(anchorBase);
+  const rollbackManifest = ProjectManifestSchema.parse(options.rollbackManifest(transactionAnchorSha256));
+  const rollbackBytes = Buffer.from(`${JSON.stringify(rollbackManifest, null, 2)}\n`);
+  const base = JournalBaseSchema.parse({
+    ...anchorBase,
+    transactionAnchorSha256,
     rollbackManifestSha256: sha256Evidence(rollbackBytes),
     rollbackManifestSize: rollbackBytes.length,
-    files: entries,
-    createdAt: new Date().toISOString(),
   });
   const journal = addIntegrity(base);
   await withAnchoredRevisions(options.root, options.operations, (revisions) => {
@@ -238,7 +274,7 @@ export async function publishRollbackJournal(options: {
     }
     revisions.promoteChildExclusive(stagingName, ACTIVE_ROLLBACK_TRANSACTION);
   });
-  return journal;
+  return { journal, rollbackManifest };
 }
 
 export async function readRollbackJournal(
@@ -296,15 +332,37 @@ export async function recoverRollbackTransactionLocked(
   }
   let desired: ReadonlyMap<string, Buffer | null>;
   let outcome: "before" | "after";
+  const marker = current.manifest.rollbackTransaction;
   if (
-    current.baseIdentity === evidence.journal.baseManifestSha256
+    !marker
+    && current.baseIdentity === evidence.journal.baseManifestSha256
     && current.manifest.currentRevision.id === evidence.journal.baseRevisionId
   ) {
+    await finalizeRollbackJournal(root, evidence.journal.transactionId, options.operations);
+    return {
+      outcome: "before",
+      targetRevisionId: evidence.journal.targetRevisionId,
+      rollbackRevisionId: evidence.journal.rollbackRevisionId,
+    };
+  } else if (marker) {
+    const { rollbackTransaction: _marker, ...withoutMarker } = current.manifest;
+    const baseIdentity = sha256Evidence(manifestBytes(ProjectManifestSchema.parse(withoutMarker)));
+    if (
+      baseIdentity !== evidence.journal.baseManifestSha256
+      || current.manifest.currentRevision.id !== evidence.journal.baseRevisionId
+      || marker.transactionId !== evidence.journal.transactionId
+      || marker.baseRevisionId !== evidence.journal.baseRevisionId
+      || marker.targetRevisionId !== evidence.journal.targetRevisionId
+      || marker.rollbackRevisionId !== evidence.journal.rollbackRevisionId
+      || marker.descriptorSha256 !== evidence.journal.transactionAnchorSha256
+    ) throw new Error("rollback transaction descriptor anchor mismatch");
     desired = evidence.before;
     outcome = "before";
   } else if (
     current.baseIdentity === evidence.journal.rollbackManifestSha256
     && current.manifest.currentRevision.id === evidence.journal.rollbackRevisionId
+    && current.manifest.currentRevision.rollbackTransactionDescriptorSha256
+      === evidence.journal.transactionAnchorSha256
   ) {
     desired = evidence.after;
     outcome = "after";
@@ -313,6 +371,15 @@ export async function recoverRollbackTransactionLocked(
   }
   await writeProjectFileSet(root, desired, options.operations);
   await assertFileSet(root, desired);
+  if (outcome === "before") {
+    await abortProjectRollbackTransaction(root, (manifest) => {
+      if (!manifest.rollbackTransaction) {
+        throw new Error("rollback transaction marker disappeared during recovery");
+      }
+      const { rollbackTransaction: _transaction, ...restored } = manifest;
+      return ProjectManifestSchema.parse(restored);
+    });
+  }
   await finalizeRollbackJournal(root, evidence.journal.transactionId, options.operations);
   return {
     outcome,

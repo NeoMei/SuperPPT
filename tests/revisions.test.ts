@@ -21,7 +21,12 @@ import { promisify } from "node:util";
 import { approveGate } from "../src/planning/confirm.js";
 import { publishPlanViews } from "../src/planning/views.js";
 import { initializeProject } from "../src/project/initialize.js";
-import { readProject, updateProject, writeProject } from "../src/project/store.js";
+import {
+  readProject,
+  updateProject,
+  updateProjectWithRevisionAppend,
+  writeProject,
+} from "../src/project/store.js";
 import {
   applyRevision,
   approveImpact,
@@ -185,15 +190,16 @@ async function setBriefArtifact(root: string): Promise<void> {
 
 async function advanceWithBriefArtifact(root: string, brief: typeof approvedBrief): Promise<void> {
   const current = await readProject(root);
-  await publishRevisionSnapshot(root, current);
+  const snapshot = await publishRevisionSnapshot(root, current);
   const bytes = Buffer.from(`${JSON.stringify(brief, null, 2)}\n`);
   await writeFile(join(root, "brief.json"), bytes);
-  await updateProject(root, (manifest) => {
+  await updateProjectWithRevisionAppend(root, (manifest) => {
     const revision = {
       id: randomUUID(),
       number: manifest.currentRevision.number + 1,
       createdAt: new Date().toISOString(),
       parentId: manifest.currentRevision.id,
+      parentSnapshotDescriptorSha256: snapshot.descriptorSha256,
     };
     return {
       ...manifest,
@@ -510,6 +516,7 @@ test("restores authenticated fixed planning artifacts from the rollback target",
 test("recovers rollback journals at every durable crash boundary", async (t) => {
   const crashes = [
     { name: "before-files", checkpoint: "journal-published", after: false },
+    { name: "after-marker", checkpoint: "marker-published", after: false },
     { name: "after-files", checkpoint: "files-written", after: false },
     { name: "after-manifest", checkpoint: "manifest-published", after: true },
   ] as const;
@@ -663,6 +670,50 @@ test("rejects tampered, extra-entry, and linked rollback journals while reads st
   await symlink(owned, activeLinked);
   await assert.rejects(recoverRollbackTransaction(linked), /rollback journal.*unsafe/i);
   await assert.rejects(readProject(linked), /pending rollback transaction/);
+
+  const coordinated = await authenticatedRollbackVersions(t, "superppt-rollback-journal-rehash-");
+  await assert.rejects(rollbackToRevision(coordinated.root, coordinated.targetId, {
+    operations: {
+      beforePlanningArtifactWrite: (_path, index) => {
+        if (index === 1) throw new Error("leave anchored journal");
+      },
+    },
+  }), /leave anchored journal/);
+  const activeCoordinated = join(coordinated.root, "revisions", "rollback-transaction");
+  const journalPath = join(activeCoordinated, "journal.json");
+  const forgedJournal = JSON.parse(await readFile(journalPath, "utf8"));
+  const beforeEntry = forgedJournal.files.find((entry: { before: unknown }) => entry.before);
+  assert.ok(beforeEntry?.before?.file);
+  const forgedBefore = Buffer.from("coordinated forged before bytes");
+  await writeFile(join(activeCoordinated, beforeEntry.before.file), forgedBefore);
+  beforeEntry.before.sha256 = createHash("sha256").update(forgedBefore).digest("hex");
+  beforeEntry.before.size = forgedBefore.length;
+  const {
+    descriptorSha256: _oldJournalHash,
+    transactionAnchorSha256: _oldAnchorHash,
+    rollbackManifestSha256: _rollbackManifestHash,
+    rollbackManifestSize: _rollbackManifestSize,
+    ...forgedAnchorBase
+  } = forgedJournal;
+  forgedJournal.transactionAnchorSha256 = createHash("sha256")
+    .update(JSON.stringify(forgedAnchorBase)).digest("hex");
+  const rollbackManifestPath = join(activeCoordinated, "rollback-superppt.json");
+  const forgedRollbackManifest = JSON.parse(await readFile(rollbackManifestPath, "utf8"));
+  forgedRollbackManifest.currentRevision.rollbackTransactionDescriptorSha256 = forgedJournal.transactionAnchorSha256;
+  forgedRollbackManifest.revisions.at(-1).rollbackTransactionDescriptorSha256 = forgedJournal.transactionAnchorSha256;
+  const forgedRollbackBytes = Buffer.from(`${JSON.stringify(forgedRollbackManifest, null, 2)}\n`);
+  await writeFile(rollbackManifestPath, forgedRollbackBytes);
+  forgedJournal.rollbackManifestSha256 = createHash("sha256").update(forgedRollbackBytes).digest("hex");
+  forgedJournal.rollbackManifestSize = forgedRollbackBytes.length;
+  const { descriptorSha256: _ignoredJournalHash, ...forgedJournalBase } = forgedJournal;
+  forgedJournal.descriptorSha256 = createHash("sha256")
+    .update(JSON.stringify(forgedJournalBase)).digest("hex");
+  await writeFile(journalPath, `${JSON.stringify(forgedJournal, null, 2)}\n`);
+  await assert.rejects(
+    recoverRollbackTransaction(coordinated.root),
+    /rollback transaction descriptor anchor mismatch/,
+  );
+  await assert.rejects(readProject(coordinated.root), /pending rollback transaction/);
 });
 
 test("rejects corrupted target planning snapshots before restoring any bytes", async (t) => {
@@ -922,6 +973,28 @@ test("authenticates revision snapshot descriptors and exact trees before rollbac
   await applyRevision(extraRoot, extraPlan, extraPlan.change);
   await writeFile(join(revisionSnapshotRoot(extraRoot, extraTarget), "extra.json"), "{}\n");
   await assert.rejects(rollbackToRevision(extraRoot, extraTarget), /snapshot.*unauthentic/i);
+
+  const rehashedRoot = await project(t, "superppt-rollback-snapshot-rehash-");
+  const rehashedTarget = (await readProject(rehashedRoot)).currentRevision.id;
+  const rehashedPlan = await publishImpactPlan(rehashedRoot, { kind: "brief", title: "After" });
+  await approveImpact(rehashedRoot, rehashedPlan.sha256);
+  await applyRevision(rehashedRoot, rehashedPlan, rehashedPlan.change);
+  const rehashedSnapshotRoot = revisionSnapshotRoot(rehashedRoot, rehashedTarget);
+  const forgedManifest = JSON.parse(await readFile(join(rehashedSnapshotRoot, "superppt.json"), "utf8"));
+  forgedManifest.title = "Coordinated snapshot forgery";
+  const forgedBytes = Buffer.from(`${JSON.stringify(forgedManifest, null, 2)}\n`);
+  await writeFile(join(rehashedSnapshotRoot, "superppt.json"), forgedBytes);
+  const forgedDescriptor = JSON.parse(await readFile(join(rehashedSnapshotRoot, "snapshot.json"), "utf8"));
+  forgedDescriptor.manifestSha256 = createHash("sha256").update(forgedBytes).digest("hex");
+  forgedDescriptor.manifestSize = forgedBytes.length;
+  const { descriptorSha256: _oldDescriptorHash, ...forgedDescriptorBase } = forgedDescriptor;
+  forgedDescriptor.descriptorSha256 = createHash("sha256")
+    .update(JSON.stringify(forgedDescriptorBase)).digest("hex");
+  await writeFile(join(rehashedSnapshotRoot, "snapshot.json"), `${JSON.stringify(forgedDescriptor, null, 2)}\n`);
+  await assert.rejects(
+    rollbackToRevision(rehashedRoot, rehashedTarget),
+    /snapshot descriptor anchor mismatch/,
+  );
 });
 
 test("retries safely after a crash leaves only a partial snapshot staging tree", async (t) => {

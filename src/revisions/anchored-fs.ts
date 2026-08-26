@@ -24,7 +24,7 @@ export type RevisionEvidenceOperations = {
   ) => Promise<void> | void;
   beforePlanningArtifactWrite?: (path: string, index: number) => Promise<void> | void;
   rollbackCheckpoint?: (
-    step: "journal-published" | "files-written" | "manifest-published",
+    step: "journal-published" | "marker-published" | "files-written" | "manifest-published",
   ) => Promise<void> | void;
 };
 

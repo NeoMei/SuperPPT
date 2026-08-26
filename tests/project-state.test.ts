@@ -21,7 +21,12 @@ import test, { type TestContext } from "node:test";
 import { promisify } from "node:util";
 
 import { initializeProject } from "../src/project/initialize.js";
-import { readProject, writeProject } from "../src/project/store.js";
+import {
+  readProject,
+  updateProject,
+  updateProjectWithRevisionAppend,
+  writeProject,
+} from "../src/project/store.js";
 import { publishRevisionSnapshot } from "../src/revisions/snapshot.js";
 
 const execFileAsync = promisify(execFile);
@@ -447,17 +452,19 @@ test("rejects removing, changing, or reordering persisted revisions", async (t) 
   const root = join(parent, "demo");
   await initializeProject({ root, title: "Demo" });
   const first = await readProject(root);
+  const firstSnapshot = await publishRevisionSnapshot(root, first);
   const secondRevision = {
     id: "00000000-0000-4000-8000-000000000102",
     number: 2,
     createdAt: new Date().toISOString(),
     parentId: first.currentRevision.id,
+    parentSnapshotDescriptorSha256: firstSnapshot.descriptorSha256,
   };
-  await writeProject(root, {
+  await updateProjectWithRevisionAppend(root, () => ({
     ...first,
     currentRevision: secondRevision,
     revisions: [...first.revisions, secondRevision],
-  });
+  }));
   const persisted = await readProject(root);
   const before = await readFile(join(root, "superppt.json"), "utf8");
   const mutations = [
@@ -499,18 +506,20 @@ test("accepts a chained revision append and advances currentRevision to its tail
   const root = join(parent, "demo");
   await initializeProject({ root, title: "Demo" });
   const first = await readProject(root);
+  const firstSnapshot = await publishRevisionSnapshot(root, first);
   const next = {
     id: "00000000-0000-4000-8000-000000000103",
     number: 2,
     createdAt: new Date().toISOString(),
     parentId: first.currentRevision.id,
+    parentSnapshotDescriptorSha256: firstSnapshot.descriptorSha256,
   };
 
-  await writeProject(root, {
+  await updateProjectWithRevisionAppend(root, () => ({
     ...first,
     currentRevision: next,
     revisions: [...first.revisions, next],
-  });
+  }));
 
   const reopened = await readProject(root);
   assert.deepEqual(reopened.revisions, [...first.revisions, next]);
@@ -536,6 +545,24 @@ test("rejects appending a revision while retaining the old currentRevision", asy
   }), /currentRevision.*appended tail/);
 
   assert.equal(await readFile(join(root, "superppt.json"), "utf8"), before);
+});
+
+test("rejects forged rollback trust fields through ordinary project updates", async (t) => {
+  const parent = await temporaryParent(t, "superppt-rollback-marker-forge-");
+  const root = join(parent, "demo");
+  await initializeProject({ root, title: "Demo" });
+  const current = await readProject(root);
+  await assert.rejects(updateProject(root, (manifest) => ({
+    ...manifest,
+    rollbackTransaction: {
+      transactionId: "00000000-0000-4000-8000-000000000201",
+      baseRevisionId: current.currentRevision.id,
+      targetRevisionId: current.currentRevision.id,
+      rollbackRevisionId: "00000000-0000-4000-8000-000000000202",
+      descriptorSha256: "a".repeat(64),
+    },
+  })), /controlled store transition/);
+  assert.equal((await readProject(root)).rollbackTransaction, undefined);
 });
 
 test("requires an exact planned revision snapshot before dropping old artifact evidence", async (t) => {
@@ -567,8 +594,8 @@ test("requires an exact planned revision snapshot before dropping old artifact e
   };
 
   await assert.rejects(
-    writeProject(root, dropsArtifact),
-    /immutable artifact evidence/,
+    updateProjectWithRevisionAppend(root, () => dropsArtifact),
+    /snapshot|openat/i,
   );
 
   const externalSnapshot = join(parent, "external-snapshot");
@@ -583,14 +610,21 @@ test("requires an exact planned revision snapshot before dropping old artifact e
   await rmdir(join(root, "revisions"));
   await symlink(externalSnapshot, join(root, "revisions"));
   await assert.rejects(
-    writeProject(root, dropsArtifact),
-    /immutable artifact evidence/,
+    updateProjectWithRevisionAppend(root, () => dropsArtifact),
+    /snapshot|unsafe|not a directory/i,
   );
   await unlink(join(root, "revisions"));
 
   await mkdir(join(root, "revisions"));
-  await publishRevisionSnapshot(root, persisted);
-  await writeProject(root, dropsArtifact);
+  const snapshot = await publishRevisionSnapshot(root, persisted);
+  await updateProjectWithRevisionAppend(root, () => ({
+    ...dropsArtifact,
+    currentRevision: { ...next, parentSnapshotDescriptorSha256: snapshot.descriptorSha256 },
+    revisions: [
+      ...persisted.revisions,
+      { ...next, parentSnapshotDescriptorSha256: snapshot.descriptorSha256 },
+    ],
+  }));
   assert.equal((await readProject(root)).brief, null);
 });
 
