@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
-import { createHash, randomUUID } from "node:crypto";
-import { access, mkdir, mkdtemp, readFile, realpath, rename, symlink, writeFile } from "node:fs/promises";
+import { createHash } from "node:crypto";
+import { access, copyFile, mkdir, mkdtemp, readFile, realpath, rename, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test, { type TestContext } from "node:test";
@@ -20,10 +20,9 @@ import { approveGate } from "../src/planning/confirm.js";
 import { publishPlanViews, publishStyleSample } from "../src/planning/views.js";
 import { initializeProject } from "../src/project/initialize.js";
 import { readProject, updateProject } from "../src/project/store.js";
+import { applyRevision, approveImpact, publishImpactPlan } from "../src/revisions/apply.js";
+import { publishRevisionSnapshot } from "../src/revisions/snapshot.js";
 
-process.env.RUNTIME_NODE = "/Users/neomei/.cache/codex-runtimes/codex-primary-runtime/dependencies/node/bin/node";
-process.env.RUNTIME_NODE_MODULES = "/Users/neomei/.cache/codex-runtimes/codex-primary-runtime/dependencies/node/node_modules";
-process.env.RUNTIME_BIN_DIR = "/Users/neomei/.cache/codex-runtimes/codex-primary-runtime/dependencies/bin/override";
 const execFileAsync = promisify(execFile);
 
 async function directory(t: TestContext): Promise<string> {
@@ -110,7 +109,38 @@ async function readyProject(t: TestContext): Promise<{ root: string; revisionId:
   const artifacts = await Promise.all(PROJECT_SLIDES.map(async (id, order) => {
     const attempt = join(root, "images", id, "attempt-1");
     await mkdir(attempt, { recursive: true });
-    return image(join(attempt, "slide.png"), order === 0 ? "#aa2211" : "#1144aa");
+    const generated = await image(join(attempt, "slide.png"), order === 0 ? "#aa2211" : "#1144aa");
+    await writeFile(join(attempt, "ledger.json"), `${JSON.stringify({
+      ledgerVersion: 1,
+      slideId: id,
+      revisionId: manifest.currentRevision.id,
+      attempt: 1,
+      providerId: "ledger-provider",
+      promptSha256: "a".repeat(64),
+      promptPurged: true,
+      output: `images/${id}/attempt-1/slide.png`,
+      outputSha256: generated.sha256,
+      outputBytes: (await readFile(generated.path)).length,
+      durationMs: 1,
+      quality: {
+        ok: true,
+        issueCount: 0,
+        issueHashes: [],
+        issueCodes: [],
+        requiredText: [{
+          textSha256: createHash("sha256").update(outline.slides[order]!.title).digest("hex"),
+          present: true,
+          exact: true,
+        }],
+        styleConsistent: true,
+        hierarchyClear: true,
+        richDetail: true,
+        noForbiddenContent: true,
+      },
+      outcome: "accepted",
+      errorCode: null,
+    }, null, 2)}\n`);
+    return generated;
   }));
   await updateProject(root, (current) => ({
     ...current,
@@ -141,7 +171,20 @@ async function fakeOutputs(renders: FinalRender[], paths: { pptx: string; pdf: s
   const zip = new JSZip();
   zip.file("[Content_Types].xml", "<Types/>");
   for (const [index, render] of renders.entries()) {
-    zip.file(`ppt/slides/slide${index + 1}.xml`, `<p:sld><p:cNvPr name=\"page-${render.id}\"/></p:sld>`);
+    zip.file(`ppt/slides/slide${index + 1}.xml`, `<p:sld><p:pic><p:cNvPr name=\"page-${render.id}\"/><a:blip r:embed=\"rIdImage\"/></p:pic></p:sld>`);
+    zip.file(`ppt/slides/_rels/slide${index + 1}.xml.rels`, `<Relationships><Relationship Id=\"rIdImage\" Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/image\" Target=\"../media/image${index + 1}.png\"/></Relationships>`);
+    zip.file(`ppt/media/image${index + 1}.png`, render.bytes);
+  }
+  await writeFile(paths.pptx, await zip.generateAsync({ type: "nodebuffer" }), { flag: "wx" });
+  await exportPdf(renders, paths.pdf);
+  await buildMontage(renders, paths.montage);
+}
+
+async function fakeUnboundOutputs(renders: FinalRender[], paths: { pptx: string; pdf: string; montage: string }): Promise<void> {
+  const zip = new JSZip();
+  zip.file("[Content_Types].xml", "<Types/>");
+  for (const [index, render] of renders.entries()) {
+    zip.file(`ppt/slides/slide${index + 1}.xml`, `<p:sld><p:pic><p:cNvPr name=\"page-${render.id}\"/></p:pic></p:sld>`);
   }
   await writeFile(paths.pptx, await zip.generateAsync({ type: "nodebuffer" }), { flag: "wx" });
   await exportPdf(renders, paths.pdf);
@@ -338,7 +381,6 @@ test("assembles into an owned revision destination and publishes exact manifest 
   const fixture = await readyProject(t);
   const result = await assembleProject({
     root: fixture.root,
-    providerId: "test-provider",
     operations: { buildOutputs: fakeOutputs },
   });
   const manifest = await readProject(fixture.root);
@@ -363,7 +405,6 @@ test("retains partial staging without mutating the manifest", async (t) => {
   const before = await readProject(fixture.root);
   await assert.rejects(assembleProject({
     root: fixture.root,
-    providerId: "test-provider",
     operations: {
       buildOutputs: async (renders, paths) => {
         await fakeOutputs(renders, paths);
@@ -380,7 +421,6 @@ test("recovers a promoted output after a crash before the manifest update", asyn
   const fixture = await readyProject(t);
   await assert.rejects(assembleProject({
     root: fixture.root,
-    providerId: "test-provider",
     operations: {
       buildOutputs: fakeOutputs,
       checkpoint: (step) => {
@@ -392,7 +432,6 @@ test("recovers a promoted output after a crash before the manifest update", asyn
 
   const recovered = await assembleProject({
     root: fixture.root,
-    providerId: "test-provider",
     operations: { buildOutputs: async () => { throw new Error("must reuse promoted output"); } },
   });
   assert.equal(recovered.recovered, true);
@@ -409,8 +448,8 @@ test("serializes concurrent assembly and never overwrites an unowned or tampered
     },
   };
   const results = await Promise.all([
-    assembleProject({ root: fixture.root, providerId: "test-provider", operations }),
-    assembleProject({ root: fixture.root, providerId: "test-provider", operations }),
+    assembleProject({ root: fixture.root, operations }),
+    assembleProject({ root: fixture.root, operations }),
   ]);
   assert.equal(builds, 1);
   assert.equal(results.filter((result) => result.recovered).length, 1);
@@ -419,7 +458,6 @@ test("serializes concurrent assembly and never overwrites an unowned or tampered
   await writeFile(pptx, "tampered");
   await assert.rejects(assembleProject({
     root: fixture.root,
-    providerId: "test-provider",
     operations,
   }), /owned output evidence is invalid/);
 
@@ -429,7 +467,6 @@ test("serializes concurrent assembly and never overwrites an unowned or tampered
   await writeFile(join(destination, "foreign.txt"), "do not delete");
   await assert.rejects(assembleProject({
     root: second.root,
-    providerId: "test-provider",
     operations,
   }), /destination is not owned by SuperPPT/);
   assert.equal(await readFile(join(destination, "foreign.txt"), "utf8"), "do not delete");
@@ -439,19 +476,13 @@ test("aborts promotion when the current revision changes during assembly", async
   const fixture = await readyProject(t);
   await assert.rejects(assembleProject({
     root: fixture.root,
-    providerId: "test-provider",
     operations: {
       buildOutputs: fakeOutputs,
       beforePromote: async () => {
-        await updateProject(fixture.root, (manifest) => {
-          const revision = {
-            id: randomUUID(),
-            number: manifest.currentRevision.number + 1,
-            createdAt: new Date().toISOString(),
-            parentId: manifest.currentRevision.id,
-          };
-          return { ...manifest, currentRevision: revision, revisions: [...manifest.revisions, revision] };
-        });
+        const change = { kind: "style" as const };
+        const plan = await publishImpactPlan(fixture.root, change);
+        await approveImpact(fixture.root, plan.sha256);
+        await applyRevision(fixture.root, plan, change);
       },
     },
   }), /revision changed during assembly/);
@@ -462,7 +493,6 @@ test("records delivery only from explicit all-true current client evidence", asy
   const fixture = await readyProject(t);
   await assembleProject({
     root: fixture.root,
-    providerId: "test-provider",
     operations: { buildOutputs: fakeOutputs },
   });
   const incomplete = join(fixture.root, "incomplete.json");
@@ -510,7 +540,7 @@ test("exposes assemble, acceptance, and acceptance-record as strict CLI routes",
     SUPERPPT_AI_IMAGE_TO_PPT_SOURCE: "",
     SUPERPPT_IMAGE_TO_EDITABLE_PPTX_SOURCE: "",
   });
-  assert.match(assembleError, /dependency source overrides/);
+  assert.match(assembleError, /not owned by SuperPPT|planning artifact must be a regular file/);
   assert.doesNotMatch(assembleError, /unknown command/);
 
   const acceptanceError = await invoke(["acceptance", "--project", root]);
@@ -526,4 +556,155 @@ test("exposes assemble, acceptance, and acceptance-record as strict CLI routes",
   ]);
   assert.match(recordError, /ENOENT/);
   assert.doesNotMatch(recordError, /unknown command/);
+});
+
+test("rejects a PPTX that names pages but has no bound media relationships", async (t) => {
+  const fixture = await readyProject(t);
+  await assert.rejects(assembleProject({
+    root: fixture.root,
+    operations: { buildOutputs: fakeUnboundOutputs },
+  }), /PPTX.*media|media.*PPTX/i);
+});
+
+test("derives provider identity from every accepted attempt ledger", async (t) => {
+  const fixture = await readyProject(t);
+  const untrustedCallerOptions = {
+    root: fixture.root,
+    providerId: "spoofed-provider",
+    operations: { buildOutputs: fakeOutputs },
+  };
+  await assembleProject(untrustedCallerOptions);
+  assert.equal((await readProjectAcceptance(fixture.root)).providerId, "ledger-provider");
+  const ledgerPath = join(fixture.root, "images", PROJECT_SLIDES[0], "attempt-1", "ledger.json");
+  const ledger = JSON.parse(await readFile(ledgerPath, "utf8"));
+  await writeFile(ledgerPath, `${JSON.stringify({ ...ledger, providerId: "forged-provider" }, null, 2)}\n`);
+  await assert.rejects(
+    readProjectAcceptance(fixture.root),
+    /provider evidence is not current|one accepted provider identity/,
+  );
+});
+
+test("recovery rejects self-consistent output markers with noncanonical artifact paths", async (t) => {
+  const fixture = await readyProject(t);
+  const result = await assembleProject({
+    root: fixture.root,
+    operations: { buildOutputs: fakeOutputs },
+  });
+  const destination = result.destination;
+  const markerPath = join(destination, ".superppt-output.json");
+  const acceptancePath = join(destination, "acceptance.json");
+  const wrongPptx = join(destination, "renamed-deck.pptx");
+  await copyFile(join(destination, "deck.pptx"), wrongPptx);
+  const marker = JSON.parse(await readFile(markerPath, "utf8"));
+  const acceptance = JSON.parse(await readFile(acceptancePath, "utf8"));
+  const wrongRef = `output/revisions/1/renamed-deck.pptx`;
+  marker.artifacts.pptx.path = wrongRef;
+  acceptance.exports.pptx.path = wrongRef;
+  const acceptanceBytes = Buffer.from(`${JSON.stringify(acceptance, null, 2)}\n`);
+  await writeFile(acceptancePath, acceptanceBytes);
+  marker.artifacts.acceptance.sha256 = createHash("sha256").update(acceptanceBytes).digest("hex");
+  await writeFile(markerPath, `${JSON.stringify(marker, null, 2)}\n`);
+
+  await assert.rejects(assembleProject({
+    root: fixture.root,
+    operations: { buildOutputs: fakeOutputs },
+  }), /canonical artifact paths/);
+});
+
+test("aborts and quarantines output when a same-revision render changes after promotion", async (t) => {
+  const fixture = await readyProject(t);
+  const replacementRoot = join(fixture.root, "images", PROJECT_SLIDES[0], "attempt-2");
+  await mkdir(replacementRoot, { recursive: true });
+  const replacement = await image(join(replacementRoot, "slide.png"), "#777777");
+  await assert.rejects(assembleProject({
+    root: fixture.root,
+    operations: {
+      buildOutputs: fakeOutputs,
+      checkpoint: async (step) => {
+        if (step !== "output-promoted") return;
+        await publishRevisionSnapshot(fixture.root, await readProject(fixture.root));
+        await updateProject(fixture.root, (manifest) => ({
+          ...manifest,
+          slides: manifest.slides.map((slide) => slide.id === PROJECT_SLIDES[0] ? {
+            ...slide,
+            image: {
+              path: `images/${slide.id}/attempt-2/slide.png`,
+              sha256: replacement.sha256,
+              revisionId: manifest.currentRevision.id,
+            },
+          } : slide),
+        }));
+      },
+    },
+  }), /slide binding changed during assembly/);
+  await assert.rejects(access(join(fixture.root, "output", "revisions", "1")));
+});
+
+test("recovers acceptance after a hard crash following immutable record promotion", async (t) => {
+  const fixture = await readyProject(t);
+  await assembleProject({
+    root: fixture.root,
+    operations: { buildOutputs: fakeOutputs },
+  });
+  const evidence = join(fixture.root, "accepted-crash.json");
+  await writeFile(evidence, `${JSON.stringify({
+    application: "WPS",
+    opened: true,
+    edited: true,
+    saved: true,
+    reopened: true,
+    confirmedAt: new Date().toISOString(),
+  })}\n`, { mode: 0o600 });
+  const recordWithOperations = recordClientAcceptance as unknown as (
+    root: string,
+    input: string,
+    operations: { checkpoint: (step: string) => Promise<void> | void },
+  ) => Promise<unknown>;
+  await assert.rejects(recordWithOperations(fixture.root, evidence, {
+    checkpoint: (step) => {
+      if (step === "record-promoted") throw new Error("simulated hard crash");
+    },
+  }), /simulated hard crash/);
+  const recovered = await recordClientAcceptance(fixture.root, evidence);
+  assert.equal(recovered.deliveryComplete, true);
+  assert.equal((await readProject(fixture.root)).stage, "delivered");
+});
+
+test("rejects a coordinated rewrite of an orphaned immutable acceptance record", async (t) => {
+  const fixture = await readyProject(t);
+  await assembleProject({
+    root: fixture.root,
+    operations: { buildOutputs: fakeOutputs },
+  });
+  const evidence = join(fixture.root, "accepted-tamper.json");
+  await writeFile(evidence, `${JSON.stringify({
+    application: "WPS",
+    opened: true,
+    edited: true,
+    saved: true,
+    reopened: true,
+    confirmedAt: new Date().toISOString(),
+  })}\n`, { mode: 0o600 });
+  await assert.rejects(recordClientAcceptance(fixture.root, evidence, {
+    checkpoint: (step) => {
+      if (step === "record-promoted") throw new Error("simulated hard crash");
+    },
+  }), /simulated hard crash/);
+  const record = join(fixture.root, "output", "revisions", "1", "acceptance-record.json");
+  const forged = AcceptanceSchema.parse(JSON.parse(await readFile(record, "utf8")));
+  await writeFile(record, `${JSON.stringify({ ...forged, providerId: "forged-provider" }, null, 2)}\n`);
+  await assert.rejects(
+    recordClientAcceptance(fixture.root, evidence),
+    /immutable acceptance record does not match current client evidence/,
+  );
+  assert.equal((await readProject(fixture.root)).stage, "assembling");
+});
+
+test("uses only injected workspace runtime paths and a platform PATH delimiter", async () => {
+  const source = await readFile(join(process.cwd(), "src", "deck", "pptx.ts"), "utf8");
+  const tests = await readFile(join(process.cwd(), "tests", "deck.test.ts"), "utf8");
+  assert.doesNotMatch(source, /\/Users\/neomei/);
+  assert.doesNotMatch(tests, /\/Users\/neomei/);
+  assert.match(source, /delimiter/);
+  assert.doesNotMatch(source, /PATH:\s*`\$\{runtime\.binDir\}:\$\{/);
 });

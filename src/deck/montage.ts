@@ -2,7 +2,7 @@ import sharp from "sharp";
 
 import type { FinalRender } from "./assemble.js";
 
-export async function buildMontage(renders: FinalRender[], output: string): Promise<void> {
+export async function buildMontageBytes(renders: FinalRender[]): Promise<Buffer> {
   if (renders.length === 0) throw new Error("montage requires at least one render");
   const columns = Math.min(4, renders.length);
   const rows = Math.ceil(renders.length / columns);
@@ -11,7 +11,7 @@ export async function buildMontage(renders: FinalRender[], output: string): Prom
   const tiles = await Promise.all(renders.map((render) =>
     sharp(render.bytes).resize(width, height, { fit: "fill" }).jpeg({ quality: 82 }).toBuffer()
   ));
-  await sharp({
+  return sharp({
     create: {
       width: columns * width,
       height: rows * height,
@@ -22,5 +22,10 @@ export async function buildMontage(renders: FinalRender[], output: string): Prom
     input,
     left: index % columns * width,
     top: Math.floor(index / columns) * height,
-  }))).jpeg({ quality: 88 }).toFile(output);
+  }))).jpeg({ quality: 88 }).toBuffer();
+}
+
+export async function buildMontage(renders: FinalRender[], output: string): Promise<void> {
+  const { writeFile } = await import("node:fs/promises");
+  await writeFile(output, await buildMontageBytes(renders), { flag: "wx" });
 }

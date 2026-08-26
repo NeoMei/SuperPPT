@@ -1,6 +1,6 @@
 import { execFile } from "node:child_process";
 import { lstat, mkdir, mkdtemp, readFile, realpath, rm, symlink, writeFile } from "node:fs/promises";
-import { dirname, isAbsolute, join, relative } from "node:path";
+import { delimiter, dirname, isAbsolute, join, relative } from "node:path";
 import { promisify } from "node:util";
 
 import { promoteExclusive } from "../project/promotion.js";
@@ -104,7 +104,7 @@ export async function createPresentation(
         RUNTIME_NODE: runtime.node,
         RUNTIME_NODE_MODULES: runtime.nodeModules,
         RUNTIME_BIN_DIR: runtime.binDir,
-        PATH: `${runtime.binDir}:${process.env.PATH ?? ""}`,
+        PATH: [runtime.binDir, process.env.PATH].filter(Boolean).join(delimiter),
       },
       maxBuffer: 4 * 1024 * 1024,
     });

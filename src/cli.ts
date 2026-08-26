@@ -280,10 +280,8 @@ async function main(argv: string[]): Promise<void> {
 
   if (command === "assemble") {
     const options = exactFlags(argv.slice(1), ["--project"]);
-    const resolved = await configuredDependencies();
     outputJson(await assembleProject({
       root: options.get("--project")!,
-      providerId: resolved.ai.defaultProvider,
     }));
     return;
   }
