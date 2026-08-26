@@ -1,4 +1,4 @@
-import { access } from "node:fs/promises";
+import { access, lstat } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 
 import { preflightDependencies } from "./dependencies/preflight.js";
@@ -14,6 +14,9 @@ import {
   recordManualQa,
   retryProjectPage,
 } from "./generation/batch.js";
+import { convertProjectPage } from "./editable/adapter.js";
+import { applyProjectEditPlan } from "./editable/operations.js";
+import { EditPlanSchema, type EditPlan } from "./editable/schemas.js";
 import { approveGate, type PlanningGate } from "./planning/confirm.js";
 import { normalizeInput, type InputRequest } from "./planning/intake.js";
 import { publishPlanViews, publishStyleSample } from "./planning/views.js";
@@ -96,6 +99,29 @@ function planningGate(value: string): PlanningGate {
     return value;
   }
   throw new Error(`invalid planning gate: ${value}`);
+}
+
+async function editPlan(path: string): Promise<EditPlan> {
+  try {
+    const info = await lstat(path);
+    if (info.isSymbolicLink() || !info.isFile()) throw new Error("unsafe file type");
+    if (process.platform !== "win32" && (info.mode & 0o777) !== 0o600) {
+      throw new Error("edit plan file must be private (mode 0600)");
+    }
+    return EditPlanSchema.parse(JSON.parse((await readRegularFileNoFollow(path)).toString("utf8")));
+  } catch (error: unknown) {
+    if (error instanceof Error && error.message.startsWith("edit plan file must be private")) throw error;
+    throw new Error("edit plan file is unsafe or invalid", { cause: error });
+  }
+}
+
+function editPlanSummary(plan: EditPlan): Record<string, unknown> {
+  if (plan.route === "regenerate") return { route: "regenerate" };
+  return {
+    route: "editable",
+    operationCount: plan.operations.length,
+    operationKinds: [...new Set(plan.operations.map((operation) => operation.kind))].sort(),
+  };
 }
 
 async function configuredDependencies() {
@@ -275,6 +301,52 @@ async function main(argv: string[]): Promise<void> {
     const plan = await describeProjectGeneration({ root, ai: resolved.ai, selectedIds: new Set([slideId]) });
     outputJson({ event: "generation-plan", ...plan });
     outputJson(await retryProjectPage({ root, slideId, ai: resolved.ai, runner }));
+    return;
+  }
+
+  if (command === "convert-page") {
+    const options = exactFlags(argv.slice(1), ["--project", "--slide"]);
+    const resolved = await configuredDependencies();
+    const result = await convertProjectPage({
+      root: options.get("--project")!,
+      slideId: options.get("--slide")!,
+      converterRoot: resolved.editable.root,
+    });
+    outputJson({
+      route: "editable",
+      slideId: options.get("--slide")!,
+      revisionId: result.revisionId,
+      revisionRoot: result.revisionRoot,
+      sourcePng: result.sourcePng,
+      manifestPath: result.manifestPath,
+      ledgerPath: result.ledgerPath,
+      cleanBackground: result.cleanBackground,
+      artifactHashes: result.artifactHashes,
+    });
+    return;
+  }
+
+  if (command === "plan-edit") {
+    const options = exactFlags(argv.slice(1), ["--input"]);
+    outputJson(editPlanSummary(await editPlan(options.get("--input")!)));
+    return;
+  }
+
+  if (command === "apply-edit") {
+    const options = exactFlags(argv.slice(1), ["--project", "--slide", "--revision", "--input"]);
+    const result = await applyProjectEditPlan({
+      root: options.get("--project")!,
+      slideId: options.get("--slide")!,
+      sourceRevisionId: options.get("--revision")!,
+      rawPlan: await editPlan(options.get("--input")!),
+    });
+    outputJson({
+      route: "editable",
+      slideId: options.get("--slide")!,
+      revisionId: result.revisionId,
+      revisionRoot: result.revisionRoot,
+      modifiedManifestPath: result.modifiedManifestPath,
+    });
     return;
   }
 

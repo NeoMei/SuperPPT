@@ -1,0 +1,28 @@
+{
+  "manifestVersion": 1,
+  "canvas": { "width": 1280, "height": 720 },
+  "elements": [
+    {
+      "kind": "text",
+      "id": "ocr-title",
+      "text": "原始标题",
+      "bbox": { "x": 120, "y": 88, "width": 680, "height": 92 },
+      "rotation": 0,
+      "color": "F5F7FA",
+      "fontSizePx": 48,
+      "bold": true,
+      "align": "left",
+      "zIndex": 2
+    },
+    {
+      "kind": "asset",
+      "id": "icon-1",
+      "label": "orchestration icon",
+      "bbox": { "x": 920, "y": 260, "width": 120, "height": 120 },
+      "extraction": "transparent",
+      "assetPath": "assets/icon.png",
+      "zIndex": 3
+    }
+  ],
+  "warnings": []
+}
