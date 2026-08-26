@@ -9,6 +9,7 @@ import {
   openSync,
   readFileSync,
   renameSync,
+  rmdirSync,
   unlinkSync,
   writeFileSync,
 } from "node:fs";
@@ -262,6 +263,22 @@ export class GenerationDirectory {
       if (nativeAt.unlinkat(this.fd, name, 0) !== 0 && koffi.errno() !== koffi.os.errno.ENOENT) throw nativeError("unlinkat");
     } else {
       try { unlinkSync(join(this.path, name)); } catch (error: unknown) {
+        if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+      }
+    }
+    syncDirectory(this.fd);
+    this.assertCurrent();
+  }
+
+  removeEmptyChild(name: string): void {
+    safeName(name);
+    if (nativeAt) {
+      const atRemoveDir = process.platform === "darwin" ? 0x80 : 0x200;
+      if (nativeAt.unlinkat(this.fd, name, atRemoveDir) !== 0 && koffi.errno() !== koffi.os.errno.ENOENT) {
+        throw nativeError("unlinkat directory");
+      }
+    } else {
+      try { rmdirSync(join(this.path, name)); } catch (error: unknown) {
         if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
       }
     }

@@ -14,6 +14,7 @@ import type { Artifact, ProjectManifest, SlideRecord } from "../project/schemas.
 import { readProject, updateProject } from "../project/store.js";
 import { loadBuiltInStyleCatalog } from "../styles/catalog.js";
 import { GenerationDirectory, openGenerationDirectory } from "./anchored-dir.js";
+import { cleanupAbandonedProjectStaging, ownedTemporaryName } from "./abandoned.js";
 import { readPrivateInputFile } from "./private-input.js";
 import type { QualityDecision } from "./schemas.js";
 import { AttemptLedgerSchema, QualityDecisionSchema, type AttemptLedger } from "./schemas.js";
@@ -346,7 +347,7 @@ async function performAttempt(options: {
   } catch (error: unknown) {
     if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
   }
-  const stagingName = `.${attemptName}.${randomUUID()}.staging`;
+  const stagingName = `.${attemptName}.${ownedTemporaryName("staging")}`;
   const stagingDirectory = slideDirectory.child(stagingName);
   const staging = stagingDirectory.path;
   const output = join(staging, "slide.png");
@@ -461,6 +462,8 @@ async function generateSelected(options: {
   return withProjectLease(options.root, "generation", async (root) => {
     const gated = await gateGeneration(root);
     const revisionId = gated.currentRevision.id;
+    const recoveryPlan = await loadValidatedPlan(root);
+    await cleanupAbandonedProjectStaging(root, recoveryPlan.specs.map(({ slideId }) => slideId));
     let prepared = await projectPages(root, gated);
     await updateBoundProject(root, revisionId, (manifest) => {
       const prior = new Map(manifest.slides.map((slide) => [slide.id, slide]));

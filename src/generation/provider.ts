@@ -1,4 +1,4 @@
-import { createHash, randomUUID } from "node:crypto";
+import { createHash } from "node:crypto";
 import { closeSync, constants } from "node:fs";
 import { realpath } from "node:fs/promises";
 import { dirname, isAbsolute, relative, resolve, sep } from "node:path";
@@ -6,6 +6,7 @@ import { dirname, isAbsolute, relative, resolve, sep } from "node:path";
 import sharp from "sharp";
 
 import { openGenerationDirectory } from "./anchored-dir.js";
+import { cleanupAbandonedProviderFiles, ownedTemporaryName } from "./abandoned.js";
 import { AttemptLedgerSchema, type AttemptLedger } from "./schemas.js";
 import { runBridge } from "./bridge-process.js";
 import { withPrivateInput } from "./private-input.js";
@@ -79,13 +80,14 @@ export async function generateSlide(options: GenerateSlideOptions): Promise<Atte
   const outputName = output.slice(outputParent.length + 1);
   if (!outputName || outputName.includes("/") || outputName.includes("\\")) throw new Error("provider output path is invalid");
   const directory = openGenerationDirectory(outputParent);
-  const rawName = `.${randomUUID()}.provider-image`;
+  const rawName = `.${ownedTemporaryName("provider-image")}`;
   const started = performance.now();
   let providerSucceeded = false;
   let rawFd: number | undefined;
   try {
     await options.afterOutputDirectoryOpened?.();
     directory.assertCurrent();
+    cleanupAbandonedProviderFiles(directory);
     directory.writeExclusive(rawName, Buffer.alloc(0));
     rawFd = directory.openRegular(rawName, constants.O_RDWR);
     const activeRawFd = rawFd;
@@ -104,6 +106,7 @@ export async function generateSlide(options: GenerateSlideOptions): Promise<Atte
             modulePath: options.modulePath,
             callable: options.callable,
             inputFd: input.fd,
+            inputValue: input.value,
             targetFd: activeRawFd,
             targetPath: `${outputParent}/${rawName}`,
             timeoutMs: options.timeoutMs ?? 120_000,
@@ -123,7 +126,7 @@ export async function generateSlide(options: GenerateSlideOptions): Promise<Atte
     }
     await validateProviderImage(source, options.allowedFormats);
     const normalized = await normalize(source);
-    directory.replace(outputName, normalized, `.${randomUUID()}.normalized.png`);
+    directory.replace(outputName, normalized, `.${ownedTemporaryName("normalized.png")}`);
     return AttemptLedgerSchema.parse({
       ledgerVersion: 1,
       slideId: options.slideId ?? "external-slide",

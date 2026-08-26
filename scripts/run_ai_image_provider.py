@@ -7,6 +7,7 @@ input into the parent process logs.
 """
 
 import contextlib
+import ctypes
 import importlib.util
 import io
 import json
@@ -14,6 +15,8 @@ import os
 from pathlib import Path
 import stat
 import sys
+import threading
+import time
 import types
 
 try:
@@ -22,10 +25,107 @@ except ImportError:  # Windows
     resource = None
 
 
+_windows_job = None
+
+
+def kill_process_family(*_ignored):
+    if os.name == "nt":
+        os._exit(1)
+    try:
+        os.killpg(os.getpgrp(), 9)
+    except BaseException:
+        os._exit(1)
+
+
+def configure_windows_job():
+    global _windows_job
+    if os.name != "nt":
+        return
+
+    from ctypes import wintypes
+
+    class IO_COUNTERS(ctypes.Structure):
+        _fields_ = [
+            ("ReadOperationCount", ctypes.c_ulonglong),
+            ("WriteOperationCount", ctypes.c_ulonglong),
+            ("OtherOperationCount", ctypes.c_ulonglong),
+            ("ReadTransferCount", ctypes.c_ulonglong),
+            ("WriteTransferCount", ctypes.c_ulonglong),
+            ("OtherTransferCount", ctypes.c_ulonglong),
+        ]
+
+    class BASIC_LIMITS(ctypes.Structure):
+        _fields_ = [
+            ("PerProcessUserTimeLimit", ctypes.c_longlong),
+            ("PerJobUserTimeLimit", ctypes.c_longlong),
+            ("LimitFlags", wintypes.DWORD),
+            ("MinimumWorkingSetSize", ctypes.c_size_t),
+            ("MaximumWorkingSetSize", ctypes.c_size_t),
+            ("ActiveProcessLimit", wintypes.DWORD),
+            ("Affinity", ctypes.c_size_t),
+            ("PriorityClass", wintypes.DWORD),
+            ("SchedulingClass", wintypes.DWORD),
+        ]
+
+    class EXTENDED_LIMITS(ctypes.Structure):
+        _fields_ = [
+            ("BasicLimitInformation", BASIC_LIMITS),
+            ("IoInfo", IO_COUNTERS),
+            ("ProcessMemoryLimit", ctypes.c_size_t),
+            ("JobMemoryLimit", ctypes.c_size_t),
+            ("PeakProcessMemoryUsed", ctypes.c_size_t),
+            ("PeakJobMemoryUsed", ctypes.c_size_t),
+        ]
+
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.CreateJobObjectW.restype = wintypes.HANDLE
+    kernel32.CreateJobObjectW.argtypes = [ctypes.c_void_p, wintypes.LPCWSTR]
+    kernel32.SetInformationJobObject.restype = wintypes.BOOL
+    kernel32.SetInformationJobObject.argtypes = [wintypes.HANDLE, ctypes.c_int, ctypes.c_void_p, wintypes.DWORD]
+    kernel32.GetCurrentProcess.restype = wintypes.HANDLE
+    kernel32.AssignProcessToJobObject.restype = wintypes.BOOL
+    kernel32.AssignProcessToJobObject.argtypes = [wintypes.HANDLE, wintypes.HANDLE]
+    kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+    job = kernel32.CreateJobObjectW(None, None)
+    if not job:
+        raise RuntimeError("provider containment unavailable")
+    limits = EXTENDED_LIMITS()
+    limits.BasicLimitInformation.LimitFlags = 0x00002000  # JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
+    if not kernel32.SetInformationJobObject(job, 9, ctypes.byref(limits), ctypes.sizeof(limits)):
+        kernel32.CloseHandle(job)
+        raise RuntimeError("provider containment unavailable")
+    if not kernel32.AssignProcessToJobObject(job, kernel32.GetCurrentProcess()):
+        kernel32.CloseHandle(job)
+        raise RuntimeError("provider containment unavailable")
+    _windows_job = job
+
+
+def configure_parent_death():
+    expected = int(os.environ["SUPERPPT_BRIDGE_PARENT_PID"])
+    if expected <= 1:
+        raise RuntimeError("provider parent identity is invalid")
+    configure_windows_job()
+    if sys.platform.startswith("linux"):
+        signal = __import__("signal")
+        signal.signal(signal.SIGTERM, kill_process_family)
+        libc = ctypes.CDLL(None, use_errno=True)
+        if libc.prctl(1, signal.SIGTERM, 0, 0, 0) != 0:  # PR_SET_PDEATHSIG
+            raise RuntimeError("provider parent-death containment unavailable")
+    if os.getppid() != expected:
+        kill_process_family()
+
+    def watch_parent():
+        while os.getppid() == expected:
+            time.sleep(0.025)
+        kill_process_family()
+
+    threading.Thread(target=watch_parent, name="superppt-parent-watch", daemon=True).start()
+
+
 def regular_private_file(path_string):
     if path_string == "@fd:3":
         info = os.fstat(3)
-        if not stat.S_ISREG(info.st_mode) or (os.name != "nt" and stat.S_IMODE(info.st_mode) != 0o600):
+        if os.name != "nt" and (not stat.S_ISREG(info.st_mode) or stat.S_IMODE(info.st_mode) != 0o600):
             raise RuntimeError("private input descriptor is invalid")
         return os.fdopen(os.dup(3), "r", encoding="utf-8")
     path = Path(path_string)
@@ -99,6 +199,7 @@ def main(argv):
     if len(argv) != 6 or argv[1] not in {"generate", "review"}:
         raise RuntimeError("invalid provider bridge invocation")
     mode, module_path, callable_name, private_path, target = argv[1:]
+    configure_parent_death()
     private = regular_private_file(private_path)
     function = getattr(load_module(module_path), callable_name)
     if not callable(function):

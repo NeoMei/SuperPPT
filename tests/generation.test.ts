@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { execFile } from "node:child_process";
+import { execFile, spawn } from "node:child_process";
 import { access, chmod, lstat, mkdir, mkdtemp, readFile, readdir, realpath, rename, stat, symlink, unlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { isAbsolute, join } from "node:path";
@@ -11,6 +11,7 @@ import { generateProject, recordManualQa, retryProjectPage, runBatch } from "../
 import { generateSlide } from "../src/generation/provider.js";
 import { reviewSlide } from "../src/generation/quality.js";
 import { privateSecurityPolicy } from "../src/generation/private-input.js";
+import { bridgeContainmentPolicy } from "../src/generation/bridge-process.js";
 import { AttemptLedgerSchema, QualityDecisionSchema } from "../src/generation/schemas.js";
 import type { ResolvedDependencies } from "../src/dependencies/schemas.js";
 import { approveGate, assertGateCurrent } from "../src/planning/confirm.js";
@@ -21,6 +22,7 @@ import { readProject } from "../src/project/store.js";
 const runner = join(process.cwd(), "scripts", "run_ai_image_provider.py");
 const fakeProvider = join(process.cwd(), "tests", "fixtures", "fake_ai_provider.py");
 const fakeReviewer = join(process.cwd(), "tests", "fixtures", "fake_ai_reviewer.py");
+const orphanProbe = join(process.cwd(), "tests", "fixtures", "orphan_generation_probe.ts");
 const execFileAsync = promisify(execFile);
 const SLIDE_IDS = [
   "00000000-0000-4000-8000-000000000711",
@@ -35,6 +37,19 @@ async function directory(t: TestContext, prefix: string): Promise<string> {
     await rm(root, { recursive: true, force: true });
   });
   return realpath(root);
+}
+
+async function waitFor(predicate: () => Promise<boolean>, timeoutMs = 5_000): Promise<void> {
+  const deadline = performance.now() + timeoutMs;
+  while (performance.now() < deadline) {
+    if (await predicate()) return;
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  }
+  throw new Error("timed out waiting for probe state");
+}
+
+function processExists(pid: number): boolean {
+  try { process.kill(pid, 0); return true; } catch { return false; }
 }
 
 async function approvedProject(t: TestContext, prefix: string): Promise<{ root: string; ai: ResolvedDependencies["ai"]; editableRoot: string }> {
@@ -293,6 +308,111 @@ test("cleans private input after provider timeout and rejects trusted-root escap
     trustedRoot: trusted,
     attempt: 1,
   }), /outside the trusted root/);
+});
+
+test("contains the provider and unlinks private input when its orchestrator is SIGKILLed", { skip: process.platform === "win32" }, async (t) => {
+  const root = await directory(t, "superppt-orphan-probe-");
+  const provider = join(root, "provider.py");
+  const pidMarker = join(root, "provider.pid");
+  const privateMarker = join(root, "private.path");
+  await writeFile(provider, [
+    "import os",
+    "import time",
+    "def gen(prompt, out_path, retries=0):",
+    " open(os.environ['SUPERPPT_ORPHAN_PID_MARKER'], 'w').write(str(os.getpid()))",
+    " while True: time.sleep(1)",
+    "",
+  ].join("\n"));
+  const orchestrator = spawn(process.execPath, [
+    "--import", "tsx", orphanProbe, root, runner, provider, privateMarker,
+  ], {
+    cwd: process.cwd(),
+    stdio: "ignore",
+    env: { ...process.env, SUPERPPT_ORPHAN_PID_MARKER: pidMarker },
+  });
+  let providerPid = 0;
+  try {
+    await waitFor(async () => {
+      try {
+        providerPid = Number(await readFile(pidMarker, "utf8"));
+        return Number.isInteger(providerPid) && providerPid > 0 && (await readFile(privateMarker, "utf8")).length > 0;
+      } catch { return false; }
+    }, 15_000);
+    const privatePath = await readFile(privateMarker, "utf8");
+    assert.equal(processExists(providerPid), true);
+    orchestrator.kill("SIGKILL");
+    await new Promise<void>((resolve) => orchestrator.once("close", () => resolve()));
+    await waitFor(async () => !processExists(providerPid), 3_000);
+    await assert.rejects(access(privatePath));
+  } finally {
+    if (orchestrator.exitCode === null && orchestrator.signalCode === null) orchestrator.kill("SIGKILL");
+    if (providerPid > 0 && processExists(providerPid)) process.kill(providerPid, "SIGKILL");
+  }
+});
+
+test("cleans only owned abandoned provider files and never follows matching symlinks", async (t) => {
+  const root = await directory(t, "superppt-abandoned-provider-");
+  const privateRoot = join(root, ".private");
+  const deadPid = 2_000_000_000;
+  const firstId = "00000000-0000-4000-8000-000000000781";
+  const secondId = "00000000-0000-4000-8000-000000000782";
+  await mkdir(privateRoot, { mode: 0o700 });
+  const abandonedPrivate = join(privateRoot, `pid-${deadPid}-${firstId}.prompt.txt`);
+  const abandonedRaw = join(root, `.pid-${deadPid}-${firstId}.provider-image`);
+  await writeFile(abandonedPrivate, "ABANDONED_PRIVATE_SENTINEL", { mode: 0o600 });
+  await writeFile(abandonedRaw, "abandoned raw", { mode: 0o600 });
+  const outside = join(root, "outside.txt");
+  const linkedRaw = join(root, `.pid-${deadPid}-${secondId}.provider-image`);
+  await writeFile(outside, "outside stays");
+  await symlink(outside, linkedRaw);
+
+  await generateSlide({
+    runner,
+    modulePath: fakeProvider,
+    callable: "gen",
+    prompt: "new private prompt",
+    output: join(root, "slide.png"),
+    trustedRoot: root,
+    attempt: 1,
+  });
+
+  await assert.rejects(access(abandonedPrivate));
+  await assert.rejects(access(abandonedRaw));
+  assert.equal((await lstat(linkedRaw)).isSymbolicLink(), true);
+  assert.equal(await readFile(outside, "utf8"), "outside stays");
+});
+
+test("cleans only validated dead-owner attempt staging during project recovery", async (t) => {
+  const fixture = await approvedProject(t, "superppt-abandoned-staging-");
+  const slideRoot = join(fixture.root, "images", SLIDE_IDS[0]);
+  const deadPid = 2_000_000_000;
+  const firstId = "00000000-0000-4000-8000-000000000783";
+  const secondId = "00000000-0000-4000-8000-000000000784";
+  const abandoned = join(slideRoot, `.attempt-1.pid-${deadPid}-${firstId}.staging`);
+  const privateRoot = join(abandoned, ".private");
+  await mkdir(privateRoot, { recursive: true, mode: 0o700 });
+  await writeFile(join(privateRoot, `pid-${deadPid}-${firstId}.prompt.txt`), "ABANDONED_STAGING_SENTINEL", { mode: 0o600 });
+  await writeFile(join(abandoned, `.pid-${deadPid}-${firstId}.provider-image`), "raw", { mode: 0o600 });
+  const outside = join(fixture.root, "outside-staging");
+  await mkdir(outside);
+  await writeFile(join(outside, "keep.txt"), "outside stays");
+  const linked = join(slideRoot, `.attempt-1.pid-${deadPid}-${secondId}.staging`);
+  await symlink(outside, linked);
+
+  await assert.rejects(
+    generateProject({ root: fixture.root, ai: fixture.ai, runner, concurrency: 1 }),
+    /attempt directory is unsafe/,
+  );
+
+  await assert.rejects(access(abandoned));
+  assert.equal((await lstat(linked)).isSymbolicLink(), true);
+  assert.equal(await readFile(join(outside, "keep.txt"), "utf8"), "outside stays");
+});
+
+test("uses process groups on POSIX and a Job Object branch on Windows", () => {
+  assert.deepEqual(bridgeContainmentPolicy("darwin"), { detached: true, killProcessGroup: true, windowsJobObject: false });
+  assert.deepEqual(bridgeContainmentPolicy("linux"), { detached: true, killProcessGroup: true, windowsJobObject: false });
+  assert.deepEqual(bridgeContainmentPolicy("win32"), { detached: false, killProcessGroup: false, windowsJobObject: true });
 });
 
 test("uses a private review request and rejects non-exact reviewer JSON", async (t) => {
@@ -682,9 +802,9 @@ test("terminates an oversized provider during execution and isolates a concurren
 });
 
 test("private security policy keeps exact POSIX modes but does not require them on Windows", () => {
-  assert.deepEqual(privateSecurityPolicy("darwin"), { directoryMode: 0o700, fileMode: 0o600, requireExactMode: true });
-  assert.deepEqual(privateSecurityPolicy("linux"), { directoryMode: 0o700, fileMode: 0o600, requireExactMode: true });
-  assert.deepEqual(privateSecurityPolicy("win32"), { directoryMode: undefined, fileMode: undefined, requireExactMode: false });
+  assert.deepEqual(privateSecurityPolicy("darwin"), { directoryMode: 0o700, fileMode: 0o600, requireExactMode: true, transport: "unlinked-regular-file" });
+  assert.deepEqual(privateSecurityPolicy("linux"), { directoryMode: 0o700, fileMode: 0o600, requireExactMode: true, transport: "unlinked-regular-file" });
+  assert.deepEqual(privateSecurityPolicy("win32"), { directoryMode: undefined, fileMode: undefined, requireExactMode: false, transport: "anonymous-pipe" });
 });
 
 test("crash resume derives a new corrective prompt from sanitized retained evidence", async (t) => {

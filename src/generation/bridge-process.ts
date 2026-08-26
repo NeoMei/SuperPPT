@@ -1,8 +1,27 @@
-import { spawn } from "node:child_process";
+import { spawn, type ChildProcess } from "node:child_process";
 import { closeSync, constants, fstatSync, lstatSync, openSync } from "node:fs";
 import type { Stats } from "node:fs";
+import type { Writable } from "node:stream";
 
 const MAX_BRIDGE_OUTPUT = 1024 * 1024;
+
+export function bridgeContainmentPolicy(platform: NodeJS.Platform = process.platform): {
+  detached: boolean;
+  killProcessGroup: boolean;
+  windowsJobObject: boolean;
+} {
+  return platform === "win32"
+    ? { detached: false, killProcessGroup: false, windowsJobObject: true }
+    : { detached: true, killProcessGroup: true, windowsJobObject: false };
+}
+
+function terminateBridge(child: ChildProcess): void {
+  const policy = bridgeContainmentPolicy();
+  if (policy.killProcessGroup && child.pid) {
+    try { process.kill(-child.pid, "SIGKILL"); return; } catch { /* fall through */ }
+  }
+  child.kill("SIGKILL");
+}
 
 function sameIdentity(left: Stats, right: Stats): boolean {
   return left.dev === right.dev && left.ino === right.ino;
@@ -26,6 +45,7 @@ export async function runBridge(options: {
   modulePath: string;
   callable: string;
   inputFd: number;
+  inputValue: string;
   targetFd: number;
   targetPath: string;
   timeoutMs: number;
@@ -38,6 +58,7 @@ export async function runBridge(options: {
   try {
     await options.afterModuleOpened?.();
     return await new Promise<string>((resolve, reject) => {
+      const policy = bridgeContainmentPolicy();
       const child = spawn("python3", [
         options.runner,
         options.mode,
@@ -47,15 +68,22 @@ export async function runBridge(options: {
         targetArgument,
       ], {
         windowsHide: true,
-        stdio: ["ignore", "pipe", "pipe", options.inputFd, moduleFd, options.targetFd],
+        detached: policy.detached,
+        stdio: ["ignore", "pipe", "pipe", policy.windowsJobObject ? "pipe" : options.inputFd, moduleFd, options.targetFd],
         env: {
           ...process.env,
           SUPERPPT_BRIDGE_MODULE_FD: "4",
+          SUPERPPT_BRIDGE_PARENT_PID: String(process.pid),
           ...(options.maximumTargetBytes === undefined ? {} : {
             SUPERPPT_BRIDGE_MAX_OUTPUT_BYTES: String(options.maximumTargetBytes),
           }),
         },
       });
+      if (policy.windowsJobObject) {
+        const privatePipe = child.stdio[3] as Writable;
+        privatePipe.on("error", () => undefined);
+        privatePipe.end(options.inputValue);
+      }
       const stdout: Buffer[] = [];
       let stdoutBytes = 0;
       let overflow = false;
@@ -64,23 +92,23 @@ export async function runBridge(options: {
         stdoutBytes += chunk.length;
         if (stdoutBytes > MAX_BRIDGE_OUTPUT) {
           overflow = true;
-          child.kill("SIGKILL");
+          terminateBridge(child);
         } else {
           stdout.push(chunk);
         }
       });
       // Drain, but deliberately never surface, provider-controlled stderr.
       child.stderr!.resume();
-      const timer = setTimeout(() => child.kill("SIGKILL"), options.timeoutMs);
+      const timer = setTimeout(() => terminateBridge(child), options.timeoutMs);
       const targetMonitor = options.maximumTargetBytes === undefined ? undefined : setInterval(() => {
         try {
           if (fstatSync(options.targetFd).size > options.maximumTargetBytes!) {
             targetLimitExceeded = true;
-            child.kill("SIGKILL");
+            terminateBridge(child);
           }
         } catch {
           targetLimitExceeded = true;
-          child.kill("SIGKILL");
+          terminateBridge(child);
         }
       }, 5);
       child.once("error", () => {

@@ -1,17 +1,18 @@
-import { randomUUID } from "node:crypto";
 import { closeSync, fstatSync, readFileSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
 
 import { GenerationDirectory, openGenerationDirectory } from "./anchored-dir.js";
+import { cleanupAbandonedProviderFiles, ownedTemporaryName } from "./abandoned.js";
 
 export function privateSecurityPolicy(platform: NodeJS.Platform = process.platform): {
   directoryMode: 0o700 | undefined;
   fileMode: 0o600 | undefined;
   requireExactMode: boolean;
+  transport: "unlinked-regular-file" | "anonymous-pipe";
 } {
   return platform === "win32"
-    ? { directoryMode: undefined, fileMode: undefined, requireExactMode: false }
-    : { directoryMode: 0o700, fileMode: 0o600, requireExactMode: true };
+    ? { directoryMode: undefined, fileMode: undefined, requireExactMode: false, transport: "anonymous-pipe" }
+    : { directoryMode: 0o700, fileMode: 0o600, requireExactMode: true, transport: "unlinked-regular-file" };
 }
 
 export function readPrivateInputFile(path: string): Buffer {
@@ -36,16 +37,21 @@ export async function withPrivateInput<T>(options: {
   value: string;
   parent?: GenerationDirectory;
   beforeExecute?: (path: string) => Promise<void>;
-  action: (input: { path: string; fd: number }) => Promise<T>;
+  action: (input: { path: string; fd: number; value: string }) => Promise<T>;
 }): Promise<T> {
+  if (privateSecurityPolicy().transport === "anonymous-pipe") {
+    await options.beforeExecute?.("@anonymous-private-input");
+    return options.action({ path: "@anonymous-private-input", fd: -1, value: options.value });
+  }
   const ownsParent = options.parent === undefined;
   const parent = options.parent ?? openGenerationDirectory(dirname(options.target));
   let directory: GenerationDirectory | undefined;
   let fd: number | undefined;
   let created = false;
-  const name = `${randomUUID()}.${options.suffix}`;
+  const name = ownedTemporaryName(options.suffix);
   try {
     directory = parent.child(".private");
+    cleanupAbandonedProviderFiles(parent);
     const path = join(directory.path, name);
     directory.writeExclusive(name, options.value);
     created = true;
@@ -55,7 +61,13 @@ export async function withPrivateInput<T>(options: {
     await options.beforeExecute?.(path);
     parent.assertCurrent();
     directory.assertCurrent();
-    return await options.action({ path, fd });
+    // POSIX children consume the already-opened descriptor. Removing its directory
+    // entry before spawn leaves no plaintext pathname behind if the orchestrator dies.
+    if (process.platform !== "win32") {
+      directory.remove(name);
+      created = false;
+    }
+    return await options.action({ path, fd, value: options.value });
   } finally {
     if (fd !== undefined) closeSync(fd);
     try { if (directory && created) directory.remove(name); } finally {

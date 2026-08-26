@@ -49,6 +49,7 @@ export async function reviewSlide(options: {
             modulePath: options.modulePath,
             callable: options.callable ?? "check",
             inputFd: input.fd,
+            inputValue: input.value,
             targetFd: activeImageFd,
             targetPath: options.image,
             timeoutMs: options.timeoutMs ?? 120_000,
