@@ -30,6 +30,45 @@ export const QualityDecisionSchema = z.object({
   }
 });
 
+export const QualityIssueCodeSchema = z.enum([
+  "reviewer-issue",
+  "required-text-missing",
+  "required-text-inexact",
+  "style-inconsistent",
+  "hierarchy-unclear",
+  "insufficient-detail",
+  "forbidden-content",
+]);
+
+export const QualityEvidenceSchema = z.object({
+  ok: z.boolean(),
+  issueCount: z.number().int().nonnegative(),
+  issueHashes: z.array(Sha256Schema),
+  issueCodes: z.array(QualityIssueCodeSchema),
+  requiredText: z.array(z.object({
+    textSha256: Sha256Schema,
+    present: z.boolean(),
+    exact: z.boolean(),
+  }).strict()),
+  styleConsistent: z.boolean(),
+  hierarchyClear: z.boolean(),
+  richDetail: z.boolean(),
+  noForbiddenContent: z.boolean(),
+}).strict().superRefine((value, context) => {
+  if (value.issueCount !== value.issueHashes.length) {
+    context.addIssue({ code: "custom", message: "issueCount must equal issueHashes length", path: ["issueCount"] });
+  }
+  const shouldPass = value.issueCount === 0
+    && value.requiredText.every((item) => item.present && item.exact)
+    && value.styleConsistent
+    && value.hierarchyClear
+    && value.richDetail
+    && value.noForbiddenContent;
+  if (value.ok !== shouldPass) {
+    context.addIssue({ code: "custom", message: "ok must equal sanitized quality checks", path: ["ok"] });
+  }
+});
+
 export const AttemptLedgerSchema = z.object({
   ledgerVersion: z.literal(1),
   slideId: z.string().min(1),
@@ -40,13 +79,14 @@ export const AttemptLedgerSchema = z.object({
   promptPurged: z.literal(true),
   output: z.string().min(1).nullable(),
   outputSha256: Sha256Schema.nullable(),
+  outputBytes: z.number().int().positive().nullable().default(null),
   durationMs: z.number().int().nonnegative(),
-  quality: QualityDecisionSchema.nullable(),
+  quality: QualityEvidenceSchema.nullable(),
   outcome: z.enum(["generated", "accepted", "rejected", "provider-error", "review-error"]).default("generated"),
   errorCode: z.enum(["provider-failed", "invalid-image", "review-failed"]).nullable().default(null),
 }).strict().superRefine((value, context) => {
-  if ((value.output === null) !== (value.outputSha256 === null)) {
-    context.addIssue({ code: "custom", message: "output and outputSha256 must be present together", path: ["output"] });
+  if (new Set([value.output === null, value.outputSha256 === null, value.outputBytes === null]).size !== 1) {
+    context.addIssue({ code: "custom", message: "output, outputSha256, and outputBytes must be present together", path: ["output"] });
   }
   if (value.outcome === "accepted" && !value.quality?.ok) {
     context.addIssue({ code: "custom", message: "accepted attempts require passing quality", path: ["quality"] });
@@ -57,4 +97,5 @@ export const AttemptLedgerSchema = z.object({
 });
 
 export type QualityDecision = z.infer<typeof QualityDecisionSchema>;
+export type QualityEvidence = z.infer<typeof QualityEvidenceSchema>;
 export type AttemptLedger = z.infer<typeof AttemptLedgerSchema>;

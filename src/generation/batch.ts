@@ -2,21 +2,23 @@ import { createHash, randomUUID } from "node:crypto";
 import { lstat, readdir, realpath, rm } from "node:fs/promises";
 import { join, relative, sep } from "node:path";
 import { z } from "zod";
+import sharp from "sharp";
 
 import type { ResolvedDependencies } from "../dependencies/schemas.js";
 import { assertGateCurrent } from "../planning/confirm.js";
 import { loadValidatedPlan } from "../planning/load.js";
 import { StyleSelectionSchema } from "../planning/schemas.js";
 import { withProjectLease } from "../project/lock.js";
-import { readOwnedRegularFile, readRegularFileNoFollow } from "../project/safe-file.js";
+import { readOwnedRegularFile } from "../project/safe-file.js";
 import type { Artifact, ProjectManifest, SlideRecord } from "../project/schemas.js";
 import { readProject, updateProject } from "../project/store.js";
 import { loadBuiltInStyleCatalog } from "../styles/catalog.js";
 import { GenerationDirectory, openGenerationDirectory } from "./anchored-dir.js";
+import { readPrivateInputFile } from "./private-input.js";
 import type { QualityDecision } from "./schemas.js";
 import { AttemptLedgerSchema, QualityDecisionSchema, type AttemptLedger } from "./schemas.js";
 import { generateSlide } from "./provider.js";
-import { correctivePrompt } from "./quality.js";
+import { correctivePrompt, correctivePromptFromEvidence, qualityEvidence } from "./quality.js";
 import { reviewSlide } from "./quality.js";
 
 const BatchPageSchema = z.object({
@@ -176,10 +178,55 @@ async function latestAttemptLedger(root: string, page: ProjectPage): Promise<Att
   if (page.attempts < 1) return null;
   const path = `images/${page.id}/attempt-${page.attempts}/ledger.json`;
   try {
-    return AttemptLedgerSchema.parse(JSON.parse((await readOwnedRegularFile(root, path)).toString("utf8")));
+    const ledger = AttemptLedgerSchema.parse(JSON.parse((await readOwnedRegularFile(root, path)).toString("utf8")));
+    if (ledger.slideId !== page.id || ledger.attempt !== page.attempts) throw new Error("attempt identity mismatch");
+    return ledger;
   } catch (error: unknown) {
     throw new Error("attempt ledger is invalid", { cause: error });
   }
+}
+
+async function authenticateLedgerImage(
+  root: string,
+  page: ProjectPage,
+  ledger: AttemptLedger,
+): Promise<Artifact | null> {
+  const expectedPath = `images/${page.id}/attempt-${ledger.attempt}/slide.png`;
+  if (
+    ledger.output !== expectedPath
+    || !ledger.outputSha256
+    || !ledger.outputBytes
+  ) return null;
+  try {
+    const bytes = await readOwnedRegularFile(root, expectedPath);
+    if (bytes.length !== ledger.outputBytes || hash(bytes) !== ledger.outputSha256) return null;
+    const decoder = sharp(bytes, { failOn: "error", limitInputPixels: 1920 * 1080, animated: false });
+    const metadata = await decoder.metadata();
+    if (
+      metadata.format !== "png"
+      || metadata.width !== 1920
+      || metadata.height !== 1080
+      || (metadata.pages ?? 1) !== 1
+    ) return null;
+    await decoder.clone().raw().toBuffer();
+    return { path: expectedPath, sha256: ledger.outputSha256, revisionId: ledger.revisionId! };
+  } catch {
+    return null;
+  }
+}
+
+async function inspectAttemptStates(
+  root: string,
+  revisionId: string,
+  pages: ProjectPage[],
+): Promise<Map<string, { ledger: AttemptLedger; artifact: Artifact | null }>> {
+  const states = new Map<string, { ledger: AttemptLedger; artifact: Artifact | null }>();
+  for (const page of pages) {
+    const ledger = await latestAttemptLedger(root, page);
+    if (ledger?.revisionId !== revisionId) continue;
+    states.set(page.id, { ledger, artifact: await authenticateLedgerImage(root, page, ledger) });
+  }
+  return states;
 }
 
 async function recoverProjectAttempts(
@@ -187,25 +234,22 @@ async function recoverProjectAttempts(
   revisionId: string,
   pages: ProjectPage[],
 ): Promise<void> {
-  const recovered = new Map<string, AttemptLedger>();
-  for (const page of pages) {
-    const ledger = await latestAttemptLedger(root, page);
-    if (ledger?.revisionId === revisionId) recovered.set(page.id, ledger);
-  }
+  const recovered = await inspectAttemptStates(root, revisionId, pages);
   if (recovered.size === 0) return;
   await updateBoundProject(root, revisionId, (manifest) => ({
     ...manifest,
     slides: manifest.slides.map((slide) => {
-      const ledger = recovered.get(slide.id);
-      if (!ledger) return slide;
-      if (ledger.outcome === "accepted" && ledger.output && ledger.outputSha256) {
+      const state = recovered.get(slide.id);
+      if (!state) return slide;
+      const { ledger, artifact } = state;
+      if (ledger.outcome === "accepted" && artifact) {
         return {
           ...slide,
           status: "ready" as const,
-          image: { path: ledger.output, sha256: ledger.outputSha256, revisionId },
+          image: artifact,
         };
       }
-      if (ledger.outcome === "generated") return { ...slide, status: "generating" as const };
+      if (ledger.outcome === "generated" && artifact) return { ...slide, status: "generating" as const };
       return { ...slide, status: "failed" as const };
     }),
   }));
@@ -343,6 +387,7 @@ async function performAttempt(options: {
         promptPurged: true,
         output: null,
         outputSha256: null,
+        outputBytes: null,
         durationMs: Math.max(0, Math.round(performance.now() - started)),
         quality: null,
         outcome: "provider-error",
@@ -366,7 +411,7 @@ async function performAttempt(options: {
         qualityMatches(quality, options.page.requiredText);
         ledger = AttemptLedgerSchema.parse({
           ...ledger,
-          quality,
+          quality: qualityEvidence(quality),
           outcome: quality.ok ? "accepted" : "rejected",
         });
       } catch {
@@ -406,6 +451,7 @@ async function generateSelected(options: {
   runner: string;
   concurrency: number;
   selectedIds?: Set<string>;
+  operations?: { afterAttemptPromoted?: (pageId: string, attempt: number, ledger: AttemptLedger) => Promise<void> };
 }): Promise<ProjectGenerationResult> {
   if (!Number.isInteger(options.concurrency) || options.concurrency < 1 || options.concurrency > 8) {
     throw new Error("concurrency must be between 1 and 8");
@@ -426,11 +472,18 @@ async function generateSelected(options: {
     });
     await recoverProjectAttempts(root, revisionId, prepared.pages);
     prepared = await projectPages(root, await readProject(root));
+    const attemptStates = await inspectAttemptStates(root, revisionId, prepared.pages);
+    const awaitingManual = new Set([...attemptStates.entries()]
+      .filter(([, state]) => !options.ai.reviewer && state.ledger.outcome === "generated" && state.artifact)
+      .map(([pageId]) => pageId));
     const requested = prepared.pages.filter((page) =>
-      (options.selectedIds ? options.selectedIds.has(page.id) : page.status !== "ready")
+      (options.selectedIds
+        ? options.selectedIds.has(page.id)
+        : page.status !== "ready" && !awaitingManual.has(page.id))
     );
     if (options.selectedIds && requested.length !== options.selectedIds.size) throw new Error("retry page is not in the current slide plan");
     if (requested.some((page) => page.status === "ready")) throw new Error("ready pages cannot be retried");
+    if (requested.some((page) => awaitingManual.has(page.id))) throw new Error("page is awaiting manual QA");
     if (options.selectedIds && requested.some((page) => page.attempts >= 3)) throw new Error("page has reached the three-attempt limit");
     const selected = requested.filter((page) => page.attempts < 3);
 
@@ -439,7 +492,10 @@ async function generateSelected(options: {
     await Promise.all(Array.from({ length: Math.min(options.concurrency, selected.length) }, async () => {
       while (cursor < selected.length) {
         const page = selected[cursor++]!;
-        let prompt = page.prompt;
+        const retained = attemptStates.get(page.id)?.ledger;
+        let prompt = retained && retained.attempt === page.attempts && retained.outcome !== "generated"
+          ? correctivePromptFromEvidence(page.prompt, retained.quality)
+          : page.prompt;
         let finalStatus: SlideRecord["status"] = "failed";
         let finalArtifact: Artifact | null = null;
         const first = page.attempts + 1;
@@ -463,6 +519,7 @@ async function generateSelected(options: {
             runner: options.runner,
             styleName: prepared.styleName,
           });
+          await options.operations?.afterAttemptPromoted?.(page.id, attempt, result.ledger);
           if (!result.artifact) continue;
           finalArtifact = result.artifact;
           if (!options.ai.reviewer) {
@@ -516,10 +573,15 @@ export async function describeProjectGeneration(options: {
   if (!provider) throw new Error("default provider is unavailable");
   const manifest = await gateGeneration(options.root);
   const prepared = await projectPages(options.root, manifest);
+  const attemptStates = await inspectAttemptStates(options.root, manifest.currentRevision.id, prepared.pages);
+  const awaitingManual = new Set([...attemptStates.entries()]
+    .filter(([, state]) => !options.ai.reviewer && state.ledger.outcome === "generated" && state.artifact)
+    .map(([pageId]) => pageId));
   const selected = prepared.pages.filter((page) =>
-    options.selectedIds ? options.selectedIds.has(page.id) : page.status !== "ready"
+    options.selectedIds ? options.selectedIds.has(page.id) : page.status !== "ready" && !awaitingManual.has(page.id)
   );
   if (options.selectedIds && selected.length !== options.selectedIds.size) throw new Error("retry page is not in the current slide plan");
+  if (selected.some((page) => awaitingManual.has(page.id))) throw new Error("page is awaiting manual QA");
   return {
     providerId: provider.id,
     pageCount: selected.length,
@@ -534,6 +596,7 @@ export async function generateProject(options: {
   ai: ResolvedDependencies["ai"];
   runner: string;
   concurrency: number;
+  operations?: { afterAttemptPromoted?: (pageId: string, attempt: number, ledger: AttemptLedger) => Promise<void> };
 }): Promise<ProjectGenerationResult> {
   return generateSelected(options);
 }
@@ -553,16 +616,18 @@ export async function recordManualQa(options: {
   input: string;
   ai?: ResolvedDependencies["ai"];
   afterLedgerWritten?: () => Promise<void>;
-}): Promise<QualityDecision> {
+}): Promise<{ slideId: string; status: "ready" | "failed"; ok: boolean; passedChecks: number; totalChecks: number }> {
   if (options.ai?.reviewer) throw new Error("manual QA is available only when no dependency reviewer exists");
   const inputInfo = await lstat(options.input);
   if (inputInfo.isSymbolicLink() || !inputInfo.isFile()) throw new Error("manual QA input must be a regular file");
-  if ((inputInfo.mode & 0o777) !== 0o600) throw new Error("manual QA input must have mode 0600");
   let quality: QualityDecision;
   try {
-    quality = QualityDecisionSchema.parse(JSON.parse((await readRegularFileNoFollow(options.input)).toString("utf8")));
+    quality = QualityDecisionSchema.parse(JSON.parse(readPrivateInputFile(options.input).toString("utf8")));
   } catch (error: unknown) {
-    throw new Error("manual QA evidence is invalid", { cause: error });
+    if (error instanceof Error && error.message === "private input must have mode 0600") {
+      throw new Error("manual QA input must have mode 0600");
+    }
+    throw new Error("manual QA evidence is invalid");
   }
   return withProjectLease(options.root, "generation", async (root) => {
     const manifest = await gateGeneration(root);
@@ -571,8 +636,8 @@ export async function recordManualQa(options: {
     if (!page || !slide || slide.status !== "generating") throw new Error("slide is not awaiting manual QA");
     try {
       qualityMatches(quality, page.requiredText);
-    } catch (error: unknown) {
-      throw new Error("manual QA evidence is invalid", { cause: error });
+    } catch {
+      throw new Error("manual QA evidence is invalid");
     }
     const attempt = await attemptCount(root, options.slideId);
     if (attempt < 1) throw new Error("slide has no generated attempt to review");
@@ -586,7 +651,10 @@ export async function recordManualQa(options: {
     if (ledger.revisionId !== manifest.currentRevision.id || ledger.quality !== null || ledger.outcome !== "generated") {
       throw new Error("attempt is not awaiting manual QA");
     }
-    const next = AttemptLedgerSchema.parse({ ...ledger, quality, outcome: quality.ok ? "accepted" : "rejected" });
+    const artifact = await authenticateLedgerImage(root, page, ledger);
+    if (!artifact) throw new Error("attempt image is missing or invalid");
+    const evidence = qualityEvidence(quality);
+    const next = AttemptLedgerSchema.parse({ ...ledger, quality: evidence, outcome: quality.ok ? "accepted" : "rejected" });
     const projectDirectory = openGenerationDirectory(await realpath(root));
     const imagesDirectory = projectDirectory.child("images", false);
     const slideDirectory = imagesDirectory.child(options.slideId, false);
@@ -605,13 +673,18 @@ export async function recordManualQa(options: {
       slides: current.slides.map((record) => record.id === options.slideId ? {
         ...record,
         status: quality.ok ? "ready" : "failed",
-        image: quality.ok && ledger.output && ledger.outputSha256 ? {
-          path: ledger.output,
-          sha256: ledger.outputSha256,
-          revisionId: manifest.currentRevision.id,
-        } : record.image,
+        image: quality.ok ? artifact : record.image,
       } : record),
     }));
-    return quality;
+    const passedChecks = evidence.requiredText.filter((item) => item.present && item.exact).length
+      + [evidence.styleConsistent, evidence.hierarchyClear, evidence.richDetail, evidence.noForbiddenContent]
+        .filter(Boolean).length;
+    return {
+      slideId: options.slideId,
+      status: quality.ok ? "ready" : "failed",
+      ok: quality.ok,
+      passedChecks,
+      totalChecks: evidence.requiredText.length + 4,
+    };
   });
 }

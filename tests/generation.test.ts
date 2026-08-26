@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
-import { access, chmod, lstat, mkdir, mkdtemp, readFile, readdir, realpath, rename, stat, symlink, writeFile } from "node:fs/promises";
+import { access, chmod, lstat, mkdir, mkdtemp, readFile, readdir, realpath, rename, stat, symlink, unlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { isAbsolute, join } from "node:path";
 import test, { type TestContext } from "node:test";
@@ -10,6 +10,7 @@ import sharp from "sharp";
 import { generateProject, recordManualQa, retryProjectPage, runBatch } from "../src/generation/batch.js";
 import { generateSlide } from "../src/generation/provider.js";
 import { reviewSlide } from "../src/generation/quality.js";
+import { privateSecurityPolicy } from "../src/generation/private-input.js";
 import { AttemptLedgerSchema, QualityDecisionSchema } from "../src/generation/schemas.js";
 import type { ResolvedDependencies } from "../src/dependencies/schemas.js";
 import { approveGate, assertGateCurrent } from "../src/planning/confirm.js";
@@ -462,7 +463,14 @@ test("manual QA requires a regular 0600 JSON file and exact reviewer schema", as
   await chmod(input, 0o644);
   await assert.rejects(recordManualQa({ root: fixture.root, slideId: SLIDE_IDS[0], input }), /manual QA input must have mode 0600/);
   await chmod(input, 0o600);
-  await assert.rejects(recordManualQa({ root: fixture.root, slideId: SLIDE_IDS[0], input }), /manual QA evidence is invalid/);
+  const secret = "QA_INVALID_ERROR_SENTINEL";
+  await writeFile(input, JSON.stringify({ unexpected: secret }));
+  await assert.rejects(recordManualQa({ root: fixture.root, slideId: SLIDE_IDS[0], input }), (error: unknown) => {
+    assert.match(String(error), /manual QA evidence is invalid/);
+    assert.doesNotMatch(String(error), new RegExp(secret));
+    assert.equal((error as Error).cause, undefined);
+    return true;
+  });
 });
 
 test("recovers an accepted manual ledger after a crash before manifest publication", async (t) => {
@@ -490,7 +498,7 @@ test("recovers an accepted manual ledger after a crash before manifest publicati
 
   const resumed = await generateProject({ root: fixture.root, ai: fixture.ai, runner, concurrency: 2 });
   assert.equal(resumed.pages.find(({ id }) => id === SLIDE_IDS[0])?.status, "ready");
-  assert.equal(resumed.callCount, 2);
+  assert.equal(resumed.callCount, 0);
   await assert.rejects(access(join(fixture.root, "images", SLIDE_IDS[0], "attempt-2")));
 });
 
@@ -535,7 +543,7 @@ test("CLI record-qa and retry-page use manual evidence without regenerating peer
   const rejectedPath = join(evidenceRoot, "rejected.json");
   await writeFile(rejectedPath, JSON.stringify({
     ok: false,
-    issues: ["repair hierarchy"],
+    issues: ["QA_CLI_SECRET_SENTINEL repair hierarchy"],
     requiredText: [{ text: "Title", present: true, exact: true }],
     styleConsistent: true,
     hierarchyClear: false,
@@ -548,12 +556,21 @@ test("CLI record-qa and retry-page use manual evidence without regenerating peer
     SUPERPPT_AI_IMAGE_TO_PPT_SOURCE: fixture.ai.root,
     SUPERPPT_IMAGE_TO_EDITABLE_PPTX_SOURCE: fixture.editableRoot,
   };
-  await execFileAsync(process.execPath, [
+  const recorded = await execFileAsync(process.execPath, [
     "--import", "tsx", "src/cli.ts", "record-qa",
     "--project", fixture.root,
     "--slide", SLIDE_IDS[0],
     "--input", rejectedPath,
   ], { cwd: process.cwd(), env });
+  assert.equal(recorded.stderr, "");
+  assert.deepEqual(JSON.parse(recorded.stdout), {
+    slideId: SLIDE_IDS[0],
+    status: "failed",
+    ok: false,
+    passedChecks: 4,
+    totalChecks: 5,
+  });
+  assert.doesNotMatch(recorded.stdout, /QA_CLI_SECRET_SENTINEL|repair hierarchy|Title|issues|requiredText/);
   const before = await readProject(fixture.root);
   assert.equal(before.slides[0]!.status, "failed");
   const peerLedger = await readFile(join(fixture.root, "images", SLIDE_IDS[1], "attempt-1", "ledger.json"));
@@ -567,4 +584,142 @@ test("CLI record-qa and retry-page use manual evidence without regenerating peer
   assert.match(retried.stdout, /"pageCount": 1/);
   await access(join(fixture.root, "images", SLIDE_IDS[0], "attempt-2", "ledger.json"));
   assert.deepEqual(await readFile(join(fixture.root, "images", SLIDE_IDS[1], "attempt-1", "ledger.json")), peerLedger);
+});
+
+test("ordinary resume leaves generated attempts awaiting manual QA without consuming another attempt", async (t) => {
+  const fixture = await approvedProject(t, "superppt-awaiting-manual-");
+  fixture.ai.reviewer = null;
+  const first = await generateProject({ root: fixture.root, ai: fixture.ai, runner, concurrency: 3 });
+  assert.equal(first.callCount, 3);
+  const resumed = await generateProject({ root: fixture.root, ai: fixture.ai, runner, concurrency: 3 });
+  assert.equal(resumed.callCount, 0);
+  for (const slideId of SLIDE_IDS) {
+    await access(join(fixture.root, "images", slideId, "attempt-1", "ledger.json"));
+    await assert.rejects(access(join(fixture.root, "images", slideId, "attempt-2")));
+  }
+});
+
+test("does not trust accepted recovery when the fixed image is missing or tampered", async (t) => {
+  const fixture = await approvedProject(t, "superppt-recovery-auth-");
+  fixture.ai.reviewer = null;
+  await generateProject({ root: fixture.root, ai: fixture.ai, runner, concurrency: 3 });
+  const inputRoot = await directory(t, "superppt-recovery-auth-input-");
+  const input = join(inputRoot, "qa.json");
+  const accepted = {
+    ok: true,
+    issues: [],
+    requiredText: [{ text: "Title", present: true, exact: true }],
+    styleConsistent: true,
+    hierarchyClear: true,
+    richDetail: true,
+    noForbiddenContent: true,
+  };
+  await writeFile(input, JSON.stringify(accepted), { mode: 0o600 });
+  await chmod(input, 0o600);
+  for (const slideId of SLIDE_IDS.slice(0, 2)) {
+    await assert.rejects(recordManualQa({
+      root: fixture.root,
+      slideId,
+      input,
+      afterLedgerWritten: async () => { throw new Error("injected accepted-ledger crash"); },
+    }), /injected accepted-ledger crash/);
+  }
+  await unlink(join(fixture.root, "images", SLIDE_IDS[0], "attempt-1", "slide.png"));
+  await writeFile(join(fixture.root, "images", SLIDE_IDS[1], "attempt-1", "slide.png"), "tampered");
+
+  const resumed = await generateProject({ root: fixture.root, ai: fixture.ai, runner, concurrency: 2 });
+  assert.equal(resumed.pages.find(({ id }) => id === SLIDE_IDS[0])?.status, "generating");
+  assert.equal(resumed.pages.find(({ id }) => id === SLIDE_IDS[1])?.status, "generating");
+  assert.equal(resumed.callCount, 2);
+  await access(join(fixture.root, "images", SLIDE_IDS[0], "attempt-2", "ledger.json"));
+  await access(join(fixture.root, "images", SLIDE_IDS[1], "attempt-2", "ledger.json"));
+  await assert.rejects(access(join(fixture.root, "images", SLIDE_IDS[2], "attempt-2")));
+});
+
+test("persists only hashed non-secret QA evidence", async (t) => {
+  const fixture = await approvedProject(t, "superppt-qa-evidence-");
+  fixture.ai.reviewer = { module: "scripts/reviewer.py", callable: "check" };
+  await writeFile(join(fixture.ai.root, "scripts", "reviewer.py"), await readFile(fakeReviewer));
+  fixture.ai.reviewer.callable = "check";
+  const input = join(await directory(t, "superppt-qa-evidence-input-"), "qa.json");
+  await writeFile(input, JSON.stringify({
+    ok: false,
+    issues: ["QA_SECRET_SENTINEL manual issue"],
+    requiredText: [{ text: "Title", present: true, exact: true }],
+    styleConsistent: true,
+    hierarchyClear: false,
+    richDetail: true,
+    noForbiddenContent: true,
+  }), { mode: 0o600 });
+  await chmod(input, 0o600);
+  fixture.ai.reviewer = null;
+  await generateProject({ root: fixture.root, ai: fixture.ai, runner, concurrency: 1 });
+  const summary = await recordManualQa({ root: fixture.root, slideId: SLIDE_IDS[0], input });
+  const ledgerBytes = await readFile(join(fixture.root, "images", SLIDE_IDS[0], "attempt-1", "ledger.json"), "utf8");
+  assert.doesNotMatch(ledgerBytes, /QA_SECRET_SENTINEL|manual issue|"text"\s*:\s*"Title"/);
+  const ledger = AttemptLedgerSchema.parse(JSON.parse(ledgerBytes));
+  assert.equal(ledger.quality?.issueCount, 1);
+  assert.equal(ledger.quality?.issueHashes.length, 1);
+  assert.equal(ledger.quality?.requiredText[0]?.textSha256.length, 64);
+  assert.doesNotMatch(JSON.stringify(summary), /QA_SECRET_SENTINEL|manual issue|Title/);
+});
+
+test("terminates an oversized provider during execution and isolates a concurrent normal call", async (t) => {
+  const root = await directory(t, "superppt-provider-cap-");
+  const oversized = join(root, "oversized.py");
+  await writeFile(oversized, "def gen(prompt, out_path, retries=0):\n f=open(out_path,'wb')\n while True: f.write(b'x' * 1048576); f.flush()\n");
+  const started = performance.now();
+  const [failed, succeeded] = await Promise.allSettled([
+    generateSlide({ runner, modulePath: oversized, callable: "gen", prompt: "private oversized", output: join(root, "too-big.png"), attempt: 1, timeoutMs: 10_000 }),
+    generateSlide({ runner, modulePath: fakeProvider, callable: "gen", prompt: "private normal", output: join(root, "normal.png"), attempt: 1, timeoutMs: 10_000 }),
+  ]);
+  assert.equal(failed.status, "rejected");
+  assert.equal(succeeded.status, "fulfilled");
+  assert.ok(performance.now() - started < 5_000);
+  assert.equal((await sharp(join(root, "normal.png")).metadata()).width, 1920);
+  assert.deepEqual((await readdir(root)).filter((name) => name.includes("provider-image")), []);
+  assert.deepEqual(await readdir(join(root, ".private")), []);
+});
+
+test("private security policy keeps exact POSIX modes but does not require them on Windows", () => {
+  assert.deepEqual(privateSecurityPolicy("darwin"), { directoryMode: 0o700, fileMode: 0o600, requireExactMode: true });
+  assert.deepEqual(privateSecurityPolicy("linux"), { directoryMode: 0o700, fileMode: 0o600, requireExactMode: true });
+  assert.deepEqual(privateSecurityPolicy("win32"), { directoryMode: undefined, fileMode: undefined, requireExactMode: false });
+});
+
+test("crash resume derives a new corrective prompt from sanitized retained evidence", async (t) => {
+  const fixture = await approvedProject(t, "superppt-corrective-resume-");
+  await writeFile(
+    join(fixture.ai.root, "scripts", "reviewer.py"),
+    `${await readFile(fakeReviewer, "utf8")}\ncheck = reject_with_sensitive_issue\n`,
+  );
+  let injected = false;
+  await assert.rejects(generateProject({
+    root: fixture.root,
+    ai: fixture.ai,
+    runner,
+    concurrency: 1,
+    operations: {
+      afterAttemptPromoted: async (pageId, attempt) => {
+        if (!injected && pageId === SLIDE_IDS[0] && attempt === 1) {
+          injected = true;
+          throw new Error("injected rejected-attempt crash");
+        }
+      },
+    },
+  }), /injected rejected-attempt crash/);
+
+  const resumed = await generateProject({ root: fixture.root, ai: fixture.ai, runner, concurrency: 1 });
+  assert.equal(resumed.callCount, 8);
+  const first = AttemptLedgerSchema.parse(JSON.parse(await readFile(join(fixture.root, "images", SLIDE_IDS[0], "attempt-1", "ledger.json"), "utf8")));
+  const second = AttemptLedgerSchema.parse(JSON.parse(await readFile(join(fixture.root, "images", SLIDE_IDS[0], "attempt-2", "ledger.json"), "utf8")));
+  assert.notEqual(first.promptSha256, second.promptSha256);
+  for (const slideId of SLIDE_IDS) {
+    for (const attempt of [1, 2, 3]) {
+      const path = join(fixture.root, "images", slideId, `attempt-${attempt}`, "ledger.json");
+      try { assert.doesNotMatch(await readFile(path, "utf8"), /QA_SECRET_SENTINEL|hierarchy needs repair|"text"\s*:\s*"Title"/); } catch (error: unknown) {
+        if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+      }
+    }
+  }
 });

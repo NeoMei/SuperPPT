@@ -1,10 +1,13 @@
+import { createHash } from "node:crypto";
 import { closeSync } from "node:fs";
 import { basename, dirname } from "node:path";
 
 import { openGenerationDirectory } from "./anchored-dir.js";
 import { runBridge } from "./bridge-process.js";
 import { withPrivateInput } from "./private-input.js";
-import { QualityDecisionSchema, type QualityDecision } from "./schemas.js";
+import { QualityDecisionSchema, QualityEvidenceSchema, type QualityDecision, type QualityEvidence } from "./schemas.js";
+
+const hash = (value: string): string => createHash("sha256").update(value).digest("hex");
 
 export async function reviewSlide(options: {
   runner: string;
@@ -80,5 +83,47 @@ export function correctivePrompt(original: string, quality: QualityDecision): st
     ...decision.issues.map((issue) => `- ${issue}`),
     "Preserve approved content and style; change only the listed failures.",
     "Final self-check must pass all prior constraints.",
+  ].join("\n\n");
+}
+
+export function qualityEvidence(raw: QualityDecision): QualityEvidence {
+  const quality = QualityDecisionSchema.parse(raw);
+  const codes = new Set<QualityEvidence["issueCodes"][number]>();
+  if (quality.issues.length > 0) codes.add("reviewer-issue");
+  if (quality.requiredText.some((item) => !item.present)) codes.add("required-text-missing");
+  if (quality.requiredText.some((item) => item.present && !item.exact)) codes.add("required-text-inexact");
+  if (!quality.styleConsistent) codes.add("style-inconsistent");
+  if (!quality.hierarchyClear) codes.add("hierarchy-unclear");
+  if (!quality.richDetail) codes.add("insufficient-detail");
+  if (!quality.noForbiddenContent) codes.add("forbidden-content");
+  return QualityEvidenceSchema.parse({
+    ok: quality.ok,
+    issueCount: quality.issues.length,
+    issueHashes: quality.issues.map(hash),
+    issueCodes: [...codes],
+    requiredText: quality.requiredText.map((item) => ({
+      textSha256: hash(item.text),
+      present: item.present,
+      exact: item.exact,
+    })),
+    styleConsistent: quality.styleConsistent,
+    hierarchyClear: quality.hierarchyClear,
+    richDetail: quality.richDetail,
+    noForbiddenContent: quality.noForbiddenContent,
+  });
+}
+
+export function correctivePromptFromEvidence(original: string, evidence: QualityEvidence | null): string {
+  const correction = evidence
+    ? [
+      `Failure codes: ${evidence.issueCodes.join(", ") || "unspecified-quality-failure"}.`,
+      `Failure evidence hashes: ${evidence.issueHashes.join(", ") || "none"}.`,
+    ]
+    : ["Prior attempt did not complete strict review; re-check every approved constraint."];
+  return [
+    original,
+    "CORRECTION REQUIRED FROM RETAINED NON-SECRET EVIDENCE:",
+    ...correction,
+    "Do not repeat the prior composition blindly. Preserve approved copy and style while correcting all failed checks.",
   ].join("\n\n");
 }

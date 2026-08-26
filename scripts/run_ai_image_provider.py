@@ -16,18 +16,23 @@ import stat
 import sys
 import types
 
+try:
+    import resource
+except ImportError:  # Windows
+    resource = None
+
 
 def regular_private_file(path_string):
     if path_string == "@fd:3":
         info = os.fstat(3)
-        if not stat.S_ISREG(info.st_mode) or stat.S_IMODE(info.st_mode) != 0o600:
+        if not stat.S_ISREG(info.st_mode) or (os.name != "nt" and stat.S_IMODE(info.st_mode) != 0o600):
             raise RuntimeError("private input descriptor is invalid")
         return os.fdopen(os.dup(3), "r", encoding="utf-8")
     path = Path(path_string)
     info = path.lstat()
     if stat.S_ISLNK(info.st_mode) or not stat.S_ISREG(info.st_mode):
         raise RuntimeError("private input must be a regular file")
-    if stat.S_IMODE(info.st_mode) != 0o600:
+    if os.name != "nt" and stat.S_IMODE(info.st_mode) != 0o600:
         raise RuntimeError("private input permissions are invalid")
     return path
 
@@ -80,6 +85,16 @@ def invoke(function, *args):
         return function(*args)
 
 
+def apply_output_limit():
+    value = os.environ.get("SUPERPPT_BRIDGE_MAX_OUTPUT_BYTES")
+    if value is None or resource is None:
+        return
+    maximum = int(value)
+    if maximum <= 0:
+        raise RuntimeError("provider output limit is invalid")
+    resource.setrlimit(resource.RLIMIT_FSIZE, (maximum, maximum))
+
+
 def main(argv):
     if len(argv) != 6 or argv[1] not in {"generate", "review"}:
         raise RuntimeError("invalid provider bridge invocation")
@@ -89,6 +104,7 @@ def main(argv):
     if not callable(function):
         raise RuntimeError("provider callable is invalid")
     if mode == "generate":
+        apply_output_limit()
         prompt = read_private(private)
         ok = bool(invoke(function, prompt, target, 0))
         prompt = None

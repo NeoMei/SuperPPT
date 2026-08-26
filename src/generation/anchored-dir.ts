@@ -164,7 +164,7 @@ export class GenerationDirectory {
       const fd = nativeAt.openat(this.fd, name, constants.O_RDONLY | (constants.O_DIRECTORY ?? 0) | (constants.O_NOFOLLOW ?? 0), 0);
       if (fd < 0) throw nativeError("openat directory");
       const child = new GenerationDirectory(join(this.path, name), fd);
-      chmodSync(child.path, 0o700);
+      if (process.platform !== "win32") chmodSync(child.path, 0o700);
       child.assertCurrent();
       return child;
     }
@@ -176,7 +176,7 @@ export class GenerationDirectory {
     }
     const fd = process.platform === "win32" ? -1 : openSync(path, constants.O_RDONLY | (constants.O_DIRECTORY ?? 0) | (constants.O_NOFOLLOW ?? 0));
     const child = new GenerationDirectory(path, fd);
-    chmodSync(path, 0o700);
+    if (process.platform !== "win32") chmodSync(path, 0o700);
     child.assertCurrent();
     return child;
   }
@@ -199,7 +199,14 @@ export class GenerationDirectory {
     const safeFlags = flags | (constants.O_NOFOLLOW ?? 0);
     let before: Stats | undefined;
     if (!nativeAt) {
-      before = lstatSync(join(this.path, name));
+      const path = join(this.path, name);
+      if (windowsApi) {
+        const attributes = windowsApi.getFileAttributes(path);
+        if (attributes === INVALID_FILE_ATTRIBUTES || (attributes & FILE_ATTRIBUTE_REPARSE_POINT) !== 0) {
+          throw new Error("generation file is a reparse point");
+        }
+      }
+      before = lstatSync(path);
       if (before.isSymbolicLink() || !before.isFile()) throw new Error("generation file is unsafe");
     }
     const fd = nativeAt ? nativeAt.openat(this.fd, name, safeFlags, 0) : openSync(join(this.path, name), safeFlags);

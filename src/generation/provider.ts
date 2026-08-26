@@ -107,6 +107,7 @@ export async function generateSlide(options: GenerateSlideOptions): Promise<Atte
             targetFd: activeRawFd,
             targetPath: `${outputParent}/${rawName}`,
             timeoutMs: options.timeoutMs ?? 120_000,
+            maximumTargetBytes: MAX_PROVIDER_BYTES,
             afterModuleOpened: options.afterProviderModuleOpened,
           });
           directory.assertCurrent();
@@ -133,6 +134,7 @@ export async function generateSlide(options: GenerateSlideOptions): Promise<Atte
       promptPurged: true,
       output: resolve(outputParent, outputName),
       outputSha256: hash(normalized),
+      outputBytes: normalized.length,
       durationMs: Math.max(0, Math.round(performance.now() - started)),
       quality: null,
       outcome: "generated",

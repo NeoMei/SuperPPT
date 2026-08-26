@@ -29,6 +29,7 @@ export async function runBridge(options: {
   targetFd: number;
   targetPath: string;
   timeoutMs: number;
+  maximumTargetBytes?: number;
   afterModuleOpened?: () => Promise<void>;
 }): Promise<string> {
   const moduleFd = openModule(options.modulePath);
@@ -47,11 +48,18 @@ export async function runBridge(options: {
       ], {
         windowsHide: true,
         stdio: ["ignore", "pipe", "pipe", options.inputFd, moduleFd, options.targetFd],
-        env: { ...process.env, SUPERPPT_BRIDGE_MODULE_FD: "4" },
+        env: {
+          ...process.env,
+          SUPERPPT_BRIDGE_MODULE_FD: "4",
+          ...(options.maximumTargetBytes === undefined ? {} : {
+            SUPERPPT_BRIDGE_MAX_OUTPUT_BYTES: String(options.maximumTargetBytes),
+          }),
+        },
       });
       const stdout: Buffer[] = [];
       let stdoutBytes = 0;
       let overflow = false;
+      let targetLimitExceeded = false;
       child.stdout!.on("data", (chunk: Buffer) => {
         stdoutBytes += chunk.length;
         if (stdoutBytes > MAX_BRIDGE_OUTPUT) {
@@ -64,13 +72,26 @@ export async function runBridge(options: {
       // Drain, but deliberately never surface, provider-controlled stderr.
       child.stderr!.resume();
       const timer = setTimeout(() => child.kill("SIGKILL"), options.timeoutMs);
+      const targetMonitor = options.maximumTargetBytes === undefined ? undefined : setInterval(() => {
+        try {
+          if (fstatSync(options.targetFd).size > options.maximumTargetBytes!) {
+            targetLimitExceeded = true;
+            child.kill("SIGKILL");
+          }
+        } catch {
+          targetLimitExceeded = true;
+          child.kill("SIGKILL");
+        }
+      }, 5);
       child.once("error", () => {
         clearTimeout(timer);
+        if (targetMonitor) clearInterval(targetMonitor);
         reject(new Error("provider bridge execution failed"));
       });
       child.once("close", (code) => {
         clearTimeout(timer);
-        if (code !== 0 || overflow) reject(new Error("provider bridge execution failed"));
+        if (targetMonitor) clearInterval(targetMonitor);
+        if (code !== 0 || overflow || targetLimitExceeded) reject(new Error("provider bridge execution failed"));
         else resolve(Buffer.concat(stdout).toString("utf8"));
       });
     });
