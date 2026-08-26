@@ -18,6 +18,7 @@ import koffi from "koffi";
 
 export type RevisionEvidenceOperations = {
   afterRevisionsDirectoryOpened?: () => Promise<void> | void;
+  afterPlanningArtifactRestored?: (path: string) => Promise<void> | void;
 };
 
 type NativeAt = {
@@ -64,6 +65,7 @@ type WindowsDirectoryGuardApi = {
   closeHandle(handle: number | bigint): number;
   getFileAttributes(path: string): number;
   getLastError(): number;
+  moveFileEx(source: string, target: string, flags: number): number;
 };
 
 const windowsGuardApi: WindowsDirectoryGuardApi | null = (() => {
@@ -74,6 +76,7 @@ const windowsGuardApi: WindowsDirectoryGuardApi | null = (() => {
     closeHandle: kernel.func("int __stdcall CloseHandle(intptr_t handle)"),
     getFileAttributes: kernel.func("unsigned int __stdcall GetFileAttributesW(str16 path)"),
     getLastError: kernel.func("unsigned int __stdcall GetLastError(void)"),
+    moveFileEx: kernel.func("int __stdcall MoveFileExW(str16 source, str16 target, unsigned int flags)"),
   } as WindowsDirectoryGuardApi;
 })();
 
@@ -84,6 +87,28 @@ const FILE_ATTRIBUTE_REPARSE_POINT = 0x00000400;
 const INVALID_FILE_ATTRIBUTES = 0xffffffff;
 const FILE_FLAG_OPEN_REPARSE_POINT = 0x00200000;
 const FILE_FLAG_BACKUP_SEMANTICS = 0x02000000;
+const MOVEFILE_REPLACE_EXISTING = 0x00000001;
+const MOVEFILE_WRITE_THROUGH = 0x00000008;
+
+export type WindowsMoveApi = Pick<WindowsDirectoryGuardApi, "moveFileEx" | "getLastError">;
+
+export function moveFileDurable(
+  source: string,
+  target: string,
+  replace: boolean,
+  platform: NodeJS.Platform = process.platform,
+  api: WindowsMoveApi | null = windowsGuardApi,
+): void {
+  if (platform !== "win32") {
+    renameSync(source, target);
+    return;
+  }
+  if (!api) throw new Error("Windows durable move is unavailable");
+  const flags = MOVEFILE_WRITE_THROUGH | (replace ? MOVEFILE_REPLACE_EXISTING : 0);
+  if (!api.moveFileEx(source, target, flags)) {
+    throw new Error(`MoveFileExW failed: ${api.getLastError()}`);
+  }
+}
 
 function openWindowsDirectoryGuard(path: string): number | bigint | null {
   if (!windowsGuardApi) return null;
@@ -274,6 +299,7 @@ export class AnchoredDirectory {
   replace(name: string, value: string | Buffer, temporaryName: string): void {
     safeName(name);
     safeName(temporaryName);
+    this.assertCurrent();
     this.writeExclusive(temporaryName, value);
     try {
       if (nativeAt) {
@@ -281,9 +307,10 @@ export class AnchoredDirectory {
           throw nativeError(`renameat ${temporaryName}`);
         }
       } else {
-        renameSync(join(this.path, temporaryName), join(this.path, name));
+        moveFileDurable(join(this.path, temporaryName), join(this.path, name), true);
       }
       syncAnchoredDirectory(this.fd);
+      this.assertCurrent();
     } catch (error: unknown) {
       if (nativeAt) nativeAt.unlinkat(this.fd, temporaryName, 0);
       else {
@@ -291,6 +318,18 @@ export class AnchoredDirectory {
       }
       throw error;
     }
+  }
+
+  remove(name: string): void {
+    safeName(name);
+    this.assertCurrent();
+    if (nativeAt) {
+      if (nativeAt.unlinkat(this.fd, name, 0) !== 0) throw nativeError(`unlinkat ${name}`);
+    } else {
+      unlinkSync(join(this.path, name));
+    }
+    syncAnchoredDirectory(this.fd);
+    this.assertCurrent();
   }
 
   promoteChildExclusive(stagingName: string, targetName: string): void {
@@ -311,7 +350,7 @@ export class AnchoredDirectory {
       } catch (error: unknown) {
         if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
       }
-      renameSync(join(this.path, stagingName), join(this.path, targetName));
+      moveFileDurable(join(this.path, stagingName), join(this.path, targetName), false);
     }
     syncAnchoredDirectory(this.fd);
     this.assertCurrent();
@@ -331,6 +370,9 @@ export async function withAnchoredRevisions<T>(
   operations: RevisionEvidenceOperations | undefined,
   action: (revisions: AnchoredDirectory) => Promise<T> | T,
 ): Promise<T> {
+  if (!nativeAt && !windowsGuardApi) {
+    throw new Error(`anchored revision evidence is unsupported on ${process.platform}`);
+  }
   const path = join(root, "revisions");
   const fd = process.platform === "win32"
     ? -1
@@ -344,5 +386,26 @@ export async function withAnchoredRevisions<T>(
     return result;
   } finally {
     revisions.close();
+  }
+}
+
+export async function withAnchoredDirectory<T>(
+  path: string,
+  action: (directory: AnchoredDirectory) => Promise<T> | T,
+): Promise<T> {
+  if (!nativeAt && !windowsGuardApi) {
+    throw new Error(`anchored filesystem access is unsupported on ${process.platform}`);
+  }
+  const fd = process.platform === "win32"
+    ? -1
+    : openSync(path, constants.O_RDONLY | (constants.O_DIRECTORY ?? 0) | (constants.O_NOFOLLOW ?? 0));
+  const directory = new AnchoredDirectory(path, fd);
+  try {
+    directory.assertCurrent();
+    const result = await action(directory);
+    directory.assertCurrent();
+    return result;
+  } finally {
+    directory.close();
   }
 }

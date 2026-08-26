@@ -18,9 +18,16 @@ import {
   type ImpactPlan,
 } from "./impact.js";
 import {
+  AnchoredDirectory,
   type RevisionEvidenceOperations,
+  withAnchoredDirectory,
   withAnchoredRevisions,
 } from "./anchored-fs.js";
+import {
+  authenticatedPlanningArtifacts,
+  assertCurrentRevisionPlanningEvidence,
+  assertManifestArtifactReferences,
+} from "./physical.js";
 
 const RevisionIdSchema = z.string().uuid();
 
@@ -157,6 +164,8 @@ export async function approveImpact(
     }
     const base = await readProject(canonicalRoot);
     assertExactPlanBase(base, evidence.plan);
+    await assertCurrentRevisionPlanningEvidence(canonicalRoot, base);
+    await assertManifestArtifactReferences(canonicalRoot, base);
     const approvalId = randomUUID();
     const confirmedAt = new Date().toISOString();
     const snapshotPath = await publishImpactApprovalSnapshot(
@@ -167,8 +176,10 @@ export async function approveImpact(
       confirmedAt,
       options.operations,
     );
-    await updateProject(canonicalRoot, (manifest) => {
+    await updateProject(canonicalRoot, async (manifest) => {
       assertExactPlanBase(manifest, evidence.plan);
+      await assertCurrentRevisionPlanningEvidence(canonicalRoot, manifest);
+      await assertManifestArtifactReferences(canonicalRoot, manifest);
       const latestGate = manifest.gates.at(-1);
       if (
         latestGate?.gate === "revision-impact"
@@ -229,6 +240,8 @@ export async function applyRevision(
         throw new Error("impact plan is stale for the current base revision");
       }
       await requireApprovedPlan(canonicalRoot, manifest, plan);
+      await assertCurrentRevisionPlanningEvidence(canonicalRoot, manifest);
+      await assertManifestArtifactReferences(canonicalRoot, manifest);
       await snapshotRevision(canonicalRoot, manifest, options.operations);
       const nextRevision = {
         id: randomUUID(),
@@ -290,6 +303,91 @@ async function readRollbackTarget(
   }
 }
 
+type PlanningArtifactOriginal = {
+  path: string;
+  bytes: Buffer | null;
+};
+
+async function mutatePlanningArtifacts(
+  root: string,
+  replacements: ReadonlyMap<string, Buffer | null>,
+  operations?: RevisionEvidenceOperations,
+): Promise<PlanningArtifactOriginal[]> {
+  return withAnchoredDirectory(root, async (project) => {
+    const directories = new Map<string, AnchoredDirectory>([["", project]]);
+    const opened: AnchoredDirectory[] = [];
+    const parentFor = (path: string): { parent: AnchoredDirectory; name: string } => {
+      const parts = path.split("/");
+      if (
+        parts.length === 0
+        || parts.some((part) => !part || part === "." || part === ".." || part.includes("\\"))
+      ) throw new Error(`unsafe planning artifact path: ${path}`);
+      const name = parts.pop()!;
+      let key = "";
+      let parent = project;
+      for (const part of parts) {
+        key = key ? `${key}/${part}` : part;
+        let child = directories.get(key);
+        if (!child) {
+          child = parent.child(part, false);
+          directories.set(key, child);
+          opened.push(child);
+        }
+        parent = child;
+      }
+      return { parent, name };
+    };
+
+    const originals: PlanningArtifactOriginal[] = [];
+    const changed: PlanningArtifactOriginal[] = [];
+    try {
+      for (const path of [...replacements.keys()].sort()) {
+        const { parent, name } = parentFor(path);
+        originals.push({ path, bytes: parent.read(name) });
+      }
+      try {
+        for (const original of originals) {
+          const next = replacements.get(original.path)!;
+          if (next !== null && original.bytes?.equals(next)) continue;
+          const { parent, name } = parentFor(original.path);
+          if (next === null) parent.remove(name);
+          else parent.replace(name, next, `.${name}.${randomUUID()}.staging`);
+          changed.push(original);
+          await operations?.afterPlanningArtifactRestored?.(original.path);
+        }
+      } catch (error: unknown) {
+        for (const original of [...changed].reverse()) {
+          const { parent, name } = parentFor(original.path);
+          if (original.bytes === null) parent.remove(name);
+          else parent.replace(name, original.bytes, `.${name}.${randomUUID()}.rollback`);
+        }
+        throw error;
+      }
+      return changed;
+    } finally {
+      for (const directory of opened.reverse()) directory.close();
+    }
+  });
+}
+
+async function restorePlanningArtifacts(
+  root: string,
+  artifacts: ReadonlyMap<string, Buffer>,
+  operations?: RevisionEvidenceOperations,
+): Promise<PlanningArtifactOriginal[]> {
+  return mutatePlanningArtifacts(root, artifacts, operations);
+}
+
+async function undoPlanningArtifactRestore(
+  root: string,
+  originals: readonly PlanningArtifactOriginal[],
+): Promise<void> {
+  await mutatePlanningArtifacts(
+    root,
+    new Map(originals.map((original) => [original.path, original.bytes])),
+  );
+}
+
 export async function rollbackToRevision(
   root: string,
   rawRevisionId: string,
@@ -297,35 +395,46 @@ export async function rollbackToRevision(
 ): Promise<void> {
   const revisionId = RevisionIdSchema.parse(rawRevisionId);
   await withProjectLease(root, "revision-impact", async (canonicalRoot) => {
-    await updateProject(canonicalRoot, async (current) => {
-      if (revisionId === current.currentRevision.id) {
-        throw new Error("rollback target must be an earlier revision");
-      }
-      const targetIndex = current.revisions.findIndex((revision) => revision.id === revisionId);
-      if (targetIndex < 0) throw new Error("rollback target is not in the project revision ledger");
-      const target = await readRollbackTarget(canonicalRoot, revisionId, options.operations);
-      const targetPrefix = current.revisions.slice(0, targetIndex + 1);
-      if (
-        target.projectId !== current.projectId
-        || target.currentRevision.id !== revisionId
-        || target.revisions.at(-1)?.id !== revisionId
-        || !sameJson(target.revisions, targetPrefix)
-      ) {
-        throw new Error("rollback target snapshot is not a legal project revision prefix");
-      }
-      await snapshotRevision(canonicalRoot, current);
-      const rollbackRevision = {
-        id: randomUUID(),
-        number: current.currentRevision.number + 1,
-        createdAt: new Date().toISOString(),
-        parentId: current.currentRevision.id,
-      };
-      return ProjectManifestSchema.parse({
-        ...target,
-        currentRevision: rollbackRevision,
-        revisions: [...current.revisions, rollbackRevision],
-        gates: current.gates,
+    let restored: PlanningArtifactOriginal[] = [];
+    try {
+      await updateProject(canonicalRoot, async (current) => {
+        if (revisionId === current.currentRevision.id) {
+          throw new Error("rollback target must be an earlier revision");
+        }
+        const targetIndex = current.revisions.findIndex((revision) => revision.id === revisionId);
+        if (targetIndex < 0) throw new Error("rollback target is not in the project revision ledger");
+        const target = await readRollbackTarget(canonicalRoot, revisionId, options.operations);
+        const targetPrefix = current.revisions.slice(0, targetIndex + 1);
+        if (
+          target.projectId !== current.projectId
+          || target.currentRevision.id !== revisionId
+          || target.revisions.at(-1)?.id !== revisionId
+          || !sameJson(target.revisions, targetPrefix)
+        ) {
+          throw new Error("rollback target snapshot is not a legal project revision prefix");
+        }
+        const targetArtifacts = await authenticatedPlanningArtifacts(canonicalRoot, target);
+        await assertManifestArtifactReferences(canonicalRoot, target, targetArtifacts);
+        await assertCurrentRevisionPlanningEvidence(canonicalRoot, current);
+        await assertManifestArtifactReferences(canonicalRoot, current);
+        await snapshotRevision(canonicalRoot, current, options.operations);
+        restored = await restorePlanningArtifacts(canonicalRoot, targetArtifacts, options.operations);
+        const rollbackRevision = {
+          id: randomUUID(),
+          number: current.currentRevision.number + 1,
+          createdAt: new Date().toISOString(),
+          parentId: current.currentRevision.id,
+        };
+        return ProjectManifestSchema.parse({
+          ...target,
+          currentRevision: rollbackRevision,
+          revisions: [...current.revisions, rollbackRevision],
+          gates: current.gates,
+        });
       });
-    });
+    } catch (error: unknown) {
+      if (restored.length > 0) await undoPlanningArtifactRestore(canonicalRoot, restored);
+      throw error;
+    }
   });
 }

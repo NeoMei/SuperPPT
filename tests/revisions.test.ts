@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import {
   access,
   mkdir,
@@ -17,6 +17,8 @@ import { join } from "node:path";
 import test, { type TestContext } from "node:test";
 import { promisify } from "node:util";
 
+import { approveGate } from "../src/planning/confirm.js";
+import { publishPlanViews } from "../src/planning/views.js";
 import { initializeProject } from "../src/project/initialize.js";
 import { readProject, updateProject, writeProject } from "../src/project/store.js";
 import {
@@ -25,6 +27,7 @@ import {
   publishImpactPlan,
   rollbackToRevision,
 } from "../src/revisions/apply.js";
+import { moveFileDurable } from "../src/revisions/anchored-fs.js";
 import {
   ImpactPlanSchema,
   planImpact,
@@ -33,6 +36,7 @@ import {
 const PROJECT_ID = "00000000-0000-4000-8000-000000000301";
 const A = "00000000-0000-4000-8000-000000000401";
 const B = "00000000-0000-4000-8000-000000000402";
+const C = "00000000-0000-4000-8000-000000000403";
 const UNKNOWN = "00000000-0000-4000-8000-000000000499";
 const execFileAsync = promisify(execFile);
 
@@ -64,6 +68,20 @@ async function manifestWithSlides(t: TestContext) {
 }
 
 async function seedSlides(root: string): Promise<void> {
+  const artifacts = [
+    [`images/${A}.png`, Buffer.from("image-a")],
+    [`images/${B}.png`, Buffer.from("image-b")],
+    [`previews/${A}.png`, Buffer.from("preview-a")],
+    [`previews/${B}.png`, Buffer.from("preview-b")],
+    ["output/deck.pptx", Buffer.from("deck")],
+  ] as const;
+  for (const [path, bytes] of artifacts) {
+    await writeFile(join(root, ...path.split("/")), bytes);
+  }
+  const hashes = Object.fromEntries(artifacts.map(([path, bytes]) => [
+    path,
+    createHash("sha256").update(bytes).digest("hex"),
+  ]));
   await updateProject(root, (manifest) => ({
     ...manifest,
     slides: [A, B].map((id, order) => ({
@@ -77,13 +95,13 @@ async function seedSlides(root: string): Promise<void> {
       status: "ready" as const,
       image: {
         path: `images/${id}.png`,
-        sha256: `${order + 1}`.repeat(64),
+        sha256: hashes[`images/${id}.png`]!,
         revisionId: manifest.currentRevision.id,
       },
       editable: null,
       finalRender: {
         path: `previews/${id}.png`,
-        sha256: `${order + 3}`.repeat(64),
+        sha256: hashes[`previews/${id}.png`]!,
         revisionId: manifest.currentRevision.id,
       },
       staleReasons: [],
@@ -92,11 +110,104 @@ async function seedSlides(root: string): Promise<void> {
       ...manifest.exports,
       pptx: {
         path: "output/deck.pptx",
-        sha256: "a".repeat(64),
+        sha256: hashes["output/deck.pptx"]!,
         revisionId: manifest.currentRevision.id,
       },
     },
   }));
+}
+
+const approvedBrief = {
+  schemaVersion: 1 as const,
+  title: "Authenticated V1",
+  purpose: "Exercise revision evidence",
+  audience: "Reviewers",
+  language: "en-US",
+  targetSlides: 3,
+  mustCover: ["alpha", "beta", "gamma"],
+  constraints: ["16:9"],
+};
+
+const approvedOutline = {
+  schemaVersion: 1 as const,
+  slides: [A, B, C].map((id, order) => ({
+    id,
+    order,
+    title: ["Alpha", "Beta", "Gamma"][order]!,
+    role: (order === 0 ? "cover" : order === 2 ? "summary" : "content") as "cover" | "content" | "summary",
+    purpose: ["Explain alpha", "Explain beta", "Explain gamma"][order]!,
+    sourceRefs: [`L${order + 1}`],
+  })),
+};
+
+async function writeApprovedOutline(
+  root: string,
+  brief = approvedBrief,
+  outline = approvedOutline,
+): Promise<void> {
+  await writeFile(join(root, "brief.json"), `${JSON.stringify(brief, null, 2)}\n`);
+  await writeFile(join(root, "outline.json"), `${JSON.stringify(outline, null, 2)}\n`);
+  for (const slide of outline.slides) {
+    const directory = join(root, "slides", slide.id);
+    await mkdir(directory, { recursive: true });
+    await writeFile(join(directory, "spec.json"), `${JSON.stringify({
+      schemaVersion: 1,
+      slideId: slide.id,
+      title: slide.title,
+      role: slide.role,
+      coreMessage: slide.purpose,
+      requiredText: [slide.title],
+      visualSubject: "One authenticated subject",
+      composition: "one focal point",
+      relationships: ["subject supports message"],
+      forbidden: ["watermark"],
+      sourceRefs: slide.sourceRefs,
+    }, null, 2)}\n`);
+  }
+  await publishPlanViews(root);
+  await approveGate(root, "outline");
+}
+
+async function setBriefArtifact(root: string): Promise<void> {
+  const bytes = await readFile(join(root, "brief.json"));
+  await updateProject(root, (manifest) => ({
+    ...manifest,
+    brief: {
+      path: "brief.json",
+      sha256: createHash("sha256").update(bytes).digest("hex"),
+      revisionId: manifest.currentRevision.id,
+    },
+  }));
+}
+
+async function advanceWithBriefArtifact(root: string, brief: typeof approvedBrief): Promise<void> {
+  const current = await readProject(root);
+  const snapshotDirectory = join(root, "revisions", current.currentRevision.id);
+  await mkdir(snapshotDirectory, { recursive: true });
+  await writeFile(
+    join(snapshotDirectory, "superppt.json"),
+    `${JSON.stringify(current, null, 2)}\n`,
+  );
+  const bytes = Buffer.from(`${JSON.stringify(brief, null, 2)}\n`);
+  await writeFile(join(root, "brief.json"), bytes);
+  await updateProject(root, (manifest) => {
+    const revision = {
+      id: randomUUID(),
+      number: manifest.currentRevision.number + 1,
+      createdAt: new Date().toISOString(),
+      parentId: manifest.currentRevision.id,
+    };
+    return {
+      ...manifest,
+      currentRevision: revision,
+      revisions: [...manifest.revisions, revision],
+      brief: {
+        path: "brief.json",
+        sha256: createHash("sha256").update(bytes).digest("hex"),
+        revisionId: revision.id,
+      },
+    };
+  });
 }
 
 test("plans local and global invalidation while preserving order-only images", async (t) => {
@@ -106,6 +217,27 @@ test("plans local and global invalidation while preserving order-only images", a
   assert.deepEqual(planImpact(manifest, { kind: "style" }).staleSlideIds, [A, B]);
   assert.deepEqual(planImpact(manifest, { kind: "brief", title: "Changed" }).staleSlideIds, [A, B]);
   assert.deepEqual(planImpact(manifest, { kind: "outline-order" }).staleSlideIds, []);
+});
+
+test("uses durable non-replacing and replacing Windows moves with exact flags", () => {
+  const calls: Array<{ source: string; target: string; flags: number }> = [];
+  const api = {
+    moveFileEx(source: string, target: string, flags: number): number {
+      calls.push({ source, target, flags });
+      return 1;
+    },
+    getLastError: () => 0,
+  };
+  moveFileDurable("pending.staging", "pending.json", true, "win32", api);
+  moveFileDurable("approval.staging", "approval-id", false, "win32", api);
+  assert.deepEqual(calls, [
+    { source: "pending.staging", target: "pending.json", flags: 0x9 },
+    { source: "approval.staging", target: "approval-id", flags: 0x8 },
+  ]);
+  assert.throws(() => moveFileDurable("a", "b", false, "win32", {
+    moveFileEx: () => 0,
+    getLastError: () => 5,
+  }), /MoveFileExW failed: 5/);
 });
 
 test("rejects unknown, duplicate, and non-strict slide change identities", async (t) => {
@@ -178,6 +310,86 @@ test("publishes a fixed-path plan and requires a real exact-base approval before
   await assert.rejects(applyRevision(root, plan, plan.change), /stale|base revision/i);
 });
 
+test("requires current physical ordinary-gate evidence before approval and apply", async (t) => {
+  const approvalRoot = await project(t, "superppt-impact-physical-approval-");
+  await writeApprovedOutline(approvalRoot);
+  const approvalPlan = await publishImpactPlan(approvalRoot, { kind: "brief", title: "V2" });
+  await writeFile(join(approvalRoot, "brief.json"), `${JSON.stringify({
+    ...approvedBrief,
+    title: "Tampered before approval",
+  }, null, 2)}\n`);
+  await assert.rejects(
+    approveImpact(approvalRoot, approvalPlan.sha256),
+    /ordinary planning gate evidence is not current/,
+  );
+  assert.deepEqual((await readProject(approvalRoot)).gates.map((gate) => gate.gate), ["outline"]);
+
+  const applyRoot = await project(t, "superppt-impact-physical-apply-");
+  await writeApprovedOutline(applyRoot);
+  const applyPlan = await publishImpactPlan(applyRoot, { kind: "brief", title: "V2" });
+  await approveImpact(applyRoot, applyPlan.sha256);
+  const approved = await readProject(applyRoot);
+  await writeFile(join(applyRoot, "brief.json"), `${JSON.stringify({
+    ...approvedBrief,
+    title: "Tampered after approval",
+  }, null, 2)}\n`);
+  await assert.rejects(
+    applyRevision(applyRoot, applyPlan, applyPlan.change),
+    /ordinary planning gate evidence is not current/,
+  );
+  assert.equal((await readProject(applyRoot)).currentRevision.id, approved.currentRevision.id);
+  await assert.rejects(access(join(
+    applyRoot,
+    "revisions",
+    approved.currentRevision.id,
+    "superppt.json",
+  )), { code: "ENOENT" });
+});
+
+test("requires every manifest Artifact reference to match owned physical bytes", async (t) => {
+  const v1 = Buffer.from("artifact-v1");
+  const artifactSha256 = createHash("sha256").update(v1).digest("hex");
+  const approvalRoot = await project(t, "superppt-impact-artifact-approval-");
+  const artifactPath = join(approvalRoot, "source", "brief.bin");
+  await writeFile(artifactPath, v1);
+  await updateProject(approvalRoot, (manifest) => ({
+    ...manifest,
+    brief: {
+      path: "source/brief.bin",
+      sha256: artifactSha256,
+      revisionId: manifest.currentRevision.id,
+    },
+  }));
+  const approvalPlan = await publishImpactPlan(approvalRoot, { kind: "style" });
+  await writeFile(artifactPath, "artifact-v2");
+  await assert.rejects(
+    approveImpact(approvalRoot, approvalPlan.sha256),
+    /manifest Artifact reference is not current/,
+  );
+  assert.deepEqual((await readProject(approvalRoot)).gates, []);
+
+  const applyRoot = await project(t, "superppt-impact-artifact-apply-");
+  const applyArtifactPath = join(applyRoot, "source", "brief.bin");
+  await writeFile(applyArtifactPath, v1);
+  await updateProject(applyRoot, (manifest) => ({
+    ...manifest,
+    brief: {
+      path: "source/brief.bin",
+      sha256: artifactSha256,
+      revisionId: manifest.currentRevision.id,
+    },
+  }));
+  const applyPlan = await publishImpactPlan(applyRoot, { kind: "style" });
+  await approveImpact(applyRoot, applyPlan.sha256);
+  const before = await readProject(applyRoot);
+  await writeFile(applyArtifactPath, "artifact-v2");
+  await assert.rejects(
+    applyRevision(applyRoot, applyPlan, applyPlan.change),
+    /manifest Artifact reference is not current/,
+  );
+  assert.equal((await readProject(applyRoot)).currentRevision.id, before.currentRevision.id);
+});
+
 test("rolls back by appending a new revision while preserving the full ledger", async (t) => {
   const root = await project(t, "superppt-impact-rollback-");
   await seedSlides(root);
@@ -207,6 +419,111 @@ test("rolls back by appending a new revision while preserving the full ledger", 
     )),
     JSON.parse(JSON.stringify(changed)),
   );
+});
+
+test("restores authenticated fixed planning artifacts from the rollback target", async (t) => {
+  const root = await project(t, "superppt-rollback-artifacts-");
+  await writeApprovedOutline(root);
+  await setBriefArtifact(root);
+  const v1Brief = await readFile(join(root, "brief.json"));
+  const v1Outline = await readFile(join(root, "outline.json"));
+  const targetId = (await readProject(root)).currentRevision.id;
+
+  const plan = await publishImpactPlan(root, { kind: "outline-order" });
+  await approveImpact(root, plan.sha256);
+  await applyRevision(root, plan, plan.change);
+
+  const v2Brief = { ...approvedBrief, title: "Authenticated V2" };
+  const v2Outline = {
+    ...approvedOutline,
+    slides: approvedOutline.slides.map((slide) => ({
+      ...slide,
+      title: `${slide.title} V2`,
+    })),
+  };
+  await advanceWithBriefArtifact(root, v2Brief);
+  await writeApprovedOutline(root, v2Brief, v2Outline);
+  const before = await readProject(root);
+  assert.notDeepEqual(await readFile(join(root, "brief.json")), v1Brief);
+  assert.notDeepEqual(await readFile(join(root, "outline.json")), v1Outline);
+
+  await rollbackToRevision(root, targetId);
+
+  const rolledBack = await readProject(root);
+  assert.deepEqual(await readFile(join(root, "brief.json")), v1Brief);
+  assert.deepEqual(await readFile(join(root, "outline.json")), v1Outline);
+  assert.equal(rolledBack.revisions.length, before.revisions.length + 1);
+  assert.deepEqual(rolledBack.gates, before.gates);
+  assert.equal(rolledBack.brief?.sha256, createHash("sha256").update(v1Brief).digest("hex"));
+});
+
+test("rolls back every restored planning artifact if restoration fails", async (t) => {
+  const root = await project(t, "superppt-rollback-artifacts-atomic-");
+  await writeApprovedOutline(root);
+  await setBriefArtifact(root);
+  const targetId = (await readProject(root)).currentRevision.id;
+  const plan = await publishImpactPlan(root, { kind: "outline-order" });
+  await approveImpact(root, plan.sha256);
+  await applyRevision(root, plan, plan.change);
+
+  const v2Brief = { ...approvedBrief, title: "Atomic V2" };
+  const v2Outline = {
+    ...approvedOutline,
+    slides: approvedOutline.slides.map((slide) => ({
+      ...slide,
+      title: `${slide.title} Atomic V2`,
+    })),
+  };
+  await advanceWithBriefArtifact(root, v2Brief);
+  await writeApprovedOutline(root, v2Brief, v2Outline);
+  const before = await readProject(root);
+  const briefBefore = await readFile(join(root, "brief.json"));
+  const outlineBefore = await readFile(join(root, "outline.json"));
+
+  await assert.rejects(rollbackToRevision(root, targetId, {
+    operations: {
+      afterPlanningArtifactRestored: () => {
+        throw new Error("injected restore failure");
+      },
+    },
+  }), /injected restore failure/);
+
+  assert.equal((await readProject(root)).currentRevision.id, before.currentRevision.id);
+  assert.deepEqual(await readFile(join(root, "brief.json")), briefBefore);
+  assert.deepEqual(await readFile(join(root, "outline.json")), outlineBefore);
+});
+
+test("rejects corrupted target planning snapshots before restoring any bytes", async (t) => {
+  const root = await project(t, "superppt-rollback-artifacts-corrupt-");
+  await writeApprovedOutline(root);
+  await setBriefArtifact(root);
+  const targetId = (await readProject(root)).currentRevision.id;
+  const plan = await publishImpactPlan(root, { kind: "outline-order" });
+  await approveImpact(root, plan.sha256);
+  await applyRevision(root, plan, plan.change);
+
+  const v2Brief = { ...approvedBrief, title: "Corruption-safe V2" };
+  await advanceWithBriefArtifact(root, v2Brief);
+  await writeApprovedOutline(root, v2Brief, approvedOutline);
+  const before = await readProject(root);
+  const briefBefore = await readFile(join(root, "brief.json"));
+  const target = JSON.parse(await readFile(
+    join(root, "revisions", targetId, "superppt.json"),
+    "utf8",
+  ));
+  const outlineGate = target.gates.find((gate: { gate: string }) => gate.gate === "outline");
+  assert.ok(outlineGate?.snapshotPath);
+  await writeFile(
+    join(root, ...outlineGate.snapshotPath.split("/"), "artifacts", "brief.json"),
+    "corrupted target snapshot\n",
+  );
+
+  await assert.rejects(
+    rollbackToRevision(root, targetId),
+    /rollback planning artifact evidence is invalid/,
+  );
+  assert.equal((await readProject(root)).currentRevision.id, before.currentRevision.id);
+  assert.deepEqual(await readFile(join(root, "brief.json")), briefBefore);
 });
 
 test("applies order-only without invalidating slide images and applies style globally", async (t) => {
