@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
-import { lstat, mkdir } from "node:fs/promises";
-import { dirname, extname, join } from "node:path";
+import { lstat, mkdir, readdir, realpath, rm, unlink } from "node:fs/promises";
+import { basename, dirname, extname, join, resolve } from "node:path";
 import sharp from "sharp";
 
 import { syncDirectory, writeDurableExclusive } from "../project/durable.js";
@@ -15,9 +15,13 @@ import {
   EditableManifestSchema,
   EditableRevisionMarkerSchema,
   EditableSlideMarkerSchema,
+  EditableStagingMarkerSchema,
   ModifiedManifestSchema,
+  ModifiedRevisionRecordSchema,
   type EditPlan,
   type EditableManifest,
+  type EditableStagingMarker,
+  type ModifiedRevisionRecord,
 } from "./schemas.js";
 
 export class UnsupportedEditableTargetError extends Error {
@@ -35,14 +39,20 @@ async function requireDirectory(path: string, message: string): Promise<void> {
   if (info.isSymbolicLink() || !info.isDirectory()) throw new Error(message);
 }
 
-async function ensureOwnedRevision(revisionRoot: string): Promise<void> {
-  await requireDirectory(revisionRoot, "replacement destination must be an owned editable revision");
-  let raw: Buffer;
+async function ownedStaging(revisionRoot: string): Promise<EditableStagingMarker> {
+  const lexical = resolve(revisionRoot);
   try {
-    raw = await readRegularFileNoFollow(join(revisionRoot, ".superppt-editable-revision.json"));
-    EditableRevisionMarkerSchema.parse(JSON.parse(raw.toString("utf8")));
+    await requireDirectory(lexical, "replacement destination must be an owned editable staging directory");
+    if (await realpath(lexical) !== lexical) throw new Error("staging canonical path mismatch");
+    const raw = await readRegularFileNoFollow(join(lexical, ".superppt-editable-staging.json"));
+    const marker = EditableStagingMarkerSchema.parse(JSON.parse(raw.toString("utf8")));
+    if (
+      basename(lexical) !== marker.stagingName
+      || basename(dirname(lexical)) !== marker.slideId
+    ) throw new Error("staging path identity mismatch");
+    return marker;
   } catch (error: unknown) {
-    throw new Error("replacement destination must be an owned editable revision", { cause: error });
+    throw new Error("replacement destination must be an owned editable staging directory with canonical identity", { cause: error });
   }
 }
 
@@ -79,7 +89,7 @@ export async function prepareReplacementAssets(
   const plan = EditPlanSchema.parse(structuredClone(rawPlan));
   if (plan.route === "regenerate") return plan;
   if (!plan.operations.some((operation) => operation.kind === "replace-asset")) return plan;
-  await ensureOwnedRevision(revisionRoot);
+  await ownedStaging(revisionRoot);
   const assets = await ensureChildDirectory(revisionRoot, "assets");
   const replacements = await ensureChildDirectory(assets, "replacements");
 
@@ -129,33 +139,40 @@ export function applyEditPlan(input: unknown, rawPlan: unknown): EditableManifes
   const manifest = structuredClone(EditableManifestSchema.parse(input));
   const plan = EditPlanSchema.parse(rawPlan);
   if (plan.route === "regenerate") throw new UnsupportedEditableTargetError(plan.reason);
+  validateEditTargets(manifest, plan);
   for (const operation of plan.operations) {
-    const element = manifest.elements.find((candidate) => candidate.id === operation.elementId);
-    if (!element) {
-      throw new UnsupportedEditableTargetError(`target is not an editable manifest element: ${operation.elementId}`);
-    }
+    const element = manifest.elements.find((candidate) => candidate.id === operation.elementId)!;
     if (operation.kind === "replace-text") {
-      if (element.kind !== "text") throw new UnsupportedEditableTargetError("replace-text requires a text element");
+      if (element.kind !== "text") throw new Error("prevalidated text target changed");
       element.text = operation.text;
     } else if (operation.kind === "set-text-style") {
-      if (element.kind !== "text") throw new UnsupportedEditableTargetError("set-text-style requires a text element");
+      if (element.kind !== "text") throw new Error("prevalidated text target changed");
       if (operation.color !== undefined) element.color = operation.color;
       if (operation.fontSizePx !== undefined) element.fontSizePx = operation.fontSizePx;
       if (operation.bold !== undefined) element.bold = operation.bold;
       if (operation.align !== undefined) element.align = operation.align;
     } else if (operation.kind === "move-asset") {
-      if (element.kind !== "asset" || element.extraction !== "transparent") {
-        throw new UnsupportedEditableTargetError("move-asset requires a transparent asset");
-      }
+      if (element.kind !== "asset") throw new Error("prevalidated asset target changed");
       element.bbox = operation.bbox;
     } else {
-      if (element.kind !== "asset" || element.extraction !== "transparent") {
-        throw new UnsupportedEditableTargetError("replace-asset requires a transparent asset");
-      }
+      if (element.kind !== "asset") throw new Error("prevalidated asset target changed");
       element.assetPath = operation.assetPath;
     }
   }
   return EditableManifestSchema.parse(manifest);
+}
+
+function validateEditTargets(manifest: EditableManifest, plan: Extract<EditPlan, { route: "editable" }>): void {
+  for (const operation of plan.operations) {
+    const element = manifest.elements.find((candidate) => candidate.id === operation.elementId);
+    if (!element) throw new UnsupportedEditableTargetError(`target is not an editable manifest element: ${operation.elementId}`);
+    if ((operation.kind === "replace-text" || operation.kind === "set-text-style") && element.kind !== "text") {
+      throw new UnsupportedEditableTargetError(`${operation.kind} requires a text element`);
+    }
+    if ((operation.kind === "move-asset" || operation.kind === "replace-asset") && element.kind !== "asset") {
+      throw new UnsupportedEditableTargetError(`${operation.kind} requires a transparent asset`);
+    }
+  }
 }
 
 async function parsedRegularFile<T>(path: string, label: string, parse: (value: unknown) => T): Promise<{ value: T; bytes: Buffer }> {
@@ -168,12 +185,148 @@ async function parsedRegularFile<T>(path: string, label: string, parse: (value: 
   }
 }
 
-async function copyAuthenticatedFile(source: string, target: string): Promise<void> {
+async function copyExpectedFile(source: string, target: string, expected: string): Promise<void> {
   const bytes = await readRegularFileNoFollow(source);
+  if (sha256(bytes) !== expected) throw new Error("source editable artifact hash changed before copy");
   await mkdir(dirname(target), { recursive: true, mode: 0o700 });
   await writeDurableExclusive(target, bytes);
   const copied = await readRegularFileNoFollow(target);
-  if (sha256(copied) !== sha256(bytes)) throw new Error("editable revision copy hash mismatch");
+  if (sha256(copied) !== expected) throw new Error("editable revision copy hash mismatch");
+}
+
+async function assetHashes(root: string): Promise<Record<string, string>> {
+  const assetsRoot = join(root, "assets");
+  if (await realpath(assetsRoot) !== assetsRoot) throw new Error("modified revision asset directory is unsafe");
+  const result: Record<string, string> = {};
+  async function walk(directory: string, prefix: string): Promise<void> {
+    for (const entry of await readdir(directory, { withFileTypes: true })) {
+      const path = join(directory, entry.name);
+      const projectPath = `${prefix}/${entry.name}`;
+      if (entry.isSymbolicLink()) throw new Error("modified revision assets cannot contain symlinks");
+      if (entry.isDirectory()) await walk(path, projectPath);
+      else if (entry.isFile() && extname(entry.name).toLowerCase() === ".png") {
+        result[projectPath] = sha256(await readRegularFileNoFollow(path));
+      } else throw new Error("modified revision assets must contain only PNG files and directories");
+    }
+  }
+  await walk(assetsRoot, "assets");
+  return Object.fromEntries(Object.entries(result).sort(([left], [right]) => left.localeCompare(right)));
+}
+
+async function cleanupOwnedStaging(staging: string, expected: EditableStagingMarker): Promise<void> {
+  try {
+    await requireDirectory(staging, "staging directory changed before cleanup");
+    if (await realpath(staging) !== resolve(staging) || basename(staging) !== expected.stagingName) {
+      throw new Error("staging canonical identity changed before cleanup");
+    }
+    let identityMatches = false;
+    try {
+      const actual = await ownedStaging(staging);
+      identityMatches = JSON.stringify(actual) === JSON.stringify(expected);
+    } catch {
+      const sealed = await parsedRegularFile(
+        join(staging, ".superppt-editable-revision.json"),
+        "sealed staging revision marker",
+        (value) => EditableRevisionMarkerSchema.parse(value),
+      );
+      identityMatches = sealed.value.projectId === expected.projectId
+        && sealed.value.slideId === expected.slideId
+        && sealed.value.revisionId === expected.revisionId
+        && sealed.value.parentRevisionId === expected.parentRevisionId
+        && sealed.value.revisionKind === "modified";
+    }
+    if (!identityMatches) throw new Error("staging marker changed before cleanup");
+    await rm(staging, { recursive: true, force: false });
+    await syncDirectory(dirname(staging));
+  } catch (error: unknown) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return;
+    throw new Error("owned editable staging cleanup failed", { cause: error });
+  }
+}
+
+async function validateModifiedRevisionAt(revisionRoot: string, expectedRevisionId: string): Promise<{
+  record: ModifiedRevisionRecord;
+  manifest: EditableManifest;
+}> {
+  const lexical = resolve(revisionRoot);
+  await requireDirectory(lexical, "modified revision is unsafe or invalid");
+  if (await realpath(lexical) !== lexical) throw new Error("modified revision canonical path mismatch");
+  const marker = await parsedRegularFile(
+    join(lexical, ".superppt-editable-revision.json"),
+    "modified revision marker",
+    (value) => EditableRevisionMarkerSchema.parse(value),
+  );
+  if (
+    marker.value.revisionKind !== "modified"
+    || marker.value.revisionId !== expectedRevisionId
+    || !marker.value.parentRevisionId
+    || !marker.value.modifiedRevisionRecordSha256
+  ) throw new Error("modified revision marker identity is invalid");
+  try {
+    await lstat(join(lexical, ".superppt-editable-staging.json"));
+    throw new Error("modified revision still contains a staging marker");
+  } catch (error: unknown) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+  }
+  const record = await parsedRegularFile(
+    join(lexical, "modified-revision-record.json"),
+    "modified revision record",
+    (value) => ModifiedRevisionRecordSchema.parse(value),
+  );
+  if (sha256(record.bytes) !== marker.value.modifiedRevisionRecordSha256) throw new Error("modified revision record hash mismatch");
+  if (
+    record.value.projectId !== marker.value.projectId
+    || record.value.slideId !== marker.value.slideId
+    || record.value.revisionId !== marker.value.revisionId
+    || record.value.parentRevisionId !== marker.value.parentRevisionId
+    || record.value.sourceRevisionId !== marker.value.parentRevisionId
+  ) throw new Error("modified revision record identity mismatch");
+  const sourceRoot = join(dirname(lexical), record.value.sourceRevisionId);
+  const sourceRecord = await parsedRegularFile(
+    join(sourceRoot, "conversion-record.json"),
+    "source conversion record",
+    (value) => ConversionRecordSchema.parse(value),
+  );
+  if (
+    sha256(sourceRecord.bytes) !== record.value.sourceConversionRecordSha256
+    || sourceRecord.value.projectId !== record.value.projectId
+    || sourceRecord.value.slideId !== record.value.slideId
+    || sourceRecord.value.revisionId !== record.value.sourceRevisionId
+    || sourceRecord.value.projectRevisionId !== record.value.projectRevisionId
+    || JSON.stringify(sourceRecord.value.finalRender) !== JSON.stringify(record.value.finalRender)
+    || sourceRecord.value.artifacts.manifest !== record.value.sourceManifestSha256
+  ) throw new Error("modified revision source identity mismatch");
+  const authenticatedSource = await validateEditableConversionOutput({
+    sourcePng: join(sourceRoot, "source-1280x720.png"),
+    outDir: sourceRoot,
+  });
+  if (JSON.stringify(authenticatedSource.artifactHashes) !== JSON.stringify(sourceRecord.value.artifacts)) {
+    throw new Error("modified revision source artifacts are no longer authentic");
+  }
+  const manifest = await parsedRegularFile(
+    join(lexical, "modified-manifest.json"),
+    "modified manifest",
+    (value) => ModifiedManifestSchema.parse(value),
+  );
+  if (
+    sha256(manifest.bytes) !== record.value.artifacts.modifiedManifest
+    || manifest.value.sourceRevisionId !== record.value.parentRevisionId
+    || manifest.value.sourceManifestSha256 !== record.value.sourceManifestSha256
+  ) throw new Error("modified manifest hash mismatch");
+  const background = await readRegularFileNoFollow(join(lexical, "clean-background.png"));
+  if (sha256(background) !== record.value.artifacts.cleanBackground) throw new Error("modified clean background hash mismatch");
+  const actualAssets = await assetHashes(lexical);
+  if (JSON.stringify(actualAssets) !== JSON.stringify(record.value.artifacts.assets)) throw new Error("modified revision asset hash mismatch");
+  const referenced = manifest.value.manifest.elements.flatMap((element) => element.kind === "asset" ? [element.assetPath] : []).sort();
+  if (referenced.some((path) => !actualAssets[path])) throw new Error("modified manifest references an unauthenticated asset");
+  return { record: record.value, manifest: manifest.value.manifest };
+}
+
+export async function validateModifiedRevision(revisionRoot: string): Promise<{
+  record: ModifiedRevisionRecord;
+  manifest: EditableManifest;
+}> {
+  return validateModifiedRevisionAt(revisionRoot, basename(resolve(revisionRoot)));
 }
 
 export type AppliedEditRevision = {
@@ -189,6 +342,10 @@ export async function applyProjectEditPlan(options: {
   sourceRevisionId: string;
   rawPlan: unknown;
   idFactory?: () => string;
+  operations?: {
+    afterSourceValidation?: () => Promise<void> | void;
+    beforeSealValidation?: (staging: string) => Promise<void> | void;
+  };
 }): Promise<AppliedEditRevision> {
   const plan = EditPlanSchema.parse(options.rawPlan);
   if (plan.route === "regenerate") throw new UnsupportedEditableTargetError(plan.reason);
@@ -251,6 +408,8 @@ export async function applyProjectEditPlan(options: {
   if (JSON.stringify(conversionRecord.value.artifacts) !== JSON.stringify(source.artifactHashes)) {
     throw new Error("editable conversion record no longer authenticates converter output");
   }
+  validateEditTargets(source.manifest, plan);
+  await options.operations?.afterSourceValidation?.();
 
   const revisionId = options.idFactory?.() ?? randomUUID();
   EditableRevisionMarkerSchema.shape.revisionId.parse(revisionId);
@@ -261,44 +420,91 @@ export async function applyProjectEditPlan(options: {
   } catch (error: unknown) {
     if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
   }
-  const staging = join(slideRoot, `.staging-${revisionId}-${randomUUID()}`);
-  await mkdir(staging, { mode: 0o700 });
-  await writeDurableExclusive(join(staging, ".superppt-editable-revision.json"), `${JSON.stringify(EditableRevisionMarkerSchema.parse({
-    markerVersion: 1,
+  const stagingName = `.staging-${revisionId}-${randomUUID()}`;
+  const staging = join(slideRoot, stagingName);
+  const stagingMarker = EditableStagingMarkerSchema.parse({
+    stagingMarkerVersion: 1,
     appId: "superppt",
-    artifactKind: "editable-slide-revision",
+    artifactKind: "editable-slide-staging",
     projectId: project.projectId,
     slideId: slide.id,
     revisionId,
-    revisionKind: "modified",
     parentRevisionId: options.sourceRevisionId,
-  }), null, 2)}\n`);
-  await mkdir(join(staging, "assets"), { mode: 0o700 });
-  await copyAuthenticatedFile(source.cleanBackground, join(staging, "clean-background.png"));
-  for (const assetPath of Object.keys(source.artifactHashes.assets)) {
-    await copyAuthenticatedFile(
-      join(sourceRoot, ...assetPath.split("/")),
-      join(staging, ...assetPath.split("/")),
-    );
+    stagingName,
+  });
+  await mkdir(staging, { mode: 0o700 });
+  await writeDurableExclusive(join(staging, ".superppt-editable-staging.json"), `${JSON.stringify(stagingMarker, null, 2)}\n`);
+  try {
+    await mkdir(join(staging, "assets"), { mode: 0o700 });
+    await copyExpectedFile(source.cleanBackground, join(staging, "clean-background.png"), source.artifactHashes.cleanBackground);
+    for (const [assetPath, expected] of Object.entries(source.artifactHashes.assets)) {
+      await copyExpectedFile(
+        join(sourceRoot, ...assetPath.split("/")),
+        join(staging, ...assetPath.split("/")),
+        expected,
+      );
+    }
+    const prepared = await prepareReplacementAssets(plan, staging);
+    const modified = applyEditPlan(source.manifest, prepared);
+    const modifiedManifestPath = join(staging, "modified-manifest.json");
+    const modifiedManifestBytes = Buffer.from(`${JSON.stringify(ModifiedManifestSchema.parse({
+      modifiedManifestVersion: 1,
+      sourceRevisionId: options.sourceRevisionId,
+      sourceManifestSha256: source.artifactHashes.manifest,
+      manifest: modified,
+    }), null, 2)}\n`);
+    await writeDurableExclusive(modifiedManifestPath, modifiedManifestBytes);
+    const background = await readRegularFileNoFollow(join(staging, "clean-background.png"));
+    const record = ModifiedRevisionRecordSchema.parse({
+      modifiedRevisionRecordVersion: 1,
+      projectId: project.projectId,
+      slideId: slide.id,
+      revisionId,
+      parentRevisionId: options.sourceRevisionId,
+      sourceRevisionId: options.sourceRevisionId,
+      sourceConversionRecordSha256: sha256(conversionRecord.bytes),
+      projectRevisionId: conversionRecord.value.projectRevisionId,
+      finalRender: conversionRecord.value.finalRender,
+      sourceManifestSha256: source.artifactHashes.manifest,
+      artifacts: {
+        modifiedManifest: sha256(modifiedManifestBytes),
+        cleanBackground: sha256(background),
+        assets: await assetHashes(staging),
+      },
+    });
+    const recordBytes = Buffer.from(`${JSON.stringify(record, null, 2)}\n`);
+    await writeDurableExclusive(join(staging, "modified-revision-record.json"), recordBytes);
+    await unlink(join(staging, ".superppt-editable-staging.json"));
+    await writeDurableExclusive(join(staging, ".superppt-editable-revision.json"), `${JSON.stringify(EditableRevisionMarkerSchema.parse({
+      markerVersion: 1,
+      appId: "superppt",
+      artifactKind: "editable-slide-revision",
+      projectId: project.projectId,
+      slideId: slide.id,
+      revisionId,
+      revisionKind: "modified",
+      parentRevisionId: options.sourceRevisionId,
+      modifiedRevisionRecordSha256: sha256(recordBytes),
+    }), null, 2)}\n`);
+    await syncDirectory(join(staging, "assets"));
+    await syncDirectory(staging);
+    await options.operations?.beforeSealValidation?.(staging);
+    await validateModifiedRevisionAt(staging, revisionId);
+    await syncDirectory(slideRoot);
+    await promoteExclusive(staging, revisionRoot);
+    await syncDirectory(slideRoot);
+    return {
+      revisionId,
+      revisionRoot,
+      modifiedManifestPath: join(revisionRoot, "modified-manifest.json"),
+      manifest: modified,
+    };
+  } catch (error: unknown) {
+    try {
+      await cleanupOwnedStaging(staging, stagingMarker);
+    } catch (cleanupError: unknown) {
+      throw new AggregateError([error, cleanupError], "editable apply failed and owned staging cleanup failed");
+    }
+    throw error;
   }
-  const prepared = await prepareReplacementAssets(plan, staging);
-  const modified = applyEditPlan(source.manifest, prepared);
-  const modifiedManifestPath = join(staging, "modified-manifest.json");
-  await writeDurableExclusive(modifiedManifestPath, `${JSON.stringify(ModifiedManifestSchema.parse({
-    modifiedManifestVersion: 1,
-    sourceRevisionId: options.sourceRevisionId,
-    sourceManifestSha256: source.artifactHashes.manifest,
-    manifest: modified,
-  }), null, 2)}\n`);
-  await syncDirectory(join(staging, "assets"));
-  await syncDirectory(staging);
-  await syncDirectory(slideRoot);
-  await promoteExclusive(staging, revisionRoot);
-  await syncDirectory(slideRoot);
-  return {
-    revisionId,
-    revisionRoot,
-    modifiedManifestPath: join(revisionRoot, "modified-manifest.json"),
-    manifest: modified,
-  };
 }

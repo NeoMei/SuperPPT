@@ -198,6 +198,50 @@ function expectedOutput(outDir: string, output: string, relativeName: string): v
   }
 }
 
+function sameBox(
+  left: { x: number; y: number; width: number; height: number },
+  right: { x: number; y: number; width: number; height: number },
+): boolean {
+  return left.x === right.x
+    && left.y === right.y
+    && left.width === right.width
+    && left.height === right.height;
+}
+
+function validateDecisionBinding(manifest: EditableManifest, ledger: RunLedgerV2): void {
+  const accepted = ledger.decisions.filter((decision) => decision.decision === "accepted");
+  if (accepted.length !== manifest.elements.length) {
+    throw new Error("converter ledger decision count does not match editable manifest elements");
+  }
+  const byElement = new Map<string, (typeof accepted)[number]>();
+  for (const decision of accepted) {
+    if (decision.output.state !== "editable_layer") {
+      throw new Error("accepted converter ledger decision must publish an editable layer");
+    }
+    if (byElement.has(decision.output.manifestElementId)) {
+      throw new Error("converter ledger decisions must bind manifest elements one-to-one");
+    }
+    byElement.set(decision.output.manifestElementId, decision);
+  }
+  for (const element of manifest.elements) {
+    const decision = byElement.get(element.id);
+    if (!decision || decision.output.state !== "editable_layer" || !sameBox(decision.bbox, element.bbox)) {
+      throw new Error(`converter ledger decision does not authenticate manifest element: ${element.id}`);
+    }
+    if (element.kind === "text") {
+      if (decision.kind !== "text" || decision.extraction !== "none" || decision.output.assetPath !== undefined) {
+        throw new Error(`converter ledger decision does not authenticate text element: ${element.id}`);
+      }
+    } else if (
+      decision.kind !== "icon"
+      || decision.extraction !== "transparent"
+      || decision.output.assetPath !== element.assetPath
+    ) {
+      throw new Error(`converter ledger decision does not authenticate asset element: ${element.id}`);
+    }
+  }
+}
+
 async function verifyHash(path: string, expected: string, label: string, maximum = MAX_OUTPUT): Promise<{ bytes: Buffer; hash: string }> {
   const bytes = await boundedRegularFile(path, maximum, label);
   const hash = sha256(bytes);
@@ -239,6 +283,7 @@ async function verifyConverterOutput(outDir: string, sourceBytes: Buffer): Promi
   const parsedLedger = await parseJson(ledgerPath, MAX_JSON, "converter run ledger", (value) => RunLedgerV2Schema.parse(value));
   const { value: manifest, bytes: manifestBytes } = parsedManifest;
   const { value: ledger, bytes: ledgerBytes } = parsedLedger;
+  validateDecisionBinding(manifest, ledger);
   if (ledger.hashes.sourceImage !== sha256(sourceBytes)) throw new Error("source image hash mismatch");
   if (ledger.hashes.manifest !== sha256(manifestBytes)) throw new Error("converter manifest hash mismatch");
 

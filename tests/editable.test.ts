@@ -7,6 +7,7 @@ import {
   mkdir,
   mkdtemp,
   readFile,
+  readdir,
   realpath,
   rm,
   symlink,
@@ -29,6 +30,7 @@ import {
   applyProjectEditPlan,
   prepareReplacementAssets,
   UnsupportedEditableTargetError,
+  validateModifiedRevision,
 } from "../src/editable/operations.js";
 import {
   EditableManifestSchema,
@@ -98,7 +100,28 @@ async function writeFakeConverterOutput(outDir: string, sourcePng: string): Prom
     durationsMs: { ocr: 0, vision: 0, analyze: 0, plan: 0, repair: 0, export: 0, total: 0 },
     taskIds: {},
     warnings: [],
-    decisions: [],
+    decisions: [
+      {
+        candidateId: "text-title",
+        kind: "text",
+        decision: "accepted",
+        bbox: { x: 120, y: 88, width: 680, height: 92 },
+        sourceElementIndexes: [0],
+        repairMethod: "local_nearest_surface",
+        extraction: "none",
+        output: { state: "editable_layer", manifestElementId: "ocr-title" },
+      },
+      {
+        candidateId: "icon-candidate",
+        kind: "icon",
+        decision: "accepted",
+        bbox: { x: 920, y: 260, width: 120, height: 120 },
+        sourceElementIndexes: [1],
+        repairMethod: "local_nearest_surface",
+        extraction: "transparent",
+        output: { state: "editable_layer", manifestElementId: "icon-1", assetPath: "assets/icon.png" },
+      },
+    ],
     hashes: {
       sourceImage: sha256(await readFile(sourcePng)),
       ocr: sha256(files["ocr.json"]),
@@ -141,7 +164,37 @@ async function makeConverterOutputTextOnly(outDir: string): Promise<void> {
   const ledger = JSON.parse(await readFile(ledgerPath, "utf8"));
   ledger.hashes.manifest = sha256(manifestBytes);
   ledger.hashes.assets = {};
+  ledger.decisions = ledger.decisions.filter((decision: { kind: string }) => decision.kind === "text");
   await writeFile(ledgerPath, `${JSON.stringify(ledger, null, 2)}\n`);
+}
+
+async function replacementStaging(t: TestContext): Promise<{
+  root: string;
+  projectId: string;
+  slideId: string;
+  revisionId: string;
+  parentRevisionId: string;
+}> {
+  const base = await realpath(await temporary(t, "superppt-editable-staging-"));
+  const projectId = "00000000-0000-4000-8000-000000000001";
+  const slideId = "00000000-0000-4000-8000-000000000002";
+  const revisionId = "00000000-0000-4000-8000-000000000003";
+  const parentRevisionId = "00000000-0000-4000-8000-000000000004";
+  const slideRoot = join(base, slideId);
+  const stagingName = `.staging-${revisionId}-00000000-0000-4000-8000-000000000005`;
+  const root = join(slideRoot, stagingName);
+  await mkdir(root, { recursive: true });
+  await writeFile(join(root, ".superppt-editable-staging.json"), `${JSON.stringify({
+    stagingMarkerVersion: 1,
+    appId: "superppt",
+    artifactKind: "editable-slide-staging",
+    projectId,
+    slideId,
+    revisionId,
+    parentRevisionId,
+    stagingName,
+  })}\n`);
+  return { root, projectId, slideId, revisionId, parentRevisionId };
 }
 
 test("normalizes generated pages to the converter's exact 1280x720 PNG contract", async (t) => {
@@ -250,6 +303,48 @@ test("authenticates ownership, the source, manifest, background, assets, and eve
   }
 });
 
+test("requires a one-to-one accepted ledger decision for every editable manifest element", async (t) => {
+  const root = await temporary(t, "superppt-editable-decisions-");
+  const plugin = await converterRoot(t);
+  const sourcePng = join(root, "source.png");
+  await writeFile(sourcePng, await png(1280, 720));
+  const scenarios = [
+    (ledger: { decisions: Array<Record<string, unknown>> }) => { ledger.decisions = []; },
+    (ledger: { decisions: Array<Record<string, unknown>> }) => {
+      ledger.decisions[0] = { ...ledger.decisions[0], bbox: { x: 121, y: 88, width: 680, height: 92 } };
+    },
+    (ledger: { decisions: Array<Record<string, unknown>> }) => {
+      ledger.decisions.push({
+        candidateId: "forged-extra",
+        kind: "text",
+        decision: "accepted",
+        bbox: { x: 10, y: 10, width: 100, height: 40 },
+        sourceElementIndexes: [2],
+        repairMethod: "local_nearest_surface",
+        extraction: "none",
+        output: { state: "editable_layer", manifestElementId: "ghost-text" },
+      });
+    },
+  ];
+  for (const [index, mutate] of scenarios.entries()) {
+    const outDir = join(root, `output-${index}`);
+    await assert.rejects(runEditableConversion({
+      converterRoot: plugin,
+      sourcePng,
+      outDir,
+      execute: async () => {
+        await mkdir(outDir);
+        await writeFakeConverterOutput(outDir, sourcePng);
+        const ledgerPath = join(outDir, "run-ledger.json");
+        const ledger = JSON.parse(await readFile(ledgerPath, "utf8"));
+        mutate(ledger);
+        await writeFile(ledgerPath, `${JSON.stringify(ledger, null, 2)}\n`);
+        return { stdout: "", stderr: "" };
+      },
+    }), /ledger decision/);
+  }
+});
+
 test("rejects symlinked ownership and asset files plus rectangular or escaping assets", async (t) => {
   const manifest = JSON.parse(await readFile(join(fixtureRoot, "manifest.json"), "utf8"));
   assert.throws(() => EditableManifestSchema.parse({
@@ -260,6 +355,21 @@ test("rejects symlinked ownership and asset files plus rectangular or escaping a
     ...manifest,
     elements: [{ ...manifest.elements[1], assetPath: "../outside.png" }],
   }), /project-relative/);
+  assert.throws(() => EditableManifestSchema.parse({
+    ...manifest,
+    elements: [{
+      kind: "shape",
+      id: "unsafe-shape",
+      label: "must stay in background",
+      shape: "rect",
+      bbox: { x: 0, y: 0, width: 100, height: 100 },
+      fillColor: "FFFFFF",
+      strokeColor: "000000",
+      strokeWidthPx: 1,
+      cornerRadiusPx: 0,
+      zIndex: 1,
+    }],
+  }), /shape|Invalid/);
 
   const root = await temporary(t, "superppt-editable-symlink-");
   const plugin = await converterRoot(t);
@@ -308,6 +418,7 @@ test("rejects a symlink hidden in a referenced asset path", async (t) => {
       const ledger = JSON.parse(await readFile(ledgerPath, "utf8"));
       ledger.hashes.manifest = sha256(manifestBytes);
       ledger.hashes.assets = { "assets/nested/icon.png": sha256(icon) };
+      ledger.decisions.find((decision: { kind: string }) => decision.kind === "icon").output.assetPath = "assets/nested/icon.png";
       await writeFile(ledgerPath, `${JSON.stringify(ledger, null, 2)}\n`);
       return { stdout: "", stderr: "" };
     },
@@ -339,18 +450,8 @@ test("routes missing, background-only, and mismatched targets to regeneration", 
 
 test("copies replacement assets into an owned revision and never returns the user path", async (t) => {
   const root = await temporary(t, "superppt-editable-replacement-");
-  const revision = join(root, "revision");
+  const revision = (await replacementStaging(t)).root;
   const original = join(root, "private-user-file.png");
-  await mkdir(revision);
-  await writeFile(join(revision, ".superppt-editable-revision.json"), `${JSON.stringify({
-    markerVersion: 1,
-    appId: "superppt",
-    artifactKind: "editable-slide-revision",
-    projectId: "00000000-0000-4000-8000-000000000001",
-    slideId: "00000000-0000-4000-8000-000000000002",
-    revisionId: "00000000-0000-4000-8000-000000000003",
-    revisionKind: "modified",
-  })}\n`);
   await writeFile(original, await png(32, 32, true));
   const prepared = await prepareReplacementAssets({ route: "editable", operations: [{
     kind: "replace-asset",
@@ -378,39 +479,50 @@ test("rejects symlinked, opaque, and unowned replacement assets", async (t) => {
   await writeFile(opaque, await png(20, 20));
   await symlink(opaque, alias);
   const plan = (assetPath: string) => ({ route: "editable", operations: [{ kind: "replace-asset", elementId: "icon-1", assetPath }] });
-  await assert.rejects(prepareReplacementAssets(plan(opaque), revision), /owned editable revision/);
-  await writeFile(join(revision, ".superppt-editable-revision.json"), `${JSON.stringify({
-    markerVersion: 1,
-    appId: "superppt",
-    artifactKind: "editable-slide-revision",
-    projectId: "00000000-0000-4000-8000-000000000001",
-    slideId: "00000000-0000-4000-8000-000000000002",
-    revisionId: "00000000-0000-4000-8000-000000000003",
-    revisionKind: "modified",
-  })}\n`);
-  await assert.rejects(prepareReplacementAssets(plan(alias), revision), /regular non-symlink transparent PNG/);
-  await assert.rejects(prepareReplacementAssets(plan(opaque), revision), /regular non-symlink transparent PNG/);
+  await assert.rejects(prepareReplacementAssets(plan(opaque), revision), /owned editable staging/);
+  const staging = (await replacementStaging(t)).root;
+  await assert.rejects(prepareReplacementAssets(plan(alias), staging), /regular non-symlink transparent PNG/);
+  await assert.rejects(prepareReplacementAssets(plan(opaque), staging), /regular non-symlink transparent PNG/);
 });
 
 test("caps replacement PNG input before reading or decoding it", async (t) => {
   const root = await temporary(t, "superppt-editable-replacement-size-");
-  const revision = join(root, "revision");
-  await mkdir(revision);
-  await writeFile(join(revision, ".superppt-editable-revision.json"), `${JSON.stringify({
-    markerVersion: 1,
-    appId: "superppt",
-    artifactKind: "editable-slide-revision",
-    projectId: "00000000-0000-4000-8000-000000000001",
-    slideId: "00000000-0000-4000-8000-000000000002",
-    revisionId: "00000000-0000-4000-8000-000000000003",
-    revisionKind: "modified",
-  })}\n`);
+  const revision = (await replacementStaging(t)).root;
   for (const [name, size] of [["empty.png", 0], ["oversize.png", 64 * 1024 * 1024 + 1]] as const) {
     const path = join(root, name);
     await writeFile(path, "");
     await truncate(path, size);
     await assert.rejects(prepareReplacementAssets({ route: "editable", operations: [{ kind: "replace-asset", elementId: "icon-1", assetPath: path }] }, revision), /replacement asset size limit/);
   }
+});
+
+test("replacement preparation rejects sealed revisions and symlink-ancestor staging aliases", async (t) => {
+  const root = await realpath(await temporary(t, "superppt-editable-staging-boundary-"));
+  const privateAsset = join(root, "private.png");
+  await writeFile(privateAsset, await png(12, 12, true));
+  const plan = { route: "editable", operations: [{ kind: "replace-asset", elementId: "icon-1", assetPath: privateAsset }] };
+
+  const revisionId = "00000000-0000-4000-8000-000000000013";
+  const sealed = join(root, revisionId);
+  await mkdir(sealed);
+  await writeFile(join(sealed, ".superppt-editable-revision.json"), `${JSON.stringify({
+    markerVersion: 1,
+    appId: "superppt",
+    artifactKind: "editable-slide-revision",
+    projectId: "00000000-0000-4000-8000-000000000011",
+    slideId: "00000000-0000-4000-8000-000000000012",
+    revisionId,
+    revisionKind: "conversion",
+  })}\n`);
+  await assert.rejects(prepareReplacementAssets(plan, sealed), /owned editable staging/);
+
+  const staging = await replacementStaging(t);
+  const aliasParent = join(root, "alias-parent");
+  await symlink(join(staging.root, ".."), aliasParent);
+  await assert.rejects(
+    prepareReplacementAssets(plan, join(aliasParent, staging.root.split("/").at(-1)!)),
+    /canonical|owned editable staging/,
+  );
 });
 
 async function readyProject(t: TestContext): Promise<{ root: string; slideId: string }> {
@@ -537,6 +649,153 @@ test("applies edits into a new immutable revision and preserves the authenticate
   assert.deepEqual(await readFile(source.manifestPath), sourceManifest);
   assert.equal((await lstat(changed.modifiedManifestPath)).isSymbolicLink(), false);
   assert.equal((await sharp(join(changed.revisionRoot, "clean-background.png")).metadata()).format, "png");
+  await assert.rejects(lstat(join(changed.revisionRoot, ".superppt-editable-staging.json")), { code: "ENOENT" });
+  assert.equal((await lstat(join(changed.revisionRoot, ".superppt-editable-revision.json"))).isFile(), true);
+  const validated = await validateModifiedRevision(changed.revisionRoot);
+  assert.equal(validated.record.revisionId, changed.revisionId);
+  assert.equal(validated.record.parentRevisionId, source.revisionId);
+  assert.equal(validated.record.sourceRevisionId, source.revisionId);
+  assert.deepEqual(
+    Object.keys(validated.record.artifacts.assets).sort(),
+    ["assets/icon.png", modified.manifest.elements.find((element: { id: string }) => element.id === "icon-1").assetPath].sort(),
+  );
+});
+
+test("modified revision validation detects manifest, background, and asset tampering after publication", async (t) => {
+  const project = await readyProject(t);
+  const plugin = await converterRoot(t);
+  const source = await convertProjectPage({
+    ...project,
+    converterRoot: plugin,
+    execute: async (_command, args) => {
+      const sourcePng = args[args.indexOf("--image") + 1]!;
+      const outDir = args[args.indexOf("--out") + 1]!;
+      await mkdir(outDir);
+      await writeFakeConverterOutput(outDir, sourcePng);
+      return { stdout: "", stderr: "" };
+    },
+  });
+  const replacement = join(await temporary(t, "superppt-editable-validator-user-"), "replacement.png");
+  await writeFile(replacement, await png(24, 24, true));
+  const changed = await applyProjectEditPlan({
+    ...project,
+    sourceRevisionId: source.revisionId,
+    rawPlan: { route: "editable", operations: [{ kind: "replace-asset", elementId: "icon-1", assetPath: replacement }] },
+  });
+  const modified = JSON.parse(await readFile(changed.modifiedManifestPath, "utf8"));
+  const replacementPath = modified.manifest.elements.find((element: { id: string }) => element.id === "icon-1").assetPath as string;
+  for (const path of [
+    changed.modifiedManifestPath,
+    join(changed.revisionRoot, "clean-background.png"),
+    join(changed.revisionRoot, ...replacementPath.split("/")),
+  ]) {
+    const before = await readFile(path);
+    await writeFile(path, "tampered");
+    await assert.rejects(validateModifiedRevision(changed.revisionRoot), /modified revision|hash mismatch|invalid/);
+    await writeFile(path, before);
+    await validateModifiedRevision(changed.revisionRoot);
+  }
+});
+
+test("prevalidates every edit target before staging and cleans owned staging after later failures", async (t) => {
+  const project = await readyProject(t);
+  const plugin = await converterRoot(t);
+  const source = await convertProjectPage({
+    ...project,
+    converterRoot: plugin,
+    execute: async (_command, args) => {
+      const sourcePng = args[args.indexOf("--image") + 1]!;
+      const outDir = args[args.indexOf("--out") + 1]!;
+      await mkdir(outDir);
+      await writeFakeConverterOutput(outDir, sourcePng);
+      return { stdout: "", stderr: "" };
+    },
+  });
+  const slideRoot = join(project.root, "editable", project.slideId);
+  const privateAsset = join(await temporary(t, "superppt-editable-cleanup-user-"), "private.png");
+  await writeFile(privateAsset, await png(24, 24, true));
+  const before = (await readdir(slideRoot)).sort();
+  await assert.rejects(applyProjectEditPlan({
+    ...project,
+    sourceRevisionId: source.revisionId,
+    rawPlan: { route: "editable", operations: [{ kind: "replace-asset", elementId: "background-only", assetPath: privateAsset }] },
+  }), UnsupportedEditableTargetError);
+  assert.deepEqual((await readdir(slideRoot)).sort(), before);
+
+  const opaque = join(await temporary(t, "superppt-editable-cleanup-opaque-"), "opaque.png");
+  await writeFile(opaque, await png(24, 24));
+  await assert.rejects(applyProjectEditPlan({
+    ...project,
+    sourceRevisionId: source.revisionId,
+    rawPlan: { route: "editable", operations: [
+      { kind: "replace-asset", elementId: "icon-1", assetPath: privateAsset },
+      { kind: "replace-asset", elementId: "icon-1", assetPath: opaque },
+    ] },
+  }), /transparent PNG/);
+  assert.deepEqual((await readdir(slideRoot)).sort(), before);
+  assert.equal((await readdir(slideRoot)).some((name) => name.startsWith(".staging-")), false);
+});
+
+test("rejects source asset replacement between validation and copy and removes staging", async (t) => {
+  const project = await readyProject(t);
+  const plugin = await converterRoot(t);
+  const source = await convertProjectPage({
+    ...project,
+    converterRoot: plugin,
+    execute: async (_command, args) => {
+      const sourcePng = args[args.indexOf("--image") + 1]!;
+      const outDir = args[args.indexOf("--out") + 1]!;
+      await mkdir(outDir);
+      await writeFakeConverterOutput(outDir, sourcePng);
+      return { stdout: "", stderr: "" };
+    },
+  });
+  const slideRoot = join(project.root, "editable", project.slideId);
+  const before = (await readdir(slideRoot)).sort();
+  type ProbeOptions = Parameters<typeof applyProjectEditPlan>[0] & {
+    operations: { afterSourceValidation: () => Promise<void> };
+  };
+  const applyWithProbe = applyProjectEditPlan as unknown as (options: ProbeOptions) => ReturnType<typeof applyProjectEditPlan>;
+  await assert.rejects(applyWithProbe({
+    ...project,
+    sourceRevisionId: source.revisionId,
+    rawPlan: { route: "editable", operations: [{ kind: "replace-text", elementId: "ocr-title", text: "changed" }] },
+    operations: {
+      afterSourceValidation: async () => writeFile(join(source.revisionRoot, "assets", "icon.png"), "tampered"),
+    },
+  }), /source editable artifact hash changed before copy/);
+  assert.deepEqual((await readdir(slideRoot)).sort(), before);
+});
+
+test("validates the sealed revision before promotion and removes failed sealed staging", async (t) => {
+  const project = await readyProject(t);
+  const plugin = await converterRoot(t);
+  const source = await convertProjectPage({
+    ...project,
+    converterRoot: plugin,
+    execute: async (_command, args) => {
+      const sourcePng = args[args.indexOf("--image") + 1]!;
+      const outDir = args[args.indexOf("--out") + 1]!;
+      await mkdir(outDir);
+      await writeFakeConverterOutput(outDir, sourcePng);
+      return { stdout: "", stderr: "" };
+    },
+  });
+  const slideRoot = join(project.root, "editable", project.slideId);
+  const revisionId = "00000000-0000-4000-8000-000000000188";
+  const before = (await readdir(slideRoot)).sort();
+  await assert.rejects(applyProjectEditPlan({
+    ...project,
+    sourceRevisionId: source.revisionId,
+    rawPlan: { route: "editable", operations: [{ kind: "replace-text", elementId: "ocr-title", text: "never publish" }] },
+    idFactory: () => revisionId,
+    operations: {
+      beforeSealValidation: async (staging) => writeFile(join(staging, "modified-manifest.json"), "tampered"),
+    },
+  }), /modified manifest.*invalid|hash mismatch/);
+  assert.deepEqual((await readdir(slideRoot)).sort(), before);
+  await assert.rejects(lstat(join(slideRoot, revisionId)), { code: "ENOENT" });
+  assert.equal((await readdir(slideRoot)).some((name) => name.startsWith(".staging-")), false);
 });
 
 test("publishes text-only modified revisions with an owned empty assets directory", async (t) => {

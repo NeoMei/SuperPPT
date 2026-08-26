@@ -49,26 +49,12 @@ const AssetElementSchema = z.object({
   fallbackReason: z.string().optional(),
 }).strict();
 
-const ShapeElementSchema = z.object({
-  kind: z.literal("shape"),
-  id: z.string().min(1),
-  label: z.string(),
-  shape: z.enum(["rect", "roundRect", "ellipse", "line"]),
-  bbox: EditableBBoxSchema,
-  fillColor: z.string(),
-  strokeColor: z.string(),
-  strokeWidthPx: z.number().finite().nonnegative(),
-  cornerRadiusPx: z.number().finite().nonnegative(),
-  zIndex: z.number().int(),
-}).strict();
-
 export const EditableManifestSchema = z.object({
   manifestVersion: z.literal(1),
   canvas: z.object({ width: z.literal(1280), height: z.literal(720) }).strict(),
   elements: z.array(z.discriminatedUnion("kind", [
     TextElementSchema,
     AssetElementSchema,
-    ShapeElementSchema,
   ])),
   warnings: z.array(z.string()),
 }).strict().superRefine((manifest, context) => {
@@ -187,7 +173,30 @@ export const EditableRevisionMarkerSchema = z.object({
   revisionId: z.string().uuid(),
   revisionKind: z.enum(["conversion", "modified"]),
   parentRevisionId: z.string().uuid().optional(),
-}).strict();
+  modifiedRevisionRecordSha256: Sha256Schema.optional(),
+}).strict().superRefine((marker, context) => {
+  if (marker.revisionKind === "modified") {
+    if (!marker.parentRevisionId) context.addIssue({ code: "custom", path: ["parentRevisionId"], message: "modified revision requires parent" });
+    if (!marker.modifiedRevisionRecordSha256) context.addIssue({ code: "custom", path: ["modifiedRevisionRecordSha256"], message: "modified revision requires record hash" });
+  } else if (marker.parentRevisionId || marker.modifiedRevisionRecordSha256) {
+    context.addIssue({ code: "custom", message: "conversion revision cannot carry modified revision fields" });
+  }
+});
+
+export const EditableStagingMarkerSchema = z.object({
+  stagingMarkerVersion: z.literal(1),
+  appId: z.literal("superppt"),
+  artifactKind: z.literal("editable-slide-staging"),
+  projectId: z.string().uuid(),
+  slideId: z.string().uuid(),
+  revisionId: z.string().uuid(),
+  parentRevisionId: z.string().uuid(),
+  stagingName: z.string().regex(/^\.staging-[0-9a-f-]{36}-[0-9a-f-]{36}$/),
+}).strict().superRefine((marker, context) => {
+  if (!marker.stagingName.startsWith(`.staging-${marker.revisionId}-`)) {
+    context.addIssue({ code: "custom", path: ["stagingName"], message: "staging name must bind revision ID" });
+  }
+});
 
 export const EditableSlideMarkerSchema = z.object({
   markerVersion: z.literal(1),
@@ -248,8 +257,35 @@ export const ModifiedManifestSchema = z.object({
   manifest: EditableManifestSchema,
 }).strict();
 
+export const ModifiedRevisionRecordSchema = z.object({
+  modifiedRevisionRecordVersion: z.literal(1),
+  projectId: z.string().uuid(),
+  slideId: z.string().uuid(),
+  revisionId: z.string().uuid(),
+  parentRevisionId: z.string().uuid(),
+  sourceRevisionId: z.string().uuid(),
+  sourceConversionRecordSha256: Sha256Schema,
+  projectRevisionId: z.string().uuid(),
+  finalRender: z.object({
+    path: EditableProjectPathSchema,
+    sha256: Sha256Schema,
+  }).strict(),
+  sourceManifestSha256: Sha256Schema,
+  artifacts: z.object({
+    modifiedManifest: Sha256Schema,
+    cleanBackground: Sha256Schema,
+    assets: z.record(EditableProjectPathSchema, Sha256Schema),
+  }).strict(),
+}).strict().superRefine((record, context) => {
+  if (record.parentRevisionId !== record.sourceRevisionId) {
+    context.addIssue({ code: "custom", path: ["sourceRevisionId"], message: "source revision must equal parent revision" });
+  }
+});
+
 export type EditableManifest = z.infer<typeof EditableManifestSchema>;
 export type RunLedgerV2 = z.infer<typeof RunLedgerV2Schema>;
 export type EditPlan = z.infer<typeof EditPlanSchema>;
 export type EditableRevisionMarker = z.infer<typeof EditableRevisionMarkerSchema>;
+export type EditableStagingMarker = z.infer<typeof EditableStagingMarkerSchema>;
 export type ModifiedManifest = z.infer<typeof ModifiedManifestSchema>;
+export type ModifiedRevisionRecord = z.infer<typeof ModifiedRevisionRecordSchema>;
