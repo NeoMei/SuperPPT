@@ -2,7 +2,7 @@ import { preflightDependencies } from "./dependencies/preflight.js";
 import { resolveDependencies } from "./dependencies/resolve.js";
 import { approveGate, type PlanningGate } from "./planning/confirm.js";
 import { normalizeInput, type InputRequest } from "./planning/intake.js";
-import { publishPlanViews } from "./planning/views.js";
+import { publishPlanViews, publishStyleSample } from "./planning/views.js";
 import { initializeProject } from "./project/initialize.js";
 import { readProject } from "./project/store.js";
 
@@ -123,6 +123,12 @@ async function main(argv: string[]): Promise<void> {
   if (command === "validate-plan") {
     const options = exactFlags(argv.slice(1), ["--project"]);
     outputJson(await publishPlanViews(options.get("--project")!));
+    return;
+  }
+
+  if (command === "publish-style-sample") {
+    const options = exactFlags(argv.slice(1), ["--project"]);
+    outputJson(await publishStyleSample(options.get("--project")!));
     return;
   }
 

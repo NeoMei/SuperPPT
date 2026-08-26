@@ -250,7 +250,7 @@ async function styleArtifacts(root: string): Promise<{
   return { values, selection };
 }
 
-export async function publishStyleSample(root: string): Promise<{ publicationPath: string }> {
+export async function publishStyleSample(root: string): Promise<StylePublicationDescriptor> {
   return withPlanningLock(root, async (canonicalRoot) => {
     return withProjectLease(canonicalRoot, "state", async () => {
       const manifest = await readProject(canonicalRoot);
@@ -280,7 +280,7 @@ export async function publishStyleSample(root: string): Promise<{ publicationPat
       await promoteExclusive(staging, join(canonicalRoot, localProjectPath(publicationPath)));
       await syncDirectory(parent);
       await writeReplacement(join(canonicalRoot, "style-sample.json"), `${JSON.stringify(pointer, null, 2)}\n`);
-      return { publicationPath };
+      return pointer;
     });
   });
 }

@@ -577,3 +577,46 @@ test("CLI validates and publishes plans and exposes no artifact override", async
   await assert.rejects(execFileAsync(process.execPath, [...invocation, "approve", "--project", root, "--gate", "outline", "--artifacts", "[\"superppt.json\"]"], { cwd: process.cwd() }), /unknown CLI flag/);
   await assert.rejects(execFileAsync(process.execPath, [...invocation, "validate-plan", "--project", "relative"], { cwd: process.cwd() }), /Unsafe project root/);
 });
+
+test("CLI publishes authoritative style evidence before the existing approval gate", async (t) => {
+  const root = await project(t, "superppt-style-cli-");
+  await writeValidPlan(root);
+  await writeValidStyleSample(root);
+  const invocation = ["--import", "tsx", "src/cli.ts"];
+  const run = (args: string[]) => execFileAsync(process.execPath, [...invocation, ...args], { cwd: process.cwd() });
+
+  await run(["validate-plan", "--project", root]);
+  await run(["approve", "--project", root, "--gate", "outline"]);
+  await run(["approve", "--project", root, "--gate", "slide-specs"]);
+  await assert.rejects(
+    run(["approve", "--project", root, "--gate", "style-sample"]),
+    /authoritative style sample publication is required/,
+  );
+
+  const published = await run(["publish-style-sample", "--project", root]);
+  assert.equal(published.stderr, "");
+  const descriptor = JSON.parse(published.stdout) as {
+    kind: string;
+    publicationPath: string;
+    representativeSlideId: string;
+    sourceHashes: Record<string, string>;
+  };
+  assert.equal(descriptor.kind, "style-sample");
+  assert.match(descriptor.publicationPath, /^revisions\/[0-9a-f-]{36}\/style-samples\/[0-9a-f-]{36}$/);
+  assert.equal(descriptor.representativeSlideId, SLIDE_IDS[1]);
+  assert.deepEqual(Object.keys(descriptor.sourceHashes).sort(), [
+    "style/sample/prompt.txt",
+    "style/sample/sample.png",
+    "style/selection.json",
+  ]);
+  assert.equal((await readProject(root)).gates.some(({ gate }) => gate === "style-sample"), false);
+
+  await writeFile(join(root, "style", "sample", "prompt.txt"), "stale replacement\n");
+  await assert.rejects(
+    run(["approve", "--project", root, "--gate", "style-sample"]),
+    /do not match authoritative style sample publication/,
+  );
+  await run(["publish-style-sample", "--project", root]);
+  await run(["approve", "--project", root, "--gate", "style-sample"]);
+  assert.equal(await assertGateCurrent(root, "style-sample"), true);
+});

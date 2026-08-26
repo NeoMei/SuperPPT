@@ -47,6 +47,11 @@ export type ProjectUpdater = (
   manifest: ProjectManifest,
 ) => ProjectManifest | Promise<ProjectManifest>;
 
+const PROJECT_BASE_IDENTITY: unique symbol = Symbol("superppt.project-base-identity");
+export type ReadProjectManifest = ProjectManifest & {
+  readonly [PROJECT_BASE_IDENTITY]: string;
+};
+
 export const sha256 = (value: Buffer | string): string =>
   createHash("sha256").update(value).digest("hex");
 
@@ -183,6 +188,7 @@ async function requireRegularDirectory(path: string): Promise<void> {
 async function ownedProject(root: string): Promise<{
   root: string;
   manifest: ProjectManifest;
+  baseIdentity: string;
 }> {
   const canonical = await validateProjectRoot(root);
   try {
@@ -196,20 +202,26 @@ async function ownedProject(root: string): Promise<{
       throw new Error("marker root mismatch");
     }
     await requireRegularFile(manifestPath);
-    const manifest = ProjectManifestSchema.parse(
-      JSON.parse(await readFile(manifestPath, "utf8")),
-    );
+    const manifestBytes = await readFile(manifestPath);
+    const manifest = ProjectManifestSchema.parse(JSON.parse(manifestBytes.toString("utf8")));
     if (marker.projectId !== manifest.projectId) {
       throw new Error("marker project mismatch");
     }
-    return { root: canonical, manifest };
+    return { root: canonical, manifest, baseIdentity: sha256(manifestBytes) };
   } catch {
     throw new Error("project directory is not owned by SuperPPT");
   }
 }
 
-export async function readProject(root: string): Promise<ProjectManifest> {
-  return (await ownedProject(root)).manifest;
+export async function readProject(root: string): Promise<ReadProjectManifest> {
+  const owned = await ownedProject(root);
+  Object.defineProperty(owned.manifest, PROJECT_BASE_IDENTITY, {
+    value: owned.baseIdentity,
+    enumerable: true,
+    configurable: false,
+    writable: false,
+  });
+  return owned.manifest as ReadProjectManifest;
 }
 
 async function persistProject(
@@ -275,14 +287,20 @@ async function persistProject(
 
 export async function writeProject(
   root: string,
-  manifest: ProjectManifest,
+  manifest: ReadProjectManifest,
   operations: WriteProjectOperations = {},
 ): Promise<void> {
   const valid = ProjectManifestSchema.parse(manifest);
   const expected = await ownedProject(root);
+  const baseIdentity = (manifest as ProjectManifest & {
+    [PROJECT_BASE_IDENTITY]?: unknown;
+  })[PROJECT_BASE_IDENTITY];
+  if (typeof baseIdentity !== "string") {
+    throw new Error("writeProject requires a manifest returned by readProject");
+  }
   await withProjectLease(expected.root, "state", async (canonicalRoot) => {
     const current = await ownedProject(canonicalRoot);
-    if (!sameJson(current.manifest, expected.manifest)) {
+    if (current.baseIdentity !== baseIdentity) {
       throw new Error("stale project manifest base; retry through updateProject");
     }
     await persistProject(current, valid, operations);

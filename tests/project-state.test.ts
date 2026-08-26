@@ -130,11 +130,12 @@ test("rejects an invalid manifest before creating a project directory", async (t
 test("retains the previous manifest when a staged write fails validation", async (t) => {
   const parent = await temporaryParent(t, "superppt-atomic-");
   const root = join(parent, "demo");
-  const current = await initializeProject({
+  await initializeProject({
     root,
     title: "Demo",
     idFactory: () => "00000000-0000-4000-8000-000000000002",
   });
+  const current = await readProject(root);
   const before = await readFile(join(root, "superppt.json"), "utf8");
 
   await assert.rejects(
@@ -152,7 +153,8 @@ test("retains the previous manifest when a staged write fails validation", async
 test("refuses manifest writes after ownership is removed", async (t) => {
   const parent = await temporaryParent(t, "superppt-ownership-");
   const root = join(parent, "demo");
-  const current = await initializeProject({ root, title: "Demo" });
+  await initializeProject({ root, title: "Demo" });
+  const current = await readProject(root);
   await writeFile(
     join(root, ".superppt-project.json"),
     JSON.stringify({ markerVersion: 1, appId: "someone-else", artifactKind: "project" }),
@@ -166,8 +168,10 @@ test("binds ownership to the canonical root and manifest project UUID", async (t
   const parent = await temporaryParent(t, "superppt-marker-copy-");
   const firstRoot = join(parent, "first");
   const secondRoot = join(parent, "second");
-  const first = await initializeProject({ root: firstRoot, title: "First" });
-  const second = await initializeProject({ root: secondRoot, title: "Second" });
+  await initializeProject({ root: firstRoot, title: "First" });
+  await initializeProject({ root: secondRoot, title: "Second" });
+  const first = await readProject(firstRoot);
+  const second = await readProject(secondRoot);
   const copiedMarker = await readFile(join(firstRoot, ".superppt-project.json"));
   await writeFile(join(secondRoot, ".superppt-project.json"), copiedMarker);
 
@@ -191,7 +195,8 @@ test("binds ownership to the canonical root and manifest project UUID", async (t
 test("rejects a symlink ownership marker", async (t) => {
   const parent = await temporaryParent(t, "superppt-marker-link-");
   const root = join(parent, "demo");
-  const manifest = await initializeProject({ root, title: "Demo" });
+  await initializeProject({ root, title: "Demo" });
+  const manifest = await readProject(root);
   const marker = join(root, ".superppt-project.json");
   const markerBackup = join(root, ".superppt-project.backup.json");
   await rename(marker, markerBackup);
@@ -361,7 +366,8 @@ test("Windows atomic promotion preserves a raced target", {
 test("keeps old manifest bytes and staged evidence when a durable write fails", async (t) => {
   const parent = await temporaryParent(t, "superppt-write-fail-");
   const root = join(parent, "demo");
-  const current = await initializeProject({ root, title: "Original" });
+  await initializeProject({ root, title: "Original" });
+  const current = await readProject(root);
   const updated = { ...current, title: "Updated" };
   const manifestPath = join(root, "superppt.json");
   const before = await readFile(manifestPath, "utf8");
@@ -398,7 +404,8 @@ test("keeps old manifest bytes and staged evidence when a durable write fails", 
 test("syncs the staged manifest and project directory around promotion", async (t) => {
   const parent = await temporaryParent(t, "superppt-write-sync-");
   const root = join(parent, "demo");
-  const current = await initializeProject({ root, title: "Original" });
+  await initializeProject({ root, title: "Original" });
+  const current = await readProject(root);
   const checkpoints: string[] = [];
 
   await writeProject(root, { ...current, title: "Updated" }, {
@@ -416,10 +423,28 @@ test("syncs the staged manifest and project directory around promotion", async (
   assert.equal((await readProject(root)).title, "Updated");
 });
 
+test("writeProject rejects a manifest object read before an intervening update", async (t) => {
+  const root = join(await temporaryParent(t, "superppt-stale-base-"), "demo");
+  await initializeProject({ root, title: "Original" });
+  const stale = await readProject(root);
+  const current = await readProject(root);
+
+  await writeProject(root, { ...current, title: "Current update" });
+  await assert.rejects(
+    writeProject(root, { ...stale, stage: "outline" }),
+    /stale project manifest base/,
+  );
+
+  const persisted = await readProject(root);
+  assert.equal(persisted.title, "Current update");
+  assert.equal(persisted.stage, "intake");
+});
+
 test("rejects removing, changing, or reordering persisted revisions", async (t) => {
   const parent = await temporaryParent(t, "superppt-revision-prefix-");
   const root = join(parent, "demo");
-  const first = await initializeProject({ root, title: "Demo" });
+  await initializeProject({ root, title: "Demo" });
+  const first = await readProject(root);
   const secondRevision = {
     id: "00000000-0000-4000-8000-000000000102",
     number: 2,
@@ -470,7 +495,8 @@ test("rejects removing, changing, or reordering persisted revisions", async (t) 
 test("accepts a chained revision append and advances currentRevision to its tail", async (t) => {
   const parent = await temporaryParent(t, "superppt-revision-append-");
   const root = join(parent, "demo");
-  const first = await initializeProject({ root, title: "Demo" });
+  await initializeProject({ root, title: "Demo" });
+  const first = await readProject(root);
   const next = {
     id: "00000000-0000-4000-8000-000000000103",
     number: 2,
@@ -492,7 +518,8 @@ test("accepts a chained revision append and advances currentRevision to its tail
 test("rejects appending a revision while retaining the old currentRevision", async (t) => {
   const parent = await temporaryParent(t, "superppt-revision-old-current-");
   const root = join(parent, "demo");
-  const first = await initializeProject({ root, title: "Demo" });
+  await initializeProject({ root, title: "Demo" });
+  const first = await readProject(root);
   const next = {
     id: "00000000-0000-4000-8000-000000000105",
     number: 2,
@@ -512,7 +539,8 @@ test("rejects appending a revision while retaining the old currentRevision", asy
 test("requires an exact planned revision snapshot before dropping old artifact evidence", async (t) => {
   const parent = await temporaryParent(t, "superppt-artifact-history-");
   const root = join(parent, "demo");
-  const initial = await initializeProject({ root, title: "Demo" });
+  await initializeProject({ root, title: "Demo" });
+  const initial = await readProject(root);
   const withArtifact = {
     ...initial,
     brief: {
