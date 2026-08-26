@@ -1,12 +1,23 @@
-import { lstat, open, readFile, realpath } from "node:fs/promises";
+import { lstat, open, realpath } from "node:fs/promises";
 import { join } from "node:path";
+import { z } from "zod";
 
 import { syncDirectory } from "../project/durable.js";
+import { readRegularFileNoFollow } from "../project/safe-file.js";
 import { readProject } from "../project/store.js";
 
 export type InputRequest =
   | { kind: "description" | "text"; value: string }
   | { kind: "markdown"; path: string };
+
+const InputRequestSchema = z.discriminatedUnion("kind", [
+  z.object({ kind: z.enum(["description", "text"]), value: z.string() }).strict(),
+  z.object({ kind: z.literal("markdown"), path: z.string().min(1) }).strict(),
+]);
+
+export type NormalizeInputOperations = {
+  afterSourceOpened?: () => Promise<void> | void;
+};
 
 async function writeBytesExclusive(path: string, value: Buffer): Promise<void> {
   const handle = await open(path, "wx", 0o600);
@@ -21,7 +32,11 @@ async function writeBytesExclusive(path: string, value: Buffer): Promise<void> {
 export async function normalizeInput(
   projectRoot: string,
   request: InputRequest,
+  operations: NormalizeInputOperations = {},
 ): Promise<string> {
+  const parsed = InputRequestSchema.safeParse(request);
+  if (!parsed.success) throw new Error("invalid input request", { cause: parsed.error });
+  request = parsed.data;
   await readProject(projectRoot);
   const root = await realpath(projectRoot);
   const sourceDirectory = join(root, "source");
@@ -32,15 +47,17 @@ export async function normalizeInput(
 
   let content: Buffer;
   if (request.kind === "markdown") {
-    const info = await lstat(request.path);
-    if (
-      info.isSymbolicLink()
-      || !info.isFile()
-      || !request.path.toLowerCase().endsWith(".md")
-    ) {
+    if (!request.path.toLowerCase().endsWith(".md")) {
       throw new Error("Markdown input must be a regular .md file");
     }
-    content = await readFile(request.path);
+    try {
+      content = await readRegularFileNoFollow(request.path, {
+        afterOpen: operations.afterSourceOpened,
+      });
+    } catch (error: unknown) {
+      if (error instanceof Error && error.message.includes("changed while reading")) throw error;
+      throw new Error("Markdown input must be a regular .md file", { cause: error });
+    }
   } else {
     content = Buffer.from(request.value, "utf8");
   }

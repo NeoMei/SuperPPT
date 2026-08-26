@@ -76,6 +76,13 @@ function assertRevisionEvolution(
       "immutable revision history requires currentRevision to remain unchanged or equal the appended tail",
     );
   }
+
+  if (
+    next.gates.length < previous.gates.length
+    || previous.gates.some((gate, index) => !sameJson(gate, next.gates[index]))
+  ) {
+    throw new Error("gate history must remain an exact prefix");
+  }
 }
 
 function artifactEvidence(manifest: ProjectManifest): string[] {

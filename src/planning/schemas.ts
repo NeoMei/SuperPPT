@@ -66,6 +66,13 @@ export const SlideSpecSchema = z.object({
   sourceRefs: z.array(z.string().min(1)).min(1),
 }).strict();
 
+export const StyleSelectionSchema = z.object({
+  schemaVersion: z.literal(1),
+  styleId: z.string().regex(/^[a-z0-9-]+$/),
+  representativeSlideId: z.string().uuid(),
+}).strict();
+
 export type Brief = z.infer<typeof BriefSchema>;
 export type Outline = z.infer<typeof OutlineSchema>;
 export type SlideSpec = z.infer<typeof SlideSpecSchema>;
+export type StyleSelection = z.infer<typeof StyleSelectionSchema>;

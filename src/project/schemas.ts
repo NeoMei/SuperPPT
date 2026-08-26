@@ -56,6 +56,7 @@ export const GateSchema = z.object({
   ]),
   revisionId: z.string().uuid(),
   artifactHashes: z.record(z.string(), Sha256Schema),
+  snapshotPath: z.string().min(1).optional(),
   confirmedAt: z.string().datetime(),
 }).strict();
 
