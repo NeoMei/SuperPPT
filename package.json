@@ -4,7 +4,9 @@
   "description": "Create high-detail image-first PPTX decks with versioned planning and editable page revisions.",
   "private": true,
   "type": "module",
-  "engines": { "node": ">=22.6" },
+  "engines": {
+    "node": ">=22.6"
+  },
   "scripts": {
     "test": "node --import tsx --test \"tests/*.test.ts\"",
     "lint:types": "tsc -p tsconfig.json --noEmit",
@@ -13,6 +15,7 @@
     "cli": "tsx src/cli.ts"
   },
   "dependencies": {
+    "koffi": "3.1.6",
     "pdf-lib": "^1.17.1",
     "pptxgenjs": "^4.0.1",
     "sharp": "^0.35.3",

@@ -4,6 +4,7 @@ import { basename, dirname, join } from "node:path";
 
 import { syncDirectory, writeDurableExclusive } from "./durable.js";
 import { validateProjectRoot } from "./paths.js";
+import { promoteExclusive } from "./promotion.js";
 import {
   ProjectManifestSchema,
   type ProjectManifest,
@@ -37,6 +38,10 @@ export type InitializeOperations = {
   checkpoint?: (
     step: InitializeCheckpoint,
     stagingRoot: string,
+  ) => Promise<void> | void;
+  beforeExclusivePromote?: (
+    stagingRoot: string,
+    finalRoot: string,
   ) => Promise<void> | void;
   promote?: (stagingRoot: string, finalRoot: string) => Promise<void>;
 };
@@ -170,8 +175,8 @@ export async function initializeProject(options: {
     await syncDirectory(parent);
     await options.operations?.checkpoint?.("before-promote", stagingRoot);
 
-    await refuseExistingTarget(root);
-    await (options.operations?.promote ?? rename)(stagingRoot, root);
+    await options.operations?.beforeExclusivePromote?.(stagingRoot, root);
+    await (options.operations?.promote ?? promoteExclusive)(stagingRoot, root);
     promoted = true;
     await syncDirectory(parent);
     return manifest;
