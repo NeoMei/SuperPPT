@@ -139,3 +139,14 @@ test("compiler uses an unambiguous encoding for hostile structured values", () =
   assert.equal(new Set(compiled.map(({ sha256 }) => sha256)).size, variants.length);
   assert.ok(compiled[1]!.text.includes(JSON.stringify(['a"\n- "b'])));
 });
+
+test("compiler canonical input remains valid JSON when optional recipe fields are explicitly undefined", () => {
+  const result = compilePrompt({
+    spec: promptSpec,
+    style: { ...promptStyle, preview: undefined },
+    director: promptDirector,
+  });
+  const match = result.text.match(/BEGIN SUPERPPT CANONICAL INPUT\n([^\n]+)\nEND SUPERPPT CANONICAL INPUT/);
+  assert.ok(match?.[1]);
+  assert.doesNotThrow(() => JSON.parse(match[1]!));
+});

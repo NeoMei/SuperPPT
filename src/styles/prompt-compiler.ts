@@ -28,10 +28,11 @@ const PromptSpecSchema = z.object({
 export type CompiledPrompt = { text: string; sha256: string };
 
 function canonicalJson(value: unknown): string {
+  if (value === undefined) return "null";
   if (value === null || typeof value !== "object") return JSON.stringify(value);
   if (Array.isArray(value)) return `[${value.map(canonicalJson).join(",")}]`;
   const record = value as Record<string, unknown>;
-  return `{${Object.keys(record).sort().map((key) => `${JSON.stringify(key)}:${canonicalJson(record[key])}`).join(",")}}`;
+  return `{${Object.keys(record).filter((key) => record[key] !== undefined).sort().map((key) => `${JSON.stringify(key)}:${canonicalJson(record[key])}`).join(",")}}`;
 }
 
 const field = (label: string, value: unknown): string => `${label} (canonical JSON): ${canonicalJson(value)}`;
