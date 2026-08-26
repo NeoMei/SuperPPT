@@ -6,6 +6,7 @@ import {
   parse,
   relative,
   resolve,
+  sep,
 } from "node:path";
 
 export function isSameOrAncestor(candidate: string, child: string): boolean {
@@ -35,10 +36,30 @@ export async function canonicalPotential(path: string): Promise<string> {
   }
 }
 
+async function assertNoSymlinkComponents(path: string): Promise<void> {
+  const absolute = resolve(path);
+  const parsed = parse(absolute);
+  const components = relative(parsed.root, absolute).split(sep).filter(Boolean);
+  let cursor = parsed.root;
+  for (const component of components) {
+    cursor = resolve(cursor, component);
+    try {
+      const info = await lstat(cursor);
+      if (info.isSymbolicLink() || !info.isDirectory()) {
+        throw new Error(`Unsafe project root: ${path}`);
+      }
+    } catch (error: unknown) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") return;
+      throw error;
+    }
+  }
+}
+
 export async function validateProjectRoot(root: string): Promise<string> {
   if (!root.trim() || !isAbsolute(root)) {
     throw new Error(`Unsafe project root: ${root || "empty path"}`);
   }
+  await assertNoSymlinkComponents(root);
   const canonical = await canonicalPotential(root);
   const cwd = await realpath(process.cwd());
   if (
@@ -46,16 +67,6 @@ export async function validateProjectRoot(root: string): Promise<string> {
     || isSameOrAncestor(canonical, cwd)
   ) {
     throw new Error(`Unsafe project root: ${root}`);
-  }
-  try {
-    const info = await lstat(resolve(root));
-    if (info.isSymbolicLink() || !info.isDirectory()) {
-      throw new Error(`Unsafe project root: ${root}`);
-    }
-  } catch (error: unknown) {
-    if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
-      throw error;
-    }
   }
   return canonical;
 }

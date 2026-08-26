@@ -36,7 +36,6 @@ function outputJson(value: unknown): void {
 async function main(argv: string[]): Promise<void> {
   const command = argv[0];
   if (command === "preflight") {
-    exactFlags(argv.slice(1), []);
     const aiRoot = process.env.SUPERPPT_AI_IMAGE_TO_PPT_SOURCE;
     const editableRoot = process.env.SUPERPPT_IMAGE_TO_EDITABLE_PPTX_SOURCE;
     if (!aiRoot || !editableRoot) {

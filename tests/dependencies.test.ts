@@ -190,7 +190,7 @@ test("preflight reports removed provider, reviewer, and lockfile as unavailable"
 
 test("CLI emits a successful JSON preflight report", async (t) => {
   const { ai, editable } = await fixture(t);
-  const { stdout, stderr } = await execFileAsync(process.execPath, ["--import", "tsx", "src/cli.ts", "preflight"], {
+  const { stdout, stderr } = await execFileAsync(process.execPath, ["--import", "tsx", "src/cli.ts", "preflight", "ignored", "trailing"], {
     cwd: process.cwd(),
     env: {
       ...process.env,
