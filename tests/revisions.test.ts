@@ -1,0 +1,535 @@
+import assert from "node:assert/strict";
+import { execFile } from "node:child_process";
+import { createHash } from "node:crypto";
+import {
+  access,
+  mkdir,
+  mkdtemp,
+  readFile,
+  realpath,
+  rename,
+  rm,
+  symlink,
+  writeFile,
+} from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import test, { type TestContext } from "node:test";
+import { promisify } from "node:util";
+
+import { initializeProject } from "../src/project/initialize.js";
+import { readProject, updateProject, writeProject } from "../src/project/store.js";
+import {
+  applyRevision,
+  approveImpact,
+  publishImpactPlan,
+  rollbackToRevision,
+} from "../src/revisions/apply.js";
+import {
+  ImpactPlanSchema,
+  planImpact,
+} from "../src/revisions/impact.js";
+
+const PROJECT_ID = "00000000-0000-4000-8000-000000000301";
+const A = "00000000-0000-4000-8000-000000000401";
+const B = "00000000-0000-4000-8000-000000000402";
+const UNKNOWN = "00000000-0000-4000-8000-000000000499";
+const execFileAsync = promisify(execFile);
+
+async function project(t: TestContext, prefix: string): Promise<string> {
+  const parent = await realpath(await mkdtemp(join(tmpdir(), prefix)));
+  t.after(async () => rm(parent, { recursive: true, force: true }));
+  const root = join(parent, "project");
+  await initializeProject({ root, title: "Demo", idFactory: () => PROJECT_ID });
+  return root;
+}
+
+async function manifestWithSlides(t: TestContext) {
+  const manifest = await readProject(await project(t, "superppt-impact-plan-"));
+  manifest.slides = [A, B].map((id, order) => ({
+    id,
+    order,
+    title: id,
+    role: "content" as const,
+    specRevisionId: manifest.currentRevision.id,
+    promptRevisionId: manifest.currentRevision.id,
+    styleRevisionId: manifest.currentRevision.id,
+    status: "ready" as const,
+    image: null,
+    editable: null,
+    finalRender: null,
+    staleReasons: [],
+  }));
+  return manifest;
+}
+
+async function seedSlides(root: string): Promise<void> {
+  await updateProject(root, (manifest) => ({
+    ...manifest,
+    slides: [A, B].map((id, order) => ({
+      id,
+      order,
+      title: id,
+      role: "content" as const,
+      specRevisionId: manifest.currentRevision.id,
+      promptRevisionId: manifest.currentRevision.id,
+      styleRevisionId: manifest.currentRevision.id,
+      status: "ready" as const,
+      image: {
+        path: `images/${id}.png`,
+        sha256: `${order + 1}`.repeat(64),
+        revisionId: manifest.currentRevision.id,
+      },
+      editable: null,
+      finalRender: {
+        path: `previews/${id}.png`,
+        sha256: `${order + 3}`.repeat(64),
+        revisionId: manifest.currentRevision.id,
+      },
+      staleReasons: [],
+    })),
+    exports: {
+      ...manifest.exports,
+      pptx: {
+        path: "output/deck.pptx",
+        sha256: "a".repeat(64),
+        revisionId: manifest.currentRevision.id,
+      },
+    },
+  }));
+}
+
+test("plans local and global invalidation while preserving order-only images", async (t) => {
+  const manifest = await manifestWithSlides(t);
+  assert.deepEqual(planImpact(manifest, { kind: "slide-spec", slideIds: [B] }).staleSlideIds, [B]);
+  assert.deepEqual(planImpact(manifest, { kind: "outline-structure", slideIds: [A] }).staleSlideIds, [A]);
+  assert.deepEqual(planImpact(manifest, { kind: "style" }).staleSlideIds, [A, B]);
+  assert.deepEqual(planImpact(manifest, { kind: "brief", title: "Changed" }).staleSlideIds, [A, B]);
+  assert.deepEqual(planImpact(manifest, { kind: "outline-order" }).staleSlideIds, []);
+});
+
+test("rejects unknown, duplicate, and non-strict slide change identities", async (t) => {
+  const manifest = await manifestWithSlides(t);
+  assert.throws(
+    () => planImpact(manifest, { kind: "slide-spec", slideIds: [UNKNOWN] }),
+    /unknown slide ID/,
+  );
+  assert.throws(
+    () => planImpact(manifest, { kind: "slide-spec", slideIds: [A, A] }),
+    /unique/,
+  );
+  assert.throws(
+    () => planImpact(manifest, { kind: "style", slideIds: [A] } as never),
+    /unrecognized|invalid/i,
+  );
+});
+
+test("produces a strict deterministic hash bound to the exact base manifest", async (t) => {
+  const manifest = await manifestWithSlides(t);
+  const first = planImpact(manifest, { kind: "slide-spec", slideIds: [B] });
+  const second = planImpact(structuredClone(manifest), { kind: "slide-spec", slideIds: [B] });
+  assert.deepEqual(first, second);
+  assert.equal(ImpactPlanSchema.parse(first).sha256, first.sha256);
+  assert.throws(() => ImpactPlanSchema.parse({ ...first, extra: true }), /unrecognized/i);
+
+  const changed = structuredClone(manifest);
+  changed.title = "Changed without a revision bump";
+  const changedPlan = planImpact(changed, { kind: "slide-spec", slideIds: [B] });
+  assert.equal(changedPlan.baseRevisionId, first.baseRevisionId);
+  assert.notEqual(changedPlan.baseManifestSha256, first.baseManifestSha256);
+  assert.notEqual(changedPlan.sha256, first.sha256);
+});
+
+test("publishes a fixed-path plan and requires a real exact-base approval before apply", async (t) => {
+  const root = await project(t, "superppt-impact-apply-");
+  await seedSlides(root);
+  const before = await readProject(root);
+  const plan = await publishImpactPlan(root, { kind: "slide-spec", slideIds: [B] });
+  await access(join(root, "revisions", "pending-impact.json"));
+  assert.deepEqual(
+    JSON.parse(await readFile(join(root, "revisions", "pending-impact.json"), "utf8")),
+    plan,
+  );
+  await assert.rejects(
+    applyRevision(root, plan, plan.change),
+    /must be approved/,
+  );
+
+  await approveImpact(root, plan.sha256);
+  const approved = await readProject(root);
+  assert.equal(approved.gates.at(-1)?.gate, "revision-impact");
+  await applyRevision(root, plan, plan.change);
+  const applied = await readProject(root);
+  assert.equal(applied.revisions.length, before.revisions.length + 1);
+  assert.equal(applied.currentRevision.parentId, before.currentRevision.id);
+  assert.equal(applied.slides[0]!.status, "ready");
+  assert.ok(applied.slides[0]!.image);
+  assert.equal(applied.slides[1]!.status, "stale");
+  assert.equal(applied.slides[1]!.image, null);
+  assert.equal(applied.slides[1]!.finalRender, null);
+  assert.deepEqual(applied.slides[1]!.staleReasons, ["slide-spec"]);
+  assert.equal(applied.exports.pptx, null);
+
+  const snapshot = JSON.parse(await readFile(
+    join(root, "revisions", before.currentRevision.id, "superppt.json"),
+    "utf8",
+  ));
+  assert.deepEqual(snapshot, JSON.parse(JSON.stringify(approved)));
+  await assert.rejects(applyRevision(root, plan, plan.change), /stale|base revision/i);
+});
+
+test("rolls back by appending a new revision while preserving the full ledger", async (t) => {
+  const root = await project(t, "superppt-impact-rollback-");
+  await seedSlides(root);
+  const before = await readProject(root);
+  const plan = await publishImpactPlan(root, { kind: "brief", title: "After" });
+  await approveImpact(root, plan.sha256);
+  await applyRevision(root, plan, plan.change);
+  const changed = await readProject(root);
+  assert.equal(changed.title, "After");
+
+  await rollbackToRevision(root, before.currentRevision.id);
+  const rolledBack = await readProject(root);
+  assert.equal(rolledBack.title, "Demo");
+  assert.equal(rolledBack.revisions.length, changed.revisions.length + 1);
+  assert.deepEqual(
+    rolledBack.revisions.slice(0, changed.revisions.length),
+    changed.revisions,
+  );
+  assert.equal(rolledBack.currentRevision.parentId, changed.currentRevision.id);
+  assert.equal(rolledBack.currentRevision.number, changed.currentRevision.number + 1);
+  assert.deepEqual(rolledBack.gates, changed.gates);
+  assert.deepEqual(rolledBack.slides, before.slides);
+  assert.deepEqual(
+    JSON.parse(await readFile(
+      join(root, "revisions", changed.currentRevision.id, "superppt.json"),
+      "utf8",
+    )),
+    JSON.parse(JSON.stringify(changed)),
+  );
+});
+
+test("applies order-only without invalidating slide images and applies style globally", async (t) => {
+  const orderRoot = await project(t, "superppt-impact-order-");
+  await seedSlides(orderRoot);
+  const orderPlan = await publishImpactPlan(orderRoot, { kind: "outline-order" });
+  await approveImpact(orderRoot, orderPlan.sha256);
+  await applyRevision(orderRoot, orderPlan, orderPlan.change);
+  const ordered = await readProject(orderRoot);
+  assert.deepEqual(ordered.slides.map((slide) => slide.status), ["ready", "ready"]);
+  assert.ok(ordered.slides.every((slide) => slide.image && slide.finalRender));
+  assert.equal(ordered.exports.pptx, null);
+
+  const styleRoot = await project(t, "superppt-impact-style-");
+  await seedSlides(styleRoot);
+  const stylePlan = await publishImpactPlan(styleRoot, { kind: "style" });
+  await approveImpact(styleRoot, stylePlan.sha256);
+  await applyRevision(styleRoot, stylePlan, stylePlan.change);
+  const styled = await readProject(styleRoot);
+  assert.deepEqual(styled.slides.map((slide) => slide.status), ["stale", "stale"]);
+  assert.ok(styled.slides.every((slide) => slide.image === null && slide.finalRender === null));
+});
+
+test("rejects a forged impact gate and any plan whose exact base changed", async (t) => {
+  const forgedRoot = await project(t, "superppt-impact-forged-");
+  const plan = await publishImpactPlan(forgedRoot, { kind: "style" });
+  const manifest = await readProject(forgedRoot);
+  const bytes = await readFile(join(forgedRoot, "revisions", "pending-impact.json"));
+  await assert.rejects(writeProject(forgedRoot, {
+    ...manifest,
+    gates: [...manifest.gates, {
+      gate: "revision-impact",
+      revisionId: manifest.currentRevision.id,
+      approvalId: "00000000-0000-4000-8000-000000000777",
+      artifactHashes: {
+        "revisions/pending-impact.json": createHash("sha256").update(bytes).digest("hex"),
+      },
+      snapshotPath: `revisions/${manifest.currentRevision.id}/impact-approvals/00000000-0000-4000-8000-000000000777`,
+      snapshotManifestSha256: "0".repeat(64),
+      confirmedAt: new Date().toISOString(),
+    }],
+  }), /revision impact gate evidence/);
+  assert.deepEqual((await readProject(forgedRoot)).gates, []);
+
+  const matchedRoot = await project(t, "superppt-impact-matched-forgery-");
+  const matchedPlan = await publishImpactPlan(matchedRoot, { kind: "style" });
+  const matchedManifest = await readProject(matchedRoot);
+  const matchedBytes = await readFile(join(matchedRoot, "revisions", "pending-impact.json"));
+  await assert.rejects(writeProject(matchedRoot, {
+    ...matchedManifest,
+    gates: [...matchedManifest.gates, {
+      gate: "revision-impact",
+      revisionId: matchedManifest.currentRevision.id,
+      approvalId: "00000000-0000-4000-8000-000000000778",
+      artifactHashes: {
+        "revisions/pending-impact.json": createHash("sha256").update(matchedBytes).digest("hex"),
+      },
+      snapshotPath: `revisions/${matchedManifest.currentRevision.id}/impact-approvals/00000000-0000-4000-8000-000000000778`,
+      snapshotManifestSha256: matchedPlan.baseManifestSha256,
+      confirmedAt: new Date().toISOString(),
+    }],
+  }), /revision impact gate evidence/);
+  assert.deepEqual((await readProject(matchedRoot)).gates, []);
+
+  const staleRoot = await project(t, "superppt-impact-stale-");
+  const stalePlan = await publishImpactPlan(staleRoot, { kind: "brief", title: "Planned" });
+  await updateProject(staleRoot, (current) => ({ ...current, title: "Concurrent mutation" }));
+  await assert.rejects(approveImpact(staleRoot, stalePlan.sha256), /stale base manifest identity/);
+  assert.deepEqual((await readProject(staleRoot)).gates, []);
+});
+
+test("rejects tampered and linked pending impact evidence", async (t) => {
+  const tamperedRoot = await project(t, "superppt-impact-tampered-");
+  const plan = await publishImpactPlan(tamperedRoot, { kind: "style" });
+  await writeFile(join(tamperedRoot, "revisions", "pending-impact.json"), "{}\n");
+  await assert.rejects(approveImpact(tamperedRoot, plan.sha256), /pending impact evidence is invalid/);
+  assert.deepEqual((await readProject(tamperedRoot)).gates, []);
+
+  const semanticRoot = await project(t, "superppt-impact-semantic-tamper-");
+  await seedSlides(semanticRoot);
+  const semanticPlan = await publishImpactPlan(semanticRoot, { kind: "style" });
+  const { sha256: _oldSha, ...forgedBody } = { ...semanticPlan, staleSlideIds: [] };
+  const forgedPlan = {
+    ...forgedBody,
+    sha256: createHash("sha256").update(JSON.stringify(forgedBody)).digest("hex"),
+  };
+  await writeFile(
+    join(semanticRoot, "revisions", "pending-impact.json"),
+    `${JSON.stringify(forgedPlan, null, 2)}\n`,
+  );
+  await assert.rejects(
+    approveImpact(semanticRoot, forgedPlan.sha256),
+    /revision impact gate evidence is invalid/,
+  );
+  assert.deepEqual((await readProject(semanticRoot)).gates, []);
+
+  const linkedRoot = await project(t, "superppt-impact-linked-");
+  const linkedPlan = await publishImpactPlan(linkedRoot, { kind: "style" });
+  const outside = join(await realpath(await mkdtemp(join(tmpdir(), "superppt-impact-outside-"))), "impact.json");
+  t.after(async () => rm(outside, { force: true }));
+  await writeFile(outside, JSON.stringify(linkedPlan));
+  await rm(join(linkedRoot, "revisions", "pending-impact.json"));
+  await symlink(outside, join(linkedRoot, "revisions", "pending-impact.json"));
+  await assert.rejects(approveImpact(linkedRoot, linkedPlan.sha256), /outside project|fixed project key|unsafe/);
+  assert.deepEqual((await readProject(linkedRoot)).gates, []);
+});
+
+test("serializes concurrent apply so exactly one revision is appended", async (t) => {
+  const root = await project(t, "superppt-impact-concurrent-");
+  await seedSlides(root);
+  const plan = await publishImpactPlan(root, { kind: "slide-spec", slideIds: [A] });
+  await approveImpact(root, plan.sha256);
+  const results = await Promise.allSettled([
+    applyRevision(root, plan, plan.change),
+    applyRevision(root, plan, plan.change),
+  ]);
+  assert.equal(results.filter((result) => result.status === "fulfilled").length, 1);
+  assert.equal(results.filter((result) => result.status === "rejected").length, 1);
+  assert.equal((await readProject(root)).revisions.length, 2);
+});
+
+test("allows a new approved impact after the prior approval was applied", async (t) => {
+  const root = await project(t, "superppt-impact-chained-");
+  const first = await publishImpactPlan(root, { kind: "brief", title: "Second" });
+  await approveImpact(root, first.sha256);
+  await applyRevision(root, first, first.change);
+  const second = await publishImpactPlan(root, { kind: "brief", title: "Third" });
+  await approveImpact(root, second.sha256);
+  await applyRevision(root, second, second.change);
+  const current = await readProject(root);
+  assert.equal(current.title, "Third");
+  assert.equal(current.revisions.length, 3);
+  assert.deepEqual(current.gates.map((gate) => gate.revisionId), [
+    current.revisions[0]!.id,
+    current.revisions[1]!.id,
+  ]);
+});
+
+test("rejects missing, corrupt, linked, current, and non-ledger rollback targets without mutation", async (t) => {
+  async function changedProject(prefix: string): Promise<{
+    root: string;
+    targetId: string;
+  }> {
+    const root = await project(t, prefix);
+    const targetId = (await readProject(root)).currentRevision.id;
+    const plan = await publishImpactPlan(root, { kind: "brief", title: "After" });
+    await approveImpact(root, plan.sha256);
+    await applyRevision(root, plan, plan.change);
+    return { root, targetId };
+  }
+
+  const missing = await changedProject("superppt-rollback-missing-");
+  await rm(join(missing.root, "revisions", missing.targetId, "superppt.json"));
+  const missingBefore = await readProject(missing.root);
+  await assert.rejects(rollbackToRevision(missing.root, missing.targetId), /missing or unsafe/);
+  assert.equal((await readProject(missing.root)).currentRevision.id, missingBefore.currentRevision.id);
+
+  const corrupt = await changedProject("superppt-rollback-corrupt-");
+  await writeFile(join(corrupt.root, "revisions", corrupt.targetId, "superppt.json"), "{}\n");
+  const corruptBefore = await readProject(corrupt.root);
+  await assert.rejects(rollbackToRevision(corrupt.root, corrupt.targetId), /snapshot is corrupt/);
+  assert.equal((await readProject(corrupt.root)).currentRevision.id, corruptBefore.currentRevision.id);
+
+  const linked = await changedProject("superppt-rollback-linked-");
+  const linkedPath = join(linked.root, "revisions", linked.targetId, "superppt.json");
+  const outsideDirectory = await realpath(await mkdtemp(join(tmpdir(), "superppt-rollback-outside-")));
+  t.after(async () => rm(outsideDirectory, { recursive: true, force: true }));
+  const outside = join(outsideDirectory, "superppt.json");
+  await writeFile(outside, await readFile(linkedPath));
+  await rm(linkedPath);
+  await symlink(outside, linkedPath);
+  const linkedBefore = await readProject(linked.root);
+  await assert.rejects(rollbackToRevision(linked.root, linked.targetId), /missing or unsafe/);
+  assert.equal((await readProject(linked.root)).currentRevision.id, linkedBefore.currentRevision.id);
+
+  const illegal = await changedProject("superppt-rollback-illegal-");
+  const illegalManifest = await readProject(illegal.root);
+  await assert.rejects(
+    rollbackToRevision(illegal.root, illegalManifest.currentRevision.id),
+    /earlier revision/,
+  );
+  await assert.rejects(
+    rollbackToRevision(illegal.root, "00000000-0000-4000-8000-000000000999"),
+    /not in the project revision ledger/,
+  );
+  assert.equal((await readProject(illegal.root)).currentRevision.id, illegalManifest.currentRevision.id);
+});
+
+test("refuses to overwrite a conflicting immutable current snapshot during rollback", async (t) => {
+  const root = await project(t, "superppt-rollback-immutable-");
+  const targetId = (await readProject(root)).currentRevision.id;
+  const plan = await publishImpactPlan(root, { kind: "brief", title: "After" });
+  await approveImpact(root, plan.sha256);
+  await applyRevision(root, plan, plan.change);
+  const current = await readProject(root);
+  const currentDirectory = join(root, "revisions", current.currentRevision.id);
+  await mkdir(currentDirectory, { recursive: true });
+  await writeFile(join(currentDirectory, "superppt.json"), "{}\n");
+  await assert.rejects(rollbackToRevision(root, targetId), /immutable revision snapshot differs/);
+  assert.equal((await readProject(root)).currentRevision.id, current.currentRevision.id);
+});
+
+test("fails closed if revisions is swapped to a symlink during pending, snapshot, or rollback access", async (t) => {
+  async function swapRevisions(root: string, outside: string): Promise<void> {
+    await rename(join(root, "revisions"), join(root, "revisions-owned"));
+    await symlink(outside, join(root, "revisions"));
+  }
+
+  const pendingRoot = await project(t, "superppt-impact-pending-race-");
+  const pendingOutside = await realpath(await mkdtemp(join(tmpdir(), "superppt-impact-pending-outside-")));
+  t.after(async () => rm(pendingOutside, { recursive: true, force: true }));
+  await assert.rejects(publishImpactPlan(pendingRoot, { kind: "style" }, {
+    operations: { afterRevisionsDirectoryOpened: () => swapRevisions(pendingRoot, pendingOutside) },
+  }), /changed while accessing revision evidence/);
+  assert.deepEqual(await readFile(join(pendingOutside, ".keep"), "utf8").catch(() => null), null);
+
+  const approvalRoot = await project(t, "superppt-impact-approval-race-");
+  const approvalPlan = await publishImpactPlan(approvalRoot, { kind: "style" });
+  const approvalOutside = await realpath(await mkdtemp(join(tmpdir(), "superppt-impact-approval-outside-")));
+  t.after(async () => rm(approvalOutside, { recursive: true, force: true }));
+  await assert.rejects(approveImpact(approvalRoot, approvalPlan.sha256, {
+    operations: { afterRevisionsDirectoryOpened: () => swapRevisions(approvalRoot, approvalOutside) },
+  }), /changed while accessing revision evidence/);
+  assert.deepEqual(await readFile(join(approvalOutside, "approval.json"), "utf8").catch(() => null), null);
+  assert.deepEqual((await readProject(approvalRoot)).gates, []);
+
+  const applyRoot = await project(t, "superppt-impact-snapshot-race-");
+  const plan = await publishImpactPlan(applyRoot, { kind: "style" });
+  await approveImpact(applyRoot, plan.sha256);
+  const applyOutside = await realpath(await mkdtemp(join(tmpdir(), "superppt-impact-snapshot-outside-")));
+  t.after(async () => rm(applyOutside, { recursive: true, force: true }));
+  await assert.rejects(applyRevision(applyRoot, plan, plan.change, {
+    operations: { afterRevisionsDirectoryOpened: () => swapRevisions(applyRoot, applyOutside) },
+  }), /changed while accessing revision evidence|immutable artifact evidence|missing or unsafe/);
+  assert.deepEqual(await readFile(join(applyOutside, "superppt.json"), "utf8").catch(() => null), null);
+
+  const rollbackRoot = await project(t, "superppt-rollback-read-race-");
+  const targetId = (await readProject(rollbackRoot)).currentRevision.id;
+  const rollbackPlan = await publishImpactPlan(rollbackRoot, { kind: "brief", title: "After" });
+  await approveImpact(rollbackRoot, rollbackPlan.sha256);
+  await applyRevision(rollbackRoot, rollbackPlan, rollbackPlan.change);
+  const rollbackOutside = await realpath(await mkdtemp(join(tmpdir(), "superppt-rollback-read-outside-")));
+  t.after(async () => rm(rollbackOutside, { recursive: true, force: true }));
+  await assert.rejects(rollbackToRevision(rollbackRoot, targetId, {
+    operations: { afterRevisionsDirectoryOpened: () => swapRevisions(rollbackRoot, rollbackOutside) },
+  }), /changed while accessing revision evidence|immutable artifact evidence|missing or unsafe/);
+  assert.deepEqual(await readFile(join(rollbackOutside, "superppt.json"), "utf8").catch(() => null), null);
+});
+
+test("rejects linked or non-exact immutable impact approval trees", async (t) => {
+  const extraRoot = await project(t, "superppt-impact-approval-extra-");
+  const extraPlan = await publishImpactPlan(extraRoot, { kind: "style" });
+  await approveImpact(extraRoot, extraPlan.sha256);
+  const extraGate = (await readProject(extraRoot)).gates.at(-1)!;
+  await writeFile(join(extraRoot, ...extraGate.snapshotPath!.split("/"), "extra.json"), "{}\n");
+  await assert.rejects(applyRevision(extraRoot, extraPlan, extraPlan.change), /approval evidence tree is invalid/);
+
+  const linkedRoot = await project(t, "superppt-impact-approval-linked-");
+  const linkedPlan = await publishImpactPlan(linkedRoot, { kind: "style" });
+  await approveImpact(linkedRoot, linkedPlan.sha256);
+  const linkedGate = (await readProject(linkedRoot)).gates.at(-1)!;
+  const approvalPath = join(linkedRoot, ...linkedGate.snapshotPath!.split("/"));
+  const backupPath = `${approvalPath}.owned`;
+  await rename(approvalPath, backupPath);
+  await symlink(backupPath, approvalPath);
+  await assert.rejects(applyRevision(linkedRoot, linkedPlan, linkedPlan.change), /approval evidence tree is invalid/);
+});
+
+test("CLI plans, approves, applies, and rolls back in distinct commands", async (t) => {
+  const root = await project(t, "superppt-impact-cli-");
+  const base = await readProject(root);
+  const parent = await realpath(await mkdtemp(join(tmpdir(), "superppt-impact-cli-change-")));
+  t.after(async () => rm(parent, { recursive: true, force: true }));
+  const changePath = join(parent, "change.json");
+  await writeFile(changePath, `${JSON.stringify({ kind: "brief", title: "CLI After" })}\n`);
+  const invocation = ["--import", "tsx", "src/cli.ts"];
+
+  const planned = await execFileAsync(process.execPath, [
+    ...invocation,
+    "impact",
+    "--project",
+    root,
+    "--change",
+    changePath,
+  ], { cwd: process.cwd() });
+  assert.equal(planned.stderr, "");
+  const plan = ImpactPlanSchema.parse(JSON.parse(planned.stdout));
+  assert.equal((await readProject(root)).currentRevision.id, base.currentRevision.id);
+  assert.deepEqual((await readProject(root)).gates, []);
+
+  await assert.rejects(execFileAsync(process.execPath, [
+    ...invocation,
+    "apply-impact",
+    "--project",
+    root,
+  ], { cwd: process.cwd() }), /must be approved/);
+  await execFileAsync(process.execPath, [
+    ...invocation,
+    "approve-impact",
+    "--project",
+    root,
+    "--sha256",
+    plan.sha256,
+  ], { cwd: process.cwd() });
+  await execFileAsync(process.execPath, [
+    ...invocation,
+    "apply-impact",
+    "--project",
+    root,
+  ], { cwd: process.cwd() });
+  const applied = await readProject(root);
+  assert.equal(applied.title, "CLI After");
+  assert.equal(applied.revisions.length, 2);
+
+  await execFileAsync(process.execPath, [
+    ...invocation,
+    "rollback",
+    "--project",
+    root,
+    "--revision",
+    base.currentRevision.id,
+  ], { cwd: process.cwd() });
+  const rolledBack = await readProject(root);
+  assert.equal(rolledBack.title, "Demo");
+  assert.equal(rolledBack.revisions.length, 3);
+});

@@ -10,6 +10,7 @@ import {
   realpath,
   rename,
   rm,
+  rmdir,
   symlink,
   unlink,
   writeFile,
@@ -578,6 +579,7 @@ test("requires an exact planned revision snapshot before dropping old artifact e
     `${JSON.stringify(persisted, null, 2)}\n`,
     { flag: "wx", mode: 0o600 },
   );
+  await rmdir(join(root, "revisions"));
   await symlink(externalSnapshot, join(root, "revisions"));
   await assert.rejects(
     writeProject(root, dropsArtifact),

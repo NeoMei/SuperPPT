@@ -4,7 +4,18 @@ import { approveGate, type PlanningGate } from "./planning/confirm.js";
 import { normalizeInput, type InputRequest } from "./planning/intake.js";
 import { publishPlanViews, publishStyleSample } from "./planning/views.js";
 import { initializeProject } from "./project/initialize.js";
+import { readRegularFileNoFollow } from "./project/safe-file.js";
 import { readProject } from "./project/store.js";
+import {
+  applyRevision,
+  approveImpact,
+  publishImpactPlan,
+  rollbackToRevision,
+} from "./revisions/apply.js";
+import {
+  ChangeRequestSchema,
+  readPendingImpactEvidence,
+} from "./revisions/impact.js";
 
 function flags(argv: string[]): Map<string, string> {
   const result = new Map<string, string>();
@@ -139,6 +150,47 @@ async function main(argv: string[]): Promise<void> {
     const gate = planningGate(options.get("--gate")!);
     await approveGate(root, gate);
     outputJson({ gate, current: true });
+    return;
+  }
+
+  if (command === "impact") {
+    const options = exactFlags(argv.slice(1), ["--project", "--change"]);
+    const changePath = options.get("--change")!;
+    let change: unknown;
+    try {
+      change = JSON.parse((await readRegularFileNoFollow(changePath)).toString("utf8"));
+    } catch (error: unknown) {
+      throw new Error("impact change file is invalid", { cause: error });
+    }
+    outputJson(await publishImpactPlan(
+      options.get("--project")!,
+      ChangeRequestSchema.parse(change),
+    ));
+    return;
+  }
+
+  if (command === "approve-impact") {
+    const options = exactFlags(argv.slice(1), ["--project", "--sha256"]);
+    const sha256 = options.get("--sha256")!;
+    await approveImpact(options.get("--project")!, sha256);
+    outputJson({ sha256, approved: true });
+    return;
+  }
+
+  if (command === "apply-impact") {
+    const options = exactFlags(argv.slice(1), ["--project"]);
+    const root = options.get("--project")!;
+    const { plan } = await readPendingImpactEvidence(root);
+    await applyRevision(root, plan, plan.change);
+    outputJson({ sha256: plan.sha256, applied: true });
+    return;
+  }
+
+  if (command === "rollback") {
+    const options = exactFlags(argv.slice(1), ["--project", "--revision"]);
+    const revisionId = options.get("--revision")!;
+    await rollbackToRevision(options.get("--project")!, revisionId);
+    outputJson({ revisionId, rolledBack: true });
     return;
   }
 

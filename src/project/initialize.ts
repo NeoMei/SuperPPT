@@ -25,6 +25,7 @@ const DIRECTORIES = [
   "previews",
   "output",
   "failed-runs",
+  "revisions",
 ];
 
 export type InitializeCheckpoint =

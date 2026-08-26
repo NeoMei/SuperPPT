@@ -65,7 +65,32 @@ export const GateSchema = z.object({
     descriptorSha256: Sha256Schema,
   }).strict().optional(),
   confirmedAt: z.string().datetime(),
-}).strict();
+}).strict().superRefine((gate, context) => {
+  if (gate.gate !== "revision-impact") return;
+  const keys = Object.keys(gate.artifactHashes);
+  if (keys.length !== 1 || keys[0] !== "revisions/pending-impact.json") {
+    context.addIssue({
+      code: "custom",
+      path: ["artifactHashes"],
+      message: "revision-impact gate must bind the fixed pending impact evidence",
+    });
+  }
+  if (!gate.approvalId) {
+    context.addIssue({ code: "custom", path: ["approvalId"], message: "revision-impact gate requires an approval identity" });
+  }
+  const expectedPath = gate.approvalId
+    ? `revisions/${gate.revisionId}/impact-approvals/${gate.approvalId}`
+    : "";
+  if (gate.snapshotPath !== expectedPath) {
+    context.addIssue({ code: "custom", path: ["snapshotPath"], message: "revision-impact gate requires its fixed approval evidence path" });
+  }
+  if (!gate.snapshotManifestSha256) {
+    context.addIssue({ code: "custom", path: ["snapshotManifestSha256"], message: "revision-impact gate requires an exact base identity" });
+  }
+  if (gate.presentation) {
+    context.addIssue({ code: "custom", path: ["presentation"], message: "revision-impact gate does not accept presentation evidence" });
+  }
+});
 
 export const ProjectManifestSchema = z.object({
   schemaVersion: z.literal(1),

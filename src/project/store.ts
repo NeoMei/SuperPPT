@@ -16,6 +16,7 @@ import {
   ProjectManifestSchema,
   type ProjectManifest,
 } from "./schemas.js";
+import { validateImpactGateEvidence } from "../revisions/impact.js";
 
 export const MARKER = ".superppt-project.json";
 export const MANIFEST = "superppt.json";
@@ -260,6 +261,12 @@ async function persistProject(
         }
       } catch (error: unknown) {
         throw new Error("ordinary gate evidence is invalid", { cause: error });
+      }
+    } else if (gate.gate === "revision-impact") {
+      try {
+        await validateImpactGateEvidence(owned.root, owned.manifest, gate);
+      } catch (error: unknown) {
+        throw new Error("revision impact gate evidence is invalid", { cause: error });
       }
     }
   }
