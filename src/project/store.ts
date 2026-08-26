@@ -17,8 +17,31 @@ import {
   ProjectManifestSchema,
   type ProjectManifest,
 } from "./schemas.js";
-import { validateImpactGateEvidence } from "../revisions/impact.js";
-import { hasExactRevisionSnapshot, readRevisionSnapshot } from "../revisions/snapshot.js";
+import {
+  ChangeRequestSchema,
+  ImpactPlanSchema,
+  manifestIdentity,
+  readPendingImpactEvidence,
+  validateImpactGateEvidence,
+  type ChangeRequest,
+  type ImpactPlan,
+} from "../revisions/impact.js";
+import {
+  authenticatedPlanningArtifacts,
+  assertCurrentRevisionPlanningEvidence,
+  assertManifestArtifactReferences,
+} from "../revisions/physical.js";
+import {
+  publishRollbackJournal,
+  readRollbackJournal,
+} from "../revisions/rollback-journal.js";
+import { readProjectFileSet } from "../revisions/project-files.js";
+import {
+  hasExactRevisionSnapshot,
+  publishRevisionSnapshot,
+  readRevisionSnapshot,
+} from "../revisions/snapshot.js";
+import type { RevisionEvidenceOperations } from "../revisions/anchored-fs.js";
 
 export const MARKER = ".superppt-project.json";
 export const MANIFEST = "superppt.json";
@@ -388,57 +411,205 @@ export async function readProjectForRollbackRecovery(root: string): Promise<{
   return ownedProject(root);
 }
 
-export async function updateProjectWithRevisionAppend(
+export async function commitApprovedImpactRevision(
   root: string,
-  updater: ProjectUpdater,
-  operations: WriteProjectOperations = {},
-): Promise<ProjectManifest> {
+  rawPlan: ImpactPlan,
+  rawChange: ChangeRequest,
+  evidenceOperations?: RevisionEvidenceOperations,
+): Promise<void> {
+  const plan = ImpactPlanSchema.parse(rawPlan);
+  const change = ChangeRequestSchema.parse(rawChange);
+  if (!sameJson(plan.change, change)) {
+    throw new Error("impact plan change does not match apply request");
+  }
   let result: ProjectManifest | undefined;
   const expected = await ownedProject(root);
   await assertNoPendingRollbackTransaction(expected.root);
   await withProjectLease(expected.root, "state", async (canonicalRoot) => {
     const current = await ownedProject(canonicalRoot);
     await assertNoPendingRollbackTransaction(current.root);
-    const valid = ProjectManifestSchema.parse(await updater(structuredClone(current.manifest)));
-    await persistProject(current, valid, operations, "revision-append");
+    const pending = await readPendingImpactEvidence(canonicalRoot);
+    if (!sameJson(pending.plan, plan)) {
+      throw new Error("pending impact evidence does not match apply request");
+    }
+    const gate = current.manifest.gates.at(-1);
+    if (!gate || gate.gate !== "revision-impact") {
+      throw new Error("revision impact must be approved before apply");
+    }
+    const base = ProjectManifestSchema.parse({
+      ...current.manifest,
+      gates: current.manifest.gates.slice(0, -1),
+    });
+    if (
+      plan.projectId !== base.projectId
+      || plan.baseRevisionId !== base.currentRevision.id
+      || plan.baseRevisionNumber !== base.currentRevision.number
+      || plan.baseManifestSha256 !== manifestIdentity(base)
+    ) throw new Error("impact plan has a stale base manifest identity");
+    const approved = await validateImpactGateEvidence(canonicalRoot, base, gate);
+    if (!sameJson(approved, plan)) {
+      throw new Error("approved revision impact does not match the requested plan");
+    }
+    await assertCurrentRevisionPlanningEvidence(canonicalRoot, current.manifest);
+    await assertManifestArtifactReferences(canonicalRoot, current.manifest);
+    const snapshot = await publishRevisionSnapshot(
+      canonicalRoot,
+      current.manifest,
+      evidenceOperations,
+    );
+    const revision = {
+      id: randomUUID(),
+      number: current.manifest.currentRevision.number + 1,
+      createdAt: new Date().toISOString(),
+      parentId: current.manifest.currentRevision.id,
+      parentSnapshotDescriptorSha256: snapshot.descriptorSha256,
+    };
+    const stale = new Set(plan.staleSlideIds);
+    const valid = ProjectManifestSchema.parse({
+      ...current.manifest,
+      title: change.kind === "brief" && change.title ? change.title : current.manifest.title,
+      stage: plan.restartStage,
+      currentRevision: revision,
+      revisions: [...current.manifest.revisions, revision],
+      slides: current.manifest.slides.map((slide) => stale.has(slide.id) ? {
+        ...slide,
+        status: "stale" as const,
+        image: null,
+        editable: null,
+        finalRender: null,
+        staleReasons: [...new Set([...slide.staleReasons, change.kind])],
+      } : slide),
+      exports: plan.invalidateExports ? {
+        pptx: null,
+        pdf: null,
+        montage: null,
+        acceptance: null,
+      } : current.manifest.exports,
+    });
+    await persistProject(current, valid, {}, "revision-append");
     result = valid;
   });
-  return result!;
+  if (!result) throw new Error("approved impact revision was not committed");
 }
 
 export async function beginProjectRollbackTransaction(
   root: string,
-  updater: (
-    manifest: ProjectManifest,
-    baseIdentity: string,
-  ) => ProjectManifest | Promise<ProjectManifest>,
-  operations: WriteProjectOperations = {},
-): Promise<ProjectManifest> {
-  let result: ProjectManifest | undefined;
+  targetRevisionId: string,
+  evidenceOperations?: RevisionEvidenceOperations,
+): Promise<void> {
   const expected = await ownedProject(root);
   await assertNoPendingRollbackTransaction(expected.root);
   await withProjectLease(expected.root, "state", async (canonicalRoot) => {
     const current = await ownedProject(canonicalRoot);
     await assertNoPendingRollbackTransaction(current.root);
-    const proposed = await updater(structuredClone(current.manifest), current.baseIdentity);
-    const valid = ProjectManifestSchema.parse(proposed);
-    await persistProject(current, valid, operations, "rollback-begin");
-    result = valid;
+    if (targetRevisionId === current.manifest.currentRevision.id) {
+      throw new Error("rollback target must be an earlier revision");
+    }
+    const targetIndex = current.manifest.revisions.findIndex((revision) => revision.id === targetRevisionId);
+    if (targetIndex < 0) throw new Error("rollback target is not in the project revision ledger");
+    let targetSnapshot: Awaited<ReturnType<typeof readRevisionSnapshot>>;
+    try {
+      targetSnapshot = await readRevisionSnapshot(canonicalRoot, targetRevisionId, evidenceOperations);
+    } catch (error: unknown) {
+      throw new Error(`rollback revision snapshot is missing, unsafe, or unauthentic: ${targetRevisionId}`, { cause: error });
+    }
+    const target = targetSnapshot.manifest;
+    const targetPrefix = current.manifest.revisions.slice(0, targetIndex + 1);
+    if (
+      target.projectId !== current.manifest.projectId
+      || target.currentRevision.id !== targetRevisionId
+      || target.revisions.at(-1)?.id !== targetRevisionId
+      || !sameJson(target.revisions, targetPrefix)
+    ) throw new Error("rollback target snapshot is not a legal project revision prefix");
+    const targetChild = current.manifest.revisions[targetIndex + 1];
+    if (
+      !targetChild
+      || targetChild.parentId !== targetRevisionId
+      || targetChild.parentSnapshotDescriptorSha256 !== targetSnapshot.descriptor.descriptorSha256
+    ) throw new Error("rollback target snapshot descriptor anchor mismatch");
+    const after = await authenticatedPlanningArtifacts(canonicalRoot, target);
+    await assertManifestArtifactReferences(canonicalRoot, target, after);
+    await assertCurrentRevisionPlanningEvidence(canonicalRoot, current.manifest);
+    await assertManifestArtifactReferences(canonicalRoot, current.manifest);
+    const currentSnapshot = await publishRevisionSnapshot(canonicalRoot, current.manifest, evidenceOperations);
+    const rollbackRevisionBase = {
+      id: randomUUID(),
+      number: current.manifest.currentRevision.number + 1,
+      createdAt: new Date().toISOString(),
+      parentId: current.manifest.currentRevision.id,
+      parentSnapshotDescriptorSha256: currentSnapshot.descriptorSha256,
+    };
+    const before = await readProjectFileSet(canonicalRoot, [...after.keys()]);
+    const published = await publishRollbackJournal({
+      root: canonicalRoot,
+      current: current.manifest,
+      baseManifestSha256: current.baseIdentity,
+      targetRevisionId,
+      rollbackRevisionId: rollbackRevisionBase.id,
+      rollbackManifest: (transactionAnchorSha256) => {
+        const rollbackRevision = {
+          ...rollbackRevisionBase,
+          rollbackTransactionDescriptorSha256: transactionAnchorSha256,
+        };
+        return ProjectManifestSchema.parse({
+          ...target,
+          currentRevision: rollbackRevision,
+          revisions: [...current.manifest.revisions, rollbackRevision],
+          gates: current.manifest.gates,
+        });
+      },
+      before,
+      after,
+      operations: evidenceOperations,
+    });
+    await evidenceOperations?.rollbackCheckpoint?.("journal-published");
+    const valid = ProjectManifestSchema.parse({
+      ...current.manifest,
+      rollbackTransaction: {
+        transactionId: published.journal.transactionId,
+        baseRevisionId: published.journal.baseRevisionId,
+        targetRevisionId: published.journal.targetRevisionId,
+        rollbackRevisionId: published.journal.rollbackRevisionId,
+        descriptorSha256: published.journal.transactionAnchorSha256,
+      },
+    });
+    await persistProject(current, valid, {}, "rollback-begin");
   });
-  return result!;
+}
+
+async function assertJournalFileSet(
+  root: string,
+  expected: ReadonlyMap<string, Buffer | null>,
+): Promise<void> {
+  const actual = await readProjectFileSet(root, [...expected.keys()]);
+  for (const [path, bytes] of expected) {
+    const value = actual.get(path) ?? null;
+    if (bytes === null ? value !== null : !value?.equals(bytes)) {
+      throw new Error(`rollback transaction file set is not current: ${path}`);
+    }
+  }
 }
 
 export async function finishProjectRollbackTransaction(
   root: string,
-  updater: ProjectUpdater,
-  operations: WriteProjectOperations = {},
+  evidenceOperations?: RevisionEvidenceOperations,
 ): Promise<ProjectManifest> {
   let result: ProjectManifest | undefined;
   const expected = await ownedProject(root);
   await withProjectLease(expected.root, "state", async (canonicalRoot) => {
     const current = await ownedProject(canonicalRoot);
-    const valid = ProjectManifestSchema.parse(await updater(structuredClone(current.manifest)));
-    await persistProject(current, valid, operations, "rollback-finish");
+    const evidence = await readRollbackJournal(canonicalRoot, evidenceOperations);
+    const marker = current.manifest.rollbackTransaction;
+    if (!marker || !sameJson(marker, {
+      transactionId: evidence.journal.transactionId,
+      baseRevisionId: evidence.journal.baseRevisionId,
+      targetRevisionId: evidence.journal.targetRevisionId,
+      rollbackRevisionId: evidence.journal.rollbackRevisionId,
+      descriptorSha256: evidence.journal.transactionAnchorSha256,
+    })) throw new Error("rollback transaction descriptor anchor mismatch");
+    await assertJournalFileSet(canonicalRoot, evidence.after);
+    const valid = evidence.rollbackManifest;
+    await persistProject(current, valid, {}, "rollback-finish");
     result = valid;
   });
   return result!;
@@ -446,15 +617,24 @@ export async function finishProjectRollbackTransaction(
 
 export async function abortProjectRollbackTransaction(
   root: string,
-  updater: ProjectUpdater,
-  operations: WriteProjectOperations = {},
+  evidenceOperations?: RevisionEvidenceOperations,
 ): Promise<ProjectManifest> {
   let result: ProjectManifest | undefined;
   const expected = await ownedProject(root);
   await withProjectLease(expected.root, "state", async (canonicalRoot) => {
     const current = await ownedProject(canonicalRoot);
-    const valid = ProjectManifestSchema.parse(await updater(structuredClone(current.manifest)));
-    await persistProject(current, valid, operations, "rollback-abort");
+    const evidence = await readRollbackJournal(canonicalRoot, evidenceOperations);
+    const marker = current.manifest.rollbackTransaction;
+    if (!marker || marker.descriptorSha256 !== evidence.journal.transactionAnchorSha256) {
+      throw new Error("rollback transaction descriptor anchor mismatch");
+    }
+    await assertJournalFileSet(canonicalRoot, evidence.before);
+    const { rollbackTransaction: _transaction, ...base } = current.manifest;
+    const valid = ProjectManifestSchema.parse(base);
+    if (sha256(Buffer.from(`${JSON.stringify(valid, null, 2)}\n`)) !== evidence.journal.baseManifestSha256) {
+      throw new Error("rollback journal does not match the current manifest state");
+    }
+    await persistProject(current, valid, {}, "rollback-abort");
     result = valid;
   });
   return result!;

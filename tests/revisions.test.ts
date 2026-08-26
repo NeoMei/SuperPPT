@@ -24,7 +24,6 @@ import { initializeProject } from "../src/project/initialize.js";
 import {
   readProject,
   updateProject,
-  updateProjectWithRevisionAppend,
   writeProject,
 } from "../src/project/store.js";
 import {
@@ -189,29 +188,9 @@ async function setBriefArtifact(root: string): Promise<void> {
 }
 
 async function advanceWithBriefArtifact(root: string, brief: typeof approvedBrief): Promise<void> {
-  const current = await readProject(root);
-  const snapshot = await publishRevisionSnapshot(root, current);
-  const bytes = Buffer.from(`${JSON.stringify(brief, null, 2)}\n`);
-  await writeFile(join(root, "brief.json"), bytes);
-  await updateProjectWithRevisionAppend(root, (manifest) => {
-    const revision = {
-      id: randomUUID(),
-      number: manifest.currentRevision.number + 1,
-      createdAt: new Date().toISOString(),
-      parentId: manifest.currentRevision.id,
-      parentSnapshotDescriptorSha256: snapshot.descriptorSha256,
-    };
-    return {
-      ...manifest,
-      currentRevision: revision,
-      revisions: [...manifest.revisions, revision],
-      brief: {
-        path: "brief.json",
-        sha256: createHash("sha256").update(bytes).digest("hex"),
-        revisionId: revision.id,
-      },
-    };
-  });
+  const plan = await publishImpactPlan(root, { kind: "brief", title: brief.title });
+  await approveImpact(root, plan.sha256);
+  await applyRevision(root, plan, plan.change);
 }
 
 function revisionSnapshotRoot(root: string, revisionId: string): string {
@@ -248,7 +227,7 @@ async function authenticatedRollbackVersions(
     })),
   };
   await advanceWithBriefArtifact(root, v2Brief);
-  await writeApprovedOutline(root, v2Brief, v2Outline);
+  await writeApprovedOutline(root, approvedBrief, v2Outline);
   const current = await readProject(root);
   return {
     root,
@@ -498,9 +477,9 @@ test("restores authenticated fixed planning artifacts from the rollback target",
     })),
   };
   await advanceWithBriefArtifact(root, v2Brief);
-  await writeApprovedOutline(root, v2Brief, v2Outline);
+  await writeApprovedOutline(root, approvedBrief, v2Outline);
   const before = await readProject(root);
-  assert.notDeepEqual(await readFile(join(root, "brief.json")), v1Brief);
+  assert.deepEqual(await readFile(join(root, "brief.json")), v1Brief);
   assert.notDeepEqual(await readFile(join(root, "outline.json")), v1Outline);
 
   await rollbackToRevision(root, targetId);
@@ -727,7 +706,7 @@ test("rejects corrupted target planning snapshots before restoring any bytes", a
 
   const v2Brief = { ...approvedBrief, title: "Corruption-safe V2" };
   await advanceWithBriefArtifact(root, v2Brief);
-  await writeApprovedOutline(root, v2Brief, approvedOutline);
+  await writeApprovedOutline(root, approvedBrief, approvedOutline);
   const before = await readProject(root);
   const briefBefore = await readFile(join(root, "brief.json"));
   const target = JSON.parse(await readFile(
