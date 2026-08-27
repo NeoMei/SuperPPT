@@ -8,7 +8,16 @@ import sharp from "sharp";
 import { z } from "zod";
 
 import { buildAcceptance } from "../acceptance/build.js";
-import { AcceptanceSchema, ClientAcceptanceSchema, type Acceptance } from "../acceptance/schema.js";
+import {
+  AcceptanceSchema,
+  ClientAcceptanceInputSchema,
+  ClientAcceptanceSchema,
+  type Acceptance,
+} from "../acceptance/schema.js";
+import {
+  validateClientSmokeCopyDescriptor,
+  validateRecordedClientSmokeCopy,
+} from "../acceptance/smoke-copy.js";
 import { AttemptLedgerSchema } from "../generation/schemas.js";
 import { validateAppliedEditableBinding, validateConfirmedEditablePreview } from "../editable/render.js";
 import { assertGateCurrent } from "../planning/confirm.js";
@@ -1257,6 +1266,9 @@ async function validateAcceptanceCurrent(root: string, manifest: ProjectManifest
       throw new Error("acceptance evidence is not current");
     }
   }
+  if (acceptance.deliveryComplete) {
+    await validateRecordedClientSmokeCopy(root, manifest, acceptance.clientAcceptance);
+  }
 }
 
 async function preserveManifestBeforeArtifactReplacement(root: string, manifest: ProjectManifest): Promise<void> {
@@ -1322,15 +1334,57 @@ export async function recordClientAcceptance(
     || before.ctimeNs !== after.ctimeNs
     || (after.mode & 0o777n) !== 0o600n
   ) throw new Error("client acceptance input changed while reading");
-  const client = ClientAcceptanceSchema.parse(JSON.parse(inputBytes.toString("utf8")));
-  if (!client.application || !client.opened || !client.edited || !client.saved || !client.reopened || !client.confirmedAt) {
-    throw new Error("all five client acceptance checks must be explicitly complete");
+  let submitted;
+  try {
+    submitted = ClientAcceptanceInputSchema.parse(JSON.parse(inputBytes.toString("utf8")));
+  } catch (error: unknown) {
+    throw new Error("client acceptance input is invalid", { cause: error });
+  }
+  if (
+    !submitted.opened
+    || !submitted.edited
+    || !submitted.saved
+    || !submitted.closed
+    || !submitted.reopened
+    || submitted.result !== "passed"
+  ) {
+    throw new Error("all six client acceptance checks must be explicitly complete");
   }
   return withProjectLease(root, "acceptance", async (canonicalRoot) => {
     const manifest = await readProject(canonicalRoot);
     const current = await readProjectAcceptance(canonicalRoot);
     await validateAcceptanceCurrent(canonicalRoot, manifest, current);
     if (current.deliveryComplete) return current;
+    const smoke = await validateClientSmokeCopyDescriptor({
+      root: canonicalRoot,
+      manifest,
+      descriptorPath: submitted.smokeCopyDescriptorPath,
+      expectedDescriptorSha256: submitted.smokeCopyDescriptorSha256,
+    });
+    if (smoke.currentCopySha256 !== submitted.savedCopySha256) {
+      throw new Error("saved client smoke copy hash does not match the observed file");
+    }
+    if (smoke.currentCopySha256 === smoke.copy.initialSha256) {
+      throw new Error("smoke copy must change after the client edit");
+    }
+    const client = ClientAcceptanceSchema.parse({
+      application: submitted.application,
+      smokeCopy: {
+        descriptorPath: smoke.descriptorPath,
+        descriptorSha256: smoke.descriptorSha256,
+        path: smoke.copy.path,
+        initialSha256: smoke.copy.initialSha256,
+        savedSha256: smoke.currentCopySha256,
+      },
+      opened: submitted.opened,
+      edited: submitted.edited,
+      saved: submitted.saved,
+      closed: submitted.closed,
+      reopened: submitted.reopened,
+      result: submitted.result,
+      observedResult: submitted.observedResult,
+      confirmedAt: submitted.confirmedAt,
+    });
     const completed = AcceptanceSchema.parse({
       ...current,
       deliveryComplete: true,

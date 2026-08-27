@@ -9,6 +9,7 @@ import {
   recordClientAcceptance,
   replaceSlide,
 } from "./deck/assemble.js";
+import { createClientSmokeCopy } from "./acceptance/smoke-copy.js";
 import {
   describeProjectGeneration,
   generateProject,
@@ -465,6 +466,12 @@ async function main(argv: string[]): Promise<void> {
   if (command === "acceptance") {
     const options = exactFlags(argv.slice(1), ["--project"]);
     outputJson(await readProjectAcceptance(options.get("--project")!));
+    return;
+  }
+
+  if (command === "acceptance-smoke-copy") {
+    const options = exactFlags(argv.slice(1), ["--project"]);
+    outputJson(await createClientSmokeCopy(options.get("--project")!));
     return;
   }
 

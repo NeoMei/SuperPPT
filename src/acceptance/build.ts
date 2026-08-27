@@ -79,10 +79,14 @@ export async function buildAcceptance(input: AcceptanceInput): Promise<Acceptanc
     deliveryComplete: false,
     clientAcceptance: {
       application: null,
+      smokeCopy: null,
       opened: false,
       edited: false,
       saved: false,
+      closed: false,
       reopened: false,
+      result: null,
+      observedResult: null,
       confirmedAt: null,
     },
   });

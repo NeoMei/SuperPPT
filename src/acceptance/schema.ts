@@ -7,12 +7,52 @@ export const FileEvidenceSchema = z.object({
   sha256: Sha256Schema,
 }).strict();
 
-export const ClientAcceptanceSchema = z.object({
-  application: z.enum(["WPS", "PowerPoint"]).nullable(),
+export const ClientSmokeCopyDescriptorSchema = z.object({
+  descriptorVersion: z.literal(1),
+  appId: z.literal("superppt"),
+  artifactKind: z.literal("client-smoke-copy"),
+  projectId: z.string().uuid(),
+  revisionId: z.string().uuid(),
+  revisionNumber: z.number().int().positive(),
+  source: FileEvidenceSchema,
+  copy: z.object({
+    path: z.string().min(1),
+    initialSha256: Sha256Schema,
+  }).strict(),
+  createdAt: z.string().datetime(),
+}).strict();
+
+export const ClientAcceptanceInputSchema = z.object({
+  application: z.enum(["WPS", "PowerPoint"]),
+  smokeCopyDescriptorPath: z.string().min(1),
+  smokeCopyDescriptorSha256: Sha256Schema,
+  savedCopySha256: Sha256Schema,
   opened: z.boolean(),
   edited: z.boolean(),
   saved: z.boolean(),
+  closed: z.boolean(),
   reopened: z.boolean(),
+  result: z.enum(["passed", "failed"]),
+  observedResult: z.string().min(1).max(1000),
+  confirmedAt: z.string().datetime(),
+}).strict();
+
+export const ClientAcceptanceSchema = z.object({
+  application: z.enum(["WPS", "PowerPoint"]).nullable(),
+  smokeCopy: z.object({
+    descriptorPath: z.string().min(1),
+    descriptorSha256: Sha256Schema,
+    path: z.string().min(1),
+    initialSha256: Sha256Schema,
+    savedSha256: Sha256Schema,
+  }).strict().nullable(),
+  opened: z.boolean(),
+  edited: z.boolean(),
+  saved: z.boolean(),
+  closed: z.boolean(),
+  reopened: z.boolean(),
+  result: z.enum(["passed", "failed"]).nullable(),
+  observedResult: z.string().min(1).max(1000).nullable(),
   confirmedAt: z.string().datetime().nullable(),
 }).strict();
 
@@ -53,10 +93,14 @@ export const AcceptanceSchema = z.object({
     });
   }
   const complete = value.clientAcceptance.application !== null
+    && value.clientAcceptance.smokeCopy !== null
     && value.clientAcceptance.opened
     && value.clientAcceptance.edited
     && value.clientAcceptance.saved
+    && value.clientAcceptance.closed
     && value.clientAcceptance.reopened
+    && value.clientAcceptance.result === "passed"
+    && value.clientAcceptance.observedResult !== null
     && value.clientAcceptance.confirmedAt !== null;
   if (value.deliveryComplete !== complete) {
     context.addIssue({
