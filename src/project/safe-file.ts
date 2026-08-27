@@ -17,6 +17,13 @@ function sameContentVersion(left: BigIntStats, right: BigIntStats): boolean {
     && left.ctimeNs === right.ctimeNs;
 }
 
+function sameOpenedSnapshot(left: BigIntStats, right: BigIntStats): boolean {
+  // Atomic publication may detach the opened inode without changing its bytes.
+  return sameFile(left, right)
+    && left.size === right.size
+    && left.mtimeNs === right.mtimeNs;
+}
+
 export async function readRegularFileNoFollow(
   path: string,
   operations: SafeReadOperations = {},
@@ -48,6 +55,39 @@ export async function readRegularFileNoFollow(
       || !sameContentVersion(opened, afterOpen)
       || !sameContentVersion(afterOpen, after)
     ) {
+      throw new Error(`planning artifact changed while reading: ${path}`);
+    }
+    return value;
+  } finally {
+    await handle.close();
+  }
+}
+
+export async function readRegularFileSnapshotNoFollow(
+  path: string,
+  operations: SafeReadOperations = {},
+): Promise<Buffer> {
+  let before: BigIntStats;
+  try {
+    before = await lstat(path, { bigint: true });
+  } catch (error: unknown) {
+    throw new Error(`planning artifact must be a regular file: ${path}`, { cause: error });
+  }
+  if (before.isSymbolicLink() || !before.isFile()) {
+    throw new Error(`planning artifact must be a regular file: ${path}`);
+  }
+
+  const noFollow = process.platform === "win32" ? 0 : (constants.O_NOFOLLOW ?? 0);
+  const handle = await open(path, constants.O_RDONLY | noFollow);
+  try {
+    const opened = await handle.stat({ bigint: true });
+    if (!opened.isFile() || !sameContentVersion(before, opened)) {
+      throw new Error(`planning artifact changed while reading: ${path}`);
+    }
+    await operations.afterOpen?.(path);
+    const value = await handle.readFile();
+    const afterOpen = await handle.stat({ bigint: true });
+    if (!sameOpenedSnapshot(opened, afterOpen)) {
       throw new Error(`planning artifact changed while reading: ${path}`);
     }
     return value;

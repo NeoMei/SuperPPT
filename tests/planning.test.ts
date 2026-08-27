@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
-import { access, copyFile, mkdir, mkdtemp, readFile, readdir, realpath, rename, rm, symlink, utimes, writeFile } from "node:fs/promises";
+import { access, mkdir, mkdtemp, readFile, readdir, realpath, rename, rm, symlink, unlink, utimes, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test, { type TestContext } from "node:test";
@@ -427,26 +427,102 @@ test("state lease contenders tolerate an atomic manifest promotion by the curren
     promote: async (stagingPath, manifestPath) => {
       announcePromotion();
       await promotionReleased;
-      for (let index = 0; index < 1_024; index += 1) {
-        const replacement = `${manifestPath}.promotion-probe-${index}`;
-        await copyFile(stagingPath, replacement);
-        await rename(replacement, manifestPath);
-      }
       await rename(stagingPath, manifestPath);
     },
   });
   await promotionStarted;
 
-  const contenders = Promise.allSettled(Array.from({ length: 24 }, () =>
-    withProjectLease(root, "state", async () => undefined, { waitTimeoutMs: 60_000 })
+  let opened = 0;
+  let announceOpened!: () => void;
+  const allOpened = new Promise<void>((resolve) => { announceOpened = resolve; });
+  let releaseReads!: () => void;
+  const readsReleased = new Promise<void>((resolve) => { releaseReads = resolve; });
+  const contenderCount = 4;
+  const contenders = Promise.allSettled(Array.from({ length: contenderCount }, () =>
+    withProjectLease(root, "state", async () => undefined, {
+      waitTimeoutMs: 60_000,
+      manifestRead: {
+        afterOpen: async () => {
+          opened += 1;
+          if (opened === contenderCount) announceOpened();
+          await readsReleased;
+        },
+      },
+    })
   ));
-  releasePromotion();
-  await writer;
+  let handshakeTimer: NodeJS.Timeout | undefined;
+  try {
+    await Promise.race([
+      allOpened,
+      new Promise<never>((_resolve, reject) => {
+        handshakeTimer = setTimeout(() => reject(new Error("manifest read handshake timed out")), 2_000);
+      }),
+    ]);
+  } finally {
+    if (handshakeTimer) clearTimeout(handshakeTimer);
+    releasePromotion();
+    await writer;
+    releaseReads();
+  }
 
   const failures = (await contenders)
     .filter((result): result is PromiseRejectedResult => result.status === "rejected")
     .map(({ reason }) => reason instanceof Error ? reason.message : String(reason));
   assert.deepEqual(failures, []);
+});
+
+test("lease authentication rejects an in-place manifest rewrite before publishing lease evidence", async (t) => {
+  const root = await project(t, "superppt-state-lease-in-place-");
+  const manifestPath = join(root, "superppt.json");
+  const original = await readFile(manifestPath, "utf8");
+  const changed = original.replace('"title": "Demo"', '"title": "Damo"');
+  assert.equal(changed.length, original.length);
+  let actionCalled = false;
+
+  await assert.rejects(withProjectLease(root, "state", async () => {
+    actionCalled = true;
+  }, {
+    manifestRead: {
+      afterOpen: async () => { await writeFile(manifestPath, changed); },
+    },
+  }), /not owned|changed while reading/i);
+  assert.equal(actionCalled, false);
+  await assert.rejects(readdir(join(root, ".superppt-leases")), { code: "ENOENT" });
+});
+
+test("recovery refuses missing, tampered, or linked manifests before writing project artifacts", async (t) => {
+  for (const corruption of ["missing", "tampered", "symlink"] as const) {
+    const root = await project(t, `superppt-recovery-${corruption}-manifest-`);
+    await writeValidPlan(root);
+    await publishPlanViews(root);
+    await writeFile(join(root, "brief.json"), `${JSON.stringify({ ...brief, title: "Pending recovery" }, null, 2)}\n`);
+    await assert.rejects(publishPlanViews(root, {
+      operations: { checkpoint(step) { if (step === "convenience-written") throw new Error("leave pending recovery"); } },
+    }), /leave pending recovery/);
+    const briefBefore = await readFile(join(root, "brief.md"));
+    const journalRoot = join(root, ".superppt-view-journals");
+    const journalBefore = await readdir(journalRoot);
+    assert.ok(journalBefore.some((name) => name.endsWith(".pending.json")));
+    const leasesBefore = await readdir(join(root, ".superppt-leases", "planning"));
+    const stateLeasesBefore = await readdir(join(root, ".superppt-leases", "state"));
+    const manifestPath = join(root, "superppt.json");
+    if (corruption === "missing") {
+      await unlink(manifestPath);
+    } else if (corruption === "tampered") {
+      await writeFile(manifestPath, "{}\n");
+    } else {
+      const external = join(await temporaryParent(t, "superppt-linked-manifest-"), "manifest.json");
+      await writeFile(external, await readFile(manifestPath));
+      await unlink(manifestPath);
+      await symlink(external, manifestPath);
+    }
+
+    await assert.rejects(recoverPlanViews(root), /not owned|regular file|manifest/i);
+    assert.deepEqual(await readFile(join(root, "brief.md")), briefBefore);
+    assert.deepEqual(await readdir(journalRoot), journalBefore);
+    assert.deepEqual(await readdir(join(root, ".superppt-leases", "planning")), leasesBefore);
+    assert.deepEqual(await readdir(join(root, ".superppt-leases", "state")), stateLeasesBefore);
+  }
 });
 
 test("publishes review views as one authoritative revision tree", async (t) => {

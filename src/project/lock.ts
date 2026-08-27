@@ -4,12 +4,18 @@ import { join } from "node:path";
 
 import { syncDirectory, writeDurableExclusive } from "./durable.js";
 import { validateProjectRoot } from "./paths.js";
-import { readRegularFileNoFollow } from "./safe-file.js";
+import {
+  readRegularFileNoFollow,
+  readRegularFileSnapshotNoFollow,
+  type SafeReadOperations,
+} from "./safe-file.js";
+import { ProjectManifestSchema } from "./schemas.js";
 
 export type ProjectLockOptions = {
   staleAfterMs?: number;
   waitTimeoutMs?: number;
   retryMs?: number;
+  manifestRead?: SafeReadOperations;
 };
 
 type LeaseStatus = "pending" | "active";
@@ -41,18 +47,43 @@ async function ensureDirectory(path: string): Promise<void> {
   if (info.isSymbolicLink() || !info.isDirectory()) throw new Error(`unsafe project lease directory: ${path}`);
 }
 
-async function assertOwnedRoot(root: string): Promise<void> {
-  const markerPath = join(root, ".superppt-project.json");
-  const marker = JSON.parse((await readRegularFileNoFollow(markerPath)).toString("utf8")) as {
-    appId?: string;
-    canonicalRoot?: string;
-  };
-  if (marker.appId !== "superppt" || marker.canonicalRoot !== root) {
-    throw new Error("project directory is not owned by SuperPPT");
+async function assertOwnedRoot(
+  root: string,
+  manifestRead: SafeReadOperations = {},
+  snapshot = false,
+): Promise<void> {
+  try {
+    const markerPath = join(root, ".superppt-project.json");
+    const marker = JSON.parse((await readRegularFileNoFollow(markerPath)).toString("utf8")) as {
+      markerVersion?: number;
+      appId?: string;
+      artifactKind?: string;
+      projectId?: string;
+      canonicalRoot?: string;
+    };
+    const manifestPath = join(root, "superppt.json");
+    const manifest = ProjectManifestSchema.parse(JSON.parse(
+      (await (snapshot ? readRegularFileSnapshotNoFollow : readRegularFileNoFollow)(manifestPath, manifestRead)).toString("utf8"),
+    ));
+    if (
+      marker.markerVersion !== 1
+      || marker.appId !== "superppt"
+      || marker.artifactKind !== "project"
+      || typeof marker.projectId !== "string"
+      || !UUID.test(marker.projectId)
+      || marker.projectId !== manifest.projectId
+      || marker.canonicalRoot !== root
+      || Object.keys(marker).some((key) => ![
+        "markerVersion",
+        "appId",
+        "artifactKind",
+        "projectId",
+        "canonicalRoot",
+      ].includes(key))
+    ) throw new Error("ownership identity mismatch");
+  } catch (error: unknown) {
+    throw new Error("project directory is not owned by SuperPPT", { cause: error });
   }
-  // superppt.json is mutable under the state lease. Reading it before a
-  // contender joins that lease can race the current owner's atomic promotion.
-  // Store actions authenticate the manifest after acquiring the state lease.
 }
 
 function processIsAlive(pid: number): boolean {
@@ -146,7 +177,7 @@ export async function withProjectLease<T>(
 ): Promise<T> {
   if (!/^[a-z0-9-]+$/.test(leaseName)) throw new Error(`invalid project lease name: ${leaseName}`);
   const root = await validateProjectRoot(projectRoot);
-  await assertOwnedRoot(root);
+  await assertOwnedRoot(root, options.manifestRead, true);
   const leasesRoot = join(root, ".superppt-leases");
   await ensureDirectory(leasesRoot);
   const leaseRoot = join(leasesRoot, leaseName);
@@ -195,6 +226,15 @@ export async function withProjectLease<T>(
 
   let succeeded = false;
   try {
+    if (leaseName === "state") {
+      await assertOwnedRoot(root);
+    } else {
+      await withProjectLease(root, "state", async () => undefined, {
+        staleAfterMs,
+        waitTimeoutMs,
+        retryMs,
+      });
+    }
     const result = await action(root);
     succeeded = true;
     return result;

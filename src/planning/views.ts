@@ -398,5 +398,6 @@ export async function requireCurrentStylePresentation(
 }
 
 export async function recoverPlanViews(root: string, lock: ProjectLockOptions = {}): Promise<void> {
-  await withPlanningLock(root, recoverUnlocked, lock);
+  await withPlanningLock(root, (canonicalRoot) =>
+    withProjectLease(canonicalRoot, "state", () => recoverUnlocked(canonicalRoot), lock), lock);
 }
