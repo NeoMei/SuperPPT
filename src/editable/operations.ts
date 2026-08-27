@@ -575,11 +575,12 @@ async function createProjectModifiedRevision(
       })
     ))
   ) throw new Error("source project revision or final render is stale");
-  if (request.kind === "promote-editable" && currentEditable) {
-    throw new AlreadyEditableSlideError();
+  if (request.kind === "edit-plan") {
+    validateEditTargets(sourceManifest, request.plan);
+  } else {
+    validatePromotionTarget(sourceManifest, request.intent);
+    if (currentEditable) throw new AlreadyEditableSlideError();
   }
-  if (request.kind === "edit-plan") validateEditTargets(sourceManifest, request.plan);
-  else validatePromotionTarget(sourceManifest, request.intent);
   await options.operations?.afterSourceValidation?.();
   await assertEditableLayoutIdentity(layout);
 

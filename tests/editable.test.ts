@@ -971,6 +971,33 @@ test("separates an already-editable page from unsupported promotion targets with
   assert.equal(after.some((entry) => entry.includes(".staging-")), false);
 });
 
+test("routes missing or wrong-kind targets on an already-editable page to regenerate through the API", async (t) => {
+  const project = await readyCurrentEditableProject(t);
+  const before = await recursiveProjectSnapshot(project.root);
+
+  for (const target of [
+    { elementId: "title-not-extracted", expectedKind: "text" as const },
+    { elementId: "ocr-title", expectedKind: "asset" as const },
+  ]) {
+    await assert.rejects(promoteProjectEditableTarget({
+      root: project.root,
+      slideId: project.slideId,
+      sourceRevisionId: project.modifiedRevisionId,
+      ...target,
+    }), (error: unknown) => {
+      assert.equal(error instanceof UnsupportedEditableTargetError, true);
+      assert.equal((error as Error).name, "UnsupportedEditableTargetError");
+      assert.match((error as Error).message, /regenerate/);
+      return true;
+    });
+  }
+
+  assert.equal(project.conversionCalls(), 1);
+  const after = await recursiveProjectSnapshot(project.root);
+  assert.deepEqual(after, before);
+  assert.equal(after.some((entry) => entry.includes(".staging-")), false);
+});
+
 test("reports an already-editable page through the real CLI without regeneration or mutation", async (t) => {
   const project = await readyCurrentEditableProject(t);
   const before = await recursiveProjectSnapshot(project.root);
@@ -986,6 +1013,32 @@ test("reports an already-editable page through the real CLI without regeneration
 
   assert.equal(stdout, '{"route":"editable","status":"already-editable"}\n');
   assert.equal(stderr, "");
+  assert.equal(project.conversionCalls(), 1);
+  const after = await recursiveProjectSnapshot(project.root);
+  assert.deepEqual(after, before);
+  assert.equal(after.some((entry) => entry.includes(".staging-")), false);
+});
+
+test("routes missing or wrong-kind targets on an already-editable page to regenerate through the real CLI", async (t) => {
+  const project = await readyCurrentEditableProject(t);
+  const before = await recursiveProjectSnapshot(project.root);
+
+  for (const target of [
+    { elementId: "title-not-extracted", kind: "text" },
+    { elementId: "ocr-title", kind: "asset" },
+  ]) {
+    const { stdout, stderr } = await execFileAsync(process.execPath, [
+      "--import", "tsx", "src/cli.ts", "promote-editable",
+      "--project", project.root,
+      "--slide", project.slideId,
+      "--revision", project.modifiedRevisionId,
+      "--element", target.elementId,
+      "--kind", target.kind,
+    ], { cwd: process.cwd() });
+    assert.equal(stdout, '{"route":"regenerate"}\n');
+    assert.equal(stderr, "");
+  }
+
   assert.equal(project.conversionCalls(), 1);
   const after = await recursiveProjectSnapshot(project.root);
   assert.deepEqual(after, before);
