@@ -1,0 +1,29 @@
+{
+  "schemaVersion": 1,
+  "slides": [
+    {
+      "id": "00000000-0000-4000-8000-000000000701",
+      "order": 0,
+      "title": "AI Agent 协作系统与六类角色",
+      "role": "cover",
+      "purpose": "建立主题",
+      "sourceRefs": ["L1-L2"]
+    },
+    {
+      "id": "00000000-0000-4000-8000-000000000702",
+      "order": 1,
+      "title": "六类角色如何形成闭环",
+      "role": "process",
+      "purpose": "解释流程",
+      "sourceRefs": ["L3-L6"]
+    },
+    {
+      "id": "00000000-0000-4000-8000-000000000703",
+      "order": 2,
+      "title": "交付价值：稳定、可追踪、可迭代",
+      "role": "summary",
+      "purpose": "总结交付价值",
+      "sourceRefs": ["L7-L8"]
+    }
+  ]
+}

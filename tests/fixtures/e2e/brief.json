@@ -1,0 +1,10 @@
+{
+  "schemaVersion": 1,
+  "title": "AI Agent 协作系统",
+  "purpose": "解释协作编排",
+  "audience": "产品与技术团队",
+  "language": "zh-CN",
+  "targetSlides": 3,
+  "mustCover": ["六类角色", "闭环", "交付价值"],
+  "constraints": ["16:9", "无水印"]
+}

@@ -1,0 +1,13 @@
+{
+  "schemaVersion": 1,
+  "slideId": "00000000-0000-4000-8000-000000000702",
+  "title": "六类角色如何形成闭环",
+  "role": "process",
+  "coreMessage": "规划到反馈形成闭环",
+  "requiredText": ["规划", "记忆", "工具", "执行", "评估", "反馈"],
+  "visualSubject": "six specialist stations",
+  "composition": "clockwise closed loop",
+  "relationships": ["feedback improves planning"],
+  "forbidden": ["watermark", "unreadable text"],
+  "sourceRefs": ["L3-L6"]
+}

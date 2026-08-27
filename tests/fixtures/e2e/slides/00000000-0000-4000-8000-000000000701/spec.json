@@ -1,0 +1,13 @@
+{
+  "schemaVersion": 1,
+  "slideId": "00000000-0000-4000-8000-000000000701",
+  "title": "AI Agent 协作系统与六类角色",
+  "role": "cover",
+  "coreMessage": "一个系统协同多个专家",
+  "requiredText": ["AI Agent 协作系统"],
+  "visualSubject": "central orchestration core",
+  "composition": "hero core",
+  "relationships": ["core coordinates specialists"],
+  "forbidden": ["watermark", "unreadable text"],
+  "sourceRefs": ["L1-L2"]
+}

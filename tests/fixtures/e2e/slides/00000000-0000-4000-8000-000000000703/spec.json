@@ -1,0 +1,13 @@
+{
+  "schemaVersion": 1,
+  "slideId": "00000000-0000-4000-8000-000000000703",
+  "title": "交付价值：稳定、可追踪、可迭代",
+  "role": "summary",
+  "coreMessage": "稳定编排带来可追踪交付",
+  "requiredText": ["稳定", "可追踪", "可迭代"],
+  "visualSubject": "converging delivery horizon",
+  "composition": "three outcomes converge",
+  "relationships": ["orchestration produces outcomes"],
+  "forbidden": ["watermark", "unreadable text"],
+  "sourceRefs": ["L7-L8"]
+}
