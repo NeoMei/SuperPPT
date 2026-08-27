@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
-import { access, mkdir, mkdtemp, readFile, readdir, realpath, rename, rm, symlink, utimes, writeFile } from "node:fs/promises";
+import { access, copyFile, mkdir, mkdtemp, readFile, readdir, realpath, rename, rm, symlink, utimes, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test, { type TestContext } from "node:test";
@@ -414,6 +414,39 @@ test("unique request leases prevent adversarial takeover and concurrent owners",
   const evidence = await readdir(leaseRoot);
   assert.ok(evidence.includes("00000000-0000-4000-8000-000000000997.stale.json"));
   assert.equal(evidence.filter((name) => name.endsWith(".completed.json")).length, 4);
+});
+
+test("state lease contenders tolerate an atomic manifest promotion by the current owner", async (t) => {
+  const root = await project(t, "superppt-state-lease-promotion-");
+  let announcePromotion!: () => void;
+  const promotionStarted = new Promise<void>((resolve) => { announcePromotion = resolve; });
+  let releasePromotion!: () => void;
+  const promotionReleased = new Promise<void>((resolve) => { releasePromotion = resolve; });
+
+  const writer = updateProject(root, (manifest) => ({ ...manifest, title: "Promoted" }), {
+    promote: async (stagingPath, manifestPath) => {
+      announcePromotion();
+      await promotionReleased;
+      for (let index = 0; index < 1_024; index += 1) {
+        const replacement = `${manifestPath}.promotion-probe-${index}`;
+        await copyFile(stagingPath, replacement);
+        await rename(replacement, manifestPath);
+      }
+      await rename(stagingPath, manifestPath);
+    },
+  });
+  await promotionStarted;
+
+  const contenders = Promise.allSettled(Array.from({ length: 24 }, () =>
+    withProjectLease(root, "state", async () => undefined, { waitTimeoutMs: 60_000 })
+  ));
+  releasePromotion();
+  await writer;
+
+  const failures = (await contenders)
+    .filter((result): result is PromiseRejectedResult => result.status === "rejected")
+    .map(({ reason }) => reason instanceof Error ? reason.message : String(reason));
+  assert.deepEqual(failures, []);
 });
 
 test("publishes review views as one authoritative revision tree", async (t) => {

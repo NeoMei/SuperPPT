@@ -50,7 +50,9 @@ async function assertOwnedRoot(root: string): Promise<void> {
   if (marker.appId !== "superppt" || marker.canonicalRoot !== root) {
     throw new Error("project directory is not owned by SuperPPT");
   }
-  await readRegularFileNoFollow(join(root, "superppt.json"));
+  // superppt.json is mutable under the state lease. Reading it before a
+  // contender joins that lease can race the current owner's atomic promotion.
+  // Store actions authenticate the manifest after acquiring the state lease.
 }
 
 function processIsAlive(pid: number): boolean {
