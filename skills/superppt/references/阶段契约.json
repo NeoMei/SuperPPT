@@ -1,0 +1,21 @@
+{
+  "contractVersion": 1,
+  "stages": [
+    { "stage": 0, "id": "preflight", "interaction": "machine", "action": "continue" },
+    { "stage": 1, "id": "intake", "interaction": "machine", "action": "continue" },
+    { "stage": 2, "id": "outline", "interaction": "human", "action": "wait" },
+    { "stage": 3, "id": "slide-specs", "interaction": "human", "action": "wait" },
+    { "stage": 4, "id": "style-sample", "interaction": "human", "action": "wait" },
+    { "stage": 5, "id": "generation", "interaction": "machine", "action": "continue" },
+    { "stage": 6, "id": "assembly", "interaction": "machine", "action": "continue" },
+    { "stage": 7, "id": "revision", "interaction": "machine", "action": "on-demand" },
+    { "stage": 8, "id": "delivery", "interaction": "machine", "action": "continue" }
+  ],
+  "gates": [
+    { "id": "outline", "kind": "ordinary", "interaction": "human", "action": "wait" },
+    { "id": "slide-specs", "kind": "ordinary", "interaction": "human", "action": "wait" },
+    { "id": "style-sample", "kind": "ordinary", "interaction": "human", "action": "wait" },
+    { "id": "revision-impact", "kind": "conditional", "interaction": "human", "action": "wait" },
+    { "id": "slide-preview", "kind": "conditional", "interaction": "human", "action": "wait" }
+  ]
+}
