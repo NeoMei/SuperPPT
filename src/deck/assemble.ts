@@ -789,6 +789,64 @@ function replacementCandidate(
   };
 }
 
+function outputRevisionReferenced(manifest: ProjectManifest, revisionNumber: number): boolean {
+  const prefix = `output/revisions/${revisionNumber}/`;
+  const containsPath = (value: unknown): boolean => {
+    if (typeof value === "string") return value.startsWith(prefix);
+    if (Array.isArray(value)) return value.some(containsPath);
+    return Boolean(value && typeof value === "object" && Object.values(value).some(containsPath));
+  };
+  return (manifest.outputRevisions ?? []).some((revision) => revision.number === revisionNumber)
+    || containsPath(manifest);
+}
+
+async function quarantineConflictingReplacementCandidate(options: {
+  root: string;
+  revisionsRoot: string;
+  destination: string;
+  before: ProjectManifest;
+  expected: Omit<OutputMarker, "artifacts">;
+}): Promise<void> {
+  const marker = await readOutputMarker(options.destination);
+  if (
+    marker.projectId !== options.before.projectId
+    || marker.revisionId !== options.before.currentRevision.id
+    || marker.revisionNumber !== options.expected.revisionNumber
+    || marker.projectBindingSha256 === options.expected.projectBindingSha256
+    || outputRevisionReferenced(options.before, marker.revisionNumber)
+  ) throw new Error("conflicting replacement output is not an unreferenced current orphan candidate");
+
+  const orphanGate = [...options.before.gates].reverse().find((gate) => {
+    if (gate.gate !== "slide-preview" || !gate.slidePreview) return false;
+    return projectBinding(replacementCandidate(options.before, gate.slidePreview.slideId, gate.slidePreview))
+      === marker.projectBindingSha256;
+  });
+  if (!orphanGate?.slidePreview) {
+    throw new Error("conflicting replacement output does not bind an authenticated preview candidate");
+  }
+  const binding = await validateConfirmedEditablePreview(
+    options.root,
+    options.before,
+    orphanGate.slidePreview.slideId,
+    orphanGate.slidePreview.modifiedRevisionId,
+    orphanGate.slidePreview.expectedModifiedRevisionRecordSha256,
+  );
+  const orphanCandidate = replacementCandidate(options.before, binding.slideId, binding);
+  const { artifacts: _artifacts, ...orphanMarkerBase } = marker;
+  await validateOwnedOutput(options.root, options.destination, orphanMarkerBase, orphanCandidate);
+
+  while (true) {
+    const quarantine = join(options.revisionsRoot, `.failed-${marker.revisionNumber}-${randomUUID()}`);
+    try {
+      await promoteExclusive(options.destination, quarantine);
+      await syncDirectory(options.revisionsRoot);
+      return;
+    } catch (error: unknown) {
+      if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+    }
+  }
+}
+
 async function buildCandidateOutput(options: {
   root: string;
   before: ProjectManifest;
@@ -823,13 +881,25 @@ async function buildCandidateOutput(options: {
   const revisionsRoot = await ensureOwnedDirectory(root, "output/revisions");
   const destination = join(revisionsRoot, String(outputRevision));
   let recovered = false;
-  let verified: OutputMarker;
+  let verified: OutputMarker | null = null;
   try {
     await lstat(destination);
-    verified = await validateOwnedOutput(root, destination, markerBase, candidate);
-    recovered = true;
+    try {
+      verified = await validateOwnedOutput(root, destination, markerBase, candidate);
+      recovered = true;
+    } catch {
+      await quarantineConflictingReplacementCandidate({
+        root,
+        revisionsRoot,
+        destination,
+        before,
+        expected: markerBase,
+      });
+    }
   } catch (error: unknown) {
     if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+  }
+  if (!verified) {
     const staging = join(revisionsRoot, `.staging-${randomUUID()}`);
     await mkdir(staging, { mode: 0o700 });
     const paths = {

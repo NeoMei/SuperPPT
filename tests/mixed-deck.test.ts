@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, readdir, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, posix, resolve } from "node:path";
 import test, { type TestContext } from "node:test";
@@ -595,4 +595,86 @@ test("replaces only after a bound preview confirmation, rebuilds every output, a
   assert.doesNotMatch(secondEditableXml, /A &amp; B &lt;示例&gt;/);
   assert.match(secondEditableXml, /A &amp; <\/a:t>[\s\S]*B &lt;示例&gt;/);
   assert.match(secondEditableXml, /第二行/);
+
+  const orphanEdit = await applyProjectEditPlan({
+    root,
+    slideId: slideIds[1],
+    sourceRevisionId: secondEdit.revisionId,
+    rawPlan: { route: "editable", operations: [{ kind: "replace-text", elementId: "ocr-title", text: "孤儿候选 A" }] },
+  });
+  const orphanRecordSha256 = sha256(await readFile(join(orphanEdit.revisionRoot, "modified-revision-record.json")));
+  const orphanPreview = await renderProjectEditablePreview({
+    root,
+    slideId: slideIds[1],
+    modifiedRevisionId: orphanEdit.revisionId,
+    expectedModifiedRevisionRecordSha256: orphanRecordSha256,
+  });
+  await confirmEditablePreview({
+    root,
+    slideId: slideIds[1],
+    modifiedRevisionId: orphanEdit.revisionId,
+    expectedModifiedRevisionRecordSha256: orphanRecordSha256,
+    preview: join(root, orphanPreview.preview.path),
+  });
+  const selectedEdit = await applyProjectEditPlan({
+    root,
+    slideId: slideIds[1],
+    sourceRevisionId: secondEdit.revisionId,
+    rawPlan: { route: "editable", operations: [{ kind: "replace-text", elementId: "ocr-title", text: "最终候选 B" }] },
+  });
+  const selectedRecordSha256 = sha256(await readFile(join(selectedEdit.revisionRoot, "modified-revision-record.json")));
+  const selectedPreview = await renderProjectEditablePreview({
+    root,
+    slideId: slideIds[1],
+    modifiedRevisionId: selectedEdit.revisionId,
+    expectedModifiedRevisionRecordSha256: selectedRecordSha256,
+  });
+  await confirmEditablePreview({
+    root,
+    slideId: slideIds[1],
+    modifiedRevisionId: selectedEdit.revisionId,
+    expectedModifiedRevisionRecordSha256: selectedRecordSha256,
+    preview: join(root, selectedPreview.preview.path),
+  });
+  const beforeOrphanCrash = await readProject(root);
+  await assert.rejects(replaceSlide({
+    root,
+    slideId: slideIds[1],
+    modifiedRevisionId: orphanEdit.revisionId,
+    expectedModifiedRevisionRecordSha256: orphanRecordSha256,
+    operations: {
+      buildOutputs: mixedOutputs,
+      checkpoint: (step) => {
+        if (step === "output-promoted") throw new Error("replacement promotion crash probe");
+      },
+    },
+  }), /replacement promotion crash probe/);
+  assert.deepEqual(await readProject(root), beforeOrphanCrash);
+  const orphanMarker = JSON.parse(await readFile(join(root, "output/revisions/4/.superppt-output.json"), "utf8"));
+  assert.equal(orphanMarker.slides[1].sha256, orphanPreview.preview.sha256);
+
+  const selectedReplacement = await replaceSlide({
+    root,
+    slideId: slideIds[1],
+    modifiedRevisionId: selectedEdit.revisionId,
+    expectedModifiedRevisionRecordSha256: selectedRecordSha256,
+    operations: { buildOutputs: mixedOutputs },
+  });
+  assert.equal(selectedReplacement.revisionNumber, 4);
+  const afterSelected = await readProject(root);
+  assert.equal(afterSelected.slides[1]!.editableRevision?.modifiedRevisionId, selectedEdit.revisionId);
+  const quarantines = (await readdir(join(root, "output/revisions"))).filter((name) => /^\.failed-4-[0-9a-f-]+$/.test(name));
+  assert.equal(quarantines.length, 1);
+  const quarantineRoot = join(root, "output/revisions", quarantines[0]!);
+  const quarantinedMarker = JSON.parse(await readFile(join(quarantineRoot, ".superppt-output.json"), "utf8"));
+  assert.equal(quarantinedMarker.projectId, afterSelected.projectId);
+  assert.equal(quarantinedMarker.revisionId, afterSelected.currentRevision.id);
+  assert.equal(quarantinedMarker.revisionNumber, 4);
+  assert.equal(quarantinedMarker.slides[1].sha256, orphanPreview.preview.sha256);
+  for (const artifact of Object.values(quarantinedMarker.artifacts) as Array<{ path: string; sha256: string }>) {
+    const localName = artifact.path.split("/").at(-1)!;
+    assert.equal(sha256(await readFile(join(quarantineRoot, localName))), artifact.sha256);
+  }
+  const selectedMarker = JSON.parse(await readFile(join(root, "output/revisions/4/.superppt-output.json"), "utf8"));
+  assert.equal(selectedMarker.slides[1].sha256, selectedPreview.preview.sha256);
 });
