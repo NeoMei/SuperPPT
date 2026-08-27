@@ -471,6 +471,81 @@ test("state lease contenders tolerate an atomic manifest promotion by the curren
   assert.deepEqual(failures, []);
 });
 
+test("state lease contender tolerates promotion after statting the old manifest before opening it", async (t) => {
+  const root = await project(t, "superppt-state-lease-pre-open-promotion-");
+  let announceStat!: () => void;
+  const pathStatted = new Promise<void>((resolve) => { announceStat = resolve; });
+  let releaseOpen!: () => void;
+  const openReleased = new Promise<void>((resolve) => { releaseOpen = resolve; });
+  let actionCalled = false;
+
+  const contender = withProjectLease(root, "state", async () => {
+    actionCalled = true;
+  }, {
+    manifestRead: {
+      afterPathStat: async () => {
+        announceStat();
+        await openReleased;
+      },
+    },
+  });
+  await pathStatted;
+  await updateProject(root, (manifest) => ({ ...manifest, title: "Promoted before contender opened manifest" }));
+  releaseOpen();
+
+  await contender;
+  assert.equal(actionCalled, true);
+  assert.equal((await readProject(root)).title, "Promoted before contender opened manifest");
+});
+
+test("lease snapshot rejects a symlink swapped in after statting the manifest", async (t) => {
+  const root = await project(t, "superppt-state-lease-pre-open-symlink-");
+  const manifestPath = join(root, "superppt.json");
+  const external = join(await temporaryParent(t, "superppt-state-lease-external-manifest-"), "manifest.json");
+  await writeFile(external, await readFile(manifestPath));
+  let actionCalled = false;
+
+  await assert.rejects(withProjectLease(root, "state", async () => {
+    actionCalled = true;
+  }, {
+    manifestRead: {
+      afterPathStat: async () => {
+        await unlink(manifestPath);
+        await symlink(external, manifestPath);
+      },
+    },
+  }), /not owned/i);
+  assert.equal(actionCalled, false);
+  await assert.rejects(readdir(join(root, ".superppt-leases")), { code: "ENOENT" });
+});
+
+test("state lease contender tolerates promotion after opening the old manifest before its first stat", async (t) => {
+  const root = await project(t, "superppt-state-lease-pre-stat-promotion-");
+  let announceOpened!: () => void;
+  const fileOpened = new Promise<void>((resolve) => { announceOpened = resolve; });
+  let releaseRead!: () => void;
+  const readReleased = new Promise<void>((resolve) => { releaseRead = resolve; });
+  let actionCalled = false;
+
+  const contender = withProjectLease(root, "state", async () => {
+    actionCalled = true;
+  }, {
+    manifestRead: {
+      afterFileOpen: async () => {
+        announceOpened();
+        await readReleased;
+      },
+    },
+  });
+  await fileOpened;
+  await updateProject(root, (manifest) => ({ ...manifest, title: "Promoted while contender held old fd" }));
+  releaseRead();
+
+  await contender;
+  assert.equal(actionCalled, true);
+  assert.equal((await readProject(root)).title, "Promoted while contender held old fd");
+});
+
 test("lease authentication rejects an in-place manifest rewrite before publishing lease evidence", async (t) => {
   const root = await project(t, "superppt-state-lease-in-place-");
   const manifestPath = join(root, "superppt.json");

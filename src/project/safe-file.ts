@@ -3,6 +3,8 @@ import { lstat, open, realpath } from "node:fs/promises";
 import { isAbsolute, relative, resolve, sep } from "node:path";
 
 export type SafeReadOperations = {
+  afterPathStat?: (path: string) => Promise<void> | void;
+  afterFileOpen?: (path: string) => Promise<void> | void;
   afterOpen?: (path: string) => Promise<void> | void;
 };
 
@@ -79,12 +81,19 @@ export async function readRegularFileSnapshotNoFollow(
   if (before.isSymbolicLink() || !before.isFile()) {
     throw new Error(`planning artifact must be a regular file: ${path}`);
   }
+  await operations.afterPathStat?.(path);
 
   const noFollow = process.platform === "win32" ? 0 : (constants.O_NOFOLLOW ?? 0);
   const handle = await open(path, constants.O_RDONLY | noFollow);
   try {
+    await operations.afterFileOpen?.(path);
     const opened = await handle.stat({ bigint: true });
-    if (!opened.isFile() || !sameContentVersion(before, opened)) {
+    // With O_NOFOLLOW, a different regular inode is the valid new side of an
+    // atomic pathname promotion. Without it, retain the strict identity check.
+    const openedSnapshot = sameFile(before, opened)
+      ? sameOpenedSnapshot(before, opened)
+      : noFollow !== 0;
+    if (!opened.isFile() || !openedSnapshot) {
       throw new Error(`planning artifact changed while reading: ${path}`);
     }
     await operations.afterOpen?.(path);
