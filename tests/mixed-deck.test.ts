@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { mkdir, mkdtemp, readFile, readdir, realpath, rm, writeFile } from "node:fs/promises";
+import { lstat, mkdir, mkdtemp, readFile, readdir, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, posix, resolve } from "node:path";
 import test, { type TestContext } from "node:test";
@@ -8,7 +8,14 @@ import test, { type TestContext } from "node:test";
 import JSZip from "jszip";
 import sharp from "sharp";
 
-import { assembleDeck, assembleProject, readProjectAcceptance, replaceSlide, type FinalRender } from "../src/deck/assemble.js";
+import {
+  assembleDeck,
+  assembleProject,
+  readProjectAcceptance,
+  replaceSlide,
+  validateQuarantinedOutput,
+  type FinalRender,
+} from "../src/deck/assemble.js";
 import { buildMontage } from "../src/deck/montage.js";
 import { exportPdf } from "../src/deck/pdf.js";
 import { convertProjectPage } from "../src/editable/adapter.js";
@@ -56,6 +63,25 @@ async function mixedOutputs(
   await assembleDeck(renders, paths.pptx);
   await exportPdf(renders, paths.pdf);
   await buildMontage(renders, paths.montage);
+}
+
+async function outputDirectorySnapshot(path: string): Promise<{
+  dev: number;
+  ino: number;
+  entries: string[];
+  files: Record<string, string>;
+}> {
+  const info = await lstat(path);
+  const entries = (await readdir(path)).sort();
+  return {
+    dev: info.dev,
+    ino: info.ino,
+    entries,
+    files: Object.fromEntries(await Promise.all(entries.map(async (entry) => [
+      entry,
+      (await readFile(join(path, entry))).toString("base64"),
+    ]))),
+  };
 }
 
 async function tamperEditableBackground(pptx: string, slideNumber = 2): Promise<void> {
@@ -650,31 +676,106 @@ test("replaces only after a bound preview confirmation, rebuilds every output, a
     },
   }), /replacement promotion crash probe/);
   assert.deepEqual(await readProject(root), beforeOrphanCrash);
-  const orphanMarker = JSON.parse(await readFile(join(root, "output/revisions/4/.superppt-output.json"), "utf8"));
+  const orphanDestination = join(root, "output/revisions/4");
+  const orphanMarkerPath = join(orphanDestination, ".superppt-output.json");
+  const projectManifestPath = join(root, "superppt.json");
+  const orphanMarkerBytes = await readFile(orphanMarkerPath);
+  const orphanMarker = JSON.parse(orphanMarkerBytes.toString("utf8"));
   assert.equal(orphanMarker.slides[1].sha256, orphanPreview.preview.sha256);
 
-  const selectedReplacement = await replaceSlide({
+  const selectedReplacementOptions = {
     root,
     slideId: slideIds[1],
     modifiedRevisionId: selectedEdit.revisionId,
     expectedModifiedRevisionRecordSha256: selectedRecordSha256,
     operations: { buildOutputs: mixedOutputs },
+  };
+  const assertConflictPreserved = async (): Promise<void> => {
+    const beforeConflict = await outputDirectorySnapshot(orphanDestination);
+    const quarantinesBefore = (await readdir(join(root, "output/revisions"))).filter((name) => name.startsWith(".failed-4-"));
+    await assert.rejects(
+      replaceSlide(selectedReplacementOptions),
+      /deck output destination is not owned|owned output evidence is invalid|conflicting replacement output/,
+    );
+    assert.deepEqual(await outputDirectorySnapshot(orphanDestination), beforeConflict);
+    assert.deepEqual(
+      (await readdir(join(root, "output/revisions"))).filter((name) => name.startsWith(".failed-4-")),
+      quarantinesBefore,
+    );
+  };
+
+  await writeFile(orphanMarkerPath, "{}\n");
+  await assertConflictPreserved();
+  await writeFile(orphanMarkerPath, orphanMarkerBytes);
+
+  const tamperedMarker = structuredClone(orphanMarker);
+  tamperedMarker.artifacts.pptx.sha256 = "0".repeat(64);
+  await writeFile(orphanMarkerPath, `${JSON.stringify(tamperedMarker, null, 2)}\n`);
+  await assertConflictPreserved();
+  await writeFile(orphanMarkerPath, orphanMarkerBytes);
+
+  const orphanPptxPath = join(orphanDestination, "deck.pptx");
+  const orphanPptxBytes = await readFile(orphanPptxPath);
+  await writeFile(orphanPptxPath, Buffer.concat([orphanPptxBytes, Buffer.from("tampered")]));
+  await assertConflictPreserved();
+  await writeFile(orphanPptxPath, orphanPptxBytes);
+
+  for (const markerIdentity of [
+    { projectId: "00000000-0000-4000-8000-000000000999" },
+    { revisionId: "00000000-0000-4000-8000-000000000998" },
+    { revisionNumber: 5 },
+  ]) {
+    await writeFile(orphanMarkerPath, `${JSON.stringify({ ...orphanMarker, ...markerIdentity }, null, 2)}\n`);
+    await assertConflictPreserved();
+  }
+  await writeFile(orphanMarkerPath, orphanMarkerBytes);
+
+  const projectManifestBytes = await readFile(projectManifestPath);
+  const referencedByCurrent = JSON.parse(projectManifestBytes.toString("utf8"));
+  referencedByCurrent.exports.pptx = orphanMarker.artifacts.pptx;
+  await writeFile(projectManifestPath, `${JSON.stringify(referencedByCurrent, null, 2)}\n`);
+  await assertConflictPreserved();
+  await writeFile(projectManifestPath, projectManifestBytes);
+
+  const referencedByHistory = JSON.parse(projectManifestBytes.toString("utf8"));
+  referencedByHistory.outputRevisions.push({
+    number: 4,
+    projectRevisionId: referencedByHistory.currentRevision.id,
+    createdAt: new Date().toISOString(),
+    slides: orphanMarker.slides.map((slide: { id: string; order: number; mode: "image" | "editable"; path: string; sha256: string }) => ({
+      id: slide.id,
+      order: slide.order,
+      mode: slide.mode,
+      finalRender: { path: slide.path, sha256: slide.sha256, revisionId: referencedByHistory.currentRevision.id },
+      editable: slide.mode === "editable" ? orphanPreview.modifiedManifest : null,
+    })),
+    exports: orphanMarker.artifacts,
   });
+  await writeFile(projectManifestPath, `${JSON.stringify(referencedByHistory, null, 2)}\n`);
+  await assertConflictPreserved();
+  await writeFile(projectManifestPath, projectManifestBytes);
+
+  const selectedReplacement = await replaceSlide(selectedReplacementOptions);
   assert.equal(selectedReplacement.revisionNumber, 4);
   const afterSelected = await readProject(root);
   assert.equal(afterSelected.slides[1]!.editableRevision?.modifiedRevisionId, selectedEdit.revisionId);
   const quarantines = (await readdir(join(root, "output/revisions"))).filter((name) => /^\.failed-4-[0-9a-f-]+$/.test(name));
   assert.equal(quarantines.length, 1);
-  const quarantineRoot = join(root, "output/revisions", quarantines[0]!);
-  const quarantinedMarker = JSON.parse(await readFile(join(quarantineRoot, ".superppt-output.json"), "utf8"));
-  assert.equal(quarantinedMarker.projectId, afterSelected.projectId);
-  assert.equal(quarantinedMarker.revisionId, afterSelected.currentRevision.id);
-  assert.equal(quarantinedMarker.revisionNumber, 4);
-  assert.equal(quarantinedMarker.slides[1].sha256, orphanPreview.preview.sha256);
-  for (const artifact of Object.values(quarantinedMarker.artifacts) as Array<{ path: string; sha256: string }>) {
-    const localName = artifact.path.split("/").at(-1)!;
-    assert.equal(sha256(await readFile(join(quarantineRoot, localName))), artifact.sha256);
-  }
+  const quarantine = await validateQuarantinedOutput(root, `output/revisions/${quarantines[0]!}`);
+  assert.equal(quarantine.projectId, afterSelected.projectId);
+  assert.equal(quarantine.revisionId, afterSelected.currentRevision.id);
+  assert.equal(quarantine.revisionNumber, 4);
+  assert.equal(quarantine.originalPath, "output/revisions/4");
+  assert.equal(quarantine.quarantinePath, `output/revisions/${quarantines[0]!}`);
+  assert.equal(quarantine.reason, "superseded-editable-replacement-candidate");
+  assert.equal(Number.isFinite(Date.parse(quarantine.quarantinedAt)), true);
+  assert.equal(quarantine.candidateMarkerSha256, sha256(orphanMarkerBytes));
+  assert.deepEqual(Object.values(quarantine.artifacts).map((artifact) => artifact.quarantineRelativePath).sort(), [
+    "acceptance.json",
+    "deck.pdf",
+    "deck.pptx",
+    "montage.jpg",
+  ]);
   const selectedMarker = JSON.parse(await readFile(join(root, "output/revisions/4/.superppt-output.json"), "utf8"));
   assert.equal(selectedMarker.slides[1].sha256, selectedPreview.preview.sha256);
 });

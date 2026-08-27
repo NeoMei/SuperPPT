@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
-import { lstat, mkdir, realpath, rename } from "node:fs/promises";
+import { lstat, mkdir, realpath, rename, unlink } from "node:fs/promises";
 import { dirname, isAbsolute, join, posix, relative, sep } from "node:path";
 
 import JSZip from "jszip";
@@ -144,6 +144,32 @@ const OutputMarkerSchema = z.object({
 
 type OutputMarker = z.infer<typeof OutputMarkerSchema>;
 type OutputArtifacts = OutputMarker["artifacts"];
+const QuarantinedArtifactSchema = z.object({
+  originalPath: z.string().min(1),
+  quarantineRelativePath: z.string().regex(/^[A-Za-z0-9._-]+$/),
+  sha256: z.string().regex(/^[a-f0-9]{64}$/),
+}).strict();
+const QuarantinedOutputSchema = z.object({
+  markerVersion: z.literal(1),
+  appId: z.literal("superppt"),
+  artifactKind: z.literal("quarantined-output"),
+  projectId: z.string().uuid(),
+  revisionId: z.string().uuid(),
+  revisionNumber: z.number().int().positive(),
+  originalPath: z.string().min(1),
+  quarantinePath: z.string().min(1),
+  reason: z.literal("superseded-editable-replacement-candidate"),
+  quarantinedAt: z.string().datetime(),
+  candidateMarkerSha256: z.string().regex(/^[a-f0-9]{64}$/),
+  artifacts: z.object({
+    pptx: QuarantinedArtifactSchema,
+    pdf: QuarantinedArtifactSchema,
+    montage: QuarantinedArtifactSchema,
+    acceptance: QuarantinedArtifactSchema,
+  }).strict(),
+}).strict();
+export type QuarantinedOutput = z.infer<typeof QuarantinedOutputSchema>;
+const QUARANTINE_DESCRIPTOR = ".superppt-quarantine.json";
 export type AssembleProjectCheckpoint = "outputs-built" | "output-promoted" | "manifest-updated";
 export type AssembleProjectOperations = {
   buildOutputs?: (
@@ -800,6 +826,60 @@ function outputRevisionReferenced(manifest: ProjectManifest, revisionNumber: num
     || containsPath(manifest);
 }
 
+export async function validateQuarantinedOutput(root: string, projectPath: string): Promise<QuarantinedOutput> {
+  if (
+    isAbsolute(projectPath)
+    || projectPath.includes("\\")
+    || projectPath.split("/").some((part) => !part || part === "." || part === "..")
+  ) throw new Error("quarantine path must be project-relative and canonical");
+  const project = await readProject(root);
+  const canonicalRoot = await realpath(root);
+  const quarantine = join(canonicalRoot, ...projectPath.split("/"));
+  const info = await lstat(quarantine);
+  if (info.isSymbolicLink() || !info.isDirectory() || await realpath(quarantine) !== quarantine) {
+    throw new Error("quarantine directory is unsafe");
+  }
+  const descriptor = QuarantinedOutputSchema.parse(JSON.parse(
+    (await readRegularFileNoFollow(join(quarantine, QUARANTINE_DESCRIPTOR))).toString("utf8"),
+  ));
+  if (
+    descriptor.projectId !== project.projectId
+    || !project.revisions.some((revision) => revision.id === descriptor.revisionId)
+    || descriptor.originalPath !== `output/revisions/${descriptor.revisionNumber}`
+    || descriptor.quarantinePath !== projectPath
+    || !new RegExp(`^output/revisions/\\.failed-${descriptor.revisionNumber}-[0-9a-f-]{36}$`).test(projectPath)
+  ) throw new Error("quarantine descriptor identity is invalid");
+  const markerBytes = await readRegularFileNoFollow(join(quarantine, ".superppt-output.json"));
+  if (createHash("sha256").update(markerBytes).digest("hex") !== descriptor.candidateMarkerSha256) {
+    throw new Error("quarantine candidate marker hash mismatch");
+  }
+  const marker = OutputMarkerSchema.parse(JSON.parse(markerBytes.toString("utf8")));
+  if (
+    marker.projectId !== descriptor.projectId
+    || marker.revisionId !== descriptor.revisionId
+    || marker.revisionNumber !== descriptor.revisionNumber
+  ) throw new Error("quarantine candidate marker identity mismatch");
+  const localNames: Record<keyof OutputArtifacts, string> = {
+    pptx: "deck.pptx",
+    pdf: "deck.pdf",
+    montage: "montage.jpg",
+    acceptance: "acceptance.json",
+  };
+  for (const kind of Object.keys(localNames) as Array<keyof OutputArtifacts>) {
+    const artifact = descriptor.artifacts[kind];
+    if (
+      artifact.originalPath !== marker.artifacts[kind].path
+      || artifact.sha256 !== marker.artifacts[kind].sha256
+      || artifact.quarantineRelativePath !== localNames[kind]
+    ) throw new Error("quarantine artifact descriptor does not match the candidate marker");
+    const bytes = await readRegularFileNoFollow(join(quarantine, artifact.quarantineRelativePath));
+    if (createHash("sha256").update(bytes).digest("hex") !== artifact.sha256) {
+      throw new Error("quarantine artifact hash mismatch");
+    }
+  }
+  return descriptor;
+}
+
 async function quarantineConflictingReplacementCandidate(options: {
   root: string;
   revisionsRoot: string;
@@ -837,11 +917,56 @@ async function quarantineConflictingReplacementCandidate(options: {
 
   while (true) {
     const quarantine = join(options.revisionsRoot, `.failed-${marker.revisionNumber}-${randomUUID()}`);
+    const quarantinePath = portable(options.root, quarantine);
+    const candidateMarkerBytes = await readRegularFileNoFollow(join(options.destination, ".superppt-output.json"));
+    const localNames: Record<keyof OutputArtifacts, string> = {
+      pptx: "deck.pptx",
+      pdf: "deck.pdf",
+      montage: "montage.jpg",
+      acceptance: "acceptance.json",
+    };
+    const descriptor = QuarantinedOutputSchema.parse({
+      markerVersion: 1,
+      appId: "superppt",
+      artifactKind: "quarantined-output",
+      projectId: marker.projectId,
+      revisionId: marker.revisionId,
+      revisionNumber: marker.revisionNumber,
+      originalPath: portable(options.root, options.destination),
+      quarantinePath,
+      reason: "superseded-editable-replacement-candidate",
+      quarantinedAt: new Date().toISOString(),
+      candidateMarkerSha256: createHash("sha256").update(candidateMarkerBytes).digest("hex"),
+      artifacts: Object.fromEntries((Object.keys(localNames) as Array<keyof OutputArtifacts>).map((kind) => [kind, {
+        originalPath: marker.artifacts[kind].path,
+        quarantineRelativePath: localNames[kind],
+        sha256: marker.artifacts[kind].sha256,
+      }])),
+    });
+    const descriptorStaging = join(options.revisionsRoot, `.quarantine-${randomUUID()}.json`);
+    await writeDurableExclusive(descriptorStaging, `${JSON.stringify(descriptor, null, 2)}\n`);
+    await syncDirectory(options.revisionsRoot);
     try {
       await promoteExclusive(options.destination, quarantine);
-      await syncDirectory(options.revisionsRoot);
-      return;
+      try {
+        await promoteExclusive(descriptorStaging, join(quarantine, QUARANTINE_DESCRIPTOR));
+        await syncDirectory(quarantine);
+        await syncDirectory(options.revisionsRoot);
+        await validateQuarantinedOutput(options.root, quarantinePath);
+        return;
+      } catch (error: unknown) {
+        try {
+          await promoteExclusive(quarantine, options.destination);
+          await unlink(join(options.destination, QUARANTINE_DESCRIPTOR)).catch(() => undefined);
+          await syncDirectory(options.destination);
+          await syncDirectory(options.revisionsRoot);
+        } catch (rollbackError: unknown) {
+          throw new AggregateError([error, rollbackError], "quarantine publication failed and rollback failed");
+        }
+        throw error;
+      }
     } catch (error: unknown) {
+      await unlink(descriptorStaging).catch(() => undefined);
       if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
     }
   }
