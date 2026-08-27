@@ -48,23 +48,33 @@ async function requireDirectory(path: string, message: string): Promise<void> {
   if (info.isSymbolicLink() || !info.isDirectory()) throw new Error(message);
 }
 
-async function assertEditableLayoutIdentity(identity: EditableLayoutIdentity): Promise<void> {
+async function assertEditableSlideIdentity(identity: EditableLayoutIdentity): Promise<void> {
   const expectedEditableRoot = join(identity.root, "editable");
   const expectedSlideRoot = join(expectedEditableRoot, identity.slideId);
-  const expectedSourceRoot = join(expectedSlideRoot, identity.sourceRevisionId);
   if (
     identity.editableRoot !== expectedEditableRoot
     || identity.slideRoot !== expectedSlideRoot
-    || identity.sourceRoot !== expectedSourceRoot
     || dirname(identity.editableRoot) !== identity.root
     || dirname(identity.slideRoot) !== identity.editableRoot
-    || dirname(identity.sourceRoot) !== identity.slideRoot
     || basename(identity.slideRoot) !== identity.slideId
-    || basename(identity.sourceRoot) !== identity.sourceRevisionId
-  ) throw new Error("editable layout is not an exact project child path");
-  for (const path of [identity.root, identity.editableRoot, identity.slideRoot, identity.sourceRoot]) {
+  ) throw new Error("editable slide layout is not an exact project child path");
+  for (const path of [identity.root, identity.editableRoot, identity.slideRoot]) {
     await requireDirectory(path, "editable layout is unsafe or contains a symlink");
     if (await realpath(path) !== path) throw new Error("editable layout canonical identity mismatch");
+  }
+}
+
+async function assertEditableLayoutIdentity(identity: EditableLayoutIdentity): Promise<void> {
+  await assertEditableSlideIdentity(identity);
+  const expectedSourceRoot = join(identity.slideRoot, identity.sourceRevisionId);
+  if (
+    identity.sourceRoot !== expectedSourceRoot
+    || dirname(identity.sourceRoot) !== identity.slideRoot
+    || basename(identity.sourceRoot) !== identity.sourceRevisionId
+  ) throw new Error("editable source layout is not an exact slide child path");
+  await requireDirectory(identity.sourceRoot, "editable source layout is unsafe or contains a symlink");
+  if (await realpath(identity.sourceRoot) !== identity.sourceRoot) {
+    throw new Error("editable source layout canonical identity mismatch");
   }
 }
 
@@ -247,10 +257,19 @@ async function cleanupOwnedStaging(
   expected: EditableStagingMarker,
   layout: EditableLayoutIdentity,
 ): Promise<void> {
+  let stagingInfo;
   try {
-    await assertEditableLayoutIdentity(layout);
+    stagingInfo = await lstat(staging);
+  } catch (error: unknown) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return;
+    throw new Error("owned editable staging cleanup failed", { cause: error });
+  }
+  try {
+    await assertEditableSlideIdentity(layout);
     if (dirname(staging) !== layout.slideRoot) throw new Error("staging is not an exact editable slide child");
-    await requireDirectory(staging, "staging directory changed before cleanup");
+    if (stagingInfo.isSymbolicLink() || !stagingInfo.isDirectory()) {
+      throw new Error("staging directory changed before cleanup");
+    }
     if (await realpath(staging) !== resolve(staging) || basename(staging) !== expected.stagingName) {
       throw new Error("staging canonical identity changed before cleanup");
     }
@@ -274,7 +293,6 @@ async function cleanupOwnedStaging(
     await rm(staging, { recursive: true, force: false });
     await syncDirectory(dirname(staging));
   } catch (error: unknown) {
-    if ((error as NodeJS.ErrnoException).code === "ENOENT") return;
     throw new Error("owned editable staging cleanup failed", { cause: error });
   }
 }

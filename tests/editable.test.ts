@@ -902,6 +902,48 @@ test("uses the staging identity to clean private bytes after revision marker cor
   assert.equal((await readdir(slideRoot)).some((name) => name.startsWith(".staging-")), false);
 });
 
+test("cleans copied private bytes when the source revision disappears before sealing", async (t) => {
+  const project = await readyProject(t);
+  const plugin = await converterRoot(t);
+  const source = await convertProjectPage({
+    ...project,
+    converterRoot: plugin,
+    execute: async (_command, args) => {
+      const sourcePng = args[args.indexOf("--image") + 1]!;
+      const outDir = args[args.indexOf("--out") + 1]!;
+      await mkdir(outDir);
+      await writeFakeConverterOutput(outDir, sourcePng);
+      return { stdout: "", stderr: "" };
+    },
+  });
+  const slideRoot = join(project.root, "editable", project.slideId);
+  const privateAsset = join(await temporary(t, "superppt-editable-source-loss-user-"), "private.png");
+  const privateBytes = await png(24, 24, true);
+  await writeFile(privateAsset, privateBytes);
+  const movedSource = join(await temporary(t, "superppt-editable-source-loss-moved-"), source.revisionId);
+  const revisionId = "00000000-0000-4000-8000-000000000191";
+  let observedCopiedPrivateBytes = false;
+
+  await assert.rejects(applyProjectEditPlan({
+    ...project,
+    sourceRevisionId: source.revisionId,
+    rawPlan: { route: "editable", operations: [{ kind: "replace-asset", elementId: "icon-1", assetPath: privateAsset }] },
+    idFactory: () => revisionId,
+    operations: {
+      beforeSealValidation: async (staging) => {
+        const replacements = await readdir(join(staging, "assets", "replacements"));
+        assert.equal(replacements.length, 1);
+        observedCopiedPrivateBytes = (await readFile(join(staging, "assets", "replacements", replacements[0]!))).equals(privateBytes);
+        await rename(source.revisionRoot, movedSource);
+      },
+    },
+  }), /source conversion record|source identity|unsafe or invalid/);
+
+  assert.equal(observedCopiedPrivateBytes, true);
+  await assert.rejects(lstat(join(slideRoot, revisionId)), { code: "ENOENT" });
+  assert.equal((await readdir(slideRoot)).some((name) => name.startsWith(".staging-")), false);
+});
+
 test("publishes text-only modified revisions with an owned empty assets directory", async (t) => {
   const project = await readyProject(t);
   const plugin = await converterRoot(t);
