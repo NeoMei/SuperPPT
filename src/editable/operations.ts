@@ -34,9 +34,38 @@ export class UnsupportedEditableTargetError extends Error {
 const sha256 = (value: Buffer): string => createHash("sha256").update(value).digest("hex");
 const MAX_REPLACEMENT_ASSET_BYTES = 64 * 1024 * 1024;
 
+type EditableLayoutIdentity = {
+  root: string;
+  editableRoot: string;
+  slideRoot: string;
+  sourceRoot: string;
+  slideId: string;
+  sourceRevisionId: string;
+};
+
 async function requireDirectory(path: string, message: string): Promise<void> {
   const info = await lstat(path);
   if (info.isSymbolicLink() || !info.isDirectory()) throw new Error(message);
+}
+
+async function assertEditableLayoutIdentity(identity: EditableLayoutIdentity): Promise<void> {
+  const expectedEditableRoot = join(identity.root, "editable");
+  const expectedSlideRoot = join(expectedEditableRoot, identity.slideId);
+  const expectedSourceRoot = join(expectedSlideRoot, identity.sourceRevisionId);
+  if (
+    identity.editableRoot !== expectedEditableRoot
+    || identity.slideRoot !== expectedSlideRoot
+    || identity.sourceRoot !== expectedSourceRoot
+    || dirname(identity.editableRoot) !== identity.root
+    || dirname(identity.slideRoot) !== identity.editableRoot
+    || dirname(identity.sourceRoot) !== identity.slideRoot
+    || basename(identity.slideRoot) !== identity.slideId
+    || basename(identity.sourceRoot) !== identity.sourceRevisionId
+  ) throw new Error("editable layout is not an exact project child path");
+  for (const path of [identity.root, identity.editableRoot, identity.slideRoot, identity.sourceRoot]) {
+    await requireDirectory(path, "editable layout is unsafe or contains a symlink");
+    if (await realpath(path) !== path) throw new Error("editable layout canonical identity mismatch");
+  }
 }
 
 async function ownedStaging(revisionRoot: string): Promise<EditableStagingMarker> {
@@ -213,8 +242,14 @@ async function assetHashes(root: string): Promise<Record<string, string>> {
   return Object.fromEntries(Object.entries(result).sort(([left], [right]) => left.localeCompare(right)));
 }
 
-async function cleanupOwnedStaging(staging: string, expected: EditableStagingMarker): Promise<void> {
+async function cleanupOwnedStaging(
+  staging: string,
+  expected: EditableStagingMarker,
+  layout: EditableLayoutIdentity,
+): Promise<void> {
   try {
+    await assertEditableLayoutIdentity(layout);
+    if (dirname(staging) !== layout.slideRoot) throw new Error("staging is not an exact editable slide child");
     await requireDirectory(staging, "staging directory changed before cleanup");
     if (await realpath(staging) !== resolve(staging) || basename(staging) !== expected.stagingName) {
       throw new Error("staging canonical identity changed before cleanup");
@@ -244,7 +279,11 @@ async function cleanupOwnedStaging(staging: string, expected: EditableStagingMar
   }
 }
 
-async function validateModifiedRevisionAt(revisionRoot: string, expectedRevisionId: string): Promise<{
+async function validateModifiedRevisionAt(
+  revisionRoot: string,
+  expectedRevisionId: string,
+  expectedStagingMarker?: EditableStagingMarker,
+): Promise<{
   record: ModifiedRevisionRecord;
   manifest: EditableManifest;
 }> {
@@ -262,11 +301,23 @@ async function validateModifiedRevisionAt(revisionRoot: string, expectedRevision
     || !marker.value.parentRevisionId
     || !marker.value.modifiedRevisionRecordSha256
   ) throw new Error("modified revision marker identity is invalid");
-  try {
-    await lstat(join(lexical, ".superppt-editable-staging.json"));
-    throw new Error("modified revision still contains a staging marker");
-  } catch (error: unknown) {
-    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+  const stagingMarkerPath = join(lexical, ".superppt-editable-staging.json");
+  if (expectedStagingMarker) {
+    const stagingMarker = await parsedRegularFile(
+      stagingMarkerPath,
+      "modified revision staging marker",
+      (value) => EditableStagingMarkerSchema.parse(value),
+    );
+    if (JSON.stringify(stagingMarker.value) !== JSON.stringify(expectedStagingMarker)) {
+      throw new Error("modified revision staging marker identity mismatch");
+    }
+  } else {
+    try {
+      await lstat(stagingMarkerPath);
+      throw new Error("modified revision still contains a staging marker");
+    } catch (error: unknown) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+    }
   }
   const record = await parsedRegularFile(
     join(lexical, "modified-revision-record.json"),
@@ -345,6 +396,8 @@ export async function applyProjectEditPlan(options: {
   operations?: {
     afterSourceValidation?: () => Promise<void> | void;
     beforeSealValidation?: (staging: string) => Promise<void> | void;
+    duringRevisionMarkerWrite?: () => Promise<void> | void;
+    afterRevisionMarkerWrite?: (staging: string, markerPath: string) => Promise<void> | void;
   };
 }): Promise<AppliedEditRevision> {
   const plan = EditPlanSchema.parse(options.rawPlan);
@@ -354,8 +407,16 @@ export async function applyProjectEditPlan(options: {
   const slide = project.slides.find((candidate) => candidate.id === options.slideId);
   if (!slide) throw new Error("editable apply slide ID is not in the current project");
   EditableRevisionMarkerSchema.shape.revisionId.parse(options.sourceRevisionId);
-  const slideRoot = join(root, "editable", slide.id);
-  await requireDirectory(slideRoot, "editable slide path is unsafe or unowned");
+  const layout: EditableLayoutIdentity = {
+    root,
+    editableRoot: join(root, "editable"),
+    slideRoot: join(root, "editable", slide.id),
+    sourceRoot: join(root, "editable", slide.id, options.sourceRevisionId),
+    slideId: slide.id,
+    sourceRevisionId: options.sourceRevisionId,
+  };
+  await assertEditableLayoutIdentity(layout);
+  const { slideRoot, sourceRoot } = layout;
   const slideMarker = await parsedRegularFile(
     join(slideRoot, ".superppt-editable-slide.json"),
     "editable slide marker",
@@ -365,8 +426,6 @@ export async function applyProjectEditPlan(options: {
     throw new Error("editable slide marker identity mismatch");
   }
 
-  const sourceRoot = join(slideRoot, options.sourceRevisionId);
-  await requireDirectory(sourceRoot, "source editable revision is unsafe or unowned");
   const sourceMarker = await parsedRegularFile(
     join(sourceRoot, ".superppt-editable-revision.json"),
     "source editable revision marker",
@@ -410,6 +469,7 @@ export async function applyProjectEditPlan(options: {
   }
   validateEditTargets(source.manifest, plan);
   await options.operations?.afterSourceValidation?.();
+  await assertEditableLayoutIdentity(layout);
 
   const revisionId = options.idFactory?.() ?? randomUUID();
   EditableRevisionMarkerSchema.shape.revisionId.parse(revisionId);
@@ -435,15 +495,20 @@ export async function applyProjectEditPlan(options: {
   await mkdir(staging, { mode: 0o700 });
   await writeDurableExclusive(join(staging, ".superppt-editable-staging.json"), `${JSON.stringify(stagingMarker, null, 2)}\n`);
   try {
+    await assertEditableLayoutIdentity(layout);
+    await ownedStaging(staging);
     await mkdir(join(staging, "assets"), { mode: 0o700 });
+    await assertEditableLayoutIdentity(layout);
     await copyExpectedFile(source.cleanBackground, join(staging, "clean-background.png"), source.artifactHashes.cleanBackground);
     for (const [assetPath, expected] of Object.entries(source.artifactHashes.assets)) {
+      await assertEditableLayoutIdentity(layout);
       await copyExpectedFile(
         join(sourceRoot, ...assetPath.split("/")),
         join(staging, ...assetPath.split("/")),
         expected,
       );
     }
+    await assertEditableLayoutIdentity(layout);
     const prepared = await prepareReplacementAssets(plan, staging);
     const modified = applyEditPlan(source.manifest, prepared);
     const modifiedManifestPath = join(staging, "modified-manifest.json");
@@ -474,8 +539,8 @@ export async function applyProjectEditPlan(options: {
     });
     const recordBytes = Buffer.from(`${JSON.stringify(record, null, 2)}\n`);
     await writeDurableExclusive(join(staging, "modified-revision-record.json"), recordBytes);
-    await unlink(join(staging, ".superppt-editable-staging.json"));
-    await writeDurableExclusive(join(staging, ".superppt-editable-revision.json"), `${JSON.stringify(EditableRevisionMarkerSchema.parse({
+    const revisionMarkerPath = join(staging, ".superppt-editable-revision.json");
+    await writeDurableExclusive(revisionMarkerPath, `${JSON.stringify(EditableRevisionMarkerSchema.parse({
       markerVersion: 1,
       appId: "superppt",
       artifactKind: "editable-slide-revision",
@@ -485,11 +550,16 @@ export async function applyProjectEditPlan(options: {
       revisionKind: "modified",
       parentRevisionId: options.sourceRevisionId,
       modifiedRevisionRecordSha256: sha256(recordBytes),
-    }), null, 2)}\n`);
+    }), null, 2)}\n`, options.operations?.duringRevisionMarkerWrite);
+    await options.operations?.afterRevisionMarkerWrite?.(staging, revisionMarkerPath);
     await syncDirectory(join(staging, "assets"));
     await syncDirectory(staging);
     await options.operations?.beforeSealValidation?.(staging);
+    await validateModifiedRevisionAt(staging, revisionId, stagingMarker);
+    await unlink(join(staging, ".superppt-editable-staging.json"));
+    await syncDirectory(staging);
     await validateModifiedRevisionAt(staging, revisionId);
+    await assertEditableLayoutIdentity(layout);
     await syncDirectory(slideRoot);
     await promoteExclusive(staging, revisionRoot);
     await syncDirectory(slideRoot);
@@ -501,7 +571,7 @@ export async function applyProjectEditPlan(options: {
     };
   } catch (error: unknown) {
     try {
-      await cleanupOwnedStaging(staging, stagingMarker);
+      await cleanupOwnedStaging(staging, stagingMarker, layout);
     } catch (cleanupError: unknown) {
       throw new AggregateError([error, cleanupError], "editable apply failed and owned staging cleanup failed");
     }

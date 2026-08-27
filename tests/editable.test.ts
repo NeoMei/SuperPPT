@@ -9,6 +9,7 @@ import {
   readFile,
   readdir,
   realpath,
+  rename,
   rm,
   symlink,
   truncate,
@@ -793,6 +794,109 @@ test("validates the sealed revision before promotion and removes failed sealed s
       beforeSealValidation: async (staging) => writeFile(join(staging, "modified-manifest.json"), "tampered"),
     },
   }), /modified manifest.*invalid|hash mismatch/);
+  assert.deepEqual((await readdir(slideRoot)).sort(), before);
+  await assert.rejects(lstat(join(slideRoot, revisionId)), { code: "ENOENT" });
+  assert.equal((await readdir(slideRoot)).some((name) => name.startsWith(".staging-")), false);
+});
+
+test("rejects an editable symlink ancestor before staging or copying private bytes", async (t) => {
+  const project = await readyProject(t);
+  const plugin = await converterRoot(t);
+  const source = await convertProjectPage({
+    ...project,
+    converterRoot: plugin,
+    execute: async (_command, args) => {
+      const sourcePng = args[args.indexOf("--image") + 1]!;
+      const outDir = args[args.indexOf("--out") + 1]!;
+      await mkdir(outDir);
+      await writeFakeConverterOutput(outDir, sourcePng);
+      return { stdout: "", stderr: "" };
+    },
+  });
+  const privateAsset = join(await temporary(t, "superppt-editable-symlink-user-"), "private.png");
+  const privateBytes = await png(24, 24, true);
+  await writeFile(privateAsset, privateBytes);
+  const editable = join(project.root, "editable");
+  const outside = join(await temporary(t, "superppt-editable-symlink-outside-"), "editable-store");
+  await rename(editable, outside);
+  await symlink(outside, editable);
+  const before = (await readdir(join(outside, project.slideId))).sort();
+
+  await assert.rejects(applyProjectEditPlan({
+    ...project,
+    sourceRevisionId: source.revisionId,
+    rawPlan: { route: "editable", operations: [{ kind: "replace-asset", elementId: "icon-1", assetPath: privateAsset }] },
+  }), /editable.*unsafe|canonical|symlink/i);
+
+  assert.deepEqual((await readdir(join(outside, project.slideId))).sort(), before);
+  assert.equal((await readdir(join(outside, project.slideId))).some((name) => name.startsWith(".staging-")), false);
+});
+
+test("cleans private replacement bytes when durable revision marker writing fails", async (t) => {
+  const project = await readyProject(t);
+  const plugin = await converterRoot(t);
+  const source = await convertProjectPage({
+    ...project,
+    converterRoot: plugin,
+    execute: async (_command, args) => {
+      const sourcePng = args[args.indexOf("--image") + 1]!;
+      const outDir = args[args.indexOf("--out") + 1]!;
+      await mkdir(outDir);
+      await writeFakeConverterOutput(outDir, sourcePng);
+      return { stdout: "", stderr: "" };
+    },
+  });
+  const slideRoot = join(project.root, "editable", project.slideId);
+  const before = (await readdir(slideRoot)).sort();
+  const privateAsset = join(await temporary(t, "superppt-editable-marker-failure-user-"), "private.png");
+  await writeFile(privateAsset, await png(24, 24, true));
+  const revisionId = "00000000-0000-4000-8000-000000000189";
+
+  await assert.rejects(applyProjectEditPlan({
+    ...project,
+    sourceRevisionId: source.revisionId,
+    rawPlan: { route: "editable", operations: [{ kind: "replace-asset", elementId: "icon-1", assetPath: privateAsset }] },
+    idFactory: () => revisionId,
+    operations: {
+      duringRevisionMarkerWrite: async () => { throw new Error("marker write probe"); },
+    },
+  }), /marker write probe/);
+
+  assert.deepEqual((await readdir(slideRoot)).sort(), before);
+  await assert.rejects(lstat(join(slideRoot, revisionId)), { code: "ENOENT" });
+  assert.equal((await readdir(slideRoot)).some((name) => name.startsWith(".staging-")), false);
+});
+
+test("uses the staging identity to clean private bytes after revision marker corruption", async (t) => {
+  const project = await readyProject(t);
+  const plugin = await converterRoot(t);
+  const source = await convertProjectPage({
+    ...project,
+    converterRoot: plugin,
+    execute: async (_command, args) => {
+      const sourcePng = args[args.indexOf("--image") + 1]!;
+      const outDir = args[args.indexOf("--out") + 1]!;
+      await mkdir(outDir);
+      await writeFakeConverterOutput(outDir, sourcePng);
+      return { stdout: "", stderr: "" };
+    },
+  });
+  const slideRoot = join(project.root, "editable", project.slideId);
+  const before = (await readdir(slideRoot)).sort();
+  const privateAsset = join(await temporary(t, "superppt-editable-marker-corrupt-user-"), "private.png");
+  await writeFile(privateAsset, await png(24, 24, true));
+  const revisionId = "00000000-0000-4000-8000-000000000190";
+
+  await assert.rejects(applyProjectEditPlan({
+    ...project,
+    sourceRevisionId: source.revisionId,
+    rawPlan: { route: "editable", operations: [{ kind: "replace-asset", elementId: "icon-1", assetPath: privateAsset }] },
+    idFactory: () => revisionId,
+    operations: {
+      afterRevisionMarkerWrite: async (_staging: string, markerPath: string) => writeFile(markerPath, "{"),
+    },
+  }), /modified revision marker.*invalid|unsafe or invalid/);
+
   assert.deepEqual((await readdir(slideRoot)).sort(), before);
   await assert.rejects(lstat(join(slideRoot, revisionId)), { code: "ENOENT" });
   assert.equal((await readdir(slideRoot)).some((name) => name.startsWith(".staging-")), false);
