@@ -59,6 +59,10 @@ async function coordinateHandshake(options: {
   release: () => void;
   contender: Promise<void>;
 }): Promise<void> {
+  const observed = options.contender.then(
+    () => ({ status: "fulfilled" as const }),
+    (reason: unknown) => ({ status: "rejected" as const, reason }),
+  );
   let primary: { error: unknown } | undefined;
   try {
     await waitForHandshake(options.signal, options.label);
@@ -73,10 +77,6 @@ async function coordinateHandshake(options: {
     }
   }
 
-  const observed = options.contender.then(
-    () => ({ status: "fulfilled" as const }),
-    (reason: unknown) => ({ status: "rejected" as const, reason }),
-  );
   let settled: Awaited<typeof observed>;
   try {
     settled = await waitForHandshake(observed, `${options.label} contender settlement`);
@@ -116,6 +116,26 @@ test("handshake coordination settles its contender before preserving signal or w
     assert.equal(contenderSettled, true);
     assert.equal(workCalled, phase === "work");
   }
+});
+
+test("handshake coordination observes a contender rejection that precedes its signal", async () => {
+  const secondary = new Error("contender rejected before signal");
+  let announceSignal!: () => void;
+  const signal = new Promise<void>((resolve) => { announceSignal = resolve; });
+  const coordinated = coordinateHandshake({
+    signal,
+    label: "early contender rejection probe",
+    work: async () => undefined,
+    release: () => undefined,
+    contender: Promise.reject(secondary),
+  });
+  await new Promise<void>((resolve) => setTimeout(resolve, 10));
+  announceSignal();
+
+  await assert.rejects(coordinated, (error: unknown) => {
+    assert.equal(error, secondary);
+    return true;
+  });
 });
 
 const brief = {
