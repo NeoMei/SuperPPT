@@ -119,6 +119,18 @@ function assertRevisionEvolution(
     );
   }
 
+  const previousOutputs = previous.outputRevisions ?? [];
+  const nextOutputs = next.outputRevisions ?? [];
+  if (
+    nextOutputs.length < previousOutputs.length
+    || previousOutputs.some((revision, index) => !sameJson(revision, nextOutputs[index]))
+  ) throw new Error("immutable output revision history must remain an exact prefix");
+  const previousDeckRevision = previous.deckRevision ?? previous.currentRevision.number;
+  const nextDeckRevision = next.deckRevision ?? next.currentRevision.number;
+  if (nextDeckRevision < previousDeckRevision || nextDeckRevision > previousDeckRevision + 1) {
+    throw new Error("deck revision must remain current or advance exactly once");
+  }
+
   if (
     next.gates.length < previous.gates.length
     || previous.gates.some((gate, index) => !sameJson(gate, next.gates[index]))
@@ -201,6 +213,10 @@ function artifactEvidence(manifest: ProjectManifest): string[] {
       slide.editable,
       slide.finalRender,
     ]),
+    ...(manifest.outputRevisions ?? []).flatMap((revision) => [
+      ...revision.slides.flatMap((slide) => [slide.finalRender, slide.editable]),
+      ...Object.values(revision.exports),
+    ]),
     ...Object.values(manifest.exports),
   ];
   const persistedIds = new Set(manifest.revisions.map((revision) => revision.id));
@@ -221,6 +237,31 @@ function preservesArtifactEvidence(
     remaining.splice(index, 1);
   }
   return true;
+}
+
+async function validateSlidePreviewGateEvidence(
+  root: string,
+  manifest: ProjectManifest,
+  gate: ProjectManifest["gates"][number],
+): Promise<void> {
+  const binding = gate.slidePreview;
+  if (gate.gate !== "slide-preview" || !binding) throw new Error("slide preview binding is missing");
+  const slide = manifest.slides.find((candidate) => candidate.id === binding.slideId);
+  if (
+    !slide?.finalRender
+    || binding.projectId !== manifest.projectId
+    || binding.projectRevisionId !== manifest.currentRevision.id
+    || gate.revisionId !== manifest.currentRevision.id
+    || !sameJson(binding.sourceFinalRender, slide.finalRender)
+  ) throw new Error("slide preview binding is stale");
+  for (const [path, expected] of Object.entries(gate.artifactHashes)) {
+    if (sha256Evidence(await readOwnedRegularFile(root, path)) !== expected) {
+      throw new Error("slide preview gate artifact hash mismatch");
+    }
+  }
+  if (sha256Evidence(await readOwnedRegularFile(root, binding.modifiedManifest.path)) !== binding.modifiedManifest.sha256) {
+    throw new Error("slide preview modified manifest hash mismatch");
+  }
 }
 
 export function createOwnershipMarker(
@@ -334,6 +375,12 @@ async function persistProject(
         await validateImpactGateEvidence(owned.root, owned.manifest, gate);
       } catch (error: unknown) {
         throw new Error("revision impact gate evidence is invalid", { cause: error });
+      }
+    } else if (gate.gate === "slide-preview") {
+      try {
+        await validateSlidePreviewGateEvidence(owned.root, valid, gate);
+      } catch (error: unknown) {
+        throw new Error("slide preview gate evidence is invalid", { cause: error });
       }
     }
   }

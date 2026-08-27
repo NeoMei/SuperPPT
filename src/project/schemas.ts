@@ -25,6 +25,41 @@ export const ArtifactSchema = z.object({
   revisionId: z.string().uuid(),
 }).strict();
 
+export const EditableRevisionBindingSchema = z.object({
+  projectId: z.string().uuid(),
+  slideId: z.string().uuid(),
+  modifiedRevisionId: z.string().uuid(),
+  sourceRevisionId: z.string().uuid(),
+  projectRevisionId: z.string().uuid(),
+  expectedModifiedRevisionRecordSha256: Sha256Schema,
+  modifiedRevisionRecordPath: z.string().startsWith("editable/"),
+  sourceFinalRender: ArtifactSchema,
+  conversionFinalRender: ArtifactSchema,
+  preview: ArtifactSchema,
+  modifiedManifest: ArtifactSchema,
+}).strict().superRefine((binding, context) => {
+  const base = `editable/${binding.slideId}/${binding.modifiedRevisionId}`;
+  if (binding.modifiedRevisionRecordPath !== `${base}/modified-revision-record.json`) {
+    context.addIssue({ code: "custom", path: ["modifiedRevisionRecordPath"], message: "editable record path must match the bound slide and revision" });
+  }
+  if (binding.modifiedManifest.path !== `${base}/modified-manifest.json`) {
+    context.addIssue({ code: "custom", path: ["modifiedManifest", "path"], message: "editable manifest path must match the bound slide and revision" });
+  }
+  if (binding.preview.path !== `previews/editable/${binding.slideId}/${binding.modifiedRevisionId}.png`) {
+    context.addIssue({ code: "custom", path: ["preview", "path"], message: "editable preview path must match the bound slide and revision" });
+  }
+  for (const [name, artifact] of Object.entries({
+    sourceFinalRender: binding.sourceFinalRender,
+    conversionFinalRender: binding.conversionFinalRender,
+    preview: binding.preview,
+    modifiedManifest: binding.modifiedManifest,
+  })) {
+    if (artifact.revisionId !== binding.projectRevisionId) {
+      context.addIssue({ code: "custom", path: [name, "revisionId"], message: "editable artifact must bind the project revision" });
+    }
+  }
+});
+
 export const SlideSchema = z.object({
   id: z.string().uuid(),
   order: z.number().int().nonnegative(),
@@ -52,6 +87,7 @@ export const SlideSchema = z.object({
   ]),
   image: ArtifactSchema.nullable(),
   editable: ArtifactSchema.nullable(),
+  editableRevision: EditableRevisionBindingSchema.nullable().optional(),
   finalRender: ArtifactSchema.nullable(),
   staleReasons: z.array(z.string()),
 }).strict();
@@ -74,8 +110,31 @@ export const GateSchema = z.object({
     publicationPath: z.string().startsWith("revisions/"),
     descriptorSha256: Sha256Schema,
   }).strict().optional(),
+  slidePreview: EditableRevisionBindingSchema.optional(),
   confirmedAt: z.string().datetime(),
 }).strict().superRefine((gate, context) => {
+  if (gate.gate === "slide-preview") {
+    if (!gate.slidePreview) {
+      context.addIssue({ code: "custom", path: ["slidePreview"], message: "slide-preview gate requires an external editable revision binding" });
+      return;
+    }
+    const expected = [gate.slidePreview.modifiedRevisionRecordPath, gate.slidePreview.preview.path].sort();
+    if (JSON.stringify(Object.keys(gate.artifactHashes).sort()) !== JSON.stringify(expected)) {
+      context.addIssue({ code: "custom", path: ["artifactHashes"], message: "slide-preview gate must bind the record and preview artifacts" });
+    }
+    if (
+      gate.revisionId !== gate.slidePreview.projectRevisionId
+      || gate.artifactHashes[gate.slidePreview.modifiedRevisionRecordPath] !== gate.slidePreview.expectedModifiedRevisionRecordSha256
+      || gate.artifactHashes[gate.slidePreview.preview.path] !== gate.slidePreview.preview.sha256
+    ) context.addIssue({ code: "custom", message: "slide-preview gate identity is inconsistent" });
+    if (gate.approvalId || gate.snapshotPath || gate.snapshotManifestSha256 || gate.presentation) {
+      context.addIssue({ code: "custom", message: "slide-preview gate accepts only direct conditional evidence" });
+    }
+    return;
+  }
+  if (gate.slidePreview) {
+    context.addIssue({ code: "custom", path: ["slidePreview"], message: "only slide-preview gates accept editable revision bindings" });
+  }
   if (gate.gate !== "revision-impact") return;
   const keys = Object.keys(gate.artifactHashes);
   if (keys.length !== 1 || keys[0] !== "revisions/pending-impact.json") {
@@ -124,6 +183,25 @@ export const ProjectManifestSchema = z.object({
   outline: ArtifactSchema.nullable(),
   style: ArtifactSchema.nullable(),
   slides: z.array(SlideSchema),
+  deckRevision: z.number().int().positive().optional(),
+  outputRevisions: z.array(z.object({
+    number: z.number().int().positive(),
+    projectRevisionId: z.string().uuid(),
+    createdAt: z.string().datetime(),
+    slides: z.array(z.object({
+      id: z.string().uuid(),
+      order: z.number().int().nonnegative(),
+      mode: z.enum(["image", "editable"]),
+      finalRender: ArtifactSchema,
+      editable: ArtifactSchema.nullable(),
+    }).strict()),
+    exports: z.object({
+      pptx: ArtifactSchema,
+      pdf: ArtifactSchema,
+      montage: ArtifactSchema,
+      acceptance: ArtifactSchema,
+    }).strict(),
+  }).strict()).optional(),
   exports: z.object({
     pptx: ArtifactSchema.nullable(),
     pdf: ArtifactSchema.nullable(),
@@ -135,3 +213,4 @@ export const ProjectManifestSchema = z.object({
 export type ProjectManifest = z.infer<typeof ProjectManifestSchema>;
 export type SlideRecord = z.infer<typeof SlideSchema>;
 export type Artifact = z.infer<typeof ArtifactSchema>;
+export type EditableRevisionBinding = z.infer<typeof EditableRevisionBindingSchema>;

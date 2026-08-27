@@ -7,6 +7,7 @@ import {
   assembleProject,
   readProjectAcceptance,
   recordClientAcceptance,
+  replaceSlide,
 } from "./deck/assemble.js";
 import {
   describeProjectGeneration,
@@ -16,6 +17,7 @@ import {
 } from "./generation/batch.js";
 import { convertProjectPage } from "./editable/adapter.js";
 import { applyProjectEditPlan } from "./editable/operations.js";
+import { confirmEditablePreview, renderProjectEditablePreview } from "./editable/render.js";
 import { EditPlanSchema, type EditPlan } from "./editable/schemas.js";
 import { approveGate, type PlanningGate } from "./planning/confirm.js";
 import { normalizeInput, type InputRequest } from "./planning/intake.js";
@@ -346,7 +348,52 @@ async function main(argv: string[]): Promise<void> {
       revisionId: result.revisionId,
       revisionRoot: result.revisionRoot,
       modifiedManifestPath: result.modifiedManifestPath,
+      modifiedRevisionRecordSha256: (await import("node:crypto")).createHash("sha256").update(
+        await readRegularFileNoFollow(`${result.revisionRoot}/modified-revision-record.json`),
+      ).digest("hex"),
     });
+    return;
+  }
+
+  if (command === "render-editable") {
+    const options = exactFlags(argv.slice(1), ["--project", "--slide", "--revision", "--record-sha256"]);
+    outputJson(await renderProjectEditablePreview({
+      root: options.get("--project")!,
+      slideId: options.get("--slide")!,
+      modifiedRevisionId: options.get("--revision")!,
+      expectedModifiedRevisionRecordSha256: options.get("--record-sha256")!,
+    }));
+    return;
+  }
+
+  if (command === "confirm-preview") {
+    const options = selectedFlags(
+      argv.slice(1),
+      ["--project", "--slide", "--revision", "--record-sha256", "--render"],
+      ["--project", "--slide", "--revision", "--record-sha256", "--render", "--decision"],
+    );
+    const decision = options.get("--decision") ?? "approved";
+    if (decision !== "approved" && decision !== "rejected") throw new Error("preview decision must be approved or rejected");
+    const result = await confirmEditablePreview({
+      root: options.get("--project")!,
+      slideId: options.get("--slide")!,
+      modifiedRevisionId: options.get("--revision")!,
+      expectedModifiedRevisionRecordSha256: options.get("--record-sha256")!,
+      preview: options.get("--render")!,
+      approved: decision === "approved",
+    });
+    outputJson(result ? { approved: true, ...result } : { approved: false });
+    return;
+  }
+
+  if (command === "replace-slide") {
+    const options = exactFlags(argv.slice(1), ["--project", "--slide", "--revision", "--record-sha256"]);
+    outputJson(await replaceSlide({
+      root: options.get("--project")!,
+      slideId: options.get("--slide")!,
+      modifiedRevisionId: options.get("--revision")!,
+      expectedModifiedRevisionRecordSha256: options.get("--record-sha256")!,
+    }));
     return;
   }
 

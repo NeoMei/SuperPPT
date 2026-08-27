@@ -10,6 +10,7 @@ import { z } from "zod";
 import { buildAcceptance } from "../acceptance/build.js";
 import { AcceptanceSchema, ClientAcceptanceSchema, type Acceptance } from "../acceptance/schema.js";
 import { AttemptLedgerSchema } from "../generation/schemas.js";
+import { validateAppliedEditableBinding, validateConfirmedEditablePreview } from "../editable/render.js";
 import { assertGateCurrent } from "../planning/confirm.js";
 import { syncDirectory, writeDurableExclusive } from "../project/durable.js";
 import { withProjectLease } from "../project/lock.js";
@@ -18,18 +19,21 @@ import { readOwnedRegularFile, readRegularFileNoFollow, type SafeReadOperations 
 import { ArtifactSchema, type Artifact, type ProjectManifest } from "../project/schemas.js";
 import { readProject, updateProject } from "../project/store.js";
 import { publishRevisionSnapshot } from "../revisions/snapshot.js";
+import { prepareEditableSlide, type EditablePage } from "./editable-slide.js";
 import { SOURCE_HEIGHT_PX, SOURCE_WIDTH_PX } from "./geometry.js";
 import { buildMontage, buildMontageBytes } from "./montage.js";
 import { buildPdfBytes, exportPdf } from "./pdf.js";
 import { createPresentation } from "./pptx.js";
 
-export type DeckPage = {
+export type ImagePage = {
   id: string;
   order: number;
   mode: "image";
   render: string;
   expectedSha256?: string;
 };
+
+export type DeckPage = ImagePage | EditablePage;
 
 export type FinalRender = DeckPage & {
   bytes: Buffer;
@@ -108,7 +112,9 @@ export async function assembleDeck(
   operations: AssembleDeckOperations = {},
 ): Promise<FinalRender[]> {
   const ordered = await validateFinalRenders(pages, operations);
-  await createPresentation(ordered, output, operations.trustedRoot);
+  await createPresentation(await Promise.all(ordered.map(async (page) => page.mode === "editable"
+    ? { ...page, editable: await prepareEditableSlide(page) }
+    : page)), output, operations.trustedRoot);
   return ordered;
 }
 
@@ -195,7 +201,7 @@ async function gatesForRevision(root: string, manifest: ProjectManifest): Promis
 }> {
   const kinds = ["outline", "slide-specs", "style-sample"] as const;
   const records = kinds.map((kind) => [...manifest.gates].reverse().find((gate) => gate.gate === kind));
-  const current = records.every((record) => record?.revisionId === manifest.currentRevision.id)
+  const current = records.every(Boolean)
     && (await Promise.all(kinds.map((kind) => assertGateCurrent(root, kind)))).every(Boolean);
   return {
     current,
@@ -238,8 +244,23 @@ async function projectPages(root: string, manifest: ProjectManifest): Promise<{
     await readOwnedRegularFile(root, record.path);
     const absolute = await realpath(join(root, record.path.split("/").join(sep)));
     if (portable(root, absolute) !== record.path) throw new Error("final render path is not owned by the project");
-    pages.push({ id: record.id, order: record.order, mode: "image", render: absolute, expectedSha256: record.sha256 });
     const slide = manifest.slides.find((candidate) => candidate.id === record.id)!;
+    if (record.mode === "editable") {
+      const editable = await validateAppliedEditableBinding(root, manifest, slide.id);
+      pages.push({
+        id: record.id,
+        order: record.order,
+        mode: "editable",
+        render: absolute,
+        expectedSha256: record.sha256,
+        editableRoot: editable.editableRoot,
+        manifest: editable.manifest,
+        modifiedRevisionId: editable.binding.modifiedRevisionId,
+        expectedModifiedRevisionRecordSha256: editable.binding.expectedModifiedRevisionRecordSha256,
+      });
+    } else {
+      pages.push({ id: record.id, order: record.order, mode: "image", render: absolute, expectedSha256: record.sha256 });
+    }
     const imageArtifact = slide.image;
     if (!imageArtifact || imageArtifact.revisionId !== manifest.currentRevision.id) {
       throw new Error("every page must bind an accepted generation attempt");
@@ -265,6 +286,7 @@ function projectBinding(manifest: ProjectManifest): string {
   return createHash("sha256").update(JSON.stringify({
     revisionId: manifest.currentRevision.id,
     revisionNumber: manifest.currentRevision.number,
+    deckRevision: manifest.deckRevision ?? manifest.currentRevision.number,
     slides: [...manifest.slides].sort((left, right) => left.order - right.order).map((slide) => ({
       id: slide.id,
       order: slide.order,
@@ -274,10 +296,15 @@ function projectBinding(manifest: ProjectManifest): string {
       styleRevisionId: slide.styleRevisionId,
       image: slide.image,
       editable: slide.editable,
+      editableRevision: slide.editableRevision ?? null,
       chosenFinalRender: slide.finalRender ?? slide.image,
       staleReasons: slide.staleReasons,
     })),
   })).digest("hex");
+}
+
+function deckRevisionNumber(manifest: ProjectManifest): number {
+  return manifest.deckRevision ?? manifest.currentRevision.number;
 }
 
 async function verifyOutputs(
@@ -290,8 +317,19 @@ async function verifyOutputs(
   for (const [index, render] of renders.entries()) {
     const slidePath = `ppt/slides/slide${index + 1}.xml`;
     const xml = await zip.file(slidePath)?.async("string");
-    if (!xml?.includes(`name=\"page-${render.id}\"`)) throw new Error("PPTX stable page object order does not match final renders");
-    if ([...xml.matchAll(/<p:pic\b/g)].length !== 1) throw new Error("PPTX must contain exactly one image shape per slide");
+    const expectedName = render.mode === "editable" ? `background-${render.id}` : `page-${render.id}`;
+    if (!xml?.includes(`name=\"${expectedName}\"`)) throw new Error("PPTX stable page object order does not match final renders");
+    if (render.mode === "image" && [...xml.matchAll(/<p:pic\b/g)].length !== 1) {
+      throw new Error("image PPTX pages must contain exactly one image shape");
+    }
+    if (render.mode === "editable") {
+      for (const element of render.manifest.elements) {
+        const name = `${element.kind === "text" ? "text" : "asset"}-${element.id}`;
+        if (!xml.includes(`name=\"${name}\"`)) throw new Error("editable PPTX object name is missing");
+        if (element.kind === "text" && !xml.includes(element.text)) throw new Error("editable PPTX text object is missing");
+      }
+      continue;
+    }
     const relationships = await zip.file(`ppt/slides/_rels/slide${index + 1}.xml.rels`)?.async("string");
     if (!relationships) throw new Error("PPTX slide media relationships are missing");
     const imageRelationships = [...relationships.matchAll(/<Relationship\b([^>]*)\/?\s*>/g)].flatMap((match) => {
@@ -304,7 +342,9 @@ async function verifyOutputs(
     if (imageRelationships.length !== 1) throw new Error("PPTX must bind exactly one media relationship per slide");
     const [relationshipId, target] = imageRelationships[0]!;
     if (!xml.includes(`r:embed="${relationshipId}"`)) throw new Error("PPTX slide does not bind its media relationship");
-    const mediaPath = posix.normalize(posix.join(posix.dirname(slidePath), target!));
+    const mediaPath = target!.startsWith("/")
+      ? posix.normalize(target!.slice(1))
+      : posix.normalize(posix.join(posix.dirname(slidePath), target!));
     if (!mediaPath.startsWith("ppt/media/")) throw new Error("PPTX media relationship escaped the media package");
     const media = await zip.file(mediaPath)?.async("nodebuffer");
     if (!media || createHash("sha256").update(media).digest("hex") !== render.sha256) {
@@ -350,7 +390,7 @@ async function buildOutputArtifacts(
       id: slide.id,
       order: slide.order,
       mode: slide.mode,
-      status: "ready",
+      status: slide.mode === "editable" ? "editable" : "ready",
       finalRender: join(root, slide.path.split("/").join(sep)),
       finalRenderSha256: slide.sha256,
     })),
@@ -376,7 +416,9 @@ async function defaultBuildOutputs(
   renders: FinalRender[],
   paths: { pptx: string; pdf: string; montage: string },
 ): Promise<void> {
-  await createPresentation(renders, paths.pptx, dirname(paths.pptx));
+  await createPresentation(await Promise.all(renders.map(async (page) => page.mode === "editable"
+    ? { ...page, editable: await prepareEditableSlide(page) }
+    : page)), paths.pptx, dirname(paths.pptx));
   await exportPdf(renders, paths.pdf);
   await buildMontage(renders, paths.montage);
 }
@@ -412,13 +454,15 @@ async function validateOwnedOutput(root: string, destination: string, expected: 
         throw new Error("artifact hash mismatch");
       }
     }
-    const renders = await validateFinalRenders(expected.slides.map((slide) => ({
-      id: slide.id,
-      order: slide.order,
-      mode: "image",
-      render: join(root, slide.path.split("/").join(sep)),
-      expectedSha256: slide.sha256,
-    })));
+    const current = await readProject(root);
+    if (projectBinding(current) !== expected.projectBindingSha256) {
+      throw new Error("slide binding changed during assembly");
+    }
+    const prepared = await projectPages(root, current);
+    if (JSON.stringify(prepared.records.map(({ id, order, mode, path, sha256 }) => ({ id, order, mode, path, sha256 }))) !== JSON.stringify(expected.slides)) {
+      throw new Error("owned output slide binding does not match the current project");
+    }
+    const renders = await validateFinalRenders(prepared.pages);
     await verifyOutputs(renders, {
       pptx: join(root, marker.artifacts.pptx.path.split("/").join(sep)),
       pdf: join(root, marker.artifacts.pdf.path.split("/").join(sep)),
@@ -441,6 +485,7 @@ async function validateOwnedOutput(root: string, destination: string, expected: 
       })
     ) throw new Error("acceptance record does not match owned output evidence");
   } catch (error: unknown) {
+    if ((error as Error).message === "slide binding changed during assembly") throw error;
     throw new Error("owned output evidence is invalid", { cause: error });
   }
   return marker;
@@ -485,7 +530,7 @@ export async function assembleProject(options: {
       artifactKind: "image-deck" as const,
       projectId: manifest.projectId,
       revisionId,
-      revisionNumber: manifest.currentRevision.number,
+      revisionNumber: manifest.deckRevision ?? manifest.currentRevision.number,
       providerId: prepared.providerId,
       projectBindingSha256: projectBinding(manifest),
       slides: prepared.records.sort((left, right) => left.order - right.order).map((record) => ({
@@ -497,7 +542,8 @@ export async function assembleProject(options: {
       })),
     };
     const revisionsRoot = await ensureOwnedDirectory(root, "output/revisions");
-    const destination = join(revisionsRoot, String(manifest.currentRevision.number));
+    const outputRevision = deckRevisionNumber(manifest);
+    const destination = join(revisionsRoot, String(outputRevision));
     try {
       await lstat(destination);
       const recovered = await validateOwnedOutput(root, destination, markerBase);
@@ -506,7 +552,7 @@ export async function assembleProject(options: {
         return {
           projectId: manifest.projectId,
           revisionId,
-          revisionNumber: manifest.currentRevision.number,
+          revisionNumber: outputRevision,
           destination,
           recovered: true,
           artifacts: {
@@ -519,7 +565,7 @@ export async function assembleProject(options: {
       return {
         projectId: manifest.projectId,
         revisionId,
-        revisionNumber: manifest.currentRevision.number,
+        revisionNumber: outputRevision,
         destination,
         recovered: true,
         artifacts: recovered.artifacts,
@@ -556,7 +602,7 @@ export async function assembleProject(options: {
     } catch (error: unknown) {
       const marker = await readOutputMarker(destination).catch(() => null);
       if (marker?.projectId === markerBase.projectId && marker.revisionId === markerBase.revisionId) {
-        await rename(destination, join(revisionsRoot, `.failed-${manifest.currentRevision.number}-${randomUUID()}`));
+        await rename(destination, join(revisionsRoot, `.failed-${outputRevision}-${randomUUID()}`));
         await syncDirectory(revisionsRoot);
       }
       throw error;
@@ -565,12 +611,111 @@ export async function assembleProject(options: {
     return {
       projectId: manifest.projectId,
       revisionId,
-      revisionNumber: manifest.currentRevision.number,
+      revisionNumber: outputRevision,
       destination,
       recovered: false,
       artifacts: verified.artifacts,
     };
   });
+}
+
+function completedExports(manifest: ProjectManifest): manifest is ProjectManifest & {
+  exports: { pptx: Artifact; pdf: Artifact; montage: Artifact; acceptance: Artifact };
+} {
+  return Boolean(manifest.exports.pptx && manifest.exports.pdf && manifest.exports.montage && manifest.exports.acceptance);
+}
+
+function archivedCurrentOutput(manifest: ProjectManifest): NonNullable<ProjectManifest["outputRevisions"]>[number] | null {
+  if (!completedExports(manifest) || manifest.slides.some((slide) => !slide.finalRender)) return null;
+  return {
+    number: deckRevisionNumber(manifest),
+    projectRevisionId: manifest.currentRevision.id,
+    createdAt: new Date().toISOString(),
+    slides: [...manifest.slides].sort((left, right) => left.order - right.order).map((slide) => ({
+      id: slide.id,
+      order: slide.order,
+      mode: currentSlideMode(slide),
+      finalRender: slide.finalRender!,
+      editable: slide.editable,
+    })),
+    exports: manifest.exports,
+  };
+}
+
+export async function replaceSlide(options: {
+  root: string;
+  slideId: string;
+  modifiedRevisionId: string;
+  expectedModifiedRevisionRecordSha256: string;
+  warnings?: string[];
+  operations?: AssembleProjectOperations;
+}): Promise<AssembleProjectResult> {
+  let recovery = false;
+  await withProjectLease(options.root, "slide-replacement", async (root) => {
+    const before = await readProject(root);
+    const existing = before.slides.find((slide) => slide.id === options.slideId);
+    if (!existing) throw new Error("replacement slide ID is not in the current project");
+    if (
+      existing.status === "editable"
+      && existing.editableRevision?.modifiedRevisionId === options.modifiedRevisionId
+      && existing.editableRevision.expectedModifiedRevisionRecordSha256 === options.expectedModifiedRevisionRecordSha256
+      && JSON.stringify(existing.finalRender) === JSON.stringify(existing.editableRevision.preview)
+    ) {
+      await validateAppliedEditableBinding(root, before, existing.id);
+      recovery = true;
+      return;
+    }
+    const binding = await validateConfirmedEditablePreview(
+      root,
+      before,
+      options.slideId,
+      options.modifiedRevisionId,
+      options.expectedModifiedRevisionRecordSha256,
+    );
+    const previousSlideState = new Map(before.slides.map((slide) => [slide.id, JSON.stringify(slide)]));
+    await updateProject(root, async (current) => {
+      if (
+        current.currentRevision.id !== before.currentRevision.id
+        || JSON.stringify(current.slides) !== JSON.stringify(before.slides)
+        || JSON.stringify(current.exports) !== JSON.stringify(before.exports)
+      ) throw new Error("project changed during slide replacement");
+      await validateConfirmedEditablePreview(
+        root,
+        current,
+        options.slideId,
+        options.modifiedRevisionId,
+        options.expectedModifiedRevisionRecordSha256,
+      );
+      const archived = archivedCurrentOutput(current);
+      const nextOutputRevisions = [...(current.outputRevisions ?? [])];
+      if (archived && !nextOutputRevisions.some((revision) => revision.number === archived.number)) {
+        nextOutputRevisions.push(archived);
+      }
+      const selected = current.slides.map((slide) => slide.id === options.slideId ? {
+        ...slide,
+        status: "editable" as const,
+        editable: binding.modifiedManifest,
+        editableRevision: binding,
+        finalRender: binding.preview,
+        staleReasons: [],
+      } : slide);
+      for (const slide of selected) {
+        if (slide.id !== options.slideId && JSON.stringify(slide) !== previousSlideState.get(slide.id)) {
+          throw new Error("slide replacement changed an untouched page");
+        }
+      }
+      return {
+        ...current,
+        stage: "revising" as const,
+        deckRevision: deckRevisionNumber(current) + 1,
+        outputRevisions: nextOutputRevisions,
+        slides: selected,
+        exports: { pptx: null, pdf: null, montage: null, acceptance: null },
+      };
+    });
+  });
+  const result = await assembleProject({ root: options.root, warnings: options.warnings, operations: options.operations });
+  return { ...result, recovered: recovery || result.recovered };
 }
 
 async function validateAcceptanceCurrent(root: string, manifest: ProjectManifest, acceptance: Acceptance): Promise<void> {
@@ -580,9 +725,6 @@ async function validateAcceptanceCurrent(root: string, manifest: ProjectManifest
   const gates = await gatesForRevision(root, manifest);
   if (!gates.current || JSON.stringify(acceptance.gates) !== JSON.stringify(gates.revisions)) {
     throw new Error("acceptance evidence is not current");
-  }
-  if ((await projectPages(root, manifest)).providerId !== acceptance.providerId) {
-    throw new Error("acceptance provider evidence is not current");
   }
   const slides = [...manifest.slides].sort((left, right) => left.order - right.order);
   if (slides.length !== acceptance.slides.length) throw new Error("acceptance evidence is not current");
@@ -600,6 +742,9 @@ async function validateAcceptanceCurrent(root: string, manifest: ProjectManifest
   }
   if (JSON.stringify(acceptance.editablePageIds) !== JSON.stringify(currentEditablePageIds)) {
     throw new Error("acceptance editable page identity is not current");
+  }
+  if ((await projectPages(root, manifest)).providerId !== acceptance.providerId) {
+    throw new Error("acceptance provider evidence is not current");
   }
   for (const kind of ["pptx", "pdf", "montage"] as const) {
     const artifact = manifest.exports[kind];
@@ -645,8 +790,8 @@ export async function readProjectAcceptance(root: string): Promise<Acceptance> {
   const artifact = manifest.exports.acceptance;
   if (!artifact || artifact.revisionId !== manifest.currentRevision.id) throw new Error("acceptance evidence is not current");
   const expectedPath = manifest.stage === "delivered"
-    ? acceptanceRecordPaths(root, manifest.currentRevision.number).recordRef
-    : canonicalArtifactRefs(manifest.currentRevision.number).acceptance;
+    ? acceptanceRecordPaths(root, deckRevisionNumber(manifest)).recordRef
+    : canonicalArtifactRefs(deckRevisionNumber(manifest)).acceptance;
   if (artifact.path !== expectedPath) throw new Error("acceptance evidence must use the canonical artifact path");
   const bytes = await readOwnedRegularFile(root, artifact.path);
   if (createHash("sha256").update(bytes).digest("hex") !== artifact.sha256) throw new Error("acceptance evidence is not current");
@@ -691,8 +836,8 @@ export async function recordClientAcceptance(
     await preserveManifestBeforeArtifactReplacement(canonicalRoot, manifest);
     const acceptanceArtifact = manifest.exports.acceptance!;
     const bytes = Buffer.from(`${JSON.stringify(completed, null, 2)}\n`);
-    const paths = acceptanceRecordPaths(canonicalRoot, manifest.currentRevision.number);
-    if (acceptanceArtifact.path !== canonicalArtifactRefs(manifest.currentRevision.number).acceptance) {
+    const paths = acceptanceRecordPaths(canonicalRoot, deckRevisionNumber(manifest));
+    if (acceptanceArtifact.path !== canonicalArtifactRefs(deckRevisionNumber(manifest)).acceptance) {
       throw new Error("canonical artifact paths are required");
     }
     const nextAcceptance: Artifact = {

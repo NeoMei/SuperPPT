@@ -276,11 +276,7 @@ export const ModifiedRevisionRecordSchema = z.object({
     cleanBackground: Sha256Schema,
     assets: z.record(EditableProjectPathSchema, Sha256Schema),
   }).strict(),
-}).strict().superRefine((record, context) => {
-  if (record.parentRevisionId !== record.sourceRevisionId) {
-    context.addIssue({ code: "custom", path: ["sourceRevisionId"], message: "source revision must equal parent revision" });
-  }
-});
+}).strict();
 
 export type EditableManifest = z.infer<typeof EditableManifestSchema>;
 export type RunLedgerV2 = z.infer<typeof RunLedgerV2Schema>;

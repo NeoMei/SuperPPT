@@ -301,6 +301,7 @@ async function validateModifiedRevisionAt(
   revisionRoot: string,
   expectedRevisionId: string,
   expectedStagingMarker?: EditableStagingMarker,
+  externallyExpectedRecordSha256?: string,
 ): Promise<{
   record: ModifiedRevisionRecord;
   manifest: EditableManifest;
@@ -342,13 +343,15 @@ async function validateModifiedRevisionAt(
     "modified revision record",
     (value) => ModifiedRevisionRecordSchema.parse(value),
   );
+  if (externallyExpectedRecordSha256 && sha256(record.bytes) !== externallyExpectedRecordSha256) {
+    throw new Error("modified revision record does not match the external project-state anchor");
+  }
   if (sha256(record.bytes) !== marker.value.modifiedRevisionRecordSha256) throw new Error("modified revision record hash mismatch");
   if (
     record.value.projectId !== marker.value.projectId
     || record.value.slideId !== marker.value.slideId
     || record.value.revisionId !== marker.value.revisionId
     || record.value.parentRevisionId !== marker.value.parentRevisionId
-    || record.value.sourceRevisionId !== marker.value.parentRevisionId
   ) throw new Error("modified revision record identity mismatch");
   const sourceRoot = join(dirname(lexical), record.value.sourceRevisionId);
   const sourceRecord = await parsedRegularFile(
@@ -391,11 +394,16 @@ async function validateModifiedRevisionAt(
   return { record: record.value, manifest: manifest.value.manifest };
 }
 
-export async function validateModifiedRevision(revisionRoot: string): Promise<{
+export async function validateModifiedRevision(revisionRoot: string, externallyExpectedRecordSha256?: string): Promise<{
   record: ModifiedRevisionRecord;
   manifest: EditableManifest;
 }> {
-  return validateModifiedRevisionAt(revisionRoot, basename(resolve(revisionRoot)));
+  return validateModifiedRevisionAt(
+    revisionRoot,
+    basename(resolve(revisionRoot)),
+    undefined,
+    externallyExpectedRecordSha256,
+  );
 }
 
 export type AppliedEditRevision = {
@@ -425,6 +433,13 @@ export async function applyProjectEditPlan(options: {
   const slide = project.slides.find((candidate) => candidate.id === options.slideId);
   if (!slide) throw new Error("editable apply slide ID is not in the current project");
   EditableRevisionMarkerSchema.shape.revisionId.parse(options.sourceRevisionId);
+  const currentEditable = slide.status === "editable" ? slide.editableRevision : null;
+  if (slide.status === "editable" && !currentEditable) {
+    throw new Error("editable re-edit requires the current project-state modified revision anchor");
+  }
+  if (currentEditable && currentEditable.modifiedRevisionId !== options.sourceRevisionId) {
+    throw new Error("editable re-edit must use the current modified revision");
+  }
   const layout: EditableLayoutIdentity = {
     root,
     editableRoot: join(root, "editable"),
@@ -453,39 +468,76 @@ export async function applyProjectEditPlan(options: {
     sourceMarker.value.projectId !== project.projectId
     || sourceMarker.value.slideId !== slide.id
     || sourceMarker.value.revisionId !== options.sourceRevisionId
-    || sourceMarker.value.revisionKind !== "conversion"
-  ) throw new Error("apply-edit requires an authenticated converter revision");
-  const conversionRecord = await parsedRegularFile(
-    join(sourceRoot, "conversion-record.json"),
-    "editable conversion record",
-    (value) => ConversionRecordSchema.parse(value),
-  );
-  if (
-    conversionRecord.value.projectId !== project.projectId
-    || conversionRecord.value.slideId !== slide.id
-    || conversionRecord.value.revisionId !== options.sourceRevisionId
-  ) throw new Error("editable conversion record identity mismatch");
+    || (!currentEditable && sourceMarker.value.revisionKind !== "conversion")
+    || (currentEditable && sourceMarker.value.revisionKind !== "modified")
+  ) throw new Error("apply-edit requires the authenticated current editable revision");
+  let sourceManifest: EditableManifest;
+  let sourceConversionRecordSha256: string;
+  let sourceProjectRevisionId: string;
+  let sourceFinalRender: { path: string; sha256: string };
+  let sourceBackgroundSha256: string;
+  let sourceAssetHashes: Record<string, string>;
+  let originalSourceManifestSha256: string;
+  if (currentEditable) {
+    const modified = await validateModifiedRevision(sourceRoot, currentEditable.expectedModifiedRevisionRecordSha256);
+    sourceManifest = modified.manifest;
+    originalSourceManifestSha256 = modified.record.sourceManifestSha256;
+    sourceConversionRecordSha256 = modified.record.sourceConversionRecordSha256;
+    sourceProjectRevisionId = modified.record.projectRevisionId;
+    sourceFinalRender = modified.record.finalRender;
+    sourceBackgroundSha256 = modified.record.artifacts.cleanBackground;
+    sourceAssetHashes = modified.record.artifacts.assets;
+  } else {
+    const conversionRecord = await parsedRegularFile(
+      join(sourceRoot, "conversion-record.json"),
+      "editable conversion record",
+      (value) => ConversionRecordSchema.parse(value),
+    );
+    if (
+      conversionRecord.value.projectId !== project.projectId
+      || conversionRecord.value.slideId !== slide.id
+      || conversionRecord.value.revisionId !== options.sourceRevisionId
+    ) throw new Error("editable conversion record identity mismatch");
+    const source = await validateEditableConversionOutput({
+      sourcePng: join(sourceRoot, "source-1280x720.png"),
+      outDir: sourceRoot,
+    });
+    if (JSON.stringify(conversionRecord.value.artifacts) !== JSON.stringify(source.artifactHashes)) {
+      throw new Error("editable conversion record no longer authenticates converter output");
+    }
+    sourceManifest = source.manifest;
+    originalSourceManifestSha256 = source.artifactHashes.manifest;
+    sourceConversionRecordSha256 = sha256(conversionRecord.bytes);
+    sourceProjectRevisionId = conversionRecord.value.projectRevisionId;
+    sourceFinalRender = conversionRecord.value.finalRender;
+    sourceBackgroundSha256 = source.artifactHashes.cleanBackground;
+    sourceAssetHashes = source.artifactHashes.assets;
+  }
   const currentRender = slide.finalRender
     ? await readOwnedRegularFile(root, slide.finalRender.path).catch(() => null)
     : null;
   if (
-    conversionRecord.value.projectRevisionId !== project.currentRevision.id
+    sourceProjectRevisionId !== project.currentRevision.id
     || !slide.finalRender
-    || slide.status !== "ready"
-    || conversionRecord.value.finalRender.path !== slide.finalRender.path
-    || conversionRecord.value.finalRender.sha256 !== slide.finalRender.sha256
+    || (slide.status !== "ready" && slide.status !== "editable")
     || slide.finalRender.revisionId !== project.currentRevision.id
     || !currentRender
-    || sha256(currentRender) !== conversionRecord.value.finalRender.sha256
+    || sha256(currentRender) !== slide.finalRender.sha256
+    || (!currentEditable && (
+      sourceFinalRender.path !== slide.finalRender.path
+      || sourceFinalRender.sha256 !== slide.finalRender.sha256
+    ))
+    || (currentEditable && (
+      currentEditable.projectRevisionId !== project.currentRevision.id
+      || JSON.stringify(currentEditable.preview) !== JSON.stringify(slide.finalRender)
+      || JSON.stringify(currentEditable.conversionFinalRender) !== JSON.stringify({
+        path: sourceFinalRender.path,
+        sha256: sourceFinalRender.sha256,
+        revisionId: project.currentRevision.id,
+      })
+    ))
   ) throw new Error("source project revision or final render is stale");
-  const source = await validateEditableConversionOutput({
-    sourcePng: join(sourceRoot, "source-1280x720.png"),
-    outDir: sourceRoot,
-  });
-  if (JSON.stringify(conversionRecord.value.artifacts) !== JSON.stringify(source.artifactHashes)) {
-    throw new Error("editable conversion record no longer authenticates converter output");
-  }
-  validateEditTargets(source.manifest, plan);
+  validateEditTargets(sourceManifest, plan);
   await options.operations?.afterSourceValidation?.();
   await assertEditableLayoutIdentity(layout);
 
@@ -517,8 +569,12 @@ export async function applyProjectEditPlan(options: {
     await ownedStaging(staging);
     await mkdir(join(staging, "assets"), { mode: 0o700 });
     await assertEditableLayoutIdentity(layout);
-    await copyExpectedFile(source.cleanBackground, join(staging, "clean-background.png"), source.artifactHashes.cleanBackground);
-    for (const [assetPath, expected] of Object.entries(source.artifactHashes.assets)) {
+    await copyExpectedFile(
+      join(sourceRoot, "clean-background.png"),
+      join(staging, "clean-background.png"),
+      sourceBackgroundSha256,
+    );
+    for (const [assetPath, expected] of Object.entries(sourceAssetHashes)) {
       await assertEditableLayoutIdentity(layout);
       await copyExpectedFile(
         join(sourceRoot, ...assetPath.split("/")),
@@ -528,12 +584,12 @@ export async function applyProjectEditPlan(options: {
     }
     await assertEditableLayoutIdentity(layout);
     const prepared = await prepareReplacementAssets(plan, staging);
-    const modified = applyEditPlan(source.manifest, prepared);
+    const modified = applyEditPlan(sourceManifest, prepared);
     const modifiedManifestPath = join(staging, "modified-manifest.json");
     const modifiedManifestBytes = Buffer.from(`${JSON.stringify(ModifiedManifestSchema.parse({
       modifiedManifestVersion: 1,
       sourceRevisionId: options.sourceRevisionId,
-      sourceManifestSha256: source.artifactHashes.manifest,
+      sourceManifestSha256: originalSourceManifestSha256,
       manifest: modified,
     }), null, 2)}\n`);
     await writeDurableExclusive(modifiedManifestPath, modifiedManifestBytes);
@@ -544,11 +600,11 @@ export async function applyProjectEditPlan(options: {
       slideId: slide.id,
       revisionId,
       parentRevisionId: options.sourceRevisionId,
-      sourceRevisionId: options.sourceRevisionId,
-      sourceConversionRecordSha256: sha256(conversionRecord.bytes),
-      projectRevisionId: conversionRecord.value.projectRevisionId,
-      finalRender: conversionRecord.value.finalRender,
-      sourceManifestSha256: source.artifactHashes.manifest,
+      sourceRevisionId: currentEditable?.sourceRevisionId ?? options.sourceRevisionId,
+      sourceConversionRecordSha256,
+      projectRevisionId: sourceProjectRevisionId,
+      finalRender: sourceFinalRender,
+      sourceManifestSha256: originalSourceManifestSha256,
       artifacts: {
         modifiedManifest: sha256(modifiedManifestBytes),
         cleanBackground: sha256(background),
