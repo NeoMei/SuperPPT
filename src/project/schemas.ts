@@ -25,6 +25,28 @@ export const ArtifactSchema = z.object({
   revisionId: z.string().uuid(),
 }).strict();
 
+export const ClientSmokeCopyAnchorSchema = z.object({
+  anchorVersion: z.literal(1),
+  anchorId: z.string().uuid(),
+  projectId: z.string().uuid(),
+  revisionId: z.string().uuid(),
+  deckRevision: z.number().int().positive(),
+  source: ArtifactSchema,
+  descriptor: ArtifactSchema,
+  initialCopy: ArtifactSchema,
+  createdAt: z.string().datetime(),
+  state: z.enum(["pending", "ready", "completed"]),
+  savedCopySha256: Sha256Schema.nullable(),
+  acceptanceRecord: ArtifactSchema.nullable(),
+  completedAt: z.string().datetime().nullable(),
+}).strict().superRefine((anchor, context) => {
+  const completed = anchor.state === "completed";
+  const evidenceFields = [anchor.savedCopySha256, anchor.acceptanceRecord, anchor.completedAt];
+  if (completed ? evidenceFields.some((value) => value === null) : evidenceFields.some((value) => value !== null)) {
+    context.addIssue({ code: "custom", message: "completed smoke copy anchors require exact saved-copy and acceptance-record evidence" });
+  }
+});
+
 export const EditableRevisionBindingSchema = z.object({
   projectId: z.string().uuid(),
   slideId: z.string().uuid(),
@@ -184,6 +206,7 @@ export const ProjectManifestSchema = z.object({
   style: ArtifactSchema.nullable(),
   slides: z.array(SlideSchema),
   deckRevision: z.number().int().positive().optional(),
+  clientSmokeCopyAnchor: ClientSmokeCopyAnchorSchema.optional(),
   outputRevisions: z.array(z.object({
     number: z.number().int().positive(),
     projectRevisionId: z.string().uuid(),
@@ -213,4 +236,5 @@ export const ProjectManifestSchema = z.object({
 export type ProjectManifest = z.infer<typeof ProjectManifestSchema>;
 export type SlideRecord = z.infer<typeof SlideSchema>;
 export type Artifact = z.infer<typeof ArtifactSchema>;
+export type ClientSmokeCopyAnchor = z.infer<typeof ClientSmokeCopyAnchorSchema>;
 export type EditableRevisionBinding = z.infer<typeof EditableRevisionBindingSchema>;

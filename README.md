@@ -20,7 +20,7 @@ SuperPPT 把主题描述、粘贴文本或 Markdown 拆解为经过确认的高�
 
 交付 PPTX、PDF、蒙太奇、项目状态、规划文件、风格配方和验收记录。普通页面是整页图片；只有用户选中的页面中，经 `image-to-editable-pptx` 成功提取并替换的文字或可靠透明素材才可编辑。未成功提取的对象仍属于背景像素，不是真实可编辑对象，所以它不是整套全可编辑。
 
-产物生成和自动化测试不等于完成验收。真实 WPS 或 PowerPoint 客户端验收必须先运行 `acceptance-smoke-copy --project <path>`，再在生成的受控副本中编辑代表性文字或已提取素材，保存、关闭并重新打开；禁止直接保存改写 canonical `deck.pptx`。`acceptance-record` 只接受与当前项目 revision、canonical 源 SHA、受控副本 descriptor 和保存后副本 SHA 一致的证据。
+产物生成和自动化测试不等于完成验收。真实 WPS 或 PowerPoint 客户端验收必须先运行 `npm run cli -- acceptance-smoke-copy --project <path>`，只在返回的受控 `deck-smoke.pptx` 副本中编辑代表性文字或已提取素材，保存、关闭并重新打开；禁止打开或保存改写 canonical `deck.pptx`。最后通过 `npm run cli -- acceptance-record --project <path> --input <file>` 提交 descriptor path、保存后副本 SHA、客户端状态和观察结果；descriptor/source SHA 只从项目内受信 anchor 获取，不接受客户端自证。
 
 ## 依赖与隐私
 

@@ -8,14 +8,12 @@ import sharp from "sharp";
 import { z } from "zod";
 
 import { buildAcceptance } from "../acceptance/build.js";
+import { validateAcceptanceManifestBinding } from "../acceptance/current.js";
 import {
   AcceptanceSchema,
-  ClientAcceptanceInputSchema,
-  ClientAcceptanceSchema,
   type Acceptance,
 } from "../acceptance/schema.js";
 import {
-  validateClientSmokeCopyDescriptor,
   validateRecordedClientSmokeCopy,
 } from "../acceptance/smoke-copy.js";
 import { AttemptLedgerSchema } from "../generation/schemas.js";
@@ -26,8 +24,7 @@ import { withProjectLease } from "../project/lock.js";
 import { promoteExclusive } from "../project/promotion.js";
 import { readOwnedRegularFile, readRegularFileNoFollow, type SafeReadOperations } from "../project/safe-file.js";
 import { ArtifactSchema, type Artifact, type ProjectManifest } from "../project/schemas.js";
-import { readProject, updateProject } from "../project/store.js";
-import { publishRevisionSnapshot } from "../revisions/snapshot.js";
+import { readProject, recordClientAcceptance, updateProject } from "../project/store.js";
 import { prepareEditableSlide, type EditablePage } from "./editable-slide.js";
 import { SOURCE_HEIGHT_PX, SOURCE_WIDTH_PX } from "./geometry.js";
 import { buildMontage, buildMontageBytes } from "./montage.js";
@@ -1231,60 +1228,10 @@ export async function replaceSlide(options: {
 }
 
 async function validateAcceptanceCurrent(root: string, manifest: ProjectManifest, acceptance: Acceptance): Promise<void> {
-  if (acceptance.projectId !== manifest.projectId || acceptance.revisionId !== manifest.currentRevision.id) {
-    throw new Error("acceptance evidence is not current");
-  }
-  const gates = await gatesForRevision(root, manifest);
-  if (!gates.current || JSON.stringify(acceptance.gates) !== JSON.stringify(gates.revisions)) {
-    throw new Error("acceptance evidence is not current");
-  }
-  const slides = [...manifest.slides].sort((left, right) => left.order - right.order);
-  if (slides.length !== acceptance.slides.length) throw new Error("acceptance evidence is not current");
-  const currentEditablePageIds: string[] = [];
-  for (const [index, evidence] of acceptance.slides.entries()) {
-    const slide = slides[index]!;
-    const mode = currentSlideMode(slide);
-    if (evidence.mode !== mode) throw new Error("acceptance slide mode is not current");
-    if (mode === "editable") currentEditablePageIds.push(slide.id);
-    if (evidence.id !== slide.id || evidence.order !== slide.order || evidence.finalRenderSha256 !== slide.finalRender?.sha256) {
-      throw new Error("acceptance evidence is not current");
-    }
-    const bytes = await readOwnedRegularFile(root, slide.finalRender.path);
-    if (createHash("sha256").update(bytes).digest("hex") !== evidence.finalRenderSha256) throw new Error("acceptance evidence is not current");
-  }
-  if (JSON.stringify(acceptance.editablePageIds) !== JSON.stringify(currentEditablePageIds)) {
-    throw new Error("acceptance editable page identity is not current");
-  }
-  if ((await projectPages(root, manifest)).providerId !== acceptance.providerId) {
-    throw new Error("acceptance provider evidence is not current");
-  }
-  for (const kind of ["pptx", "pdf", "montage"] as const) {
-    const artifact = manifest.exports[kind];
-    const evidence = acceptance.exports[kind];
-    if (!artifact || evidence.path !== artifact.path || evidence.sha256 !== artifact.sha256) throw new Error("acceptance evidence is not current");
-    if (createHash("sha256").update(await readOwnedRegularFile(root, artifact.path)).digest("hex") !== artifact.sha256) {
-      throw new Error("acceptance evidence is not current");
-    }
-  }
+  await validateAcceptanceManifestBinding(root, manifest, acceptance);
   if (acceptance.deliveryComplete) {
     await validateRecordedClientSmokeCopy(root, manifest, acceptance.clientAcceptance);
   }
-}
-
-async function preserveManifestBeforeArtifactReplacement(root: string, manifest: ProjectManifest): Promise<void> {
-  await publishRevisionSnapshot(root, manifest);
-}
-
-export type AcceptanceRecordCheckpoint = "record-promoted" | "manifest-updated";
-export type AcceptanceRecordOperations = {
-  checkpoint?: (step: AcceptanceRecordCheckpoint) => Promise<void> | void;
-};
-
-function sameArtifact(left: Artifact | null, right: Artifact): boolean {
-  return left !== null
-    && left.path === right.path
-    && left.sha256 === right.sha256
-    && left.revisionId === right.revisionId;
 }
 
 function acceptanceRecordPaths(root: string, revisionNumber: number): {
@@ -1315,123 +1262,4 @@ export async function readProjectAcceptance(root: string): Promise<Acceptance> {
   return acceptance;
 }
 
-export async function recordClientAcceptance(
-  root: string,
-  input: string,
-  operations: AcceptanceRecordOperations = {},
-): Promise<Acceptance> {
-  const before = await lstat(input, { bigint: true });
-  if (before.isSymbolicLink() || !before.isFile() || (before.mode & 0o777n) !== 0o600n) {
-    throw new Error("client acceptance input must be a regular 0600 file");
-  }
-  const inputBytes = await readRegularFileNoFollow(input);
-  const after = await lstat(input, { bigint: true });
-  if (
-    before.dev !== after.dev
-    || before.ino !== after.ino
-    || before.size !== after.size
-    || before.mtimeNs !== after.mtimeNs
-    || before.ctimeNs !== after.ctimeNs
-    || (after.mode & 0o777n) !== 0o600n
-  ) throw new Error("client acceptance input changed while reading");
-  let submitted;
-  try {
-    submitted = ClientAcceptanceInputSchema.parse(JSON.parse(inputBytes.toString("utf8")));
-  } catch (error: unknown) {
-    throw new Error("client acceptance input is invalid", { cause: error });
-  }
-  if (
-    !submitted.opened
-    || !submitted.edited
-    || !submitted.saved
-    || !submitted.closed
-    || !submitted.reopened
-    || submitted.result !== "passed"
-  ) {
-    throw new Error("all six client acceptance checks must be explicitly complete");
-  }
-  return withProjectLease(root, "acceptance", async (canonicalRoot) => {
-    const manifest = await readProject(canonicalRoot);
-    const current = await readProjectAcceptance(canonicalRoot);
-    await validateAcceptanceCurrent(canonicalRoot, manifest, current);
-    if (current.deliveryComplete) return current;
-    const smoke = await validateClientSmokeCopyDescriptor({
-      root: canonicalRoot,
-      manifest,
-      descriptorPath: submitted.smokeCopyDescriptorPath,
-      expectedDescriptorSha256: submitted.smokeCopyDescriptorSha256,
-    });
-    if (smoke.currentCopySha256 !== submitted.savedCopySha256) {
-      throw new Error("saved client smoke copy hash does not match the observed file");
-    }
-    if (smoke.currentCopySha256 === smoke.copy.initialSha256) {
-      throw new Error("smoke copy must change after the client edit");
-    }
-    const client = ClientAcceptanceSchema.parse({
-      application: submitted.application,
-      smokeCopy: {
-        descriptorPath: smoke.descriptorPath,
-        descriptorSha256: smoke.descriptorSha256,
-        path: smoke.copy.path,
-        initialSha256: smoke.copy.initialSha256,
-        savedSha256: smoke.currentCopySha256,
-      },
-      opened: submitted.opened,
-      edited: submitted.edited,
-      saved: submitted.saved,
-      closed: submitted.closed,
-      reopened: submitted.reopened,
-      result: submitted.result,
-      observedResult: submitted.observedResult,
-      confirmedAt: submitted.confirmedAt,
-    });
-    const completed = AcceptanceSchema.parse({
-      ...current,
-      deliveryComplete: true,
-      clientAcceptance: client,
-    });
-    await preserveManifestBeforeArtifactReplacement(canonicalRoot, manifest);
-    const acceptanceArtifact = manifest.exports.acceptance!;
-    const bytes = Buffer.from(`${JSON.stringify(completed, null, 2)}\n`);
-    const paths = acceptanceRecordPaths(canonicalRoot, deckRevisionNumber(manifest));
-    if (acceptanceArtifact.path !== canonicalArtifactRefs(deckRevisionNumber(manifest)).acceptance) {
-      throw new Error("canonical artifact paths are required");
-    }
-    const nextAcceptance: Artifact = {
-      path: paths.recordRef,
-      sha256: createHash("sha256").update(bytes).digest("hex"),
-      revisionId: manifest.currentRevision.id,
-    };
-    try {
-      await lstat(paths.record);
-      const existing = await readRegularFileNoFollow(paths.record);
-      if (!existing.equals(bytes)) throw new Error("immutable acceptance record does not match current client evidence");
-    } catch (error: unknown) {
-      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
-      const staging = join(paths.directory, `.acceptance-record-${randomUUID()}.staging.json`);
-      await writeDurableExclusive(staging, bytes);
-      await promoteExclusive(staging, paths.record);
-      await syncDirectory(paths.directory);
-    }
-    await operations.checkpoint?.("record-promoted");
-    const binding = projectBinding(manifest);
-    await updateProject(canonicalRoot, (latest) => {
-      if (
-        latest.currentRevision.id !== completed.revisionId
-        || projectBinding(latest) !== binding
-      ) throw new Error("acceptance evidence is not current");
-      if (sameArtifact(latest.exports.acceptance, nextAcceptance)) return latest;
-      if (!sameArtifact(latest.exports.acceptance, acceptanceArtifact)) {
-        throw new Error("acceptance manifest pointer changed during recording");
-      }
-      return {
-        ...latest,
-        stage: "delivered",
-        exports: { ...latest.exports, acceptance: nextAcceptance },
-      };
-    });
-    await operations.checkpoint?.("manifest-updated");
-    await validateAcceptanceCurrent(canonicalRoot, await readProject(canonicalRoot), completed);
-    return completed;
-  });
-}
+export { recordClientAcceptance };

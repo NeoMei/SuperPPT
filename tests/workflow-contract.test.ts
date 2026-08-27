@@ -115,4 +115,9 @@ test("makes model disclosure, QA, preview rejection, editability, and real deliv
   assert.match(workflow, /不能把整页图片描述为可编辑/);
   assert.match(workflow, /PPTX.*PDF.*montage.*acceptance/is);
   assert.match(workflow, /WPS.*PowerPoint.*保存.*关闭.*重新打开/is);
+  assert.match(workflow, /npm run cli -- acceptance-smoke-copy --project/);
+  assert.match(workflow, /npm run cli -- acceptance-record --project .* --input/);
+  assert.match(workflow, /deck-smoke\.pptx/);
+  assert.match(workflow, /只.*受控副本|受控副本.*只/is);
+  assert.match(workflow, /绝不.*canonical.*deck\.pptx|禁止.*canonical.*deck\.pptx/is);
 });

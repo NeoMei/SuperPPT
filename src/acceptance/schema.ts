@@ -11,6 +11,7 @@ export const ClientSmokeCopyDescriptorSchema = z.object({
   descriptorVersion: z.literal(1),
   appId: z.literal("superppt"),
   artifactKind: z.literal("client-smoke-copy"),
+  anchorId: z.string().uuid(),
   projectId: z.string().uuid(),
   revisionId: z.string().uuid(),
   revisionNumber: z.number().int().positive(),
@@ -25,7 +26,6 @@ export const ClientSmokeCopyDescriptorSchema = z.object({
 export const ClientAcceptanceInputSchema = z.object({
   application: z.enum(["WPS", "PowerPoint"]),
   smokeCopyDescriptorPath: z.string().min(1),
-  smokeCopyDescriptorSha256: Sha256Schema,
   savedCopySha256: Sha256Schema,
   opened: z.boolean(),
   edited: z.boolean(),

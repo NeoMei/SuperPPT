@@ -48,6 +48,8 @@ If the user only asks to make an already extracted text or transparent asset edi
 
 ## Delivery boundary
 
-Return PPTX, PDF, montage, acceptance, project status, planning artifacts, and selected style recipe. File creation and automated tests are not client acceptance. Open the PPTX in the user's target WPS or PowerPoint, edit representative text or an extracted asset on an editable page, then 保存、关闭、重新打开 and record the observed result in acceptance evidence. If real client control is unavailable, state that acceptance is pending; never claim delivery proof.
+Return PPTX, PDF, montage, acceptance, project status, planning artifacts, and selected style recipe. File creation and automated tests are not client acceptance. First run `npm run cli -- acceptance-smoke-copy --project <root>`. Read the returned `copy.path`, and open only that controlled `deck-smoke.pptx` in the user's target WPS or PowerPoint. Edit representative text or an extracted asset, then 保存、关闭、重新打开 and record the observed result in a private `0600` input. Finish with `npm run cli -- acceptance-record --project <root> --input <file>`.
+
+客户端 smoke 只允许打开并保存受控副本。Never open or save the canonical `output/revisions/<n>/deck.pptx` as the smoke-test document: changing it invalidates the delivery hashes. `acceptance-record` takes the descriptor path returned by `acceptance-smoke-copy`; it derives descriptor/source identity from the trusted project anchor rather than accepting a client-supplied descriptor hash. If real client control is unavailable, state that acceptance is pending; never claim delivery proof.
 
 On failure, resume from the last valid stage, retain failed-run evidence, report the exact blocker, and leave the prior deliverable unchanged.

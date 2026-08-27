@@ -1,10 +1,18 @@
 import { createHash, randomUUID } from "node:crypto";
-import { lstat, readFile, rename } from "node:fs/promises";
+import { lstat, readFile, readdir, realpath, rename } from "node:fs/promises";
 import { join } from "node:path";
 import { z } from "zod";
 
+import { validateAcceptanceManifestBinding } from "../acceptance/current.js";
+import {
+  AcceptanceSchema,
+  ClientAcceptanceInputSchema,
+  ClientAcceptanceSchema,
+  type Acceptance,
+} from "../acceptance/schema.js";
 import { assertCompleteEditablePreview } from "../editable/preview-image.js";
 import { syncDirectory, writeDurableExclusive } from "./durable.js";
+import { promoteExclusive } from "./promotion.js";
 import {
   sha256Evidence,
   validateCurrentPresentationBinding,
@@ -13,9 +21,11 @@ import {
 import { withProjectLease } from "./lock.js";
 import { validateProjectRoot } from "./paths.js";
 import { assertNoPendingRollbackTransaction } from "./rollback-guard.js";
-import { readOwnedRegularFile } from "./safe-file.js";
+import { readOwnedRegularFile, readRegularFileNoFollow } from "./safe-file.js";
 import {
   ProjectManifestSchema,
+  type Artifact,
+  type ClientSmokeCopyAnchor,
   type ProjectManifest,
 } from "./schemas.js";
 import {
@@ -140,7 +150,15 @@ function assertRevisionEvolution(
   }
 }
 
-type ProjectPersistMode = "ordinary" | "revision-append" | "rollback-begin" | "rollback-abort" | "rollback-finish";
+type ProjectPersistMode =
+  | "ordinary"
+  | "revision-append"
+  | "rollback-begin"
+  | "rollback-abort"
+  | "rollback-finish"
+  | "smoke-copy-create"
+  | "smoke-copy-ready"
+  | "smoke-copy-complete";
 
 async function assertControlledRevisionTrust(
   root: string,
@@ -150,14 +168,21 @@ async function assertControlledRevisionTrust(
 ): Promise<void> {
   const appended = next.revisions.slice(previous.revisions.length);
   const markerChanged = !sameJson(previous.rollbackTransaction, next.rollbackTransaction);
+  const smokeAnchorChanged = !sameJson(previous.clientSmokeCopyAnchor, next.clientSmokeCopyAnchor);
   if (mode === "ordinary") {
-    if (appended.length > 0 || markerChanged) {
-      throw new Error("revision and rollback trust fields require a controlled store transition");
+    if (appended.length > 0 || markerChanged || smokeAnchorChanged) {
+      throw new Error("revision, rollback, and client smoke copy trust fields require a controlled store transition");
+    }
+    return;
+  }
+  if (mode === "smoke-copy-create" || mode === "smoke-copy-ready" || mode === "smoke-copy-complete") {
+    if (appended.length > 0 || markerChanged || !smokeAnchorChanged) {
+      throw new Error("client smoke copy trust transition is invalid");
     }
     return;
   }
   if (mode === "revision-append") {
-    if (appended.length === 0 || markerChanged) {
+    if (appended.length === 0 || markerChanged || smokeAnchorChanged) {
       throw new Error("controlled revision append has an invalid rollback marker transition");
     }
   } else if (mode === "rollback-begin") {
@@ -450,6 +475,430 @@ export async function updateProject(
     result = valid;
   });
   return result!;
+}
+
+function currentDeckRevision(manifest: ProjectManifest): number {
+  return manifest.deckRevision ?? manifest.currentRevision.number;
+}
+
+function fixedSmokeCopyPaths(manifest: ProjectManifest): { descriptor: string; copy: string } {
+  const base = `output/revisions/${currentDeckRevision(manifest)}/client-smoke`;
+  return { descriptor: `${base}/descriptor.json`, copy: `${base}/deck-smoke.pptx` };
+}
+
+function anchorTargetsCurrentDeck(manifest: ProjectManifest, anchor: ClientSmokeCopyAnchor): boolean {
+  const canonical = manifest.exports.pptx;
+  const fixed = fixedSmokeCopyPaths(manifest);
+  return Boolean(
+    canonical
+    && anchor.projectId === manifest.projectId
+    && anchor.revisionId === manifest.currentRevision.id
+    && anchor.deckRevision === currentDeckRevision(manifest)
+    && sameJson(anchor.source, canonical)
+    && anchor.descriptor.path === fixed.descriptor
+    && anchor.descriptor.revisionId === manifest.currentRevision.id
+    && anchor.initialCopy.path === fixed.copy
+    && anchor.initialCopy.sha256 === canonical.sha256
+    && anchor.initialCopy.revisionId === manifest.currentRevision.id
+  );
+}
+
+function smokeDescriptor(anchor: ClientSmokeCopyAnchor): Record<string, unknown> {
+  return {
+    descriptorVersion: 1,
+    appId: "superppt",
+    artifactKind: "client-smoke-copy",
+    anchorId: anchor.anchorId,
+    projectId: anchor.projectId,
+    revisionId: anchor.revisionId,
+    revisionNumber: anchor.deckRevision,
+    source: { path: anchor.source.path, sha256: anchor.source.sha256 },
+    copy: { path: anchor.initialCopy.path, initialSha256: anchor.initialCopy.sha256 },
+    createdAt: anchor.createdAt,
+  };
+}
+
+function smokeDescriptorBytes(anchor: ClientSmokeCopyAnchor): Buffer {
+  return Buffer.from(`${JSON.stringify(smokeDescriptor(anchor), null, 2)}\n`);
+}
+
+async function validateInitialSmokeCopyFiles(
+  root: string,
+  manifest: ProjectManifest,
+  anchor: ClientSmokeCopyAnchor,
+): Promise<void> {
+  if (!anchorTargetsCurrentDeck(manifest, anchor)) throw new Error("trusted client smoke copy anchor is stale");
+  const canonical = manifest.exports.pptx!;
+  const paths = fixedSmokeCopyPaths(manifest);
+  const directory = join(root, ...paths.descriptor.split("/").slice(0, -1));
+  const directoryInfo = await lstat(directory);
+  if (directoryInfo.isSymbolicLink() || !directoryInfo.isDirectory() || await realpath(directory) !== directory) {
+    throw new Error("client smoke copy directory is unsafe");
+  }
+  const entries = await readdir(directory, { withFileTypes: true });
+  if (
+    sameJson(entries.map(({ name }) => name).sort(), ["deck-smoke.pptx", "descriptor.json"])
+    === false
+    || entries.some((entry) => !entry.isFile() || entry.isSymbolicLink())
+  ) throw new Error("client smoke copy directory must contain only regular controlled artifacts");
+  const canonicalBytes = await readOwnedRegularFile(root, canonical.path);
+  if (sha256(canonicalBytes) !== canonical.sha256) throw new Error("canonical PPTX evidence is not current");
+  const descriptorBytes = await readOwnedRegularFile(root, paths.descriptor);
+  if (
+    sha256(descriptorBytes) !== anchor.descriptor.sha256
+    || !sameJson(JSON.parse(descriptorBytes.toString("utf8")), smokeDescriptor(anchor))
+  ) throw new Error("client smoke copy descriptor does not match its trusted anchor");
+  const copyBytes = await readOwnedRegularFile(root, paths.copy);
+  if (sha256(copyBytes) !== anchor.initialCopy.sha256) {
+    throw new Error("new client smoke copy does not match the canonical PPTX");
+  }
+}
+
+async function beginClientSmokeCopyAnchor(
+  root: string,
+  rawAnchor: ClientSmokeCopyAnchor,
+): Promise<ClientSmokeCopyAnchor> {
+  let result: ClientSmokeCopyAnchor | undefined;
+  const owned = await ownedProject(root);
+  await assertNoPendingRollbackTransaction(owned.root);
+  await withProjectLease(owned.root, "state", async (canonicalRoot) => {
+    const current = await ownedProject(canonicalRoot);
+    await assertNoPendingRollbackTransaction(current.root);
+    const anchor = ProjectManifestSchema.shape.clientSmokeCopyAnchor.unwrap().parse(rawAnchor);
+    const prior = current.manifest.clientSmokeCopyAnchor;
+    if (prior && anchorTargetsCurrentDeck(current.manifest, prior)) {
+      if (!sameJson(prior, anchor)) throw new Error("current client smoke copy anchor is immutable");
+      result = prior;
+      return;
+    }
+    if (
+      !current.manifest.exports.acceptance
+      || anchor.state !== "pending"
+      || anchor.savedCopySha256 !== null
+      || anchor.acceptanceRecord !== null
+      || anchor.completedAt !== null
+      || !anchorTargetsCurrentDeck(current.manifest, anchor)
+    ) throw new Error("new client smoke copy anchor does not match the current canonical deck");
+    const valid = ProjectManifestSchema.parse({ ...current.manifest, clientSmokeCopyAnchor: anchor });
+    await persistProject(current, valid, {}, "smoke-copy-create");
+    result = anchor;
+  });
+  return result!;
+}
+
+async function markClientSmokeCopyAnchorReady(
+  root: string,
+  anchorId: string,
+): Promise<ClientSmokeCopyAnchor> {
+  let result: ClientSmokeCopyAnchor | undefined;
+  const owned = await ownedProject(root);
+  await assertNoPendingRollbackTransaction(owned.root);
+  await withProjectLease(owned.root, "state", async (canonicalRoot) => {
+    const current = await ownedProject(canonicalRoot);
+    await assertNoPendingRollbackTransaction(current.root);
+    const anchor = current.manifest.clientSmokeCopyAnchor;
+    if (!anchor || anchor.anchorId !== anchorId || !anchorTargetsCurrentDeck(current.manifest, anchor)) {
+      throw new Error("trusted client smoke copy anchor is missing or stale");
+    }
+    if (anchor.state === "ready") {
+      result = anchor;
+      return;
+    }
+    if (anchor.state !== "pending") throw new Error("completed client smoke copy anchor cannot become ready again");
+    await validateInitialSmokeCopyFiles(canonicalRoot, current.manifest, anchor);
+    const ready: ClientSmokeCopyAnchor = { ...anchor, state: "ready" };
+    const valid = ProjectManifestSchema.parse({ ...current.manifest, clientSmokeCopyAnchor: ready });
+    await persistProject(current, valid, {}, "smoke-copy-ready");
+    result = ready;
+  });
+  return result!;
+}
+
+export type CreateClientSmokeCopyAnchorOperations = {
+  checkpoint?: (step: "before-anchor-commit" | "anchor-committed" | "files-promoted" | "anchor-ready") => Promise<void> | void;
+  materialize: (anchor: ClientSmokeCopyAnchor) => Promise<void>;
+};
+
+export async function createClientSmokeCopyAnchor(
+  root: string,
+  operations: CreateClientSmokeCopyAnchorOperations,
+): Promise<ClientSmokeCopyAnchor> {
+  const manifest = await readProject(root);
+  const canonical = manifest.exports.pptx;
+  if (!canonical || !manifest.exports.acceptance) {
+    throw new Error("current assembled canonical PPTX is required before creating a smoke copy");
+  }
+  let anchor = manifest.clientSmokeCopyAnchor;
+  if (!anchor || !anchorTargetsCurrentDeck(manifest, anchor)) {
+    const fixed = fixedSmokeCopyPaths(manifest);
+    const base: ClientSmokeCopyAnchor = {
+      anchorVersion: 1,
+      anchorId: randomUUID(),
+      projectId: manifest.projectId,
+      revisionId: manifest.currentRevision.id,
+      deckRevision: currentDeckRevision(manifest),
+      source: canonical,
+      descriptor: { path: fixed.descriptor, sha256: "0".repeat(64), revisionId: manifest.currentRevision.id },
+      initialCopy: { path: fixed.copy, sha256: canonical.sha256, revisionId: manifest.currentRevision.id },
+      createdAt: new Date().toISOString(),
+      state: "pending",
+      savedCopySha256: null,
+      acceptanceRecord: null,
+      completedAt: null,
+    };
+    anchor = { ...base, descriptor: { ...base.descriptor, sha256: sha256(smokeDescriptorBytes(base)) } };
+    await operations.checkpoint?.("before-anchor-commit");
+    anchor = await beginClientSmokeCopyAnchor(root, anchor);
+    await operations.checkpoint?.("anchor-committed");
+  }
+  if (anchor.state === "completed") return anchor;
+  if (anchor.state === "pending") {
+    await operations.materialize(anchor);
+    await operations.checkpoint?.("files-promoted");
+  }
+  anchor = await markClientSmokeCopyAnchorReady(root, anchor.anchorId);
+  await operations.checkpoint?.("anchor-ready");
+  return anchor;
+}
+
+async function completeClientSmokeCopyAcceptance(options: {
+  root: string;
+  expectedManifest: ProjectManifest;
+  anchorId: string;
+  savedCopySha256: string;
+  acceptanceRecord: Artifact;
+  completedAt: string;
+}): Promise<ProjectManifest> {
+  let result: ProjectManifest | undefined;
+  const owned = await ownedProject(options.root);
+  await assertNoPendingRollbackTransaction(owned.root);
+  await withProjectLease(owned.root, "state", async (canonicalRoot) => {
+    const current = await ownedProject(canonicalRoot);
+    await assertNoPendingRollbackTransaction(current.root);
+    if (!sameJson(current.manifest, options.expectedManifest)) {
+      throw new Error("project changed while completing client smoke copy acceptance");
+    }
+    const anchor = current.manifest.clientSmokeCopyAnchor;
+    if (!anchor || anchor.anchorId !== options.anchorId || !anchorTargetsCurrentDeck(current.manifest, anchor)) {
+      throw new Error("trusted client smoke copy anchor is missing or stale");
+    }
+    if (
+      anchor.state !== "ready"
+      || options.savedCopySha256 === anchor.initialCopy.sha256
+      || options.acceptanceRecord.revisionId !== current.manifest.currentRevision.id
+      || options.acceptanceRecord.path !== `output/revisions/${currentDeckRevision(current.manifest)}/acceptance-record.json`
+    ) throw new Error("client smoke copy completion does not match its trusted anchor");
+    const canonicalBytes = await readOwnedRegularFile(canonicalRoot, anchor.source.path);
+    if (sha256(canonicalBytes) !== anchor.source.sha256) throw new Error("canonical PPTX changed during client acceptance");
+    const descriptorBytes = await readOwnedRegularFile(canonicalRoot, anchor.descriptor.path);
+    if (
+      sha256(descriptorBytes) !== anchor.descriptor.sha256
+      || !sameJson(JSON.parse(descriptorBytes.toString("utf8")), smokeDescriptor(anchor))
+    ) throw new Error("client smoke copy descriptor does not match its trusted anchor");
+    const savedCopyBytes = await readOwnedRegularFile(canonicalRoot, anchor.initialCopy.path);
+    if (sha256(savedCopyBytes) !== options.savedCopySha256) throw new Error("saved client smoke copy hash does not match the observed file");
+    const acceptanceBytes = await readOwnedRegularFile(canonicalRoot, options.acceptanceRecord.path);
+    if (sha256(acceptanceBytes) !== options.acceptanceRecord.sha256) throw new Error("acceptance record hash does not match the observed file");
+    const completed: ClientSmokeCopyAnchor = {
+      ...anchor,
+      state: "completed",
+      savedCopySha256: options.savedCopySha256,
+      acceptanceRecord: options.acceptanceRecord,
+      completedAt: options.completedAt,
+    };
+    const valid = ProjectManifestSchema.parse({
+      ...current.manifest,
+      stage: "delivered",
+      clientSmokeCopyAnchor: completed,
+      exports: { ...current.manifest.exports, acceptance: options.acceptanceRecord },
+    });
+    await persistProject(current, valid, {}, "smoke-copy-complete");
+    result = valid;
+  });
+  return result!;
+}
+
+async function validateCurrentSmokeCopyFiles(
+  root: string,
+  manifest: ProjectManifest,
+  anchor: ClientSmokeCopyAnchor,
+): Promise<{ descriptorSha256: string; copySha256: string }> {
+  if (!anchorTargetsCurrentDeck(manifest, anchor) || anchor.state === "pending") {
+    throw new Error("trusted client smoke copy anchor is stale");
+  }
+  const canonicalBytes = await readOwnedRegularFile(root, anchor.source.path);
+  if (sha256(canonicalBytes) !== anchor.source.sha256) throw new Error("canonical PPTX changed during client acceptance");
+  const descriptorBytes = await readOwnedRegularFile(root, anchor.descriptor.path);
+  const descriptorSha256 = sha256(descriptorBytes);
+  if (descriptorSha256 !== anchor.descriptor.sha256) throw new Error("client smoke copy descriptor hash mismatch");
+  if (!sameJson(JSON.parse(descriptorBytes.toString("utf8")), smokeDescriptor(anchor))) {
+    throw new Error("client smoke copy descriptor does not match its trusted anchor");
+  }
+  const copySha256 = sha256(await readOwnedRegularFile(root, anchor.initialCopy.path));
+  return { descriptorSha256, copySha256 };
+}
+
+function acceptancePath(manifest: ProjectManifest, delivered: boolean): string {
+  const base = `output/revisions/${currentDeckRevision(manifest)}`;
+  return delivered ? `${base}/acceptance-record.json` : `${base}/acceptance.json`;
+}
+
+async function readBoundAcceptance(root: string, manifest: ProjectManifest): Promise<Acceptance> {
+  const artifact = manifest.exports.acceptance;
+  if (
+    !artifact
+    || artifact.revisionId !== manifest.currentRevision.id
+    || artifact.path !== acceptancePath(manifest, manifest.stage === "delivered")
+  ) throw new Error("acceptance evidence is not current");
+  const bytes = await readOwnedRegularFile(root, artifact.path);
+  if (sha256(bytes) !== artifact.sha256) throw new Error("acceptance evidence is not current");
+  const acceptance = AcceptanceSchema.parse(JSON.parse(bytes.toString("utf8")));
+  await validateAcceptanceManifestBinding(root, manifest, acceptance);
+  if (manifest.stage === "delivered") {
+    const anchor = manifest.clientSmokeCopyAnchor;
+    const smoke = acceptance.clientAcceptance.smokeCopy;
+    if (
+      !anchor
+      || anchor.state !== "completed"
+      || !smoke
+      || anchor.savedCopySha256 !== smoke.savedSha256
+      || !sameJson(anchor.acceptanceRecord, artifact)
+    ) throw new Error("client smoke copy completion anchor is not current");
+    const current = await validateCurrentSmokeCopyFiles(root, manifest, anchor);
+    if (
+      smoke.descriptorPath !== anchor.descriptor.path
+      || smoke.descriptorSha256 !== current.descriptorSha256
+      || smoke.path !== anchor.initialCopy.path
+      || smoke.initialSha256 !== anchor.initialCopy.sha256
+      || smoke.savedSha256 !== current.copySha256
+      || smoke.savedSha256 === smoke.initialSha256
+    ) throw new Error("client smoke copy evidence is not current");
+  }
+  return acceptance;
+}
+
+export type AcceptanceRecordCheckpoint = "record-promoted" | "manifest-updated";
+export type AcceptanceRecordOperations = {
+  checkpoint?: (step: AcceptanceRecordCheckpoint) => Promise<void> | void;
+};
+
+export async function recordClientAcceptance(
+  root: string,
+  input: string,
+  operations: AcceptanceRecordOperations = {},
+): Promise<Acceptance> {
+  const before = await lstat(input, { bigint: true });
+  if (before.isSymbolicLink() || !before.isFile() || (before.mode & 0o777n) !== 0o600n) {
+    throw new Error("client acceptance input must be a regular 0600 file");
+  }
+  const inputBytes = await readRegularFileNoFollow(input);
+  const after = await lstat(input, { bigint: true });
+  if (
+    before.dev !== after.dev
+    || before.ino !== after.ino
+    || before.size !== after.size
+    || before.mtimeNs !== after.mtimeNs
+    || before.ctimeNs !== after.ctimeNs
+    || (after.mode & 0o777n) !== 0o600n
+  ) throw new Error("client acceptance input changed while reading");
+  let submitted;
+  try {
+    submitted = ClientAcceptanceInputSchema.parse(JSON.parse(inputBytes.toString("utf8")));
+  } catch (error: unknown) {
+    throw new Error("client acceptance input is invalid", { cause: error });
+  }
+  if (
+    !submitted.opened
+    || !submitted.edited
+    || !submitted.saved
+    || !submitted.closed
+    || !submitted.reopened
+    || submitted.result !== "passed"
+  ) throw new Error("all six client acceptance checks must be explicitly complete");
+
+  return withProjectLease(root, "acceptance", async (canonicalRoot) => {
+    const manifest = await readProject(canonicalRoot);
+    const current = await readBoundAcceptance(canonicalRoot, manifest);
+    if (current.deliveryComplete) {
+      const recorded = current.clientAcceptance;
+      if (
+        recorded.application !== submitted.application
+        || recorded.smokeCopy?.descriptorPath !== submitted.smokeCopyDescriptorPath
+        || recorded.smokeCopy?.savedSha256 !== submitted.savedCopySha256
+        || recorded.opened !== submitted.opened
+        || recorded.edited !== submitted.edited
+        || recorded.saved !== submitted.saved
+        || recorded.closed !== submitted.closed
+        || recorded.reopened !== submitted.reopened
+        || recorded.result !== submitted.result
+        || recorded.observedResult !== submitted.observedResult
+        || recorded.confirmedAt !== submitted.confirmedAt
+      ) throw new Error("immutable client acceptance replay does not match the recorded evidence");
+      return current;
+    }
+    const anchor = manifest.clientSmokeCopyAnchor;
+    if (!anchor || anchor.state !== "ready" || submitted.smokeCopyDescriptorPath !== anchor.descriptor.path) {
+      throw new Error("trusted client smoke copy anchor is missing or stale");
+    }
+    const smoke = await validateCurrentSmokeCopyFiles(canonicalRoot, manifest, anchor);
+    if (smoke.copySha256 !== submitted.savedCopySha256) {
+      throw new Error("saved client smoke copy hash does not match the observed file");
+    }
+    if (smoke.copySha256 === anchor.initialCopy.sha256) throw new Error("smoke copy must change after the client edit");
+    const client = ClientAcceptanceSchema.parse({
+      application: submitted.application,
+      smokeCopy: {
+        descriptorPath: anchor.descriptor.path,
+        descriptorSha256: smoke.descriptorSha256,
+        path: anchor.initialCopy.path,
+        initialSha256: anchor.initialCopy.sha256,
+        savedSha256: smoke.copySha256,
+      },
+      opened: submitted.opened,
+      edited: submitted.edited,
+      saved: submitted.saved,
+      closed: submitted.closed,
+      reopened: submitted.reopened,
+      result: submitted.result,
+      observedResult: submitted.observedResult,
+      confirmedAt: submitted.confirmedAt,
+    });
+    const completed = AcceptanceSchema.parse({ ...current, deliveryComplete: true, clientAcceptance: client });
+    await publishRevisionSnapshot(canonicalRoot, manifest);
+    const bytes = Buffer.from(`${JSON.stringify(completed, null, 2)}\n`);
+    const recordRef = acceptancePath(manifest, true);
+    const recordPath = join(canonicalRoot, ...recordRef.split("/"));
+    const nextAcceptance: Artifact = {
+      path: recordRef,
+      sha256: sha256(bytes),
+      revisionId: manifest.currentRevision.id,
+    };
+    try {
+      await lstat(recordPath);
+      const existing = await readRegularFileNoFollow(recordPath);
+      if (!existing.equals(bytes)) throw new Error("immutable acceptance record does not match current client evidence");
+    } catch (error: unknown) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+      const directory = join(canonicalRoot, "output", "revisions", String(currentDeckRevision(manifest)));
+      const staging = join(directory, `.acceptance-record-${randomUUID()}.staging.json`);
+      await writeDurableExclusive(staging, bytes);
+      await promoteExclusive(staging, recordPath);
+      await syncDirectory(directory);
+    }
+    await operations.checkpoint?.("record-promoted");
+    await completeClientSmokeCopyAcceptance({
+      root: canonicalRoot,
+      expectedManifest: manifest,
+      anchorId: anchor.anchorId,
+      savedCopySha256: smoke.copySha256,
+      acceptanceRecord: nextAcceptance,
+      completedAt: submitted.confirmedAt,
+    });
+    await operations.checkpoint?.("manifest-updated");
+    const delivered = await readBoundAcceptance(canonicalRoot, await readProject(canonicalRoot));
+    if (!sameJson(delivered, completed)) throw new Error("acceptance evidence is not current");
+    return delivered;
+  });
 }
 
 export async function readProjectForRollbackRecovery(root: string): Promise<{
