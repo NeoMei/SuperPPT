@@ -18,6 +18,7 @@ import { approveGate } from "../src/planning/confirm.js";
 import { publishPlanViews, publishStyleSample } from "../src/planning/views.js";
 import { initializeProject } from "../src/project/initialize.js";
 import { readProject, sha256, updateProject } from "../src/project/store.js";
+import { writeCanonicalStyleSample } from "./helpers/style-sample.js";
 
 const fixtureRoot = resolve("tests/fixtures/editable");
 const slideIds = [
@@ -130,9 +131,7 @@ async function readyProject(t: TestContext): Promise<string> {
     styleId: "cinematic-tech",
     representativeSlideId: slideIds[1],
   })}\n`);
-  await writeFile(join(root, "style", "sample", "prompt.txt"), "private style prompt\n", { mode: 0o600 });
-  await sharp({ create: { width: 1600, height: 900, channels: 3, background: "#102030" } }).png()
-    .toFile(join(root, "style", "sample", "sample.png"));
+  await writeCanonicalStyleSample(root);
   await publishPlanViews(root);
   await approveGate(root, "outline");
   await approveGate(root, "slide-specs");

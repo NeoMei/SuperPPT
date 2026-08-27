@@ -17,9 +17,12 @@ import { localProjectPath, readOwnedRegularFile, type SafeReadOperations } from 
 import type { ProjectManifest } from "../project/schemas.js";
 import { readProject, updateProject } from "../project/store.js";
 import { loadValidatedOutline, loadValidatedPlan } from "./load.js";
-import { StyleSelectionSchema } from "./schemas.js";
-import { requireCurrentPlanPresentation, requireCurrentStylePresentation } from "./views.js";
-import { validateStylePublication } from "../styles/publication.js";
+import { requireCurrentOutlinePresentation, requireCurrentPlanPresentation, requireCurrentStylePresentation } from "./views.js";
+import {
+  STYLE_SAMPLE_ARTIFACTS,
+  validateCanonicalStyleSample,
+  type StyleSampleArtifacts,
+} from "../styles/sample-contract.js";
 
 export type PlanningGate = "outline" | "slide-specs" | "style-sample";
 export type ApprovalCheckpoint = "snapshot-published" | "manifest-published";
@@ -41,11 +44,7 @@ const previous: Record<PlanningGate, PlanningGate | null> = {
   "slide-specs": "outline",
   "style-sample": "slide-specs",
 };
-export const STYLE_SAMPLE_ARTIFACTS = [
-  "style/selection.json",
-  "style/sample/prompt.txt",
-  "style/sample/sample.png",
-] as const;
+export { STYLE_SAMPLE_ARTIFACTS } from "../styles/sample-contract.js";
 
 export function toPortableProjectPath(value: string): string {
   return value.replaceAll("\\", "/");
@@ -110,18 +109,12 @@ async function gateArtifacts(
     const all = (await loadValidatedPlan(root, operations)).artifacts;
     return Object.fromEntries(Object.entries(all).filter(([path]) => path !== "brief.json"));
   }
-  const plan = await loadValidatedPlan(root, operations);
-  const selectionBytes = await readOwnedRegularFile(root, STYLE_SAMPLE_ARTIFACTS[0], operations);
-  const selection = StyleSelectionSchema.parse(JSON.parse(selectionBytes.toString("utf8")));
-  const prompt = await readOwnedRegularFile(root, STYLE_SAMPLE_ARTIFACTS[1], operations);
-  if (!prompt.toString("utf8").trim()) throw new Error("style sample prompt must not be empty");
-  const sample = await readOwnedRegularFile(root, STYLE_SAMPLE_ARTIFACTS[2], operations);
-  await validateStylePublication(plan.specs, selection, sample);
-  return {
-    [STYLE_SAMPLE_ARTIFACTS[0]]: selectionBytes,
-    [STYLE_SAMPLE_ARTIFACTS[1]]: prompt,
-    [STYLE_SAMPLE_ARTIFACTS[2]]: sample,
-  };
+  const values = Object.fromEntries(await Promise.all(STYLE_SAMPLE_ARTIFACTS.map(async (path) => [
+    path,
+    await readOwnedRegularFile(root, path, operations),
+  ]))) as StyleSampleArtifacts;
+  await validateCanonicalStyleSample(root, values);
+  return values;
 }
 
 async function currentPresentation(
@@ -129,9 +122,13 @@ async function currentPresentation(
   gate: PlanningGate,
   hashes: Record<string, string>,
 ): Promise<PresentationBinding> {
-  return gate === "style-sample"
-    ? requireCurrentStylePresentation(root, hashes)
-    : requireCurrentPlanPresentation(root, hashes);
+  if (gate === "style-sample") return requireCurrentStylePresentation(root, hashes);
+  if (gate === "slide-specs") return requireCurrentPlanPresentation(root, hashes);
+  try {
+    return await requireCurrentOutlinePresentation(root, hashes);
+  } catch {
+    return requireCurrentPlanPresentation(root, hashes);
+  }
 }
 
 async function gateCurrentWithManifest(

@@ -13,6 +13,7 @@ import { readOwnedRegularFile } from "../project/safe-file.js";
 import type { Artifact, ProjectManifest, SlideRecord } from "../project/schemas.js";
 import { readProject, updateProject } from "../project/store.js";
 import { loadBuiltInStyleCatalog } from "../styles/catalog.js";
+import { compileSlidePrompt } from "../styles/prompt-compiler.js";
 import { GenerationDirectory, openGenerationDirectory } from "./anchored-dir.js";
 import { cleanupAbandonedProjectStaging, ownedTemporaryName } from "./abandoned.js";
 import { readPrivateInputFile } from "./private-input.js";
@@ -138,24 +139,6 @@ async function gateGeneration(root: string): Promise<ProjectManifest> {
   return manifest;
 }
 
-function pagePrompt(stylePrompt: string, spec: Awaited<ReturnType<typeof loadValidatedPlan>>["specs"][number]): string {
-  return [
-    stylePrompt.trim(),
-    "SUPERPPT PAGE ADAPTATION (canonical JSON):",
-    JSON.stringify({
-      title: spec.title,
-      role: spec.role,
-      coreMessage: spec.coreMessage,
-      requiredText: spec.requiredText,
-      visualSubject: spec.visualSubject,
-      composition: spec.composition,
-      relationships: spec.relationships,
-      forbidden: spec.forbidden,
-    }),
-    "Preserve exact required copy and the approved deck style. Produce exactly one 16:9 slide with no logo or watermark.",
-  ].join("\n\n");
-}
-
 async function attemptCount(root: string, slideId: string): Promise<number> {
   const path = join(root, "images", slideId);
   try {
@@ -262,11 +245,10 @@ async function projectPages(root: string, manifest: ProjectManifest): Promise<{ 
   const catalog = await loadBuiltInStyleCatalog();
   const style = catalog.styles.find(({ id }) => id === selection.styleId);
   if (!style) throw new Error("selected style is not in the built-in catalog");
-  const stylePrompt = (await readOwnedRegularFile(root, "style/sample/prompt.txt")).toString("utf8");
   const records = new Map(manifest.slides.map((slide) => [slide.id, slide]));
   const pages: ProjectPage[] = [];
   for (const [index, spec] of plan.specs.entries()) {
-    const prompt = pagePrompt(stylePrompt, spec);
+    const { text: prompt } = compileSlidePrompt({ spec, style });
     pages.push({
       id: spec.slideId,
       order: index,

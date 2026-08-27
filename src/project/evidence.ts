@@ -168,28 +168,29 @@ export async function validatePlanPublicationEvidence(
   const outlineBytes = await readOwnedRegularFile(root, `${publicationPath}/sources/outline.json`);
   const ids = outlineIds(outlineBytes);
   if (!sameJson(ids, descriptor.outlineSlideIds)) throw new Error("planning publication outline identity mismatch");
-  const sourceKeys = [
+  const outlineSourceKeys = [
     "brief.json",
     "outline.json",
-    ...ids.map((id) => `slides/${id}/spec.json`),
   ].sort();
-  const viewKeys = [
+  const outlineViewKeys = [
     "brief.md",
     "outline.md",
-    ...ids.map((id) => `slides/${id}/spec.md`),
   ].sort();
-  if (!sameJson(Object.keys(descriptor.sourceHashes).sort(), sourceKeys)) {
+  const completeSourceKeys = [...outlineSourceKeys, ...ids.map((id) => `slides/${id}/spec.json`)].sort();
+  const completeViewKeys = [...outlineViewKeys, ...ids.map((id) => `slides/${id}/spec.md`)].sort();
+  const actualSourceKeys = Object.keys(descriptor.sourceHashes).sort();
+  const actualViewKeys = Object.keys(descriptor.viewHashes).sort();
+  const outlineOnly = sameJson(actualSourceKeys, outlineSourceKeys) && sameJson(actualViewKeys, outlineViewKeys);
+  const complete = sameJson(actualSourceKeys, completeSourceKeys) && sameJson(actualViewKeys, completeViewKeys);
+  if (!outlineOnly && !complete) {
     throw new Error("planning publication source coverage is incomplete");
-  }
-  if (!sameJson(Object.keys(descriptor.viewHashes).sort(), viewKeys)) {
-    throw new Error("planning publication view coverage is incomplete");
   }
   await verifyHashedFiles(root, publicationPath, "sources/", descriptor.sourceHashes);
   await verifyHashedFiles(root, publicationPath, "", descriptor.viewHashes);
   const expectedTree = [
     "publication.json",
-    ...sourceKeys.map((path) => `sources/${path}`),
-    ...viewKeys,
+    ...actualSourceKeys.map((path) => `sources/${path}`),
+    ...actualViewKeys,
   ].sort();
   const treeRoot = join(await realpath(root), localProjectPath(publicationPath));
   if (!sameJson(await listTree(treeRoot), expectedTree)) throw new Error("planning publication tree coverage is incomplete");
@@ -212,8 +213,10 @@ export async function validateStylePublicationEvidence(
   if (descriptor.publicationPath !== publicationPath) throw new Error("style publication path identity mismatch");
   const keys = [
     "style/selection.json",
+    "style/sample/director.json",
     "style/sample/prompt.txt",
     "style/sample/sample.png",
+    "style/sample/ledger.json",
   ];
   if (!sameJson(Object.keys(descriptor.sourceHashes).sort(), [...keys].sort())) {
     throw new Error("style publication source coverage is incomplete");
@@ -229,16 +232,28 @@ export async function validateCurrentPresentationBinding(
   root: string,
   binding: PresentationBinding,
 ): Promise<void> {
-  const pointerPath = binding.kind === "planning-views"
-    ? "planning-views.json"
-    : "style-sample.json";
-  const pointer = binding.kind === "planning-views"
-    ? PlanPublicationDescriptorSchema.parse(JSON.parse((await readOwnedRegularFile(root, pointerPath)).toString("utf8")))
-    : StylePublicationDescriptorSchema.parse(JSON.parse((await readOwnedRegularFile(root, pointerPath)).toString("utf8")));
+  const pointerPaths = binding.kind === "planning-views"
+    ? ["outline-views.json", "planning-views.json"]
+    : ["style-sample.json"];
+  const pointers = await Promise.all(pointerPaths.map(async (pointerPath) => {
+    try {
+      const bytes = await readOwnedRegularFile(root, pointerPath);
+      return binding.kind === "planning-views"
+        ? PlanPublicationDescriptorSchema.parse(JSON.parse(bytes.toString("utf8")))
+        : StylePublicationDescriptorSchema.parse(JSON.parse(bytes.toString("utf8")));
+    } catch {
+      return null;
+    }
+  }));
+  const pointer = pointers.find((candidate) => candidate
+    && candidate.publicationPath === binding.publicationPath
+    && candidate.descriptorSha256 === binding.descriptorSha256);
   const immutable = binding.kind === "planning-views"
     ? await validatePlanPublicationEvidence(root, binding.publicationPath)
     : await validateStylePublicationEvidence(root, binding.publicationPath);
   if (
+    !pointer
+    ||
     !sameJson(pointer, immutable)
     || pointer.publicationPath !== binding.publicationPath
     || pointer.descriptorSha256 !== binding.descriptorSha256
@@ -256,7 +271,13 @@ function assertExactGateKeys(
     return;
   }
   if (gate === "style-sample") {
-    const expected = ["style/sample/prompt.txt", "style/sample/sample.png", "style/selection.json"];
+    const expected = [
+      "style/sample/director.json",
+      "style/sample/ledger.json",
+      "style/sample/prompt.txt",
+      "style/sample/sample.png",
+      "style/selection.json",
+    ];
     if (!sameJson(keys, expected)) throw new Error("ordinary gate evidence has invalid style keys");
     return;
   }

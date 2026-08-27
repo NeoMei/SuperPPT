@@ -22,6 +22,7 @@ import { initializeProject } from "../src/project/initialize.js";
 import { readProject, updateProject } from "../src/project/store.js";
 import { applyRevision, approveImpact, publishImpactPlan } from "../src/revisions/apply.js";
 import { publishRevisionSnapshot } from "../src/revisions/snapshot.js";
+import { writeCanonicalStyleSample } from "./helpers/style-sample.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -96,9 +97,7 @@ async function readyProject(t: TestContext): Promise<{ root: string; revisionId:
     styleId: "cinematic-tech",
     representativeSlideId: PROJECT_SLIDES[0],
   })}\n`);
-  await writeFile(join(root, "style", "sample", "prompt.txt"), "private style prompt\n", { mode: 0o600 });
-  await sharp({ create: { width: 1600, height: 900, channels: 3, background: "#102030" } })
-    .png().toFile(join(root, "style", "sample", "sample.png"));
+  await writeCanonicalStyleSample(root);
   await publishPlanViews(root);
   await approveGate(root, "outline");
   await approveGate(root, "slide-specs");

@@ -14,6 +14,15 @@ type PromptSpec = {
   forbidden: string[];
 };
 
+const UNIVERSAL_TEXT_FORBIDDEN = [
+  "pseudo-labels",
+  "random glyphs",
+  "decorative copy",
+  "unapproved text",
+  "logo",
+  "watermark",
+] as const;
+
 const PromptSpecSchema = z.object({
   title: z.string().min(1),
   role: z.enum(["cover", "section", "content", "process", "comparison", "data", "summary"]),
@@ -26,6 +35,43 @@ const PromptSpecSchema = z.object({
 });
 
 export type CompiledPrompt = { text: string; sha256: string };
+
+export function visualDirectorForSpec(
+  rawSpec: PromptSpec | SlideSpec,
+  rawStyle: StyleRecipe,
+): VisualDirector {
+  const spec = PromptSpecSchema.parse(rawSpec);
+  const style = StyleRecipeSchema.parse(rawStyle);
+  const relationship = spec.relationships.length > 0
+    ? spec.relationships.join("; ")
+    : spec.coreMessage;
+  return VisualDirectorSchema.parse({
+    foreground: [
+      `tangible foreground evidence for ${spec.visualSubject}`,
+      `close material detail using ${style.materials.join(", ")}`,
+    ],
+    midground: [
+      `primary subject and relationship structure: ${relationship}`,
+      `spatial composition: ${spec.composition}`,
+    ],
+    background: [
+      `contextual environment supporting ${spec.coreMessage}`,
+      `depth atmosphere shaped by ${style.lighting.join(", ")}`,
+    ],
+    microDetails: [
+      ...style.detailLanguage,
+      "fine object edges, material transitions, and purposeful evidence details",
+    ],
+    readingOrder: [
+      `first: the dominant visual subject ${spec.visualSubject}`,
+      `second: the relationship ${relationship}`,
+      "third: supporting evidence and approved exact copy",
+    ],
+    textSafeArea: spec.role === "cover"
+      ? "reserve one calm high-contrast title-safe region without incidental labels"
+      : "reserve compact high-contrast text-safe regions along the reading path without covering the focal subject",
+  });
+}
 
 function canonicalJson(value: unknown): string {
   if (value === undefined) return "null";
@@ -46,7 +92,7 @@ export function compilePrompt(input: { spec: PromptSpec | SlideSpec; style: Styl
     "Use case: productivity-visual",
     "Asset type: premium 16:9 presentation slide",
     field("Page role", spec.role),
-    field("Slide title (verbatim)", spec.title),
+    field("Slide title (semantic context; render only when also present in Text verbatim)", spec.title),
     field("Core message", spec.coreMessage),
     field("Style recipe", { id: style.id, name: style.name }),
     `Style consistency: preserve this exact recipe across the deck while adapting only the page-role composition.`,
@@ -66,9 +112,17 @@ export function compilePrompt(input: { spec: PromptSpec | SlideSpec; style: Styl
     field("Typography", style.typography),
     field("Detail language", style.detailLanguage),
     field("Text (verbatim)", spec.requiredText),
-    field("Avoid", [...style.forbidden, ...spec.forbidden]),
+    field("Avoid", [...new Set([...UNIVERSAL_TEXT_FORBIDDEN, ...style.forbidden, ...spec.forbidden])]),
     `BEGIN SUPERPPT CANONICAL INPUT\n${canonicalJson(payload)}\nEND SUPERPPT CANONICAL INPUT`,
-    "Final self-check: preserve one dominant focal point, clear hierarchy, rich foreground/midground/background detail, exact required copy, exact 16:9 composition, and no logo or watermark.",
+    "Final self-check: preserve one dominant focal point, clear hierarchy, rich object/material/light/space detail across foreground/midground/background, explicit reading order and text-safe areas, exact approved required copy only, exact 16:9 composition, and no pseudo-labels, random glyphs, decorative copy, logo, or watermark.",
   ].join("\n\n");
   return { text, sha256: createHash("sha256").update(text).digest("hex") };
+}
+
+export function compileSlidePrompt(input: { spec: PromptSpec | SlideSpec; style: StyleRecipe }): CompiledPrompt {
+  return compilePrompt({
+    spec: input.spec,
+    style: input.style,
+    director: visualDirectorForSpec(input.spec, input.style),
+  });
 }

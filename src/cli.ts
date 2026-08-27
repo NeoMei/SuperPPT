@@ -15,13 +15,14 @@ import {
   recordManualQa,
   retryProjectPage,
 } from "./generation/batch.js";
+import { generateProjectStyleSample } from "./generation/style-sample.js";
 import { convertProjectPage } from "./editable/adapter.js";
 import { applyProjectEditPlan } from "./editable/operations.js";
 import { confirmEditablePreview, renderProjectEditablePreview } from "./editable/render.js";
 import { EditPlanSchema, type EditPlan } from "./editable/schemas.js";
 import { approveGate, type PlanningGate } from "./planning/confirm.js";
 import { normalizeInput, type InputRequest } from "./planning/intake.js";
-import { publishPlanViews, publishStyleSample } from "./planning/views.js";
+import { publishOutlineViews, publishPlanViews, publishStyleSample } from "./planning/views.js";
 import { initializeProject } from "./project/initialize.js";
 import { readRegularFileNoFollow } from "./project/safe-file.js";
 import { readProject } from "./project/store.js";
@@ -208,9 +209,26 @@ async function main(argv: string[]): Promise<void> {
     return;
   }
 
+  if (command === "validate-outline") {
+    const options = exactFlags(argv.slice(1), ["--project"]);
+    outputJson(await publishOutlineViews(options.get("--project")!));
+    return;
+  }
+
   if (command === "publish-style-sample") {
     const options = exactFlags(argv.slice(1), ["--project"]);
     outputJson(await publishStyleSample(options.get("--project")!));
+    return;
+  }
+
+  if (command === "generate-style-sample") {
+    const options = exactFlags(argv.slice(1), ["--project"]);
+    const resolved = await configuredDependencies();
+    outputJson(await generateProjectStyleSample({
+      root: options.get("--project")!,
+      ai: resolved.ai,
+      runner: await providerRunner(),
+    }));
     return;
   }
 

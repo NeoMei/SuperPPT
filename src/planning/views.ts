@@ -18,10 +18,14 @@ import { withPlanningLock, withProjectLease, type ProjectLockOptions } from "../
 import { promoteExclusive } from "../project/promotion.js";
 import { localProjectPath, readOwnedRegularFile } from "../project/safe-file.js";
 import { readProject } from "../project/store.js";
-import { loadValidatedPlan } from "./load.js";
+import { loadValidatedOutline, loadValidatedPlan } from "./load.js";
 import { renderBrief, renderOutline, renderSlideSpec } from "./render.js";
 import { StyleSelectionSchema, type StyleSelection } from "./schemas.js";
-import { validateStylePublication } from "../styles/publication.js";
+import {
+  readStyleSampleArtifacts,
+  STYLE_SAMPLE_ARTIFACTS,
+  validateCanonicalStyleSample,
+} from "../styles/sample-contract.js";
 
 export type ViewCheckpoint = "snapshot-published" | "authority-published" | "convenience-written";
 export type PublishPlanOptions = {
@@ -41,11 +45,7 @@ export type PublishedStyleSample = {
   sample: Buffer;
 };
 
-const STYLE_KEYS = [
-  "style/selection.json",
-  "style/sample/prompt.txt",
-  "style/sample/sample.png",
-] as const;
+const STYLE_KEYS = STYLE_SAMPLE_ARTIFACTS;
 
 function sameJson(left: unknown, right: unknown): boolean {
   return JSON.stringify(left) === JSON.stringify(right);
@@ -97,9 +97,12 @@ async function writeEvidenceTree(
   }
 }
 
-async function readPlanPointer(root: string): Promise<PlanPublicationDescriptor> {
+async function readPlanPointer(
+  root: string,
+  pointerPath = "planning-views.json",
+): Promise<PlanPublicationDescriptor> {
   const pointer = PlanPublicationDescriptorSchema.parse(JSON.parse(
-    (await readOwnedRegularFile(root, "planning-views.json")).toString("utf8"),
+    (await readOwnedRegularFile(root, pointerPath)).toString("utf8"),
   ));
   const immutable = await validatePlanPublicationEvidence(root, pointer.publicationPath);
   if (!sameJson(pointer, immutable)) throw new Error("planning publication descriptor identity mismatch");
@@ -149,16 +152,20 @@ async function updateConvenienceViews(
   }
 }
 
-async function recoverUnlocked(root: string): Promise<void> {
+async function recoverUnlocked(
+  root: string,
+  pointerPath = "planning-views.json",
+  journalName = ".superppt-view-journals",
+): Promise<void> {
   let pointer: PlanPublicationDescriptor;
   try {
-    pointer = await readPlanPointer(root);
+    pointer = await readPlanPointer(root, pointerPath);
   } catch (error: unknown) {
     const cause = (error as { cause?: NodeJS.ErrnoException }).cause;
     if ((error as NodeJS.ErrnoException).code === "ENOENT" || cause?.code === "ENOENT") return;
     throw error;
   }
-  const journalRoot = join(root, ".superppt-view-journals");
+  const journalRoot = join(root, journalName);
   await ensureDirectory(journalRoot);
   const pending = (await readdir(journalRoot)).filter((name) => name.endsWith(".pending.json"));
   if (pending.length === 0) return;
@@ -169,15 +176,20 @@ async function recoverUnlocked(root: string): Promise<void> {
   await syncDirectory(journalRoot);
 }
 
-export async function publishPlanViews(
+async function publishPlanningViews(
   root: string,
+  stage: "outline" | "slide-specs",
   options: PublishPlanOptions = {},
 ): Promise<{ publicationPath: string; slideCount: number }> {
+  const pointerPath = stage === "outline" ? "outline-views.json" : "planning-views.json";
+  const journalName = stage === "outline" ? ".superppt-outline-view-journals" : ".superppt-view-journals";
   return withPlanningLock(root, async (canonicalRoot) => {
     return withProjectLease(canonicalRoot, "state", async () => {
-      await recoverUnlocked(canonicalRoot);
+      await recoverUnlocked(canonicalRoot, pointerPath, journalName);
       const manifest = await readProject(canonicalRoot);
-      const plan = await loadValidatedPlan(canonicalRoot);
+      const plan = stage === "outline"
+        ? { ...(await loadValidatedOutline(canonicalRoot)), specs: [] }
+        : await loadValidatedPlan(canonicalRoot);
       const publicationId = randomUUID();
       const publicationPath = `revisions/${manifest.currentRevision.id}/planning-views/${publicationId}`;
       const views: Record<string, string> = {
@@ -218,7 +230,7 @@ export async function publishPlanViews(
       const pending = join(journalRoot, `${publicationId}.pending.json`);
       await writeDurableExclusive(pending, `${JSON.stringify(pointer, null, 2)}\n`);
       await syncDirectory(journalRoot);
-      await writeReplacement(join(canonicalRoot, "planning-views.json"), `${JSON.stringify(pointer, null, 2)}\n`);
+      await writeReplacement(join(canonicalRoot, pointerPath), `${JSON.stringify(pointer, null, 2)}\n`);
       await options.operations?.checkpoint?.("authority-published");
       await updateConvenienceViews(
         canonicalRoot,
@@ -227,21 +239,32 @@ export async function publishPlanViews(
       );
       await rename(pending, join(journalRoot, `${publicationId}.completed`));
       await syncDirectory(journalRoot);
-      return { publicationPath, slideCount: plan.specs.length };
+      return { publicationPath, slideCount: plan.outline.slides.length };
     });
   }, options.lock);
+}
+
+export async function publishOutlineViews(
+  root: string,
+  options: PublishPlanOptions = {},
+): Promise<{ publicationPath: string; slideCount: number }> {
+  return publishPlanningViews(root, "outline", options);
+}
+
+export async function publishPlanViews(
+  root: string,
+  options: PublishPlanOptions = {},
+): Promise<{ publicationPath: string; slideCount: number }> {
+  return publishPlanningViews(root, "slide-specs", options);
 }
 
 async function styleArtifacts(root: string): Promise<{
   values: Record<string, Buffer>;
   selection: StyleSelection;
 }> {
-  const plan = await loadValidatedPlan(root);
-  const values = Object.fromEntries(await Promise.all(STYLE_KEYS.map(async (path) => [path, await readOwnedRegularFile(root, path)])));
+  const values = await readStyleSampleArtifacts(root);
   const selection = StyleSelectionSchema.parse(JSON.parse(values[STYLE_KEYS[0]]!.toString("utf8")));
-  if (!values[STYLE_KEYS[1]]!.toString("utf8").trim()) throw new Error("style sample prompt must not be empty");
-  const sample = values[STYLE_KEYS[2]]!;
-  await validateStylePublication(plan.specs, selection, sample);
+  await validateCanonicalStyleSample(root, values);
   return { values, selection };
 }
 
@@ -285,6 +308,11 @@ export async function readPublishedPlanViews(root: string): Promise<PublishedPla
   return readAuthority(root, await readPlanPointer(root));
 }
 
+export async function readPublishedOutlineViews(root: string): Promise<PublishedPlanViews> {
+  await readProject(root);
+  return readAuthority(root, await readPlanPointer(root, "outline-views.json"));
+}
+
 export async function readPublishedStyleSample(root: string): Promise<PublishedStyleSample> {
   await readProject(root);
   const descriptor = await readStylePointer(root);
@@ -294,8 +322,8 @@ export async function readPublishedStyleSample(root: string): Promise<PublishedS
   return {
     descriptor,
     selection,
-    prompt: await readOwnedRegularFile(root, `${descriptor.publicationPath}/sources/${STYLE_KEYS[1]}`),
-    sample: await readOwnedRegularFile(root, `${descriptor.publicationPath}/sources/${STYLE_KEYS[2]}`),
+    prompt: await readOwnedRegularFile(root, `${descriptor.publicationPath}/sources/${STYLE_KEYS[2]}`),
+    sample: await readOwnedRegularFile(root, `${descriptor.publicationPath}/sources/${STYLE_KEYS[3]}`),
   };
 }
 
@@ -316,6 +344,32 @@ export async function requireCurrentPlanPresentation(
   for (const [path, expected] of Object.entries(artifactHashes)) {
     if (pointer.sourceHashes[path] !== expected) {
       throw new Error("gate artifacts do not match authoritative planning publication");
+    }
+  }
+  return { kind: "planning-views", publicationPath: pointer.publicationPath, descriptorSha256: pointer.descriptorSha256 };
+}
+
+export async function requireCurrentOutlinePresentation(
+  root: string,
+  artifactHashes: Record<string, string>,
+): Promise<PresentationBinding> {
+  let pointer: PlanPublicationDescriptor;
+  try {
+    pointer = await readPlanPointer(root, "outline-views.json");
+  } catch (error: unknown) {
+    throw new Error("authoritative planning publication is required for outline", { cause: error });
+  }
+  const manifest = await readProject(root);
+  if (pointer.projectId !== manifest.projectId || pointer.revisionId !== manifest.currentRevision.id) {
+    throw new Error("authoritative planning publication for outline does not match current project revision");
+  }
+  if (
+    !sameJson(Object.keys(pointer.sourceHashes).sort(), ["brief.json", "outline.json"])
+    || !sameJson(Object.keys(pointer.viewHashes).sort(), ["brief.md", "outline.md"])
+  ) throw new Error("authoritative planning publication for outline has invalid coverage");
+  for (const [path, expected] of Object.entries(artifactHashes)) {
+    if (pointer.sourceHashes[path] !== expected) {
+      throw new Error("gate artifacts do not match authoritative planning publication for outline");
     }
   }
   return { kind: "planning-views", publicationPath: pointer.publicationPath, descriptorSha256: pointer.descriptorSha256 };

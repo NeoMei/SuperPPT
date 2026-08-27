@@ -20,6 +20,9 @@ import { approveGate, assertGateCurrent } from "../src/planning/confirm.js";
 import { publishPlanViews, publishStyleSample } from "../src/planning/views.js";
 import { initializeProject } from "../src/project/initialize.js";
 import { readProject } from "../src/project/store.js";
+import { loadBuiltInStyleCatalog } from "../src/styles/catalog.js";
+import { compileSlidePrompt } from "../src/styles/prompt-compiler.js";
+import { writeCanonicalStyleSample } from "./helpers/style-sample.js";
 
 const runner = join(process.cwd(), "scripts", "run_ai_image_provider.py");
 const fakeProvider = join(process.cwd(), "tests", "fixtures", "fake_ai_provider.py");
@@ -102,8 +105,7 @@ async function approvedProject(t: TestContext, prefix: string): Promise<{ root: 
     styleId: "cinematic-tech",
     representativeSlideId: SLIDE_IDS[1],
   })}\n`);
-  await writeFile(join(root, "style", "sample", "prompt.txt"), "private compiled visual director prompt\n", { mode: 0o600 });
-  await sharp({ create: { width: 1600, height: 900, channels: 3, background: "#102030" } }).png().toFile(join(root, "style", "sample", "sample.png"));
+  await writeCanonicalStyleSample(root);
   await publishPlanViews(root);
   await approveGate(root, "outline");
   await approveGate(root, "slide-specs");
@@ -599,6 +601,24 @@ test("generates a gated project through the manifest-declared provider and retai
   }
 });
 
+test("batch generation hashes each page's canonical spec recipe and director prompt", async (t) => {
+  const fixture = await approvedProject(t, "superppt-canonical-batch-");
+  await generateProject({ root: fixture.root, ai: fixture.ai, runner, concurrency: 2 });
+  const catalog = await loadBuiltInStyleCatalog();
+  const style = catalog.styles.find(({ id }) => id === "cinematic-tech");
+  assert.ok(style);
+
+  for (const slideId of SLIDE_IDS) {
+    const spec = JSON.parse(await readFile(join(fixture.root, "slides", slideId, "spec.json"), "utf8"));
+    const expected = compileSlidePrompt({ spec, style });
+    const ledger = AttemptLedgerSchema.parse(JSON.parse(await readFile(
+      join(fixture.root, "images", slideId, "attempt-1", "ledger.json"),
+      "utf8",
+    )));
+    assert.equal(ledger.promptSha256, expected.sha256, slideId);
+  }
+});
+
 test("uses private manual QA when no reviewer exists and retries only one failed stable page", async (t) => {
   const fixture = await approvedProject(t, "superppt-manual-qa-");
   fixture.ai.reviewer = null;
@@ -721,6 +741,51 @@ test("CLI generate prints its provider disclosure before state-changing results"
     reviewer: "dependency",
   });
   assert.equal(documents[1]!.callCount, 3);
+});
+
+test("CLI generates and publishes a canonical representative style sample with provider proof", async (t) => {
+  const fixture = await approvedProject(t, "superppt-style-sample-cli-");
+  const callCounter = join(await directory(t, "superppt-style-sample-counter-"), "calls.log");
+  const invocation = ["--import", "tsx", "src/cli.ts"];
+  const environment = {
+    ...process.env,
+    SUPERPPT_AI_IMAGE_TO_PPT_SOURCE: fixture.ai.root,
+    SUPERPPT_IMAGE_TO_EDITABLE_PPTX_SOURCE: fixture.editableRoot,
+    SUPERPPT_TEST_CALL_COUNTER: callCounter,
+  };
+  const run = (args: string[]) => execFileAsync(process.execPath, [...invocation, ...args], {
+    cwd: process.cwd(),
+    env: environment,
+  });
+
+  const generationResult = await run(["generate-style-sample", "--project", fixture.root]);
+  assert.equal(await readFile(callCounter, "utf8"), "1\n", "representative sample generation must make exactly one provider call");
+  assert.doesNotMatch(generationResult.stdout, /BEGIN SUPERPPT CANONICAL INPUT/);
+  const generated = JSON.parse(generationResult.stdout) as {
+    providerId: string;
+    representativeSlideId: string;
+    artifacts: Record<string, string>;
+  };
+  assert.equal(generated.providerId, "openai-gpt-image-2");
+  assert.equal(generated.representativeSlideId, SLIDE_IDS[1]);
+  assert.deepEqual(Object.keys(generated.artifacts).sort(), ["director", "ledger", "prompt", "sample", "selection"]);
+
+  const prompt = await readFile(join(fixture.root, generated.artifacts.prompt), "utf8");
+  const director = JSON.parse(await readFile(join(fixture.root, generated.artifacts.director), "utf8")) as Record<string, unknown>;
+  const ledger = AttemptLedgerSchema.parse(JSON.parse(await readFile(join(fixture.root, generated.artifacts.ledger), "utf8")));
+  assert.match(prompt, /BEGIN SUPERPPT CANONICAL INPUT/);
+  assert.match(prompt, /Text \(verbatim\).*\["Title"\]/);
+  assert.doesNotMatch(prompt, /private compiled visual director prompt/);
+  assert.deepEqual(Object.keys(director).sort(), ["background", "foreground", "microDetails", "midground", "readingOrder", "textSafeArea"]);
+  assert.equal(ledger.providerId, generated.providerId);
+  assert.equal(ledger.slideId, generated.representativeSlideId);
+  assert.equal(ledger.output, "style/sample/sample.png");
+  assert.doesNotMatch(JSON.stringify(ledger), /BEGIN SUPERPPT CANONICAL INPUT/);
+  assert.equal((await sharp(join(fixture.root, generated.artifacts.sample)).metadata()).width, 1920);
+
+  await run(["publish-style-sample", "--project", fixture.root]);
+  await writeFile(join(fixture.root, generated.artifacts.prompt), "not the canonical prompt\n", { mode: 0o600 });
+  await assert.rejects(run(["publish-style-sample", "--project", fixture.root]), /canonical style sample prompt/i);
 });
 
 test("CLI record-qa and retry-page use manual evidence without regenerating peers", async (t) => {

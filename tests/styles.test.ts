@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import sharp from "sharp";
 import { loadBuiltInStyleCatalog, loadStyleCatalog, selectRepresentativeSlide } from "../src/styles/catalog.js";
-import { compilePrompt } from "../src/styles/prompt-compiler.js";
+import { compilePrompt, compileSlidePrompt } from "../src/styles/prompt-compiler.js";
 import { StyleCatalogSchema } from "../src/styles/schemas.js";
 
 const catalogPath = "skills/superppt/assets/styles/catalog.json";
@@ -122,6 +122,45 @@ test("compiler accepts a complete SlideSpec object", () => {
     style: promptStyle,
     director: promptDirector,
   }));
+});
+
+test("compiler authorizes only requiredText as verbatim copy and always rejects hallucinated labels", () => {
+  const result = compilePrompt({
+    spec: {
+      ...promptSpec,
+      title: "Semantic title must not become unapproved copy",
+      requiredText: ["ONLY APPROVED COPY"],
+      forbidden: ["unrelated crowds"],
+    },
+    style: { ...promptStyle, forbidden: ["neon gamer UI"] },
+    director: promptDirector,
+  });
+
+  assert.match(result.text, /Text \(verbatim\).*\["ONLY APPROVED COPY"\]/);
+  assert.doesNotMatch(result.text, /Slide title \(verbatim\)/);
+  for (const forbidden of ["pseudo-labels", "random glyphs", "decorative copy", "logo", "watermark"]) {
+    assert.match(result.text, new RegExp(forbidden, "i"));
+  }
+  for (const richDirection of ["Foreground", "Midground", "Background", "Materials", "Lighting", "Reading order", "Text safe area"]) {
+    assert.match(result.text, new RegExp(richDirection, "i"));
+  }
+});
+
+test("compiles each slide from its own spec, selected recipe, and complete visual director", () => {
+  const compiled = compileSlidePrompt({
+    spec: {
+      ...promptSpec,
+      title: "Per-page semantic subject",
+      requiredText: ["PER-PAGE COPY"],
+    },
+    style: promptStyle,
+  });
+  const payload = compiled.text.match(/BEGIN SUPERPPT CANONICAL INPUT\n([^\n]+)\nEND SUPERPPT CANONICAL INPUT/);
+  assert.ok(payload?.[1]);
+  const parsed = JSON.parse(payload[1]) as { director: Record<string, unknown>; spec: { requiredText: string[] }; style: { id: string } };
+  assert.deepEqual(parsed.spec.requiredText, ["PER-PAGE COPY"]);
+  assert.equal(parsed.style.id, promptStyle.id);
+  assert.deepEqual(Object.keys(parsed.director).sort(), ["background", "foreground", "microDetails", "midground", "readingOrder", "textSafeArea"]);
 });
 
 test("compiler uses an unambiguous encoding for hostile structured values", () => {

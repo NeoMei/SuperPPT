@@ -11,11 +11,12 @@ import { approveGate, assertGateCurrent, readGateSnapshot, toPortableProjectPath
 import { normalizeInput } from "../src/planning/intake.js";
 import { renderBrief, renderOutline, renderSlideSpec } from "../src/planning/render.js";
 import { BriefSchema, OutlineSchema, SlideSpecSchema } from "../src/planning/schemas.js";
-import { publishPlanViews, publishStyleSample, readPublishedPlanViews, recoverPlanViews } from "../src/planning/views.js";
+import { publishPlanViews, publishStyleSample, readPublishedOutlineViews, readPublishedPlanViews, recoverPlanViews } from "../src/planning/views.js";
 import { initializeProject } from "../src/project/initialize.js";
 import { addDescriptorIntegrity, sha256Evidence } from "../src/project/evidence.js";
 import { withProjectLease } from "../src/project/lock.js";
 import { readProject, updateProject, writeProject } from "../src/project/store.js";
+import { writeCanonicalStyleSample } from "./helpers/style-sample.js";
 
 const execFileAsync = promisify(execFile);
 const PROJECT_ID = "00000000-0000-4000-8000-000000000101";
@@ -90,10 +91,7 @@ async function writeValidStyleSample(root: string): Promise<void> {
     styleId: "cinematic-tech",
     representativeSlideId: SLIDE_IDS[1],
   }, null, 2)}\n`);
-  await writeFile(join(root, "style", "sample", "prompt.txt"), "one focal point\n");
-  await writeFile(join(root, "style", "sample", "sample.png"), await sharp({
-    create: { width: 1600, height: 900, channels: 3, background: "#102030" },
-  }).png().toBuffer());
+  await writeCanonicalStyleSample(root);
 }
 
 async function approveAll(root: string): Promise<void> {
@@ -207,7 +205,13 @@ test("ordinary gates derive and validate fixed artifact sets in exact order", as
   assert.deepEqual(manifest.gates.map(({ gate }) => gate), ["outline", "slide-specs", "style-sample"]);
   assert.deepEqual(Object.keys(manifest.gates[0]!.artifactHashes).sort(), ["brief.json", "outline.json"]);
   assert.deepEqual(Object.keys(manifest.gates[1]!.artifactHashes).sort(), ["outline.json", ...SLIDE_IDS.map((id) => `slides/${id}/spec.json`)].sort());
-  assert.deepEqual(Object.keys(manifest.gates[2]!.artifactHashes).sort(), ["style/sample/prompt.txt", "style/sample/sample.png", "style/selection.json"]);
+  assert.deepEqual(Object.keys(manifest.gates[2]!.artifactHashes).sort(), [
+    "style/sample/director.json",
+    "style/sample/ledger.json",
+    "style/sample/prompt.txt",
+    "style/sample/sample.png",
+    "style/selection.json",
+  ]);
   assert.equal(await assertGateCurrent(root, "style-sample"), true);
   await assert.rejects(approveGate(root, "revision-impact" as never), /invalid planning gate/);
   await assert.rejects(approveGate(root, "outline", { artifacts: [join(root, "superppt.json")] } as never), /invalid approval options/);
@@ -246,7 +250,7 @@ test("rejects invalid empty, target-count, must-cover, spec, and style contracts
   await assert.rejects(approveGate(styleRoot, "style-sample"), /representative slide must exist/);
 });
 
-test("style publication requires a catalog style and a decodable 16:9 PNG", async (t) => {
+test("style publication requires a built-in recipe and an exact decodable canonical PNG", async (t) => {
   const root = await project(t, "superppt-style-semantics-");
   await writeValidPlan(root);
   await writeValidStyleSample(root);
@@ -263,21 +267,22 @@ test("style publication requires a catalog style and a decodable 16:9 PNG", asyn
     styleId: "cinematic-tech",
     representativeSlideId: SLIDE_IDS[1],
   }));
+  await writeCanonicalStyleSample(root);
   await writeFile(join(root, "style", "sample", "sample.png"), await sharp({
     create: { width: 800, height: 800, channels: 3, background: "#102030" },
   }).png().toBuffer());
-  await assert.rejects(publishStyleSample(root), /16:9/);
+  await assert.rejects(publishStyleSample(root), /exact 1920x1080 PNG/);
 
   await writeFile(join(root, "style", "sample", "sample.png"), Buffer.from("not a png"));
-  await assert.rejects(publishStyleSample(root), /decodable PNG/);
+  await assert.rejects(publishStyleSample(root));
 
   const complete = await sharp({
-    create: { width: 1600, height: 900, channels: 3, background: "#102030" },
+    create: { width: 1920, height: 1080, channels: 3, background: "#102030" },
   }).png().toBuffer();
   const truncated = complete.subarray(0, complete.length - 64);
   assert.equal((await sharp(truncated).metadata()).format, "png", "regression fixture must retain a valid PNG header");
   await writeFile(join(root, "style", "sample", "sample.png"), truncated);
-  await assert.rejects(publishStyleSample(root), /decodable PNG/);
+  await assert.rejects(publishStyleSample(root));
 });
 
 test("rejects symlink and non-file fixed gate artifacts without following them", async (t) => {
@@ -468,7 +473,7 @@ test("gate approval is bound to the exact authoritative plan and style publicati
   await assert.rejects(approveGate(root, "style-sample"), /authoritative style sample publication is required/);
   await publishStyleSample(root);
   await writeFile(join(root, "style", "sample", "prompt.txt"), "changed after presentation\n");
-  await assert.rejects(approveGate(root, "style-sample"), /do not match authoritative style sample publication/);
+  await assert.rejects(approveGate(root, "style-sample"), /canonical style sample prompt/);
 });
 
 test("rejects forged ordinary gates submitted directly through writeProject", async (t) => {
@@ -615,6 +620,21 @@ test("CLI validates and publishes plans and exposes no artifact override", async
   await assert.rejects(execFileAsync(process.execPath, [...invocation, "validate-plan", "--project", "relative"], { cwd: process.cwd() }), /Unsafe project root/);
 });
 
+test("CLI publishes and approves the outline before any slide specs exist", async (t) => {
+  const root = await project(t, "superppt-outline-stage-cli-");
+  await writeFile(join(root, "brief.json"), `${JSON.stringify(brief, null, 2)}\n`);
+  await writeFile(join(root, "outline.json"), `${JSON.stringify(outline, null, 2)}\n`);
+  const invocation = ["--import", "tsx", "src/cli.ts"];
+  const run = (args: string[]) => execFileAsync(process.execPath, [...invocation, ...args], { cwd: process.cwd() });
+
+  const published = await run(["validate-outline", "--project", root]);
+  assert.equal((JSON.parse(published.stdout) as { slideCount: number }).slideCount, 3);
+  await run(["approve", "--project", root, "--gate", "outline"]);
+  assert.equal(await assertGateCurrent(root, "outline"), true);
+  await assert.rejects(run(["validate-plan", "--project", root]), /spec IDs must exactly match outline IDs/);
+  assert.equal((await readPublishedOutlineViews(root)).slides[SLIDE_IDS[0]], undefined);
+});
+
 test("CLI publishes authoritative style evidence before the existing approval gate", async (t) => {
   const root = await project(t, "superppt-style-cli-");
   await writeValidPlan(root);
@@ -642,6 +662,8 @@ test("CLI publishes authoritative style evidence before the existing approval ga
   assert.match(descriptor.publicationPath, /^revisions\/[0-9a-f-]{36}\/style-samples\/[0-9a-f-]{36}$/);
   assert.equal(descriptor.representativeSlideId, SLIDE_IDS[1]);
   assert.deepEqual(Object.keys(descriptor.sourceHashes).sort(), [
+    "style/sample/director.json",
+    "style/sample/ledger.json",
     "style/sample/prompt.txt",
     "style/sample/sample.png",
     "style/selection.json",
@@ -651,8 +673,9 @@ test("CLI publishes authoritative style evidence before the existing approval ga
   await writeFile(join(root, "style", "sample", "prompt.txt"), "stale replacement\n");
   await assert.rejects(
     run(["approve", "--project", root, "--gate", "style-sample"]),
-    /do not match authoritative style sample publication/,
+    /canonical style sample prompt/,
   );
+  await writeCanonicalStyleSample(root);
   await run(["publish-style-sample", "--project", root]);
   await run(["approve", "--project", root, "--gate", "style-sample"]);
   assert.equal(await assertGateCurrent(root, "style-sample"), true);
