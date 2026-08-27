@@ -38,10 +38,10 @@ async function project(t: TestContext, prefix: string): Promise<string> {
   return root;
 }
 
-async function waitForHandshake(signal: Promise<void>, label: string): Promise<void> {
+async function waitForHandshake<T>(signal: Promise<T>, label: string): Promise<T> {
   let timer: NodeJS.Timeout | undefined;
   try {
-    await Promise.race([
+    return await Promise.race([
       signal,
       new Promise<never>((_resolve, reject) => {
         timer = setTimeout(() => reject(new Error(`${label} handshake timed out`)), 2_000);
@@ -51,6 +51,72 @@ async function waitForHandshake(signal: Promise<void>, label: string): Promise<v
     if (timer) clearTimeout(timer);
   }
 }
+
+async function coordinateHandshake(options: {
+  signal: Promise<void>;
+  label: string;
+  work: () => Promise<void>;
+  release: () => void;
+  contender: Promise<void>;
+}): Promise<void> {
+  let primary: { error: unknown } | undefined;
+  try {
+    await waitForHandshake(options.signal, options.label);
+    await options.work();
+  } catch (error: unknown) {
+    primary = { error };
+  } finally {
+    try {
+      options.release();
+    } catch (error: unknown) {
+      primary ??= { error };
+    }
+  }
+
+  const observed = options.contender.then(
+    () => ({ status: "fulfilled" as const }),
+    (reason: unknown) => ({ status: "rejected" as const, reason }),
+  );
+  let settled: Awaited<typeof observed>;
+  try {
+    settled = await waitForHandshake(observed, `${options.label} contender settlement`);
+  } catch (error: unknown) {
+    if (primary) throw primary.error;
+    throw error;
+  }
+  if (primary) throw primary.error;
+  if (settled.status === "rejected") throw settled.reason;
+}
+
+test("handshake coordination settles its contender before preserving signal or work failures", async () => {
+  for (const phase of ["signal", "work"] as const) {
+    const primary = new Error(`primary ${phase} failure`);
+    const secondary = new Error(`secondary contender failure after ${phase}`);
+    let rejectContender!: (error: Error) => void;
+    let contenderSettled = false;
+    let workCalled = false;
+    const contender = new Promise<void>((_resolve, reject) => { rejectContender = reject; })
+      .finally(() => { contenderSettled = true; });
+
+    await assert.rejects(coordinateHandshake({
+      signal: phase === "signal" ? Promise.reject(primary) : Promise.resolve(),
+      label: `${phase} failure-path probe`,
+      work: async () => {
+        workCalled = true;
+        if (phase === "work") throw primary;
+      },
+      release: () => {
+        setTimeout(() => rejectContender(secondary), 10);
+      },
+      contender,
+    }), (error: unknown) => {
+      assert.equal(error, primary);
+      return true;
+    });
+    assert.equal(contenderSettled, true);
+    assert.equal(workCalled, phase === "work");
+  }
+});
 
 const brief = {
   schemaVersion: 1 as const,
@@ -503,14 +569,15 @@ test("state lease contender tolerates promotion after statting the old manifest 
       },
     },
   });
-  try {
-    await waitForHandshake(pathStatted, "manifest path stat");
-    await updateProject(root, (manifest) => ({ ...manifest, title: "Promoted before contender opened manifest" }));
-  } finally {
-    releaseOpen();
-  }
-
-  await contender;
+  await coordinateHandshake({
+    signal: pathStatted,
+    label: "manifest path stat",
+    work: async () => {
+      await updateProject(root, (manifest) => ({ ...manifest, title: "Promoted before contender opened manifest" }));
+    },
+    release: releaseOpen,
+    contender,
+  });
   assert.equal(actionCalled, true);
   assert.equal((await readProject(root)).title, "Promoted before contender opened manifest");
 });
@@ -536,13 +603,15 @@ test("state lease contender tolerates pre-open promotion without O_NOFOLLOW", as
         },
       },
     });
-    try {
-      await waitForHandshake(pathStatted, "win32 manifest path stat");
-      await updateProject(root, (manifest) => ({ ...manifest, title: "Promoted without O_NOFOLLOW" }));
-    } finally {
-      releaseOpen();
-    }
-    await contender;
+    await coordinateHandshake({
+      signal: pathStatted,
+      label: "win32 manifest path stat",
+      work: async () => {
+        await updateProject(root, (manifest) => ({ ...manifest, title: "Promoted without O_NOFOLLOW" }));
+      },
+      release: releaseOpen,
+      contender,
+    });
   } finally {
     Object.defineProperty(process, "platform", platform);
   }
@@ -658,14 +727,15 @@ test("state lease contender tolerates promotion after opening the old manifest b
       },
     },
   });
-  try {
-    await waitForHandshake(fileOpened, "manifest file open");
-    await updateProject(root, (manifest) => ({ ...manifest, title: "Promoted while contender held old fd" }));
-  } finally {
-    releaseRead();
-  }
-
-  await contender;
+  await coordinateHandshake({
+    signal: fileOpened,
+    label: "manifest file open",
+    work: async () => {
+      await updateProject(root, (manifest) => ({ ...manifest, title: "Promoted while contender held old fd" }));
+    },
+    release: releaseRead,
+    contender,
+  });
   assert.equal(actionCalled, true);
   assert.equal((await readProject(root)).title, "Promoted while contender held old fd");
 });
