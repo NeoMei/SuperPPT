@@ -1,0 +1,21 @@
+{
+  "name": "superppt",
+  "interface": {
+    "displayName": "SuperPPT"
+  },
+  "plugins": [
+    {
+      "name": "superppt",
+      "source": {
+        "source": "url",
+        "url": "https://github.com/NeoMei/SuperPPT.git",
+        "ref": "main"
+      },
+      "policy": {
+        "installation": "AVAILABLE",
+        "authentication": "ON_INSTALL"
+      },
+      "category": "Productivity"
+    }
+  ]
+}
