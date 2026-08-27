@@ -3,6 +3,7 @@ import { lstat, readFile, rename } from "node:fs/promises";
 import { join } from "node:path";
 import { z } from "zod";
 
+import { assertCompleteEditablePreview } from "../editable/preview-image.js";
 import { syncDirectory, writeDurableExclusive } from "./durable.js";
 import {
   sha256Evidence,
@@ -255,7 +256,9 @@ async function validateSlidePreviewGateEvidence(
     || !sameJson(binding.sourceFinalRender, slide.finalRender)
   ) throw new Error("slide preview binding is stale");
   for (const [path, expected] of Object.entries(gate.artifactHashes)) {
-    if (sha256Evidence(await readOwnedRegularFile(root, path)) !== expected) {
+    const bytes = await readOwnedRegularFile(root, path);
+    if (path === binding.preview.path) await assertCompleteEditablePreview(bytes);
+    if (sha256Evidence(bytes) !== expected) {
       throw new Error("slide preview gate artifact hash mismatch");
     }
   }

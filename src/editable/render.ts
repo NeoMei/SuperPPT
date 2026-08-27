@@ -10,10 +10,13 @@ import { withProjectLease } from "../project/lock.js";
 import { type EditableRevisionBinding, type ProjectManifest } from "../project/schemas.js";
 import { readProject, updateProject } from "../project/store.js";
 import { validateModifiedRevision } from "./operations.js";
+import {
+  assertCompleteEditablePreview,
+  EDITABLE_PREVIEW_HEIGHT,
+  EDITABLE_PREVIEW_WIDTH,
+} from "./preview-image.js";
 import { EditableManifestSchema, type EditableManifest } from "./schemas.js";
 
-const PREVIEW_WIDTH = 1920;
-const PREVIEW_HEIGHT = 1080;
 const sha256 = (bytes: Buffer): string => createHash("sha256").update(bytes).digest("hex");
 
 function xml(value: string): string {
@@ -103,7 +106,7 @@ export async function renderEditablePage(options: {
     .png()
     .toBuffer();
   await mkdir(dirname(resolve(options.output)), { recursive: true, mode: 0o700 });
-  await sharp(composed).resize(PREVIEW_WIDTH, PREVIEW_HEIGHT, { fit: "fill", kernel: "lanczos3" }).png().toFile(resolve(options.output));
+  await sharp(composed).resize(EDITABLE_PREVIEW_WIDTH, EDITABLE_PREVIEW_HEIGHT, { fit: "fill", kernel: "lanczos3" }).png().toFile(resolve(options.output));
 }
 
 function portable(root: string, path: string): string {
@@ -182,10 +185,7 @@ async function authenticatedBinding(options: {
     throw new Error("editable preview must use its immutable project-owned path");
   }
   const previewBytes = await readRegularFileNoFollow(previewCanonical);
-  const metadata = await sharp(previewBytes, { failOn: "error" }).metadata();
-  if (metadata.format !== "png" || metadata.width !== PREVIEW_WIDTH || metadata.height !== PREVIEW_HEIGHT) {
-    throw new Error("editable preview must be a complete 1920x1080 PNG");
-  }
+  await assertCompleteEditablePreview(previewBytes);
   const modifiedManifestPath = `editable/${slide.id}/${options.modifiedRevisionId}/modified-manifest.json`;
   const modifiedManifestBytes = await readRegularFileNoFollow(join(options.root, ...modifiedManifestPath.split("/")));
   if (sha256(modifiedManifestBytes) !== record.artifacts.modifiedManifest) {
@@ -361,6 +361,7 @@ export async function validateAppliedEditableBinding(
     })
   ) throw new Error("editable slide modified revision is not bound to project state");
   const preview = await readRegularFileNoFollow(join(root, ...binding.preview.path.split("/")));
+  await assertCompleteEditablePreview(preview);
   if (sha256(preview) !== binding.preview.sha256) throw new Error("editable slide preview hash changed");
   const modifiedManifest = await readRegularFileNoFollow(join(root, ...binding.modifiedManifest.path.split("/")));
   if (sha256(modifiedManifest) !== binding.modifiedManifest.sha256) throw new Error("editable slide manifest hash changed");

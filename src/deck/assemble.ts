@@ -307,6 +307,83 @@ function deckRevisionNumber(manifest: ProjectManifest): number {
   return manifest.deckRevision ?? manifest.currentRevision.number;
 }
 
+function decodeXml(value: string): string {
+  return value.replace(/&(?:#x([0-9a-f]+)|#([0-9]+)|(amp|lt|gt|quot|apos));/gi, (entity, hex: string | undefined, decimal: string | undefined, named: string | undefined) => {
+    if (hex) return String.fromCodePoint(Number.parseInt(hex, 16));
+    if (decimal) return String.fromCodePoint(Number.parseInt(decimal, 10));
+    return ({ amp: "&", lt: "<", gt: ">", quot: '"', apos: "'" } as Record<string, string>)[named!.toLowerCase()]!;
+  });
+}
+
+function xmlAttribute(attributes: string, name: string): string | null {
+  const match = new RegExp(`\\b${name}=(["'])(.*?)\\1`).exec(attributes);
+  return match?.[2] === undefined ? null : decodeXml(match[2]);
+}
+
+function objectName(block: string): string | null {
+  const attributes = /<p:cNvPr\b([^>]*)>/.exec(block)?.[1];
+  return attributes ? xmlAttribute(attributes, "name") : null;
+}
+
+function indexedObjects(xml: string, tag: "pic" | "sp"): Map<string, string> {
+  const objects = new Map<string, string>();
+  const pattern = new RegExp(`<p:${tag}\\b[\\s\\S]*?<\\/p:${tag}>`, "g");
+  for (const match of xml.matchAll(pattern)) {
+    const block = match[0];
+    const name = objectName(block);
+    if (!name || objects.has(name)) throw new Error("PPTX editable object names must be present and unique");
+    objects.set(name, block);
+  }
+  return objects;
+}
+
+function relationshipTargets(xml: string, slidePath: string): Map<string, string> {
+  const targets = new Map<string, string>();
+  for (const match of xml.matchAll(/<Relationship\b([^>]*)\/?\s*>/g)) {
+    const attributes = match[1]!;
+    const id = xmlAttribute(attributes, "Id");
+    const type = xmlAttribute(attributes, "Type");
+    const target = xmlAttribute(attributes, "Target");
+    if (!id || !type?.endsWith("/image") || !target) continue;
+    const mediaPath = target.startsWith("/")
+      ? posix.normalize(target.slice(1))
+      : posix.normalize(posix.join(posix.dirname(slidePath), target));
+    if (!mediaPath.startsWith("ppt/media/") || targets.has(id)) {
+      throw new Error("PPTX media relationship escaped the media package or is duplicated");
+    }
+    targets.set(id, mediaPath);
+  }
+  return targets;
+}
+
+function decodedText(block: string): string {
+  const paragraphs = [...block.matchAll(/<a:p\b[^>]*>([\s\S]*?)<\/a:p>/g)].map((match) => match[1]!);
+  const source = paragraphs.length > 0 ? paragraphs : [block];
+  return source.map((paragraph) => {
+    const parts: string[] = [];
+    const pattern = /<a:t\b[^>]*>([\s\S]*?)<\/a:t>|<a:br\b[^>]*\/?\s*>/g;
+    for (const match of paragraph.matchAll(pattern)) parts.push(match[1] === undefined ? "\n" : decodeXml(match[1]));
+    return parts.join("");
+  }).join("\n");
+}
+
+async function mediaForObject(options: {
+  zip: JSZip;
+  pictures: Map<string, string>;
+  targets: Map<string, string>;
+  objectName: string;
+}): Promise<Buffer> {
+  const picture = options.pictures.get(options.objectName);
+  if (!picture) throw new Error(`editable PPTX object is missing: ${options.objectName}`);
+  const relationshipId = /<a:blip\b[^>]*\br:embed=(["'])(.*?)\1/.exec(picture)?.[2];
+  if (!relationshipId) throw new Error(`editable PPTX object has no media relationship: ${options.objectName}`);
+  const target = options.targets.get(relationshipId);
+  if (!target) throw new Error(`editable PPTX media relationship is missing: ${options.objectName}`);
+  const media = await options.zip.file(target)?.async("nodebuffer");
+  if (!media) throw new Error(`editable PPTX media target is missing: ${options.objectName}`);
+  return media;
+}
+
 async function verifyOutputs(
   renders: FinalRender[],
   paths: { pptx: string; pdf: string; montage: string },
@@ -323,10 +400,41 @@ async function verifyOutputs(
       throw new Error("image PPTX pages must contain exactly one image shape");
     }
     if (render.mode === "editable") {
-      for (const element of render.manifest.elements) {
+      const relationships = await zip.file(`ppt/slides/_rels/slide${index + 1}.xml.rels`)?.async("string");
+      if (!relationships) throw new Error("editable PPTX slide media relationships are missing");
+      const pictures = indexedObjects(xml, "pic");
+      const shapes = indexedObjects(xml, "sp");
+      const targets = relationshipTargets(relationships, slidePath);
+      const prepared = await prepareEditableSlide(render);
+      const expectedPictureNames = new Set([`background-${render.id}`]);
+      const background = await mediaForObject({
+        zip,
+        pictures,
+        targets,
+        objectName: `background-${render.id}`,
+      });
+      if (createHash("sha256").update(background).digest("hex") !== createHash("sha256").update(prepared.cleanBackground).digest("hex")) {
+        throw new Error("editable background media hash mismatch");
+      }
+      for (const element of prepared.elements) {
         const name = `${element.kind === "text" ? "text" : "asset"}-${element.id}`;
-        if (!xml.includes(`name=\"${name}\"`)) throw new Error("editable PPTX object name is missing");
-        if (element.kind === "text" && !xml.includes(element.text)) throw new Error("editable PPTX text object is missing");
+        if (element.kind === "text") {
+          const shape = shapes.get(name);
+          if (!shape) throw new Error(`editable PPTX object is missing: ${name}`);
+          if (decodedText(shape) !== element.text) throw new Error(`editable PPTX decoded text mismatch: ${name}`);
+        } else {
+          expectedPictureNames.add(name);
+          const media = await mediaForObject({ zip, pictures, targets, objectName: name });
+          if (createHash("sha256").update(media).digest("hex") !== createHash("sha256").update(element.bytes).digest("hex")) {
+            throw new Error(`editable asset media hash mismatch: ${name}`);
+          }
+        }
+      }
+      if (
+        pictures.size !== expectedPictureNames.size
+        || [...pictures.keys()].some((name) => !expectedPictureNames.has(name))
+      ) {
+        throw new Error("editable PPTX contains unexpected picture objects");
       }
       continue;
     }
@@ -433,7 +541,12 @@ async function readOutputMarker(destination: string): Promise<OutputMarker> {
   }
 }
 
-async function validateOwnedOutput(root: string, destination: string, expected: Omit<OutputMarker, "artifacts">): Promise<OutputMarker> {
+async function validateOwnedOutput(
+  root: string,
+  destination: string,
+  expected: Omit<OutputMarker, "artifacts">,
+  expectedManifest?: ProjectManifest,
+): Promise<OutputMarker> {
   const marker = await readOutputMarker(destination);
   if (
     marker.projectId !== expected.projectId
@@ -454,7 +567,7 @@ async function validateOwnedOutput(root: string, destination: string, expected: 
         throw new Error("artifact hash mismatch");
       }
     }
-    const current = await readProject(root);
+    const current = expectedManifest ?? await readProject(root);
     if (projectBinding(current) !== expected.projectBindingSha256) {
       throw new Error("slide binding changed during assembly");
     }
@@ -642,6 +755,135 @@ function archivedCurrentOutput(manifest: ProjectManifest): NonNullable<ProjectMa
   };
 }
 
+function replacementCandidate(
+  before: ProjectManifest,
+  slideId: string,
+  binding: NonNullable<ProjectManifest["slides"][number]["editableRevision"]>,
+): ProjectManifest {
+  const archived = archivedCurrentOutput(before);
+  const outputRevisions = [...(before.outputRevisions ?? [])];
+  if (archived && !outputRevisions.some((revision) => revision.number === archived.number)) {
+    outputRevisions.push(archived);
+  }
+  const previousSlideState = new Map(before.slides.map((slide) => [slide.id, JSON.stringify(slide)]));
+  const slides = before.slides.map((slide) => slide.id === slideId ? {
+    ...slide,
+    status: "editable" as const,
+    editable: binding.modifiedManifest,
+    editableRevision: binding,
+    finalRender: binding.preview,
+    staleReasons: [],
+  } : slide);
+  for (const slide of slides) {
+    if (slide.id !== slideId && JSON.stringify(slide) !== previousSlideState.get(slide.id)) {
+      throw new Error("slide replacement changed an untouched page");
+    }
+  }
+  return {
+    ...before,
+    stage: "revising",
+    deckRevision: deckRevisionNumber(before) + 1,
+    outputRevisions,
+    slides,
+    exports: { pptx: null, pdf: null, montage: null, acceptance: null },
+  };
+}
+
+async function buildCandidateOutput(options: {
+  root: string;
+  before: ProjectManifest;
+  candidate: ProjectManifest;
+  warnings: string[];
+  operations?: AssembleProjectOperations;
+}): Promise<AssembleProjectResult> {
+  const { root, before, candidate } = options;
+  const gates = await gatesForRevision(root, before);
+  if (!gates.current) throw new Error("all three planning gates must be current");
+  const prepared = await projectPages(root, candidate);
+  const ordered = await validateFinalRenders(prepared.pages, { afterRenderOpened: options.operations?.afterRenderOpened });
+  const revisionId = candidate.currentRevision.id;
+  const outputRevision = deckRevisionNumber(candidate);
+  const markerBase = {
+    markerVersion: 1 as const,
+    appId: "superppt" as const,
+    artifactKind: "image-deck" as const,
+    projectId: candidate.projectId,
+    revisionId,
+    revisionNumber: outputRevision,
+    providerId: prepared.providerId,
+    projectBindingSha256: projectBinding(candidate),
+    slides: prepared.records.sort((left, right) => left.order - right.order).map((record) => ({
+      id: record.id,
+      order: record.order,
+      mode: record.mode,
+      path: record.path,
+      sha256: record.sha256,
+    })),
+  };
+  const revisionsRoot = await ensureOwnedDirectory(root, "output/revisions");
+  const destination = join(revisionsRoot, String(outputRevision));
+  let recovered = false;
+  let verified: OutputMarker;
+  try {
+    await lstat(destination);
+    verified = await validateOwnedOutput(root, destination, markerBase, candidate);
+    recovered = true;
+  } catch (error: unknown) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+    const staging = join(revisionsRoot, `.staging-${randomUUID()}`);
+    await mkdir(staging, { mode: 0o700 });
+    const paths = {
+      pptx: join(staging, "deck.pptx"),
+      pdf: join(staging, "deck.pdf"),
+      montage: join(staging, "montage.jpg"),
+    };
+    await (options.operations?.buildOutputs ?? defaultBuildOutputs)(ordered, paths);
+    await verifyOutputs(ordered, paths);
+    const outputMarker = await buildOutputArtifacts(root, markerBase, staging, options.warnings);
+    await writeDurableExclusive(join(staging, ".superppt-output.json"), `${JSON.stringify(outputMarker, null, 2)}\n`);
+    await syncDirectory(staging);
+    await syncDirectory(revisionsRoot);
+    await options.operations?.checkpoint?.("outputs-built");
+    await options.operations?.beforePromote?.();
+    const beforePromotion = await readProject(root);
+    if (JSON.stringify(beforePromotion) !== JSON.stringify(before)) {
+      throw new Error("project changed during slide replacement");
+    }
+    await promoteExclusive(staging, destination);
+    await syncDirectory(revisionsRoot);
+    await options.operations?.checkpoint?.("output-promoted");
+    try {
+      verified = await validateOwnedOutput(root, destination, markerBase, candidate);
+    } catch (error: unknown) {
+      const marker = await readOutputMarker(destination).catch(() => null);
+      if (marker?.projectId === markerBase.projectId && marker.revisionId === markerBase.revisionId) {
+        await rename(destination, join(revisionsRoot, `.failed-${outputRevision}-${randomUUID()}`));
+        await syncDirectory(revisionsRoot);
+      }
+      throw error;
+    }
+  }
+  await updateProject(root, (current) => {
+    if (JSON.stringify(current) !== JSON.stringify(before)) {
+      throw new Error("project changed during slide replacement");
+    }
+    return {
+      ...candidate,
+      stage: "assembling",
+      exports: verified.artifacts,
+    };
+  });
+  await options.operations?.checkpoint?.("manifest-updated");
+  return {
+    projectId: candidate.projectId,
+    revisionId,
+    revisionNumber: outputRevision,
+    destination,
+    recovered,
+    artifacts: verified.artifacts,
+  };
+}
+
 export async function replaceSlide(options: {
   root: string;
   slideId: string;
@@ -650,8 +892,7 @@ export async function replaceSlide(options: {
   warnings?: string[];
   operations?: AssembleProjectOperations;
 }): Promise<AssembleProjectResult> {
-  let recovery = false;
-  await withProjectLease(options.root, "slide-replacement", async (root) => {
+  return withProjectLease(options.root, "slide-replacement", async (root) => {
     const before = await readProject(root);
     const existing = before.slides.find((slide) => slide.id === options.slideId);
     if (!existing) throw new Error("replacement slide ID is not in the current project");
@@ -662,8 +903,8 @@ export async function replaceSlide(options: {
       && JSON.stringify(existing.finalRender) === JSON.stringify(existing.editableRevision.preview)
     ) {
       await validateAppliedEditableBinding(root, before, existing.id);
-      recovery = true;
-      return;
+      const result = await assembleProject({ root, warnings: options.warnings, operations: options.operations });
+      return { ...result, recovered: true };
     }
     const binding = await validateConfirmedEditablePreview(
       root,
@@ -672,50 +913,15 @@ export async function replaceSlide(options: {
       options.modifiedRevisionId,
       options.expectedModifiedRevisionRecordSha256,
     );
-    const previousSlideState = new Map(before.slides.map((slide) => [slide.id, JSON.stringify(slide)]));
-    await updateProject(root, async (current) => {
-      if (
-        current.currentRevision.id !== before.currentRevision.id
-        || JSON.stringify(current.slides) !== JSON.stringify(before.slides)
-        || JSON.stringify(current.exports) !== JSON.stringify(before.exports)
-      ) throw new Error("project changed during slide replacement");
-      await validateConfirmedEditablePreview(
-        root,
-        current,
-        options.slideId,
-        options.modifiedRevisionId,
-        options.expectedModifiedRevisionRecordSha256,
-      );
-      const archived = archivedCurrentOutput(current);
-      const nextOutputRevisions = [...(current.outputRevisions ?? [])];
-      if (archived && !nextOutputRevisions.some((revision) => revision.number === archived.number)) {
-        nextOutputRevisions.push(archived);
-      }
-      const selected = current.slides.map((slide) => slide.id === options.slideId ? {
-        ...slide,
-        status: "editable" as const,
-        editable: binding.modifiedManifest,
-        editableRevision: binding,
-        finalRender: binding.preview,
-        staleReasons: [],
-      } : slide);
-      for (const slide of selected) {
-        if (slide.id !== options.slideId && JSON.stringify(slide) !== previousSlideState.get(slide.id)) {
-          throw new Error("slide replacement changed an untouched page");
-        }
-      }
-      return {
-        ...current,
-        stage: "revising" as const,
-        deckRevision: deckRevisionNumber(current) + 1,
-        outputRevisions: nextOutputRevisions,
-        slides: selected,
-        exports: { pptx: null, pdf: null, montage: null, acceptance: null },
-      };
+    const candidate = replacementCandidate(before, options.slideId, binding);
+    return buildCandidateOutput({
+      root,
+      before,
+      candidate,
+      warnings: options.warnings ?? [],
+      operations: options.operations,
     });
   });
-  const result = await assembleProject({ root: options.root, warnings: options.warnings, operations: options.operations });
-  return { ...result, recovered: recovery || result.recovered };
 }
 
 async function validateAcceptanceCurrent(root: string, manifest: ProjectManifest, acceptance: Acceptance): Promise<void> {

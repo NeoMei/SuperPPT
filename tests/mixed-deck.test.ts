@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { join, posix, resolve } from "node:path";
 import test, { type TestContext } from "node:test";
 
 import JSZip from "jszip";
@@ -46,6 +46,41 @@ async function fakeInitialOutputs(
   await writeFile(paths.pptx, await zip.generateAsync({ type: "nodebuffer" }), { flag: "wx" });
   await exportPdf(renders, paths.pdf);
   await buildMontage(renders, paths.montage);
+}
+
+async function mixedOutputs(
+  renders: FinalRender[],
+  paths: { pptx: string; pdf: string; montage: string },
+): Promise<void> {
+  await assembleDeck(renders, paths.pptx);
+  await exportPdf(renders, paths.pdf);
+  await buildMontage(renders, paths.montage);
+}
+
+async function tamperEditableBackground(pptx: string, slideNumber = 2): Promise<void> {
+  const zip = await JSZip.loadAsync(await readFile(pptx));
+  const relationships = await zip.file(`ppt/slides/_rels/slide${slideNumber}.xml.rels`)!.async("text");
+  const image = [...relationships.matchAll(/<Relationship\b([^>]*)\/?\s*>/g)].find((match) => /\/image(["'])/.test(match[1]!));
+  assert.ok(image, "editable slide must have an image relationship");
+  const target = /\bTarget=(["'])(.*?)\1/.exec(image[1]!)?.[2];
+  assert.ok(target);
+  const mediaPath = target.startsWith("/")
+    ? posix.normalize(target.slice(1))
+    : posix.normalize(posix.join("ppt/slides", target));
+  zip.file(mediaPath, Buffer.from("tampered editable background"));
+  await writeFile(pptx, await zip.generateAsync({ type: "nodebuffer" }));
+}
+
+async function splitEscapedEditableTextRuns(pptx: string, slideNumber = 2): Promise<void> {
+  const zip = await JSZip.loadAsync(await readFile(pptx));
+  const path = `ppt/slides/slide${slideNumber}.xml`;
+  const xml = await zip.file(path)!.async("text");
+  const escaped = "A &amp; B &lt;示例&gt;";
+  const split = 'A &amp; </a:t></a:r><a:r><a:rPr lang="zh-CN"/><a:t>B &lt;示例&gt;';
+  const rewritten = xml.replace(escaped, split);
+  assert.notEqual(rewritten, xml, "editable text must be split across XML runs");
+  zip.file(path, rewritten);
+  await writeFile(pptx, await zip.generateAsync({ type: "nodebuffer" }));
 }
 
 async function readyProject(t: TestContext): Promise<string> {
@@ -312,6 +347,42 @@ test("replaces only after a bound preview confirmation, rebuilds every output, a
   });
   assert.deepEqual([(await sharp(join(root, firstPreview.preview.path)).metadata()).width, (await sharp(join(root, firstPreview.preview.path)).metadata()).height], [1920, 1080]);
 
+  const completePreviewBytes = await readFile(join(root, firstPreview.preview.path));
+  const truncatedPreviewBytes = completePreviewBytes.subarray(0, 256);
+  assert.deepEqual([
+    (await sharp(truncatedPreviewBytes).metadata()).width,
+    (await sharp(truncatedPreviewBytes).metadata()).height,
+  ], [1920, 1080]);
+  await writeFile(join(root, firstPreview.preview.path), truncatedPreviewBytes);
+  const beforeTruncatedPreview = await readProject(root);
+  await assert.rejects(confirmEditablePreview({
+    root,
+    slideId: slideIds[1],
+    modifiedRevisionId: firstEdit.revisionId,
+    expectedModifiedRevisionRecordSha256: firstRecordSha256,
+    preview: join(root, firstPreview.preview.path),
+  }), /complete 1920x1080 PNG/);
+  assert.deepEqual(await readProject(root), beforeTruncatedPreview);
+  const truncatedBinding = {
+    ...firstPreview,
+    preview: { ...firstPreview.preview, sha256: sha256(truncatedPreviewBytes) },
+  };
+  await assert.rejects(updateProject(root, (current) => ({
+    ...current,
+    gates: [...current.gates, {
+      gate: "slide-preview" as const,
+      revisionId: current.currentRevision.id,
+      artifactHashes: {
+        [truncatedBinding.modifiedRevisionRecordPath]: truncatedBinding.expectedModifiedRevisionRecordSha256,
+        [truncatedBinding.preview.path]: truncatedBinding.preview.sha256,
+      },
+      slidePreview: truncatedBinding,
+      confirmedAt: new Date().toISOString(),
+    }],
+  })), /slide preview gate evidence is invalid/);
+  assert.deepEqual(await readProject(root), beforeTruncatedPreview);
+  await writeFile(join(root, firstPreview.preview.path), completePreviewBytes);
+
   const beforeRejection = await readProject(root);
   const forgedBinding = { ...firstPreview, expectedModifiedRevisionRecordSha256: "0".repeat(64) };
   await assert.rejects(updateProject(root, (current) => ({
@@ -375,15 +446,90 @@ test("replaces only after a bound preview confirmation, rebuilds every output, a
   await writeFile(firstRecordPath, recordBytes);
   await writeFile(markerPath, markerBytes);
 
-  const firstReplacement = await replaceSlide({
+  const alternateEdit = await applyProjectEditPlan({
+    root,
+    slideId: slideIds[1],
+    sourceRevisionId: converted.revisionId,
+    rawPlan: { route: "editable", operations: [{ kind: "replace-text", elementId: "ocr-title", text: "并发候选 B" }] },
+  });
+  const alternateRecordSha256 = sha256(await readFile(join(alternateEdit.revisionRoot, "modified-revision-record.json")));
+  const alternatePreview = await renderProjectEditablePreview({
+    root,
+    slideId: slideIds[1],
+    modifiedRevisionId: alternateEdit.revisionId,
+    expectedModifiedRevisionRecordSha256: alternateRecordSha256,
+  });
+  await confirmEditablePreview({
+    root,
+    slideId: slideIds[1],
+    modifiedRevisionId: alternateEdit.revisionId,
+    expectedModifiedRevisionRecordSha256: alternateRecordSha256,
+    preview: join(root, alternatePreview.preview.path),
+  });
+  const beforeAtomicReplacement = await readProject(root);
+  await assert.rejects(replaceSlide({
     root,
     slideId: slideIds[1],
     modifiedRevisionId: firstEdit.revisionId,
     expectedModifiedRevisionRecordSha256: firstRecordSha256,
+    operations: { buildOutputs: async () => { throw new Error("replacement build failure probe"); } },
+  }), /replacement build failure probe/);
+  assert.deepEqual(await readProject(root), beforeAtomicReplacement);
+  await assert.rejects(replaceSlide({
+    root,
+    slideId: slideIds[1],
+    modifiedRevisionId: firstEdit.revisionId,
+    expectedModifiedRevisionRecordSha256: firstRecordSha256,
+    operations: {
+      buildOutputs: async (renders, paths) => {
+        await mixedOutputs(renders, paths);
+        await tamperEditableBackground(paths.pptx);
+      },
+    },
+  }), /editable background media hash mismatch/);
+  assert.deepEqual(await readProject(root), beforeAtomicReplacement);
+
+  let releaseBuild!: () => void;
+  let markBuildStarted!: () => void;
+  const buildStarted = new Promise<void>((resolveStarted) => { markBuildStarted = resolveStarted; });
+  const buildRelease = new Promise<void>((resolveRelease) => { releaseBuild = resolveRelease; });
+  const firstReplacementPromise = replaceSlide({
+    root,
+    slideId: slideIds[1],
+    modifiedRevisionId: firstEdit.revisionId,
+    expectedModifiedRevisionRecordSha256: firstRecordSha256,
+    operations: {
+      buildOutputs: async (renders, paths) => {
+        markBuildStarted();
+        await buildRelease;
+        await mixedOutputs(renders, paths);
+      },
+    },
   });
+  await buildStarted;
+  assert.deepEqual(await readProject(root), beforeAtomicReplacement);
+  const alternateReplacementOutcome = replaceSlide({
+    root,
+    slideId: slideIds[1],
+    modifiedRevisionId: alternateEdit.revisionId,
+    expectedModifiedRevisionRecordSha256: alternateRecordSha256,
+    operations: { buildOutputs: mixedOutputs },
+  }).then(
+    (value) => ({ value, error: null as Error | null }),
+    (error: Error) => ({ value: null, error }),
+  );
+  await new Promise<void>((resolveTurn) => setImmediate(resolveTurn));
+  assert.deepEqual(await readProject(root), beforeAtomicReplacement);
+  releaseBuild();
+  const firstReplacement = await firstReplacementPromise;
+  const alternateOutcome = await alternateReplacementOutcome;
+  assert.equal(alternateOutcome.value, null);
+  assert.match(alternateOutcome.error?.message ?? "", /confirmed slide preview is stale|slide-replacement lease timed out/);
+  assert.equal(firstReplacement.artifacts.pptx.path, "output/revisions/2/deck.pptx");
   const afterFirst = await readProject(root);
   assert.equal(firstReplacement.revisionNumber, 2);
   assert.equal(afterFirst.deckRevision, 2);
+  assert.equal(afterFirst.slides[1]!.editableRevision?.modifiedRevisionId, firstEdit.revisionId);
   assert.equal(afterFirst.slides[1]!.status, "editable");
   assert.deepEqual(afterFirst.slides[0]!.finalRender, untouchedBefore);
   assert.equal(afterFirst.outputRevisions?.length, 1);
@@ -411,7 +557,7 @@ test("replaces only after a bound preview confirmation, rebuilds every output, a
     root,
     slideId: slideIds[1],
     sourceRevisionId: firstEdit.revisionId,
-    rawPlan: { route: "editable", operations: [{ kind: "replace-text", elementId: "ocr-title", text: "再次修改" }] },
+    rawPlan: { route: "editable", operations: [{ kind: "replace-text", elementId: "ocr-title", text: "A & B <示例>\n第二行" }] },
   });
   assert.equal(conversionCalls, 1);
   const secondRecordSha256 = sha256(await readFile(join(secondEdit.revisionRoot, "modified-revision-record.json")));
@@ -433,6 +579,12 @@ test("replaces only after a bound preview confirmation, rebuilds every output, a
     slideId: slideIds[1],
     modifiedRevisionId: secondEdit.revisionId,
     expectedModifiedRevisionRecordSha256: secondRecordSha256,
+    operations: {
+      buildOutputs: async (renders, paths) => {
+        await mixedOutputs(renders, paths);
+        await splitEscapedEditableTextRuns(paths.pptx);
+      },
+    },
   });
   const afterSecond = await readProject(root);
   assert.equal(afterSecond.deckRevision, 3);
@@ -440,5 +592,8 @@ test("replaces only after a bound preview confirmation, rebuilds every output, a
   assert.deepEqual(afterSecond.slides[0]!.finalRender, untouchedBefore);
   assert.equal(conversionCalls, 1);
   const secondDeck = await JSZip.loadAsync(await readFile(join(root, afterSecond.exports.pptx!.path)));
-  assert.match(await secondDeck.file("ppt/slides/slide2.xml")!.async("text"), /再次修改/);
+  const secondEditableXml = await secondDeck.file("ppt/slides/slide2.xml")!.async("text");
+  assert.doesNotMatch(secondEditableXml, /A &amp; B &lt;示例&gt;/);
+  assert.match(secondEditableXml, /A &amp; <\/a:t>[\s\S]*B &lt;示例&gt;/);
+  assert.match(secondEditableXml, /第二行/);
 });
