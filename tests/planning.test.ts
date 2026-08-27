@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
-import { access, mkdir, mkdtemp, readFile, readdir, realpath, rename, rm, symlink, unlink, utimes, writeFile } from "node:fs/promises";
+import { access, mkdir, mkdtemp, readFile, readdir, realpath, rename, rm, stat, symlink, unlink, utimes, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test, { type TestContext } from "node:test";
@@ -477,17 +477,57 @@ test("lease authentication rejects an in-place manifest rewrite before publishin
   const original = await readFile(manifestPath, "utf8");
   const changed = original.replace('"title": "Demo"', '"title": "Damo"');
   assert.equal(changed.length, original.length);
+  const fixedTimestamp = new Date("2024-01-01T00:00:00.000Z");
+  await utimes(manifestPath, fixedTimestamp, fixedTimestamp);
   let actionCalled = false;
 
   await assert.rejects(withProjectLease(root, "state", async () => {
     actionCalled = true;
   }, {
     manifestRead: {
-      afterOpen: async () => { await writeFile(manifestPath, changed); },
+      afterOpen: async () => {
+        const beforeRewrite = await stat(manifestPath, { bigint: true });
+        await writeFile(manifestPath, changed);
+        await utimes(manifestPath, fixedTimestamp, fixedTimestamp);
+        const afterRewrite = await stat(manifestPath, { bigint: true });
+        assert.equal(afterRewrite.ino, beforeRewrite.ino);
+        assert.equal(afterRewrite.size, beforeRewrite.size);
+        assert.equal(afterRewrite.mtimeNs, beforeRewrite.mtimeNs);
+        assert.notEqual(afterRewrite.ctimeNs, beforeRewrite.ctimeNs);
+      },
     },
   }), /not owned|changed while reading/i);
   assert.equal(actionCalled, false);
   await assert.rejects(readdir(join(root, ".superppt-leases")), { code: "ENOENT" });
+});
+
+test("state lease reauthenticates the current manifest after a mutated old inode is detached", async (t) => {
+  const root = await project(t, "superppt-state-lease-detached-rewrite-");
+  const manifestPath = join(root, "superppt.json");
+  const replacementPath = join(root, "invalid-manifest.json");
+  const original = await readFile(manifestPath, "utf8");
+  const changed = original.replace('"title": "Demo"', '"title": "Damo"');
+  assert.equal(changed.length, original.length);
+  const fixedTimestamp = new Date("2024-01-01T00:00:00.000Z");
+  await utimes(manifestPath, fixedTimestamp, fixedTimestamp);
+  await writeFile(replacementPath, "{}\n");
+  let actionCalled = false;
+
+  await assert.rejects(withProjectLease(root, "state", async () => {
+    actionCalled = true;
+  }, {
+    manifestRead: {
+      afterOpen: async () => {
+        await writeFile(manifestPath, changed);
+        await utimes(manifestPath, fixedTimestamp, fixedTimestamp);
+        await rename(replacementPath, manifestPath);
+      },
+    },
+  }), /not owned/i);
+  assert.equal(actionCalled, false);
+  const stateEvidence = await readdir(join(root, ".superppt-leases", "state"));
+  assert.equal(stateEvidence.length, 1);
+  assert.match(stateEvidence[0]!, /\.failed\.json$/);
 });
 
 test("recovery refuses missing, tampered, or linked manifests before writing project artifacts", async (t) => {

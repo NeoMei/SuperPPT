@@ -18,10 +18,13 @@ function sameContentVersion(left: BigIntStats, right: BigIntStats): boolean {
 }
 
 function sameOpenedSnapshot(left: BigIntStats, right: BigIntStats): boolean {
-  // Atomic publication may detach the opened inode without changing its bytes.
+  // Replacing the pathname detaches its single-link old inode and changes only
+  // ctime/nlink. In-place writers cannot restore ctime through utimes.
+  const atomicallyDetached = left.nlink === 1n && right.nlink === 0n;
   return sameFile(left, right)
     && left.size === right.size
-    && left.mtimeNs === right.mtimeNs;
+    && left.mtimeNs === right.mtimeNs
+    && (left.ctimeNs === right.ctimeNs || atomicallyDetached);
 }
 
 export async function readRegularFileNoFollow(
