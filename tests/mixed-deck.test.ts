@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { lstat, mkdir, mkdtemp, readFile, readdir, realpath, rm, writeFile } from "node:fs/promises";
+import { lstat, mkdir, mkdtemp, readFile, readdir, readlink, realpath, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, posix, resolve } from "node:path";
 import test, { type TestContext } from "node:test";
@@ -66,22 +66,42 @@ async function mixedOutputs(
 }
 
 async function outputDirectorySnapshot(path: string): Promise<{
-  dev: number;
-  ino: number;
-  entries: string[];
-  files: Record<string, string>;
+  nodes: Record<string, {
+    type: "directory" | "file" | "symlink" | "other";
+    dev: number;
+    ino: number;
+    bytes?: string;
+    target?: string;
+  }>;
 }> {
-  const info = await lstat(path);
-  const entries = (await readdir(path)).sort();
-  return {
-    dev: info.dev,
-    ino: info.ino,
-    entries,
-    files: Object.fromEntries(await Promise.all(entries.map(async (entry) => [
-      entry,
-      (await readFile(join(path, entry))).toString("base64"),
-    ]))),
+  const nodes: Record<string, {
+    type: "directory" | "file" | "symlink" | "other";
+    dev: number;
+    ino: number;
+    bytes?: string;
+    target?: string;
+  }> = {};
+  const walk = async (current: string, relativePath: string): Promise<void> => {
+    const info = await lstat(current);
+    const type = info.isDirectory() ? "directory"
+      : info.isFile() ? "file"
+        : info.isSymbolicLink() ? "symlink"
+          : "other";
+    nodes[relativePath || "."] = {
+      type,
+      dev: info.dev,
+      ino: info.ino,
+      ...(type === "file" ? { bytes: (await readFile(current)).toString("base64") } : {}),
+      ...(type === "symlink" ? { target: await readlink(current) } : {}),
+    };
+    if (type === "directory") {
+      for (const entry of (await readdir(current)).sort()) {
+        await walk(join(current, entry), relativePath ? `${relativePath}/${entry}` : entry);
+      }
+    }
   };
+  await walk(path, "");
+  return { nodes };
 }
 
 async function tamperEditableBackground(pptx: string, slideNumber = 2): Promise<void> {
@@ -690,19 +710,87 @@ test("replaces only after a bound preview confirmation, rebuilds every output, a
     expectedModifiedRevisionRecordSha256: selectedRecordSha256,
     operations: { buildOutputs: mixedOutputs },
   };
-  const assertConflictPreserved = async (): Promise<void> => {
+  const assertConflictPreserved = async (
+    options: Parameters<typeof replaceSlide>[0] = selectedReplacementOptions,
+    expectedError = /deck output destination is not owned|owned output evidence is invalid|conflicting replacement output|replacement orphan candidate/,
+  ): Promise<void> => {
     const beforeConflict = await outputDirectorySnapshot(orphanDestination);
-    const quarantinesBefore = (await readdir(join(root, "output/revisions"))).filter((name) => name.startsWith(".failed-4-"));
+    const revisionsRoot = join(root, "output/revisions");
+    const revisionsBefore = (await readdir(revisionsRoot)).sort();
     await assert.rejects(
-      replaceSlide(selectedReplacementOptions),
-      /deck output destination is not owned|owned output evidence is invalid|conflicting replacement output/,
+      replaceSlide(options),
+      expectedError,
     );
     assert.deepEqual(await outputDirectorySnapshot(orphanDestination), beforeConflict);
-    assert.deepEqual(
-      (await readdir(join(root, "output/revisions"))).filter((name) => name.startsWith(".failed-4-")),
-      quarantinesBefore,
-    );
+    assert.deepEqual((await readdir(revisionsRoot)).sort(), revisionsBefore);
   };
+
+  const extraPath = join(orphanDestination, "arbitrary-extra.bin");
+  await writeFile(extraPath, "extra candidate bytes");
+  await assertConflictPreserved();
+  await rm(extraPath);
+
+  const orphanMontagePath = join(orphanDestination, "montage.jpg");
+  const orphanMontageBytes = await readFile(orphanMontagePath);
+  const linkTarget = join(await temporary(t, "superppt-orphan-link-target-"), "montage.jpg");
+  await writeFile(linkTarget, orphanMontageBytes);
+  await rm(orphanMontagePath);
+  await symlink(linkTarget, orphanMontagePath);
+  await assertConflictPreserved();
+  await rm(orphanMontagePath);
+  await writeFile(orphanMontagePath, orphanMontageBytes);
+
+  const orphanAcceptancePath = join(orphanDestination, "acceptance.json");
+  const orphanAcceptanceBytes = await readFile(orphanAcceptancePath);
+  await rm(orphanAcceptancePath);
+  await mkdir(orphanAcceptancePath);
+  await writeFile(join(orphanAcceptancePath, "nested.bin"), "nested bytes");
+  await assertConflictPreserved();
+  await rm(orphanAcceptancePath, { recursive: true });
+  await writeFile(orphanAcceptancePath, orphanAcceptanceBytes);
+
+  const preexistingDescriptor = join(orphanDestination, ".superppt-quarantine.json");
+  await writeFile(preexistingDescriptor, "preexisting descriptor bytes");
+  await assertConflictPreserved();
+  await rm(preexistingDescriptor);
+
+  for (const checkpoint of [
+    "descriptor-staged",
+    "output-quarantined",
+    "descriptor-promoted",
+    "descriptor-validated",
+  ] as const) {
+    await assertConflictPreserved({
+      ...selectedReplacementOptions,
+      operations: {
+        buildOutputs: mixedOutputs,
+        quarantineCheckpoint: (step) => {
+          if (step === checkpoint) throw new Error(`quarantine ${checkpoint} probe`);
+        },
+      },
+    }, new RegExp(`quarantine ${checkpoint} probe`));
+  }
+
+  const descriptorCollisionBytes = Buffer.from("preexisting collision descriptor");
+  const revisionsBeforeCollision = (await readdir(join(root, "output/revisions"))).sort();
+  let collisionSnapshot: Awaited<ReturnType<typeof outputDirectorySnapshot>> | null = null;
+  await assert.rejects(replaceSlide({
+    ...selectedReplacementOptions,
+    operations: {
+      buildOutputs: mixedOutputs,
+      quarantineCheckpoint: async (step, paths) => {
+        if (step === "output-quarantined") {
+          await writeFile(join(paths.quarantine, ".superppt-quarantine.json"), descriptorCollisionBytes, { flag: "wx" });
+          collisionSnapshot = await outputDirectorySnapshot(paths.quarantine);
+        }
+      },
+    },
+  }), /already exists|EEXIST|descriptor|unexpected entries/i);
+  assert.ok(collisionSnapshot);
+  assert.deepEqual(await outputDirectorySnapshot(orphanDestination), collisionSnapshot);
+  assert.deepEqual((await readdir(join(root, "output/revisions"))).sort(), revisionsBeforeCollision);
+  assert.deepEqual(await readFile(preexistingDescriptor), descriptorCollisionBytes);
+  await rm(preexistingDescriptor);
 
   await writeFile(orphanMarkerPath, "{}\n");
   await assertConflictPreserved();

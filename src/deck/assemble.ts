@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
-import { lstat, mkdir, realpath, rename, unlink } from "node:fs/promises";
+import { lstat, mkdir, readdir, realpath, rename, unlink } from "node:fs/promises";
 import { dirname, isAbsolute, join, posix, relative, sep } from "node:path";
 
 import JSZip from "jszip";
@@ -171,6 +171,7 @@ const QuarantinedOutputSchema = z.object({
 export type QuarantinedOutput = z.infer<typeof QuarantinedOutputSchema>;
 const QUARANTINE_DESCRIPTOR = ".superppt-quarantine.json";
 export type AssembleProjectCheckpoint = "outputs-built" | "output-promoted" | "manifest-updated";
+export type QuarantineCheckpoint = "descriptor-staged" | "output-quarantined" | "descriptor-promoted" | "descriptor-validated";
 export type AssembleProjectOperations = {
   buildOutputs?: (
     renders: FinalRender[],
@@ -179,6 +180,10 @@ export type AssembleProjectOperations = {
   checkpoint?: (step: AssembleProjectCheckpoint) => Promise<void> | void;
   beforePromote?: () => Promise<void> | void;
   afterRenderOpened?: (path: string) => Promise<void> | void;
+  quarantineCheckpoint?: (
+    step: QuarantineCheckpoint,
+    paths: { destination: string; quarantine: string; descriptorStaging: string },
+  ) => Promise<void> | void;
 };
 
 export type AssembleProjectResult = {
@@ -826,6 +831,46 @@ function outputRevisionReferenced(manifest: ProjectManifest, revisionNumber: num
     || containsPath(manifest);
 }
 
+async function requireExactRegularFiles(directory: string, expected: readonly string[], label: string): Promise<void> {
+  const entries = await readdir(directory, { withFileTypes: true });
+  const actual = entries.map((entry) => entry.name).sort();
+  const required = [...expected].sort();
+  if (JSON.stringify(actual) !== JSON.stringify(required)) throw new Error(`${label} has unexpected entries`);
+  for (const entry of entries) {
+    const path = join(directory, entry.name);
+    const info = await lstat(path);
+    if (!entry.isFile() || info.isSymbolicLink() || !info.isFile()) {
+      throw new Error(`${label} must contain only exact regular files`);
+    }
+  }
+}
+
+type OwnedDescriptorIdentity = { dev: number; ino: number; sha256: string };
+
+async function ownedDescriptorIdentity(path: string, expectedSha256: string): Promise<OwnedDescriptorIdentity> {
+  const info = await lstat(path);
+  if (info.isSymbolicLink() || !info.isFile()) throw new Error("quarantine descriptor staging identity is unsafe");
+  const actual = createHash("sha256").update(await readRegularFileNoFollow(path)).digest("hex");
+  if (actual !== expectedSha256) throw new Error("quarantine descriptor staging hash mismatch");
+  return { dev: info.dev, ino: info.ino, sha256: actual };
+}
+
+async function unlinkOwnedDescriptor(path: string, identity: OwnedDescriptorIdentity): Promise<void> {
+  let info;
+  try {
+    info = await lstat(path);
+  } catch (error: unknown) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return;
+    throw error;
+  }
+  if (info.isSymbolicLink() || !info.isFile() || info.dev !== identity.dev || info.ino !== identity.ino) {
+    throw new Error("refusing to unlink an unowned quarantine descriptor");
+  }
+  const actual = createHash("sha256").update(await readRegularFileNoFollow(path)).digest("hex");
+  if (actual !== identity.sha256) throw new Error("refusing to unlink a changed quarantine descriptor");
+  await unlink(path);
+}
+
 export async function validateQuarantinedOutput(root: string, projectPath: string): Promise<QuarantinedOutput> {
   if (
     isAbsolute(projectPath)
@@ -839,6 +884,14 @@ export async function validateQuarantinedOutput(root: string, projectPath: strin
   if (info.isSymbolicLink() || !info.isDirectory() || await realpath(quarantine) !== quarantine) {
     throw new Error("quarantine directory is unsafe");
   }
+  await requireExactRegularFiles(quarantine, [
+    ".superppt-output.json",
+    QUARANTINE_DESCRIPTOR,
+    "deck.pptx",
+    "deck.pdf",
+    "montage.jpg",
+    "acceptance.json",
+  ], "quarantine directory");
   const descriptor = QuarantinedOutputSchema.parse(JSON.parse(
     (await readRegularFileNoFollow(join(quarantine, QUARANTINE_DESCRIPTOR))).toString("utf8"),
   ));
@@ -886,6 +939,7 @@ async function quarantineConflictingReplacementCandidate(options: {
   destination: string;
   before: ProjectManifest;
   expected: Omit<OutputMarker, "artifacts">;
+  operations?: AssembleProjectOperations;
 }): Promise<void> {
   const marker = await readOutputMarker(options.destination);
   if (
@@ -914,6 +968,14 @@ async function quarantineConflictingReplacementCandidate(options: {
   const orphanCandidate = replacementCandidate(options.before, binding.slideId, binding);
   const { artifacts: _artifacts, ...orphanMarkerBase } = marker;
   await validateOwnedOutput(options.root, options.destination, orphanMarkerBase, orphanCandidate);
+  const candidateFiles = [
+    ".superppt-output.json",
+    "deck.pptx",
+    "deck.pdf",
+    "montage.jpg",
+    "acceptance.json",
+  ] as const;
+  await requireExactRegularFiles(options.destination, candidateFiles, "replacement orphan candidate");
 
   while (true) {
     const quarantine = join(options.revisionsRoot, `.failed-${marker.revisionNumber}-${randomUUID()}`);
@@ -944,30 +1006,69 @@ async function quarantineConflictingReplacementCandidate(options: {
       }])),
     });
     const descriptorStaging = join(options.revisionsRoot, `.quarantine-${randomUUID()}.json`);
-    await writeDurableExclusive(descriptorStaging, `${JSON.stringify(descriptor, null, 2)}\n`);
+    const descriptorBytes = Buffer.from(`${JSON.stringify(descriptor, null, 2)}\n`);
+    const descriptorSha256 = createHash("sha256").update(descriptorBytes).digest("hex");
+    await writeDurableExclusive(descriptorStaging, descriptorBytes);
+    const descriptorIdentity = await ownedDescriptorIdentity(descriptorStaging, descriptorSha256);
     await syncDirectory(options.revisionsRoot);
     try {
-      await promoteExclusive(options.destination, quarantine);
-      try {
-        await promoteExclusive(descriptorStaging, join(quarantine, QUARANTINE_DESCRIPTOR));
-        await syncDirectory(quarantine);
-        await syncDirectory(options.revisionsRoot);
-        await validateQuarantinedOutput(options.root, quarantinePath);
-        return;
-      } catch (error: unknown) {
-        try {
-          await promoteExclusive(quarantine, options.destination);
-          await unlink(join(options.destination, QUARANTINE_DESCRIPTOR)).catch(() => undefined);
-          await syncDirectory(options.destination);
-          await syncDirectory(options.revisionsRoot);
-        } catch (rollbackError: unknown) {
-          throw new AggregateError([error, rollbackError], "quarantine publication failed and rollback failed");
-        }
-        throw error;
-      }
+      await options.operations?.quarantineCheckpoint?.("descriptor-staged", {
+        destination: options.destination,
+        quarantine,
+        descriptorStaging,
+      });
+      await requireExactRegularFiles(options.destination, candidateFiles, "replacement orphan candidate");
     } catch (error: unknown) {
-      await unlink(descriptorStaging).catch(() => undefined);
-      if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+      await unlinkOwnedDescriptor(descriptorStaging, descriptorIdentity);
+      await syncDirectory(options.revisionsRoot);
+      throw error;
+    }
+    try {
+      await promoteExclusive(options.destination, quarantine);
+    } catch (error: unknown) {
+      await unlinkOwnedDescriptor(descriptorStaging, descriptorIdentity);
+      await syncDirectory(options.revisionsRoot);
+      if ((error as NodeJS.ErrnoException).code === "EEXIST") continue;
+      throw error;
+    }
+    let descriptorPromoted = false;
+    try {
+      await options.operations?.quarantineCheckpoint?.("output-quarantined", {
+        destination: options.destination,
+        quarantine,
+        descriptorStaging,
+      });
+      await requireExactRegularFiles(quarantine, candidateFiles, "replacement orphan candidate");
+      await promoteExclusive(descriptorStaging, join(quarantine, QUARANTINE_DESCRIPTOR));
+      descriptorPromoted = true;
+      await options.operations?.quarantineCheckpoint?.("descriptor-promoted", {
+        destination: options.destination,
+        quarantine,
+        descriptorStaging,
+      });
+      await syncDirectory(quarantine);
+      await syncDirectory(options.revisionsRoot);
+      await validateQuarantinedOutput(options.root, quarantinePath);
+      await options.operations?.quarantineCheckpoint?.("descriptor-validated", {
+        destination: options.destination,
+        quarantine,
+        descriptorStaging,
+      });
+      return;
+    } catch (error: unknown) {
+      try {
+        await promoteExclusive(quarantine, options.destination);
+        if (descriptorPromoted) {
+          await unlinkOwnedDescriptor(join(options.destination, QUARANTINE_DESCRIPTOR), descriptorIdentity);
+        } else {
+          await unlinkOwnedDescriptor(descriptorStaging, descriptorIdentity);
+        }
+        await syncDirectory(options.destination);
+        await syncDirectory(options.revisionsRoot);
+      } catch (rollbackError: unknown) {
+        throw new AggregateError([error, rollbackError], "quarantine publication failed and rollback failed");
+      }
+      throw error;
     }
   }
 }
@@ -1019,6 +1120,7 @@ async function buildCandidateOutput(options: {
         destination,
         before,
         expected: markerBase,
+        operations: options.operations,
       });
     }
   } catch (error: unknown) {
