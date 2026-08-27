@@ -107,6 +107,8 @@ test("makes model disclosure, QA, preview rejection, editability, and real deliv
   assert.match(workflow, /--element.*--kind.*只.*目标.*已提取/is);
   assert.match(workflow, /全部可靠提取.*text.*transparent assets/is);
   assert.match(workflow, /背景.*未提取.*仍不可编辑/is);
+  assert.match(workflow, /already-editable.*不.*regenerate|already-editable.*不得.*重生/is);
+  assert.match(workflow, /\{"route":"editable","status":"already-editable"\}/);
   assert.match(workflow, /未被提取.*regenerate|regenerate.*未被提取/is);
   assert.match(workflow, /拒绝.*不变更|拒绝.*不修改/s);
   assert.match(workflow, /已.*editable.*不重复.*OCR.*vision/is);

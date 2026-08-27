@@ -19,6 +19,7 @@ import {
 import { generateProjectStyleSample } from "./generation/style-sample.js";
 import { convertProjectPage } from "./editable/adapter.js";
 import {
+  AlreadyEditableSlideError,
   applyProjectEditPlan,
   promoteProjectEditableTarget,
   UnsupportedEditableTargetError,
@@ -394,6 +395,10 @@ async function main(argv: string[]): Promise<void> {
         expectedKind,
       });
     } catch (error: unknown) {
+      if (error instanceof AlreadyEditableSlideError) {
+        process.stdout.write('{"route":"editable","status":"already-editable"}\n');
+        return;
+      }
       if (error instanceof UnsupportedEditableTargetError) {
         process.stdout.write('{"route":"regenerate"}\n');
         return;

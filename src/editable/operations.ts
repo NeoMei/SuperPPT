@@ -33,6 +33,13 @@ export class UnsupportedEditableTargetError extends Error {
   }
 }
 
+export class AlreadyEditableSlideError extends Error {
+  constructor() {
+    super("page is already editable; use an explicit non-empty edit plan");
+    this.name = "AlreadyEditableSlideError";
+  }
+}
+
 const sha256 = (value: Buffer): string => createHash("sha256").update(value).digest("hex");
 const MAX_REPLACEMENT_ASSET_BYTES = 64 * 1024 * 1024;
 
@@ -468,9 +475,6 @@ async function createProjectModifiedRevision(
   if (slide.status === "editable" && !currentEditable) {
     throw new Error("editable re-edit requires the current project-state modified revision anchor");
   }
-  if (request.kind === "promote-editable" && currentEditable) {
-    throw new UnsupportedEditableTargetError("page is already editable; use an explicit non-empty edit plan");
-  }
   if (currentEditable && currentEditable.modifiedRevisionId !== options.sourceRevisionId) {
     throw new Error("editable re-edit must use the current modified revision");
   }
@@ -571,6 +575,9 @@ async function createProjectModifiedRevision(
       })
     ))
   ) throw new Error("source project revision or final render is stale");
+  if (request.kind === "promote-editable" && currentEditable) {
+    throw new AlreadyEditableSlideError();
+  }
   if (request.kind === "edit-plan") validateEditTargets(sourceManifest, request.plan);
   else validatePromotionTarget(sourceManifest, request.intent);
   await options.operations?.afterSourceValidation?.();

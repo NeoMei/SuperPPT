@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
-import { createHash } from "node:crypto";
 import { execFile } from "node:child_process";
+import { createHash } from "node:crypto";
 import {
   chmod,
   lstat,
@@ -41,7 +41,8 @@ import {
   RunLedgerV2Schema,
 } from "../src/editable/schemas.js";
 import { initializeProject } from "../src/project/initialize.js";
-import { sha256 as projectSha256, updateProject } from "../src/project/store.js";
+import { readProject, sha256 as projectSha256, updateProject } from "../src/project/store.js";
+import { publishRevisionSnapshot } from "../src/revisions/snapshot.js";
 
 const execFileAsync = promisify(execFile);
 const fixtureRoot = resolve("tests/fixtures/editable");
@@ -587,6 +588,87 @@ async function readyProject(t: TestContext): Promise<{ root: string; slideId: st
   return { root, slideId };
 }
 
+async function readyCurrentEditableProject(t: TestContext): Promise<{
+  root: string;
+  slideId: string;
+  modifiedRevisionId: string;
+  conversionCalls: () => number;
+}> {
+  const project = await readyProject(t);
+  const plugin = await converterRoot(t);
+  let conversionCalls = 0;
+  const source = await convertProjectPage({
+    ...project,
+    converterRoot: plugin,
+    execute: async (_command, args) => {
+      conversionCalls += 1;
+      const sourcePng = args[args.indexOf("--image") + 1]!;
+      const outDir = args[args.indexOf("--out") + 1]!;
+      await mkdir(outDir);
+      await writeFakeConverterOutput(outDir, sourcePng);
+      return { stdout: "", stderr: "" };
+    },
+  });
+  const promoted = await promoteProjectEditableTarget({
+    ...project,
+    sourceRevisionId: source.revisionId,
+    elementId: "ocr-title",
+    expectedKind: "text",
+  });
+  const current = await readProject(project.root);
+  const slide = current.slides[0]!;
+  const previewPath = `previews/editable/${project.slideId}/${promoted.revisionId}.png`;
+  const previewBytes = await readFile(join(project.root, ...slide.finalRender!.path.split("/")));
+  await mkdir(join(project.root, "previews", "editable", project.slideId), { recursive: true });
+  await writeFile(join(project.root, ...previewPath.split("/")), previewBytes);
+  const recordPath = `editable/${project.slideId}/${promoted.revisionId}/modified-revision-record.json`;
+  const manifestPath = `editable/${project.slideId}/${promoted.revisionId}/modified-manifest.json`;
+  const recordBytes = await readFile(join(project.root, ...recordPath.split("/")));
+  const modifiedManifestBytes = await readFile(join(project.root, ...manifestPath.split("/")));
+  const record = JSON.parse(recordBytes.toString("utf8")) as { sourceRevisionId: string };
+  await publishRevisionSnapshot(project.root, current);
+  await updateProject(project.root, (manifest) => {
+    const sourceFinalRender = manifest.slides[0]!.finalRender!;
+    const preview = {
+      path: previewPath,
+      sha256: sha256(previewBytes),
+      revisionId: manifest.currentRevision.id,
+    };
+    const modifiedManifest = {
+      path: manifestPath,
+      sha256: sha256(modifiedManifestBytes),
+      revisionId: manifest.currentRevision.id,
+    };
+    return {
+      ...manifest,
+      slides: manifest.slides.map((candidate) => candidate.id === project.slideId ? {
+        ...candidate,
+        status: "editable" as const,
+        editable: modifiedManifest,
+        finalRender: preview,
+        editableRevision: {
+          projectId: manifest.projectId,
+          slideId: project.slideId,
+          modifiedRevisionId: promoted.revisionId,
+          sourceRevisionId: record.sourceRevisionId,
+          projectRevisionId: manifest.currentRevision.id,
+          expectedModifiedRevisionRecordSha256: sha256(recordBytes),
+          modifiedRevisionRecordPath: recordPath,
+          sourceFinalRender,
+          conversionFinalRender: sourceFinalRender,
+          preview,
+          modifiedManifest,
+        },
+      } : candidate),
+    };
+  });
+  return {
+    ...project,
+    modifiedRevisionId: promoted.revisionId,
+    conversionCalls: () => conversionCalls,
+  };
+}
+
 test("creates fresh durable conversion revisions without changing the previous converter output", async (t) => {
   const project = await readyProject(t);
   const plugin = await converterRoot(t);
@@ -864,6 +946,98 @@ test("classifies unsupported promote-editable CLI targets as a minimal regenerat
     assert.match(failure.stderr, /kind must be text or asset/);
     return true;
   });
+  assert.deepEqual(await recursiveProjectSnapshot(project.root), before);
+});
+
+test("separates an already-editable page from unsupported promotion targets without mutation", async (t) => {
+  const project = await readyCurrentEditableProject(t);
+  const before = await recursiveProjectSnapshot(project.root);
+
+  await assert.rejects(promoteProjectEditableTarget({
+    root: project.root,
+    slideId: project.slideId,
+    sourceRevisionId: project.modifiedRevisionId,
+    elementId: "ocr-title",
+    expectedKind: "text",
+  }), (error: unknown) => {
+    assert.equal((error as Error).name, "AlreadyEditableSlideError");
+    assert.equal(error instanceof UnsupportedEditableTargetError, false);
+    return true;
+  });
+
+  assert.equal(project.conversionCalls(), 1);
+  const after = await recursiveProjectSnapshot(project.root);
+  assert.deepEqual(after, before);
+  assert.equal(after.some((entry) => entry.includes(".staging-")), false);
+});
+
+test("reports an already-editable page through the real CLI without regeneration or mutation", async (t) => {
+  const project = await readyCurrentEditableProject(t);
+  const before = await recursiveProjectSnapshot(project.root);
+
+  const { stdout, stderr } = await execFileAsync(process.execPath, [
+    "--import", "tsx", "src/cli.ts", "promote-editable",
+    "--project", project.root,
+    "--slide", project.slideId,
+    "--revision", project.modifiedRevisionId,
+    "--element", "ocr-title",
+    "--kind", "text",
+  ], { cwd: process.cwd() });
+
+  assert.equal(stdout, '{"route":"editable","status":"already-editable"}\n');
+  assert.equal(stderr, "");
+  assert.equal(project.conversionCalls(), 1);
+  const after = await recursiveProjectSnapshot(project.root);
+  assert.deepEqual(after, before);
+  assert.equal(after.some((entry) => entry.includes(".staging-")), false);
+});
+
+test("keeps stale-revision authentication failures distinct from already-editable status", async (t) => {
+  const project = await readyCurrentEditableProject(t);
+  const before = await recursiveProjectSnapshot(project.root);
+
+  await assert.rejects(execFileAsync(process.execPath, [
+    "--import", "tsx", "src/cli.ts", "promote-editable",
+    "--project", project.root,
+    "--slide", project.slideId,
+    "--revision", "00000000-0000-4000-8000-000000000299",
+    "--element", "ocr-title",
+    "--kind", "text",
+  ], { cwd: process.cwd() }), (error: unknown) => {
+    const failure = error as { code: number; stdout: string; stderr: string };
+    assert.equal(failure.code, 1);
+    assert.equal(failure.stdout, "");
+    assert.match(failure.stderr, /current modified revision/);
+    return true;
+  });
+
+  assert.equal(project.conversionCalls(), 1);
+  assert.deepEqual(await recursiveProjectSnapshot(project.root), before);
+});
+
+test("authenticates the current modified revision before reporting already-editable", async (t) => {
+  const project = await readyCurrentEditableProject(t);
+  const manifest = await readProject(project.root);
+  const recordPath = manifest.slides[0]!.editableRevision!.modifiedRevisionRecordPath;
+  await writeFile(join(project.root, ...recordPath.split("/")), "{}\n");
+  const before = await recursiveProjectSnapshot(project.root);
+
+  await assert.rejects(execFileAsync(process.execPath, [
+    "--import", "tsx", "src/cli.ts", "promote-editable",
+    "--project", project.root,
+    "--slide", project.slideId,
+    "--revision", project.modifiedRevisionId,
+    "--element", "ocr-title",
+    "--kind", "text",
+  ], { cwd: process.cwd() }), (error: unknown) => {
+    const failure = error as { code: number; stdout: string; stderr: string };
+    assert.equal(failure.code, 1);
+    assert.equal(failure.stdout, "");
+    assert.match(failure.stderr, /modified revision|record/);
+    return true;
+  });
+
+  assert.equal(project.conversionCalls(), 1);
   assert.deepEqual(await recursiveProjectSnapshot(project.root), before);
 });
 
