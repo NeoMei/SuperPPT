@@ -29,6 +29,8 @@ function sameOpenedSnapshot(left: BigIntStats, right: BigIntStats): boolean {
     && (left.ctimeNs === right.ctimeNs || atomicallyDetached);
 }
 
+const SNAPSHOT_OPEN_ATTEMPTS = 3;
+
 export async function readRegularFileNoFollow(
   path: string,
   operations: SafeReadOperations = {},
@@ -72,40 +74,45 @@ export async function readRegularFileSnapshotNoFollow(
   path: string,
   operations: SafeReadOperations = {},
 ): Promise<Buffer> {
-  let before: BigIntStats;
-  try {
-    before = await lstat(path, { bigint: true });
-  } catch (error: unknown) {
-    throw new Error(`planning artifact must be a regular file: ${path}`, { cause: error });
-  }
-  if (before.isSymbolicLink() || !before.isFile()) {
-    throw new Error(`planning artifact must be a regular file: ${path}`);
-  }
-  await operations.afterPathStat?.(path);
-
   const noFollow = process.platform === "win32" ? 0 : (constants.O_NOFOLLOW ?? 0);
-  const handle = await open(path, constants.O_RDONLY | noFollow);
-  try {
-    await operations.afterFileOpen?.(path);
-    const opened = await handle.stat({ bigint: true });
-    // With O_NOFOLLOW, a different regular inode is the valid new side of an
-    // atomic pathname promotion. Without it, retain the strict identity check.
-    const openedSnapshot = sameFile(before, opened)
-      ? sameOpenedSnapshot(before, opened)
-      : noFollow !== 0;
-    if (!opened.isFile() || !openedSnapshot) {
-      throw new Error(`planning artifact changed while reading: ${path}`);
+  for (let attempt = 0; attempt < SNAPSHOT_OPEN_ATTEMPTS; attempt += 1) {
+    let before: BigIntStats;
+    try {
+      before = await lstat(path, { bigint: true });
+    } catch (error: unknown) {
+      throw new Error(`planning artifact must be a regular file: ${path}`, { cause: error });
     }
-    await operations.afterOpen?.(path);
-    const value = await handle.readFile();
-    const afterOpen = await handle.stat({ bigint: true });
-    if (!sameOpenedSnapshot(opened, afterOpen)) {
-      throw new Error(`planning artifact changed while reading: ${path}`);
+    if (before.isSymbolicLink() || !before.isFile()) {
+      throw new Error(`planning artifact must be a regular file: ${path}`);
     }
-    return value;
-  } finally {
-    await handle.close();
+    await operations.afterPathStat?.(path);
+
+    const handle = await open(path, constants.O_RDONLY | noFollow);
+    try {
+      await operations.afterFileOpen?.(path);
+      const opened = await handle.stat({ bigint: true });
+      if (!opened.isFile()) {
+        throw new Error(`planning artifact changed while reading: ${path}`);
+      }
+      if (!sameFile(before, opened)) {
+        if (attempt + 1 < SNAPSHOT_OPEN_ATTEMPTS) continue;
+        throw new Error(`planning artifact changed while reading: ${path}`);
+      }
+      if (!sameOpenedSnapshot(before, opened)) {
+        throw new Error(`planning artifact changed while reading: ${path}`);
+      }
+      await operations.afterOpen?.(path);
+      const value = await handle.readFile();
+      const afterOpen = await handle.stat({ bigint: true });
+      if (!sameOpenedSnapshot(opened, afterOpen)) {
+        throw new Error(`planning artifact changed while reading: ${path}`);
+      }
+      return value;
+    } finally {
+      await handle.close();
+    }
   }
+  throw new Error(`planning artifact changed while reading: ${path}`);
 }
 
 export function localProjectPath(projectPath: string): string {

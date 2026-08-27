@@ -38,6 +38,20 @@ async function project(t: TestContext, prefix: string): Promise<string> {
   return root;
 }
 
+async function waitForHandshake(signal: Promise<void>, label: string): Promise<void> {
+  let timer: NodeJS.Timeout | undefined;
+  try {
+    await Promise.race([
+      signal,
+      new Promise<never>((_resolve, reject) => {
+        timer = setTimeout(() => reject(new Error(`${label} handshake timed out`)), 2_000);
+      }),
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
 const brief = {
   schemaVersion: 1 as const,
   title: "AI Agent 协作系统",
@@ -489,13 +503,52 @@ test("state lease contender tolerates promotion after statting the old manifest 
       },
     },
   });
-  await pathStatted;
-  await updateProject(root, (manifest) => ({ ...manifest, title: "Promoted before contender opened manifest" }));
-  releaseOpen();
+  try {
+    await waitForHandshake(pathStatted, "manifest path stat");
+    await updateProject(root, (manifest) => ({ ...manifest, title: "Promoted before contender opened manifest" }));
+  } finally {
+    releaseOpen();
+  }
 
   await contender;
   assert.equal(actionCalled, true);
   assert.equal((await readProject(root)).title, "Promoted before contender opened manifest");
+});
+
+test("state lease contender tolerates pre-open promotion without O_NOFOLLOW", async (t) => {
+  const root = await project(t, "superppt-state-lease-win32-pre-open-promotion-");
+  let announceStat!: () => void;
+  const pathStatted = new Promise<void>((resolve) => { announceStat = resolve; });
+  let releaseOpen!: () => void;
+  const openReleased = new Promise<void>((resolve) => { releaseOpen = resolve; });
+  let actionCalled = false;
+  const platform = Object.getOwnPropertyDescriptor(process, "platform")!;
+
+  try {
+    Object.defineProperty(process, "platform", { ...platform, value: "win32" });
+    const contender = withProjectLease(root, "state", async () => {
+      actionCalled = true;
+    }, {
+      manifestRead: {
+        afterPathStat: async () => {
+          announceStat();
+          await openReleased;
+        },
+      },
+    });
+    try {
+      await waitForHandshake(pathStatted, "win32 manifest path stat");
+      await updateProject(root, (manifest) => ({ ...manifest, title: "Promoted without O_NOFOLLOW" }));
+    } finally {
+      releaseOpen();
+    }
+    await contender;
+  } finally {
+    Object.defineProperty(process, "platform", platform);
+  }
+
+  assert.equal(actionCalled, true);
+  assert.equal((await readProject(root)).title, "Promoted without O_NOFOLLOW");
 });
 
 test("lease snapshot rejects a symlink swapped in after statting the manifest", async (t) => {
@@ -519,6 +572,74 @@ test("lease snapshot rejects a symlink swapped in after statting the manifest", 
   await assert.rejects(readdir(join(root, ".superppt-leases")), { code: "ENOENT" });
 });
 
+test("lease snapshot without O_NOFOLLOW rejects a symlink before reading its target", async (t) => {
+  const root = await project(t, "superppt-state-lease-win32-pre-open-symlink-");
+  const manifestPath = join(root, "superppt.json");
+  const external = join(await temporaryParent(t, "superppt-state-lease-win32-external-manifest-"), "manifest.json");
+  await writeFile(external, await readFile(manifestPath));
+  let contentReadStarted = false;
+  let actionCalled = false;
+  const platform = Object.getOwnPropertyDescriptor(process, "platform")!;
+
+  try {
+    Object.defineProperty(process, "platform", { ...platform, value: "win32" });
+    await assert.rejects(withProjectLease(root, "state", async () => {
+      actionCalled = true;
+    }, {
+      manifestRead: {
+        afterPathStat: async () => {
+          await unlink(manifestPath);
+          await symlink(external, manifestPath);
+        },
+        afterOpen: async () => { contentReadStarted = true; },
+      },
+    }), /not owned/i);
+  } finally {
+    Object.defineProperty(process, "platform", platform);
+  }
+
+  assert.equal(contentReadStarted, false);
+  assert.equal(actionCalled, false);
+  await assert.rejects(readdir(join(root, ".superppt-leases")), { code: "ENOENT" });
+});
+
+test("lease snapshot bounds repeated pre-open promotions before reading content", async (t) => {
+  const root = await project(t, "superppt-state-lease-win32-bounded-promotions-");
+  const manifestPath = join(root, "superppt.json");
+  const original = await readFile(manifestPath, "utf8");
+  const replacements = await Promise.all(Array.from({ length: 3 }, async (_unused, index) => {
+    const replacement = join(root, `manifest-promotion-${index}.json`);
+    await writeFile(replacement, original.replace('"title": "Demo"', `"title": "Promotion ${index}"`));
+    return replacement;
+  }));
+  let promotions = 0;
+  let contentReadStarted = false;
+  let actionCalled = false;
+  const platform = Object.getOwnPropertyDescriptor(process, "platform")!;
+
+  try {
+    Object.defineProperty(process, "platform", { ...platform, value: "win32" });
+    await assert.rejects(withProjectLease(root, "state", async () => {
+      actionCalled = true;
+    }, {
+      manifestRead: {
+        afterPathStat: async () => {
+          await rename(replacements[promotions]!, manifestPath);
+          promotions += 1;
+        },
+        afterOpen: async () => { contentReadStarted = true; },
+      },
+    }), /not owned|changed while reading/i);
+  } finally {
+    Object.defineProperty(process, "platform", platform);
+  }
+
+  assert.equal(promotions, 3);
+  assert.equal(contentReadStarted, false);
+  assert.equal(actionCalled, false);
+  await assert.rejects(readdir(join(root, ".superppt-leases")), { code: "ENOENT" });
+});
+
 test("state lease contender tolerates promotion after opening the old manifest before its first stat", async (t) => {
   const root = await project(t, "superppt-state-lease-pre-stat-promotion-");
   let announceOpened!: () => void;
@@ -537,9 +658,12 @@ test("state lease contender tolerates promotion after opening the old manifest b
       },
     },
   });
-  await fileOpened;
-  await updateProject(root, (manifest) => ({ ...manifest, title: "Promoted while contender held old fd" }));
-  releaseRead();
+  try {
+    await waitForHandshake(fileOpened, "manifest file open");
+    await updateProject(root, (manifest) => ({ ...manifest, title: "Promoted while contender held old fd" }));
+  } finally {
+    releaseRead();
+  }
 
   await contender;
   assert.equal(actionCalled, true);
