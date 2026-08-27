@@ -8,6 +8,7 @@ import {
   mkdtemp,
   readFile,
   readdir,
+  readlink,
   realpath,
   rename,
   rm,
@@ -16,7 +17,7 @@ import {
   writeFile,
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { join, relative, resolve } from "node:path";
 import sharp from "sharp";
 import test, { type TestContext } from "node:test";
 import { promisify } from "node:util";
@@ -50,6 +51,28 @@ async function temporary(t: TestContext, prefix: string): Promise<string> {
   const root = await mkdtemp(join(tmpdir(), prefix));
   t.after(async () => rm(root, { recursive: true, force: true }));
   return root;
+}
+
+async function recursiveProjectSnapshot(root: string): Promise<string[]> {
+  const snapshot: string[] = [];
+  const walk = async (directory: string): Promise<void> => {
+    const entries = await readdir(directory, { withFileTypes: true });
+    for (const entry of entries.sort((left, right) => left.name.localeCompare(right.name))) {
+      const path = join(directory, entry.name);
+      const local = relative(root, path);
+      const metadata = await lstat(path);
+      if (entry.isDirectory()) {
+        snapshot.push(`directory:${local}:${metadata.mode}`);
+        await walk(path);
+      } else if (entry.isSymbolicLink()) {
+        snapshot.push(`symlink:${local}:${metadata.mode}:${await readlink(path)}`);
+      } else {
+        snapshot.push(`file:${local}:${metadata.mode}:${sha256(await readFile(path))}`);
+      }
+    }
+  };
+  await walk(root);
+  return snapshot;
 }
 
 async function converterRoot(t: TestContext): Promise<string> {
@@ -787,6 +810,61 @@ test("exposes promote-editable as a strict executable CLI route", async (t) => {
     elementKind: "text",
   });
   assert.equal(conversionCalls, 1);
+});
+
+test("classifies unsupported promote-editable CLI targets as a minimal regenerate decision without mutation", async (t) => {
+  const project = await readyProject(t);
+  const plugin = await converterRoot(t);
+  const source = await convertProjectPage({
+    ...project,
+    converterRoot: plugin,
+    execute: async (_command, args) => {
+      const sourcePng = args[args.indexOf("--image") + 1]!;
+      const outDir = args[args.indexOf("--out") + 1]!;
+      await mkdir(outDir);
+      await writeFakeConverterOutput(outDir, sourcePng);
+      return { stdout: "", stderr: "" };
+    },
+  });
+  const before = await recursiveProjectSnapshot(project.root);
+
+  for (const target of [
+    { elementId: "title-not-extracted", kind: "text" },
+    { elementId: "ocr-title", kind: "asset" },
+  ]) {
+    const { stdout, stderr } = await execFileAsync(process.execPath, [
+      "--import", "tsx", "src/cli.ts", "promote-editable",
+      "--project", project.root,
+      "--slide", project.slideId,
+      "--revision", source.revisionId,
+      "--element", target.elementId,
+      "--kind", target.kind,
+    ], { cwd: process.cwd() });
+    assert.equal(stdout, '{"route":"regenerate"}\n');
+    assert.equal(stderr, "");
+    const after = await recursiveProjectSnapshot(project.root);
+    assert.deepEqual(after, before);
+    assert.equal(
+      after.some((entry) => entry.includes(".staging-")),
+      false,
+    );
+  }
+
+  await assert.rejects(execFileAsync(process.execPath, [
+    "--import", "tsx", "src/cli.ts", "promote-editable",
+    "--project", project.root,
+    "--slide", project.slideId,
+    "--revision", source.revisionId,
+    "--element", "ocr-title",
+    "--kind", "shape",
+  ], { cwd: process.cwd() }), (error: unknown) => {
+    const failure = error as { code: number; stdout: string; stderr: string };
+    assert.equal(failure.code, 1);
+    assert.equal(failure.stdout, "");
+    assert.match(failure.stderr, /kind must be text or asset/);
+    return true;
+  });
+  assert.deepEqual(await recursiveProjectSnapshot(project.root), before);
 });
 
 test("modified revision validation detects manifest, background, and asset tampering after publication", async (t) => {

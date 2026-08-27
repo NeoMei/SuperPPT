@@ -80,6 +80,8 @@ test("defines agent-authored planning, single-select rich style, and auditable p
   assert.match(skill, /风格只能单选/);
   assert.match(skill, /紧凑.*高细节|高细节.*紧凑/);
   assert.match(skill, /提示词编译器/);
+  assert.match(skill, /deterministically derived from the agent-authored per-slide spec/i);
+  assert.doesNotMatch(skill, /agent-authored visual-director/i);
   assert.match(skill, /可审计/);
   assert.match(skill, /幻觉文字|虚构文字/);
   assert.doesNotMatch(skill, /多选风格|自动把整套.*可编辑/);
@@ -101,6 +103,10 @@ test("makes model disclosure, QA, preview rejection, editability, and real deliv
   assert.match(workflow, /slide-preview/);
   assert.match(workflow, /promote-editable --project --slide --revision --element --kind/);
   assert.match(workflow, /不修改内容.*promote-editable|promote-editable.*不修改内容/is);
+  assert.match(workflow, /promote-editable.*页面级重建|页面级重建.*promote-editable/is);
+  assert.match(workflow, /--element.*--kind.*只.*目标.*已提取/is);
+  assert.match(workflow, /全部可靠提取.*text.*transparent assets/is);
+  assert.match(workflow, /背景.*未提取.*仍不可编辑/is);
   assert.match(workflow, /未被提取.*regenerate|regenerate.*未被提取/is);
   assert.match(workflow, /拒绝.*不变更|拒绝.*不修改/s);
   assert.match(workflow, /已.*editable.*不重复.*OCR.*vision/is);

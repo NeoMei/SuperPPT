@@ -17,7 +17,11 @@ import {
 } from "./generation/batch.js";
 import { generateProjectStyleSample } from "./generation/style-sample.js";
 import { convertProjectPage } from "./editable/adapter.js";
-import { applyProjectEditPlan, promoteProjectEditableTarget } from "./editable/operations.js";
+import {
+  applyProjectEditPlan,
+  promoteProjectEditableTarget,
+  UnsupportedEditableTargetError,
+} from "./editable/operations.js";
 import { confirmEditablePreview, renderProjectEditablePreview } from "./editable/render.js";
 import { EditPlanSchema, type EditPlan } from "./editable/schemas.js";
 import { approveGate, type PlanningGate } from "./planning/confirm.js";
@@ -379,13 +383,22 @@ async function main(argv: string[]): Promise<void> {
     if (expectedKind !== "text" && expectedKind !== "asset") {
       throw new Error("promote-editable kind must be text or asset");
     }
-    const result = await promoteProjectEditableTarget({
-      root: options.get("--project")!,
-      slideId: options.get("--slide")!,
-      sourceRevisionId: options.get("--revision")!,
-      elementId: options.get("--element")!,
-      expectedKind,
-    });
+    let result;
+    try {
+      result = await promoteProjectEditableTarget({
+        root: options.get("--project")!,
+        slideId: options.get("--slide")!,
+        sourceRevisionId: options.get("--revision")!,
+        elementId: options.get("--element")!,
+        expectedKind,
+      });
+    } catch (error: unknown) {
+      if (error instanceof UnsupportedEditableTargetError) {
+        process.stdout.write('{"route":"regenerate"}\n');
+        return;
+      }
+      throw error;
+    }
     outputJson({
       route: "editable",
       slideId: options.get("--slide")!,
