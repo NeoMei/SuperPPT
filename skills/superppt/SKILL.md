@@ -44,7 +44,7 @@ Only approved `requiredText` may be requested verbatim. Forbid pseudo-labels, ra
 
 Classify by the manifest, not by the user's edit verb. Text and reliable transparent assets may route to editable reconstruction; missing targets, main illustration, scene, background, overall layout, or information structure route to page regeneration. Normalize a bitmap source to exactly 1280×720 PNG before first conversion.
 
-Apply only validated operations, render a preview, show before/after and route evidence, then follow `slide-preview`. A rejected preview leaves the current project and deck unchanged; do not claim persisted rejection evidence when none was written. An approved preview may replace that stable page and rebuild the complete deck revision. When the current page is already `editable`, continue from its current authenticated modified manifest and do not repeat OCR or vision.
+If the user only asks to make an already extracted text or transparent asset editable without changing its content, use the explicit `promote-editable` route; never forge a same-text edit or an empty edit plan. Apply only validated operations or an audited promotion intent, render a preview, show before/after and route evidence, then follow `slide-preview`. A rejected preview leaves the current project and deck unchanged; do not claim persisted rejection evidence when none was written. An approved preview may replace that stable page and rebuild the complete deck revision. When the current page is already `editable`, continue from its current authenticated modified manifest and do not repeat OCR or vision.
 
 ## Delivery boundary
 

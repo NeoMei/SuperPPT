@@ -30,10 +30,12 @@ import {
   applyEditPlan,
   applyProjectEditPlan,
   prepareReplacementAssets,
+  promoteProjectEditableTarget,
   UnsupportedEditableTargetError,
   validateModifiedRevision,
 } from "../src/editable/operations.js";
 import {
+  EditPlanSchema,
   EditableManifestSchema,
   RunLedgerV2Schema,
 } from "../src/editable/schemas.js";
@@ -660,6 +662,131 @@ test("applies edits into a new immutable revision and preserves the authenticate
     Object.keys(validated.record.artifacts.assets).sort(),
     ["assets/icon.png", modified.manifest.elements.find((element: { id: string }) => element.id === "icon-1").assetPath].sort(),
   );
+});
+
+test("promotes one authenticated extracted target without changing content or rerunning conversion", async (t) => {
+  assert.throws(() => EditPlanSchema.parse({ route: "editable", operations: [] }));
+  const project = await readyProject(t);
+  const plugin = await converterRoot(t);
+  let conversionCalls = 0;
+  const source = await convertProjectPage({
+    ...project,
+    converterRoot: plugin,
+    execute: async (_command, args) => {
+      conversionCalls += 1;
+      const sourcePng = args[args.indexOf("--image") + 1]!;
+      const outDir = args[args.indexOf("--out") + 1]!;
+      await mkdir(outDir);
+      await writeFakeConverterOutput(outDir, sourcePng);
+      return { stdout: "", stderr: "" };
+    },
+  });
+  const sourceManifestBytes = await readFile(source.manifestPath);
+  const promoted = await promoteProjectEditableTarget({
+    ...project,
+    sourceRevisionId: source.revisionId,
+    elementId: "ocr-title",
+    expectedKind: "text",
+    idFactory: () => "00000000-0000-4000-8000-000000000116",
+  });
+
+  assert.equal(conversionCalls, 1);
+  assert.deepEqual(promoted.manifest, JSON.parse(sourceManifestBytes.toString("utf8")));
+  const validated = await validateModifiedRevision(promoted.revisionRoot);
+  assert.deepEqual(validated.manifest, JSON.parse(sourceManifestBytes.toString("utf8")));
+  assert.deepEqual(validated.record.intent, {
+    kind: "promote-editable",
+    elementId: "ocr-title",
+    elementKind: "text",
+  });
+  assert.equal(validated.record.parentRevisionId, source.revisionId);
+  assert.equal(validated.record.sourceRevisionId, source.revisionId);
+  assert.equal(validated.record.sourceConversionRecordSha256.length, 64);
+  assert.equal(validated.record.artifacts.modifiedManifest.length, 64);
+  assert.equal(validated.record.artifacts.cleanBackground.length, 64);
+  assert.deepEqual(Object.keys(validated.record.artifacts.assets), ["assets/icon.png"]);
+});
+
+test("rejects unknown or wrong-kind promotion targets before creating staging", async (t) => {
+  const project = await readyProject(t);
+  const plugin = await converterRoot(t);
+  let conversionCalls = 0;
+  const source = await convertProjectPage({
+    ...project,
+    converterRoot: plugin,
+    execute: async (_command, args) => {
+      conversionCalls += 1;
+      const sourcePng = args[args.indexOf("--image") + 1]!;
+      const outDir = args[args.indexOf("--out") + 1]!;
+      await mkdir(outDir);
+      await writeFakeConverterOutput(outDir, sourcePng);
+      return { stdout: "", stderr: "" };
+    },
+  });
+  const slideRoot = join(project.root, "editable", project.slideId);
+  const before = (await readdir(slideRoot)).sort();
+
+  for (const target of [
+    { elementId: "title-not-extracted", expectedKind: "text" as const },
+    { elementId: "ocr-title", expectedKind: "asset" as const },
+  ]) {
+    await assert.rejects(promoteProjectEditableTarget({
+      ...project,
+      sourceRevisionId: source.revisionId,
+      ...target,
+    }), (error: unknown) => {
+      assert.equal(error instanceof UnsupportedEditableTargetError, true);
+      assert.match((error as Error).message, /regenerate/);
+      return true;
+    });
+    assert.deepEqual((await readdir(slideRoot)).sort(), before);
+    assert.equal((await readdir(slideRoot)).some((name) => name.startsWith(".staging-")), false);
+  }
+  assert.equal(conversionCalls, 1);
+});
+
+test("exposes promote-editable as a strict executable CLI route", async (t) => {
+  const project = await readyProject(t);
+  const plugin = await converterRoot(t);
+  let conversionCalls = 0;
+  const source = await convertProjectPage({
+    ...project,
+    converterRoot: plugin,
+    execute: async (_command, args) => {
+      conversionCalls += 1;
+      const sourcePng = args[args.indexOf("--image") + 1]!;
+      const outDir = args[args.indexOf("--out") + 1]!;
+      await mkdir(outDir);
+      await writeFakeConverterOutput(outDir, sourcePng);
+      return { stdout: "", stderr: "" };
+    },
+  });
+  const { stdout, stderr } = await execFileAsync(process.execPath, [
+    "--import", "tsx", "src/cli.ts", "promote-editable",
+    "--project", project.root,
+    "--slide", project.slideId,
+    "--revision", source.revisionId,
+    "--element", "ocr-title",
+    "--kind", "text",
+  ], { cwd: process.cwd() });
+  assert.equal(stderr, "");
+  const output = JSON.parse(stdout) as {
+    route: string;
+    slideId: string;
+    revisionId: string;
+    revisionRoot: string;
+    modifiedRevisionRecordSha256: string;
+  };
+  assert.equal(output.route, "editable");
+  assert.equal(output.slideId, project.slideId);
+  assert.match(output.modifiedRevisionRecordSha256, /^[a-f0-9]{64}$/);
+  const validated = await validateModifiedRevision(output.revisionRoot, output.modifiedRevisionRecordSha256);
+  assert.deepEqual(validated.record.intent, {
+    kind: "promote-editable",
+    elementId: "ocr-title",
+    elementKind: "text",
+  });
+  assert.equal(conversionCalls, 1);
 });
 
 test("modified revision validation detects manifest, background, and asset tampering after publication", async (t) => {

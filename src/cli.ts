@@ -17,7 +17,7 @@ import {
 } from "./generation/batch.js";
 import { generateProjectStyleSample } from "./generation/style-sample.js";
 import { convertProjectPage } from "./editable/adapter.js";
-import { applyProjectEditPlan } from "./editable/operations.js";
+import { applyProjectEditPlan, promoteProjectEditableTarget } from "./editable/operations.js";
 import { confirmEditablePreview, renderProjectEditablePreview } from "./editable/render.js";
 import { EditPlanSchema, type EditPlan } from "./editable/schemas.js";
 import { approveGate, type PlanningGate } from "./planning/confirm.js";
@@ -359,6 +359,32 @@ async function main(argv: string[]): Promise<void> {
       slideId: options.get("--slide")!,
       sourceRevisionId: options.get("--revision")!,
       rawPlan: await editPlan(options.get("--input")!),
+    });
+    outputJson({
+      route: "editable",
+      slideId: options.get("--slide")!,
+      revisionId: result.revisionId,
+      revisionRoot: result.revisionRoot,
+      modifiedManifestPath: result.modifiedManifestPath,
+      modifiedRevisionRecordSha256: (await import("node:crypto")).createHash("sha256").update(
+        await readRegularFileNoFollow(`${result.revisionRoot}/modified-revision-record.json`),
+      ).digest("hex"),
+    });
+    return;
+  }
+
+  if (command === "promote-editable") {
+    const options = exactFlags(argv.slice(1), ["--project", "--slide", "--revision", "--element", "--kind"]);
+    const expectedKind = options.get("--kind")!;
+    if (expectedKind !== "text" && expectedKind !== "asset") {
+      throw new Error("promote-editable kind must be text or asset");
+    }
+    const result = await promoteProjectEditableTarget({
+      root: options.get("--project")!,
+      slideId: options.get("--slide")!,
+      sourceRevisionId: options.get("--revision")!,
+      elementId: options.get("--element")!,
+      expectedKind,
     });
     outputJson({
       route: "editable",

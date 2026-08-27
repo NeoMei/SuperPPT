@@ -19,7 +19,7 @@ import {
 import { buildMontage } from "../src/deck/montage.js";
 import { exportPdf } from "../src/deck/pdf.js";
 import { convertProjectPage } from "../src/editable/adapter.js";
-import { applyProjectEditPlan } from "../src/editable/operations.js";
+import { applyProjectEditPlan, promoteProjectEditableTarget } from "../src/editable/operations.js";
 import { confirmEditablePreview, renderEditablePage, renderProjectEditablePreview } from "../src/editable/render.js";
 import { approveGate } from "../src/planning/confirm.js";
 import { publishPlanViews, publishStyleSample } from "../src/planning/views.js";
@@ -365,11 +365,12 @@ test("replaces only after a bound preview confirmation, rebuilds every output, a
       return { stdout: "", stderr: "" };
     },
   });
-  const firstEdit = await applyProjectEditPlan({
+  const firstEdit = await promoteProjectEditableTarget({
     root,
     slideId: slideIds[1],
     sourceRevisionId: converted.revisionId,
-    rawPlan: { route: "editable", operations: [{ kind: "replace-text", elementId: "ocr-title", text: "新的标题" }] },
+    elementId: "ocr-title",
+    expectedKind: "text",
   });
   const firstRecordPath = join(firstEdit.revisionRoot, "modified-revision-record.json");
   const firstRecordSha256 = sha256(await readFile(firstRecordPath));
@@ -586,7 +587,7 @@ test("replaces only after a bound preview confirmation, rebuilds every output, a
   assert.equal(firstAcceptance.slides[1]!.finalRenderSha256, firstPreview.preview.sha256);
   const firstDeck = await JSZip.loadAsync(await readFile(join(root, afterFirst.exports.pptx!.path)));
   const firstEditableXml = await firstDeck.file("ppt/slides/slide2.xml")!.async("text");
-  assert.match(firstEditableXml, /新的标题/);
+  assert.match(firstEditableXml, /原始标题/);
   assert.match(firstEditableXml, /name="text-ocr-title"/);
   assert.match(firstEditableXml, new RegExp(`name="background-${slideIds[1]}"`));
   const replacementRetry = await replaceSlide({

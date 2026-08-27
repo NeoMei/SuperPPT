@@ -257,6 +257,12 @@ export const ModifiedManifestSchema = z.object({
   manifest: EditableManifestSchema,
 }).strict();
 
+export const PromoteEditableIntentSchema = z.object({
+  kind: z.literal("promote-editable"),
+  elementId: z.string().min(1),
+  elementKind: z.enum(["text", "asset"]),
+}).strict();
+
 export const ModifiedRevisionRecordSchema = z.object({
   modifiedRevisionRecordVersion: z.literal(1),
   projectId: z.string().uuid(),
@@ -271,6 +277,7 @@ export const ModifiedRevisionRecordSchema = z.object({
     sha256: Sha256Schema,
   }).strict(),
   sourceManifestSha256: Sha256Schema,
+  intent: PromoteEditableIntentSchema.optional(),
   artifacts: z.object({
     modifiedManifest: Sha256Schema,
     cleanBackground: Sha256Schema,
@@ -285,3 +292,4 @@ export type EditableRevisionMarker = z.infer<typeof EditableRevisionMarkerSchema
 export type EditableStagingMarker = z.infer<typeof EditableStagingMarkerSchema>;
 export type ModifiedManifest = z.infer<typeof ModifiedManifestSchema>;
 export type ModifiedRevisionRecord = z.infer<typeof ModifiedRevisionRecordSchema>;
+export type PromoteEditableIntent = z.infer<typeof PromoteEditableIntentSchema>;

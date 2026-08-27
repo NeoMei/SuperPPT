@@ -99,6 +99,9 @@ test("makes model disclosure, QA, preview rejection, editability, and real deliv
   }
   assert.match(workflow, /record-qa/);
   assert.match(workflow, /slide-preview/);
+  assert.match(workflow, /promote-editable --project --slide --revision --element --kind/);
+  assert.match(workflow, /不修改内容.*promote-editable|promote-editable.*不修改内容/is);
+  assert.match(workflow, /未被提取.*regenerate|regenerate.*未被提取/is);
   assert.match(workflow, /拒绝.*不变更|拒绝.*不修改/s);
   assert.match(workflow, /已.*editable.*不重复.*OCR.*vision/is);
   assert.match(workflow, /不能把整页图片描述为可编辑/);

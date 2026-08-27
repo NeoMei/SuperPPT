@@ -18,10 +18,12 @@ import {
   EditableStagingMarkerSchema,
   ModifiedManifestSchema,
   ModifiedRevisionRecordSchema,
+  PromoteEditableIntentSchema,
   type EditPlan,
   type EditableManifest,
   type EditableStagingMarker,
   type ModifiedRevisionRecord,
+  type PromoteEditableIntent,
 } from "./schemas.js";
 
 export class UnsupportedEditableTargetError extends Error {
@@ -385,6 +387,15 @@ async function validateModifiedRevisionAt(
     || manifest.value.sourceRevisionId !== record.value.parentRevisionId
     || manifest.value.sourceManifestSha256 !== record.value.sourceManifestSha256
   ) throw new Error("modified manifest hash mismatch");
+  if (record.value.intent) {
+    if (record.value.parentRevisionId !== record.value.sourceRevisionId) {
+      throw new Error("promote-editable must derive directly from its authenticated conversion revision");
+    }
+    validatePromotionTarget(authenticatedSource.manifest, record.value.intent);
+    if (JSON.stringify(manifest.value.manifest) !== JSON.stringify(authenticatedSource.manifest)) {
+      throw new Error("promote-editable modified content instead of preserving the conversion manifest");
+    }
+  }
   const background = await readRegularFileNoFollow(join(lexical, "clean-background.png"));
   if (sha256(background) !== record.value.artifacts.cleanBackground) throw new Error("modified clean background hash mismatch");
   const actualAssets = await assetHashes(lexical);
@@ -413,11 +424,10 @@ export type AppliedEditRevision = {
   manifest: EditableManifest;
 };
 
-export async function applyProjectEditPlan(options: {
+type ProjectModifiedRevisionOptions = {
   root: string;
   slideId: string;
   sourceRevisionId: string;
-  rawPlan: unknown;
   idFactory?: () => string;
   operations?: {
     afterSourceValidation?: () => Promise<void> | void;
@@ -425,9 +435,30 @@ export async function applyProjectEditPlan(options: {
     duringRevisionMarkerWrite?: () => Promise<void> | void;
     afterRevisionMarkerWrite?: (staging: string, markerPath: string) => Promise<void> | void;
   };
-}): Promise<AppliedEditRevision> {
-  const plan = EditPlanSchema.parse(options.rawPlan);
-  if (plan.route === "regenerate") throw new UnsupportedEditableTargetError(plan.reason);
+};
+
+type ModifiedRevisionRequest =
+  | { kind: "edit-plan"; plan: Extract<EditPlan, { route: "editable" }> }
+  | { kind: "promote-editable"; intent: PromoteEditableIntent };
+
+function validatePromotionTarget(manifest: EditableManifest, intent: PromoteEditableIntent): void {
+  const element = manifest.elements.find((candidate) => candidate.id === intent.elementId);
+  if (!element) {
+    throw new UnsupportedEditableTargetError(
+      `target was not extracted as an editable element; route regenerate: ${intent.elementId}`,
+    );
+  }
+  if (element.kind !== intent.elementKind) {
+    throw new UnsupportedEditableTargetError(
+      `target kind is ${element.kind}, not ${intent.elementKind}; route regenerate`,
+    );
+  }
+}
+
+async function createProjectModifiedRevision(
+  options: ProjectModifiedRevisionOptions,
+  request: ModifiedRevisionRequest,
+): Promise<AppliedEditRevision> {
   const project = await readProject(options.root);
   const root = await validateProjectRoot(options.root);
   const slide = project.slides.find((candidate) => candidate.id === options.slideId);
@@ -436,6 +467,9 @@ export async function applyProjectEditPlan(options: {
   const currentEditable = slide.status === "editable" ? slide.editableRevision : null;
   if (slide.status === "editable" && !currentEditable) {
     throw new Error("editable re-edit requires the current project-state modified revision anchor");
+  }
+  if (request.kind === "promote-editable" && currentEditable) {
+    throw new UnsupportedEditableTargetError("page is already editable; use an explicit non-empty edit plan");
   }
   if (currentEditable && currentEditable.modifiedRevisionId !== options.sourceRevisionId) {
     throw new Error("editable re-edit must use the current modified revision");
@@ -537,7 +571,8 @@ export async function applyProjectEditPlan(options: {
       })
     ))
   ) throw new Error("source project revision or final render is stale");
-  validateEditTargets(sourceManifest, plan);
+  if (request.kind === "edit-plan") validateEditTargets(sourceManifest, request.plan);
+  else validatePromotionTarget(sourceManifest, request.intent);
   await options.operations?.afterSourceValidation?.();
   await assertEditableLayoutIdentity(layout);
 
@@ -583,8 +618,9 @@ export async function applyProjectEditPlan(options: {
       );
     }
     await assertEditableLayoutIdentity(layout);
-    const prepared = await prepareReplacementAssets(plan, staging);
-    const modified = applyEditPlan(sourceManifest, prepared);
+    const modified = request.kind === "edit-plan"
+      ? applyEditPlan(sourceManifest, await prepareReplacementAssets(request.plan, staging))
+      : EditableManifestSchema.parse(structuredClone(sourceManifest));
     const modifiedManifestPath = join(staging, "modified-manifest.json");
     const modifiedManifestBytes = Buffer.from(`${JSON.stringify(ModifiedManifestSchema.parse({
       modifiedManifestVersion: 1,
@@ -605,6 +641,7 @@ export async function applyProjectEditPlan(options: {
       projectRevisionId: sourceProjectRevisionId,
       finalRender: sourceFinalRender,
       sourceManifestSha256: originalSourceManifestSha256,
+      ...(request.kind === "promote-editable" ? { intent: request.intent } : {}),
       artifacts: {
         modifiedManifest: sha256(modifiedManifestBytes),
         cleanBackground: sha256(background),
@@ -651,4 +688,24 @@ export async function applyProjectEditPlan(options: {
     }
     throw error;
   }
+}
+
+export async function applyProjectEditPlan(options: ProjectModifiedRevisionOptions & {
+  rawPlan: unknown;
+}): Promise<AppliedEditRevision> {
+  const plan = EditPlanSchema.parse(options.rawPlan);
+  if (plan.route === "regenerate") throw new UnsupportedEditableTargetError(plan.reason);
+  return createProjectModifiedRevision(options, { kind: "edit-plan", plan });
+}
+
+export async function promoteProjectEditableTarget(options: ProjectModifiedRevisionOptions & {
+  elementId: string;
+  expectedKind: "text" | "asset";
+}): Promise<AppliedEditRevision> {
+  const intent = PromoteEditableIntentSchema.parse({
+    kind: "promote-editable",
+    elementId: options.elementId,
+    elementKind: options.expectedKind,
+  });
+  return createProjectModifiedRevision(options, { kind: "promote-editable", intent });
 }
