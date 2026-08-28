@@ -19,7 +19,7 @@ import {
 import { normalizeInput } from "../src/planning/intake.js";
 import { renderBrief, renderOutline, renderSlideSpec } from "../src/planning/render.js";
 import { BriefSchema, OutlineSchema, SlideSpecSchema } from "../src/planning/schemas.js";
-import { publishPlanViews, publishStyleSample, readPublishedOutlineViews, readPublishedPlanViews, recoverPlanViews } from "../src/planning/views.js";
+import { publishPlanViews, publishStyleSample, readPublishedOutlineViews, readPublishedPlanViews, readPublishedStyleSample, recoverPlanViews } from "../src/planning/views.js";
 import { initializeProject } from "../src/project/initialize.js";
 import { addDescriptorIntegrity, sha256Evidence } from "../src/project/evidence.js";
 import { withProjectLease } from "../src/project/lock.js";
@@ -355,6 +355,17 @@ test("ordinary gates derive and validate fixed artifact sets in exact order", as
   assert.equal(await assertGateCurrent(root, "style-sample"), true);
   await assert.rejects(approveGate(root, "revision-impact" as never), /invalid planning gate/);
   await assert.rejects(approveGate(root, "outline", { artifacts: [join(root, "superppt.json")] } as never), /invalid approval options/);
+});
+
+test("published style samples expose the user choices before Style Lock approval", async (t) => {
+  const root = await project(t, "superppt-style-sample-choices-");
+  await writeValidPlan(root);
+  await writeValidStyleSample(root);
+  const descriptor = await publishStyleSample(root);
+  const published = await readPublishedStyleSample(root);
+
+  assert.equal(published.descriptor.publicationPath, descriptor.publicationPath);
+  assert.deepEqual(published.nextActions, ["keep-style", "revise-style-recipe", "authorize-new-sample"]);
 });
 
 test("generation authorization and deck review extend the ordinary gate chain", async (t) => {

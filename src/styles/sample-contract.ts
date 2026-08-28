@@ -37,6 +37,36 @@ export type CanonicalStyleSample = {
   compiled: CompiledPrompt;
 };
 
+export function delegatedStyleSampleArtifacts(
+  canonical: CanonicalStyleSample,
+  normalizedSample: Buffer,
+  providerId: string,
+): StyleSampleArtifacts {
+  const ledger = AttemptLedgerSchema.parse({
+    ledgerVersion: 1,
+    slideId: representativeSlideId(canonical.selection),
+    revisionId: canonical.projectRevisionId,
+    attempt: 1,
+    providerId,
+    promptSha256: canonical.compiled.sha256,
+    promptPurged: true,
+    output: STYLE_SAMPLE_ARTIFACTS[3],
+    outputSha256: digest(normalizedSample),
+    outputBytes: normalizedSample.length,
+    durationMs: 0,
+    quality: null,
+    outcome: "generated",
+    errorCode: null,
+  });
+  return {
+    [STYLE_SAMPLE_ARTIFACTS[0]]: Buffer.from(`${JSON.stringify(canonical.selection, null, 2)}\n`),
+    [STYLE_SAMPLE_ARTIFACTS[1]]: Buffer.from(`${JSON.stringify(canonical.director, null, 2)}\n`),
+    [STYLE_SAMPLE_ARTIFACTS[2]]: Buffer.from(canonical.compiled.text),
+    [STYLE_SAMPLE_ARTIFACTS[3]]: normalizedSample,
+    [STYLE_SAMPLE_ARTIFACTS[4]]: Buffer.from(`${JSON.stringify(ledger, null, 2)}\n`),
+  };
+}
+
 export function representativeSlideId(selection: StyleSampleSelection): string {
   return selection.representativeSlideId;
 }

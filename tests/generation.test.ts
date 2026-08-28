@@ -25,6 +25,7 @@ import {
 } from "../src/generation/delegation-result.js";
 import { ImageGenerationJobSchema } from "../src/generation/job-schemas.js";
 import { assertJobAuthorized, prepareImageGenerationJob } from "../src/generation/jobs.js";
+import { finalizeStyleSample, prepareStyleSampleJob } from "../src/generation/style-sample.js";
 import { generateSlide } from "../src/generation/provider.js";
 import { reviewSlide } from "../src/generation/quality.js";
 import { privateSecurityPolicy } from "../src/generation/private-input.js";
@@ -427,8 +428,9 @@ test("image generation job rejects a changed non-null Skill Git revision", async
   await assert.rejects(assertJobAuthorized(fixture.root, job), /Skill identity changed|Git revision/i);
 });
 
-test("image generation job keeps style-sample authorization separate and one-call", async (t) => {
+test("delegated style sample requires execution authorization, finalizes its authenticated artifact, then approves the lock", async (t) => {
   const fixture = await approvedProject(t, "superppt-image-job-sample-", lockedStyle);
+  await createProvisionalStyleLock(fixture.root, lockedStyle);
   await assert.rejects(
     publishStyleSampleGenerationPlan(fixture.root, { aiDependency: fixture.aiDependency, callBudget: 2 }),
     /exactly 1/i,
@@ -440,21 +442,95 @@ test("image generation job keeps style-sample authorization separate and one-cal
   assert.equal(plan.kind, "style-sample");
   assert.equal(plan.pages.length, 1);
   await assert.rejects(
-    prepareImageGenerationJob(fixture.root, { kind: "style-sample", aiDependency: fixture.aiDependency }),
-    /style sample generation authorization/i,
+    prepareStyleSampleJob(fixture.root, fixture.aiDependency),
+    /authorization/i,
   );
 
   await approveExecutionGate(fixture.root, "style-sample-generation", "style/sample/generation-plan.json");
-  const job = await prepareImageGenerationJob(fixture.root, {
-    kind: "style-sample",
-    aiDependency: fixture.aiDependency,
-  });
+  const job = await prepareStyleSampleJob(fixture.root, fixture.aiDependency);
   assert.equal(job.callBudget, 1);
   assert.equal(job.pages.length, 1);
   assert.equal(job.styleLock.approvalState, "provisional");
-  await assertJobAuthorized(fixture.root, job);
-  await writeFile(join(fixture.root, "slides", job.pages[0]!.slideId, "spec.json"), "{}\n", { mode: 0o600 });
-  await assert.rejects(assertJobAuthorized(fixture.root, job), /outline and slide-specs|authorization.*stale/i);
+  const page = job.pages[0]!;
+  const masterPath = join(fixture.root, ...page.target.split("/"));
+  await sharp({ create: { width: 1920, height: 1080, channels: 3, background: "#102030" } }).png().toFile(masterPath);
+  const admission = await admitDelegatedGenerationCall(fixture.root, {
+    jobId: job.jobId,
+    slideId: page.slideId,
+    attempt: page.attempt,
+    requestOrdinal: 1,
+  });
+  const result = await recordDelegatedResult(fixture.root, {
+    jobId: job.jobId,
+    slideId: page.slideId,
+    attempt: page.attempt,
+    requestOrdinal: 1,
+    admissionToken: admission.admissionToken,
+    dependency: { status: "success", provider: "openai", channel: "api", output_path: masterPath, safe_message: "" },
+    batchReport: {
+      batch_mode: "serial-sticky-monotonic",
+      stopped: false,
+      search_candidate: "api-openai",
+      sticky_candidate: "api-openai",
+      pages: [{ page: 1, outcome: "success", candidate: "api-openai", summary: "" }],
+      switches: [],
+    },
+    actualPromptSha256: page.promptSha256,
+    styleLockSha256: job.styleLockSha256,
+    styleRecipeSha256: job.styleLock.styleRecipeSha256,
+    referenceUsage: [],
+    presentationQa: null,
+  });
+  assert.equal(result.outcome, "success");
+  assert.equal(result.pages[0]!.styleConsistency, "not-reviewed");
+  assert.deepEqual((await readProject(fixture.root)).slides, [], "a provisional sample is never attached as a deck page");
+
+  const finalized = await finalizeStyleSample(fixture.root, job.jobId);
+  assert.deepEqual(Object.keys(finalized).sort(), ["style/sample/director.json", "style/sample/ledger.json", "style/sample/prompt.txt", "style/sample/slide.png", "style/selection.json"]);
+  await publishStyleSample(fixture.root);
+  await approveGate(fixture.root, "style-sample");
+  const approved = await approveStyleLock(fixture.root);
+  assert.equal(approved.approvalState, "approved");
+});
+
+test("delegated style sample cannot finalize or retry after its one authorized call fails", async (t) => {
+  const fixture = await approvedProject(t, "superppt-image-job-sample-failure-");
+  await createProvisionalStyleLock(fixture.root, lockedStyle);
+  await publishStyleSampleGenerationPlan(fixture.root, { aiDependency: fixture.aiDependency, callBudget: 1 });
+  await approveExecutionGate(fixture.root, "style-sample-generation", "style/sample/generation-plan.json");
+  const job = await prepareStyleSampleJob(fixture.root, fixture.aiDependency);
+  const page = job.pages[0]!;
+  const admission = await admitDelegatedGenerationCall(fixture.root, {
+    jobId: job.jobId,
+    slideId: page.slideId,
+    attempt: page.attempt,
+    requestOrdinal: 1,
+  });
+  await recordDelegatedResult(fixture.root, {
+    jobId: job.jobId,
+    slideId: page.slideId,
+    attempt: page.attempt,
+    requestOrdinal: 1,
+    admissionToken: admission.admissionToken,
+    dependency: { status: "local_failure", provider: "openai", channel: "api", output_path: null, safe_message: "unavailable" },
+    batchReport: {
+      batch_mode: "serial-sticky-monotonic",
+      stopped: true,
+      search_candidate: "host-openai",
+      sticky_candidate: null,
+      pages: [{ page: 1, outcome: "fatal", candidate: "api-openai", summary: "unavailable" }],
+      switches: [],
+    },
+    actualPromptSha256: page.promptSha256,
+    styleLockSha256: job.styleLockSha256,
+    styleRecipeSha256: job.styleLock.styleRecipeSha256,
+    referenceUsage: [],
+    presentationQa: null,
+  });
+
+  await assert.rejects(finalizeStyleSample(fixture.root, job.jobId), /accepted|successful/i);
+  await assert.rejects(prepareStyleSampleJob(fixture.root, fixture.aiDependency), /budget.*exhausted|new.*plan/i);
+  await assert.rejects(publishStyleSample(fixture.root), /canonical|artifact|sample/i);
 });
 
 test("generation execution admits before the callback, counts failures, and replays exact tuples without another call", async (t) => {
@@ -1816,7 +1892,7 @@ test("CLI generate prints its provider disclosure before state-changing results"
   assert.equal(documents[1]!.callCount, 3);
 });
 
-test("CLI generates and publishes a canonical representative style sample with provider proof", async (t) => {
+test("CLI no longer executes a direct style-sample provider call", async (t) => {
   const fixture = await approvedProject(t, "superppt-style-sample-cli-");
   const callCounter = join(await directory(t, "superppt-style-sample-counter-"), "calls.log");
   const invocation = ["--import", "tsx", "src/cli.ts"];
@@ -1831,34 +1907,8 @@ test("CLI generates and publishes a canonical representative style sample with p
     env: environment,
   });
 
-  const generationResult = await run(["generate-style-sample", "--project", fixture.root]);
-  assert.equal(await readFile(callCounter, "utf8"), "1\n", "representative sample generation must make exactly one provider call");
-  assert.doesNotMatch(generationResult.stdout, /BEGIN SUPERPPT CANONICAL INPUT/);
-  const generated = JSON.parse(generationResult.stdout) as {
-    providerId: string;
-    representativeSlideId: string;
-    artifacts: Record<string, string>;
-  };
-  assert.equal(generated.providerId, "openai-gpt-image-2");
-  assert.equal(generated.representativeSlideId, SLIDE_IDS[1]);
-  assert.deepEqual(Object.keys(generated.artifacts).sort(), ["director", "ledger", "prompt", "sample", "selection"]);
-
-  const prompt = await readFile(join(fixture.root, generated.artifacts.prompt), "utf8");
-  const director = JSON.parse(await readFile(join(fixture.root, generated.artifacts.director), "utf8")) as Record<string, unknown>;
-  const ledger = AttemptLedgerSchema.parse(JSON.parse(await readFile(join(fixture.root, generated.artifacts.ledger), "utf8")));
-  assert.match(prompt, /BEGIN SUPERPPT CANONICAL INPUT/);
-  assert.match(prompt, /Text \(verbatim\).*\["Title"\]/);
-  assert.doesNotMatch(prompt, /private compiled visual director prompt/);
-  assert.deepEqual(Object.keys(director).sort(), ["background", "foreground", "microDetails", "midground", "readingOrder", "textSafeArea"]);
-  assert.equal(ledger.providerId, generated.providerId);
-  assert.equal(ledger.slideId, generated.representativeSlideId);
-  assert.equal(ledger.output, "style/sample/slide.png");
-  assert.doesNotMatch(JSON.stringify(ledger), /BEGIN SUPERPPT CANONICAL INPUT/);
-  assert.equal((await sharp(join(fixture.root, generated.artifacts.sample)).metadata()).width, 1920);
-
-  await run(["publish-style-sample", "--project", fixture.root]);
-  await writeFile(join(fixture.root, generated.artifacts.prompt), "not the canonical prompt\n", { mode: 0o600 });
-  await assert.rejects(run(["publish-style-sample", "--project", fixture.root]), /canonical style sample prompt/i);
+  await assert.rejects(run(["generate-style-sample", "--project", fixture.root]), /unknown command/i);
+  await assert.rejects(access(callCounter), { code: "ENOENT" }, "the deprecated command must not reach a provider");
 });
 
 test("CLI record-qa and retry-page use manual evidence without regenerating peers", async (t) => {

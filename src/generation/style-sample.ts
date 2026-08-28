@@ -1,112 +1,123 @@
-import { randomUUID } from "node:crypto";
-import { join } from "node:path";
+import { createHash } from "node:crypto";
 
-import type { LegacyResolvedDependencies } from "../dependencies/schemas.js";
-import { assertGateCurrent } from "../planning/confirm.js";
+import type { AiImageSkillDependency } from "../dependencies/schemas.js";
 import { withProjectLease } from "../project/lock.js";
 import { readOwnedRegularFile } from "../project/safe-file.js";
-import { readProject } from "../project/store.js";
 import {
   canonicalStyleSample,
-  representativeSlideId,
+  delegatedStyleSampleArtifacts,
   STYLE_SAMPLE_ARTIFACTS,
   validateCanonicalStyleSample,
   type StyleSampleArtifacts,
 } from "../styles/sample-contract.js";
 import { openGenerationDirectory } from "./anchored-dir.js";
-import { ownedTemporaryName } from "./abandoned.js";
-import { generateSlide } from "./provider.js";
-import { AttemptLedgerSchema } from "./schemas.js";
+import { assertAuthorizedJobBinding, authorizationCallBudget, authorizationForPreparation, readCallLedger } from "./authorization.js";
+import { ImageGenerationResultSchema, type ImageGenerationResult } from "./schemas.js";
+import { canonicalContractFile, type ImageGenerationJob } from "./job-schemas.js";
+import { prepareImageGenerationJob, readImageGenerationJob } from "./jobs.js";
 
-const ARTIFACT_RESULT = {
-  selection: STYLE_SAMPLE_ARTIFACTS[0],
-  director: STYLE_SAMPLE_ARTIFACTS[1],
-  prompt: STYLE_SAMPLE_ARTIFACTS[2],
-  sample: STYLE_SAMPLE_ARTIFACTS[3],
-  ledger: STYLE_SAMPLE_ARTIFACTS[4],
-} as const;
-
-function sampleName(path: string): string {
-  return path.slice("style/sample/".length);
+function sha256(value: Buffer): string {
+  return createHash("sha256").update(value).digest("hex");
 }
 
-async function requirePlanningGates(root: string): Promise<void> {
-  if (!await assertGateCurrent(root, "outline") || !await assertGateCurrent(root, "slide-specs")) {
-    throw new Error("outline and slide-specs gates must be current before style sample generation");
+async function readAcceptedSampleResult(root: string, job: ImageGenerationJob): Promise<ImageGenerationResult> {
+  if (job.kind !== "style-sample" || job.callBudget !== 1 || job.pages.length !== 1) {
+    throw new Error("style sample finalization requires an immutable one-call sample job");
   }
+  const bytes = await readOwnedRegularFile(root, `generation/jobs/${job.jobId}/result.json`).catch((error: unknown) => {
+    throw new Error("accepted delegated style sample result is unavailable", { cause: error });
+  });
+  let result: ImageGenerationResult;
+  try {
+    result = ImageGenerationResultSchema.parse(JSON.parse(bytes.toString("utf8")));
+    if (bytes.toString("utf8") !== canonicalContractFile(result)) throw new Error("non-canonical result");
+  } catch (error: unknown) {
+    throw new Error("accepted delegated style sample result is invalid", { cause: error });
+  }
+  const page = result.pages[0];
+  const expected = job.pages[0]!;
+  if (
+    result.jobId !== job.jobId
+    || result.projectRevisionId !== job.projectRevisionId
+    || result.outcome !== "success"
+    || result.actualRequestCount !== 1
+    || result.pages.length !== 1
+    || !page
+    || page.slideId !== expected.slideId
+    || page.attempt !== expected.attempt
+    || page.status !== "success"
+    || page.styleConsistency !== "not-reviewed"
+    || page.presentationQa !== null
+    || !page.artifacts
+    || page.actualPromptSha256 !== expected.promptSha256
+    || page.styleLockSha256 !== job.styleLockSha256
+    || page.styleRecipeSha256 !== job.styleLock.styleRecipeSha256
+    || page.artifacts.normalized.path !== `generation/jobs/${job.jobId}/normalized/${expected.slideId}.png`
+    || page.artifacts.normalized.revisionId !== job.projectRevisionId
+  ) throw new Error("delegated style sample result is not an accepted authenticated one-call result");
+  const calls = await readCallLedger(root);
+  const entries = calls.filter((entry) => entry.jobId === job.jobId);
+  if (entries.length !== 2 || entries[0]?.entryKind !== "admission" || entries[1]?.entryKind !== "terminal" || entries[1].outcome !== "success") {
+    throw new Error("delegated style sample result does not have one successful durable admission");
+  }
+  const budget = await authorizationCallBudget(root, job.authorizationDigest, job.callBudget);
+  if (budget.consumed !== 1 || budget.remaining !== 0) throw new Error("delegated style sample must consume its one authorized call");
+  return result;
 }
 
-export async function generateProjectStyleSample(options: {
-  root: string;
-  ai: LegacyResolvedDependencies["ai"];
-  runner: string;
-}): Promise<{
-  providerId: string;
-  representativeSlideId: string;
-  artifacts: typeof ARTIFACT_RESULT;
-}> {
-  const provider = options.ai.providers.find(({ id }) => id === options.ai.defaultProvider);
-  if (!provider) throw new Error("default provider is unavailable");
-  return withProjectLease(options.root, "generation", async (root) => {
-    await requirePlanningGates(root);
-    const canonical = await canonicalStyleSample(root);
-    const revisionId = canonical.projectRevisionId;
-    const sampleDirectory = openGenerationDirectory(join(root, "style", "sample"));
-    const stagingName = `.style-sample-${randomUUID()}.staging`;
-    const staging = sampleDirectory.child(stagingName);
-    const output = join(staging.path, "slide.png");
-    const cleanupNames = ["slide.png", "director.json", "prompt.txt", "ledger.json"];
-    try {
-      const rawLedger = await generateSlide({
-        runner: options.runner,
-        modulePath: join(options.ai.root, provider.module),
-        callable: provider.callable,
-        providerId: provider.id,
-        slideId: representativeSlideId(canonical.selection),
-        revisionId,
-        prompt: canonical.compiled.text,
-        output,
-        attempt: 1,
-        allowedFormats: provider.outputFormats,
-        trustedRoot: staging.path,
-      });
-      const ledger = AttemptLedgerSchema.parse({
-        ...rawLedger,
-        output: STYLE_SAMPLE_ARTIFACTS[3],
-      });
-      staging.writeExclusive("director.json", `${JSON.stringify(canonical.director, null, 2)}\n`);
-      staging.writeExclusive("prompt.txt", canonical.compiled.text);
-      staging.writeExclusive("ledger.json", `${JSON.stringify(ledger, null, 2)}\n`);
-      const values = {
-        [STYLE_SAMPLE_ARTIFACTS[0]]: await readOwnedRegularFile(root, STYLE_SAMPLE_ARTIFACTS[0]),
-        [STYLE_SAMPLE_ARTIFACTS[1]]: staging.read("director.json"),
-        [STYLE_SAMPLE_ARTIFACTS[2]]: staging.read("prompt.txt"),
-        [STYLE_SAMPLE_ARTIFACTS[3]]: staging.read("slide.png"),
-        [STYLE_SAMPLE_ARTIFACTS[4]]: staging.read("ledger.json"),
-      } as StyleSampleArtifacts;
-      await validateCanonicalStyleSample(root, values);
-      const current = await readProject(root);
-      if (current.currentRevision.id !== revisionId) throw new Error("project revision changed during style sample generation");
-      await requirePlanningGates(root);
-      sampleDirectory.assertCurrent();
-      for (const path of STYLE_SAMPLE_ARTIFACTS.slice(1)) {
-        sampleDirectory.replace(sampleName(path), values[path], `.${ownedTemporaryName("style-sample")}`);
-      }
-      return {
-        providerId: provider.id,
-        representativeSlideId: representativeSlideId(canonical.selection),
-        artifacts: ARTIFACT_RESULT,
-      };
-    } finally {
-      for (const name of cleanupNames) {
-        try { staging.remove(name); } catch { /* absent after provider failure */ }
-      }
-      try {
-        staging.removeEmptyChild(".private");
-      } finally {
-        staging.close();
-        try { sampleDirectory.removeEmptyChild(stagingName); } finally { sampleDirectory.close(); }
-      }
+export async function prepareStyleSampleJob(
+  root: string,
+  aiDependency: AiImageSkillDependency,
+): Promise<ImageGenerationJob> {
+  const authorization = await authorizationForPreparation(root, "style-sample");
+  const budget = await authorizationCallBudget(root, authorization.digest, authorization.plan.callBudget);
+  if (budget.remaining === 0) {
+    throw new Error("a new style sample generation plan is required after its one-call budget is exhausted");
+  }
+  return prepareImageGenerationJob(root, { kind: "style-sample", aiDependency });
+}
+
+export async function finalizeStyleSample(root: string, jobId: string): Promise<StyleSampleArtifacts> {
+  return withProjectLease(root, "state", async (canonicalRoot) => {
+    const job = await readImageGenerationJob(canonicalRoot, jobId);
+    await assertAuthorizedJobBinding(canonicalRoot, job);
+    const result = await readAcceptedSampleResult(canonicalRoot, job);
+    const normalized = await readOwnedRegularFile(canonicalRoot, result.pages[0]!.artifacts!.normalized.path);
+    if (sha256(normalized) !== result.pages[0]!.artifacts!.normalized.sha256) {
+      throw new Error("delegated style sample normalized artifact hash changed");
     }
+    const canonical = await canonicalStyleSample(canonicalRoot);
+    if (
+      canonical.projectRevisionId !== job.projectRevisionId
+      || canonical.spec.slideId !== job.pages[0]!.slideId
+      || canonical.compiled.sha256 !== job.pages[0]!.promptSha256
+    ) throw new Error("delegated style sample job no longer matches the current provisional style lock");
+    const values = delegatedStyleSampleArtifacts(
+      canonical,
+      normalized,
+      `${result.pages[0]!.dependency.channel}-${result.pages[0]!.dependency.provider}`,
+    );
+    await validateCanonicalStyleSample(canonicalRoot, values);
+    const project = openGenerationDirectory(canonicalRoot);
+    const style = project.child("style", false);
+    const sample = style.child("sample", false);
+    try {
+      for (const path of STYLE_SAMPLE_ARTIFACTS.slice(1)) {
+        sample.replace(path.slice("style/sample/".length), values[path], `.finalize-${path.slice("style/sample/".length)}`);
+      }
+    } finally {
+      sample.close();
+      style.close();
+      project.close();
+    }
+    const finalized = {
+      [STYLE_SAMPLE_ARTIFACTS[0]]: await readOwnedRegularFile(canonicalRoot, STYLE_SAMPLE_ARTIFACTS[0]),
+      [STYLE_SAMPLE_ARTIFACTS[1]]: await readOwnedRegularFile(canonicalRoot, STYLE_SAMPLE_ARTIFACTS[1]),
+      [STYLE_SAMPLE_ARTIFACTS[2]]: await readOwnedRegularFile(canonicalRoot, STYLE_SAMPLE_ARTIFACTS[2]),
+      [STYLE_SAMPLE_ARTIFACTS[3]]: await readOwnedRegularFile(canonicalRoot, STYLE_SAMPLE_ARTIFACTS[3]),
+      [STYLE_SAMPLE_ARTIFACTS[4]]: await readOwnedRegularFile(canonicalRoot, STYLE_SAMPLE_ARTIFACTS[4]),
+    } as StyleSampleArtifacts;
+    await validateCanonicalStyleSample(canonicalRoot, finalized);
+    return finalized;
   });
 }

@@ -2,7 +2,7 @@ import { access, lstat } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 
 import { preflightLegacyDependencies } from "./dependencies/preflight.js";
-import { resolveDependencies } from "./dependencies/resolve.js";
+import { resolveDependencies, resolveSkillDependencies } from "./dependencies/resolve.js";
 import {
   assembleProject,
   readProjectAcceptance,
@@ -16,7 +16,7 @@ import {
   recordManualQa,
   retryProjectPage,
 } from "./generation/batch.js";
-import { generateProjectStyleSample } from "./generation/style-sample.js";
+import { finalizeStyleSample, prepareStyleSampleJob } from "./generation/style-sample.js";
 import { convertProjectPage } from "./editable/adapter.js";
 import {
   AlreadyEditableSlideError,
@@ -227,14 +227,20 @@ async function main(argv: string[]): Promise<void> {
     return;
   }
 
-  if (command === "generate-style-sample") {
+  if (command === "prepare-style-sample-job") {
     const options = exactFlags(argv.slice(1), ["--project"]);
     const resolved = await configuredDependencies();
-    outputJson(await generateProjectStyleSample({
-      root: options.get("--project")!,
-      ai: resolved.ai,
-      runner: await providerRunner(),
-    }));
+    const dependencies = await resolveSkillDependencies({
+      aiSkillRoot: resolved.ai.root,
+      editableSkillRoot: resolved.editable.root,
+    });
+    outputJson(await prepareStyleSampleJob(options.get("--project")!, dependencies.ai));
+    return;
+  }
+
+  if (command === "finalize-style-sample") {
+    const options = exactFlags(argv.slice(1), ["--project", "--job-id"]);
+    outputJson(await finalizeStyleSample(options.get("--project")!, options.get("--job-id")!));
     return;
   }
 

@@ -47,7 +47,10 @@ export type PublishedStyleSample = {
   selection: StyleSampleSelection;
   prompt: Buffer;
   sample: Buffer;
+  nextActions: readonly ["keep-style", "revise-style-recipe", "authorize-new-sample"];
 };
+
+const STYLE_SAMPLE_NEXT_ACTIONS = ["keep-style", "revise-style-recipe", "authorize-new-sample"] as const;
 
 const STYLE_KEYS = STYLE_SAMPLE_ARTIFACTS;
 
@@ -330,6 +333,7 @@ export async function readPublishedStyleSample(root: string): Promise<PublishedS
     selection,
     prompt: await readOwnedRegularFile(root, `${descriptor.publicationPath}/sources/${STYLE_KEYS[2]}`),
     sample: await readOwnedRegularFile(root, `${descriptor.publicationPath}/sources/${STYLE_KEYS[3]}`),
+    nextActions: STYLE_SAMPLE_NEXT_ACTIONS,
   };
 }
 

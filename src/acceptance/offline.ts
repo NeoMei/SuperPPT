@@ -14,14 +14,19 @@ import { convertProjectPage } from "../editable/adapter.js";
 import { applyProjectEditPlan } from "../editable/operations.js";
 import { confirmEditablePreview, renderProjectEditablePreview } from "../editable/render.js";
 import { generateProject } from "../generation/batch.js";
-import { generateProjectStyleSample } from "../generation/style-sample.js";
-import { approveGate } from "../planning/confirm.js";
+import { admitDelegatedGenerationCall, publishStyleSampleGenerationPlan } from "../generation/authorization.js";
+import { recordDelegatedResult } from "../generation/delegation-result.js";
+import { generateSlide } from "../generation/provider.js";
+import { finalizeStyleSample, prepareStyleSampleJob } from "../generation/style-sample.js";
+import { approveExecutionGate, approveGate } from "../planning/confirm.js";
 import { normalizeInput } from "../planning/intake.js";
 import { loadValidatedOutline, loadValidatedPlan } from "../planning/load.js";
 import { BriefSchema, OutlineSchema, SlideSpecSchema } from "../planning/schemas.js";
 import { publishOutlineViews, publishPlanViews, publishStyleSample } from "../planning/views.js";
 import { initializeProject } from "../project/initialize.js";
 import { readProject, sha256 } from "../project/store.js";
+import { resolveSkillDependencies } from "../dependencies/resolve.js";
+import { approveStyleLock, createProvisionalStyleLock } from "../styles/style-lock.js";
 
 type AcceptanceSnapshot = {
   slideCount: number;
@@ -154,6 +159,9 @@ async function stagedAiDependency(parent: string, provider: string, reviewer: st
   await writeFile(join(root, "SKILL.md"), "---\nname: ai-image-to-ppt\n---\n", { flag: "wx", mode: 0o600 });
   await copyFile(provider, join(root, "scripts", "provider.py"));
   await copyFile(reviewer, join(root, "scripts", "reviewer.py"));
+  for (const script of ["generation_result.py", "host_routing_policy.py", "import_host_image.py", "prepare_editable_input.py"]) {
+    await writeFile(join(root, "scripts", script), "raise SystemExit('not executed by offline delegated sample')\n", { flag: "wx", mode: 0o600 });
+  }
   const capabilities = {
     contractVersion: 1 as const,
     defaultProvider: "offline-fixture-provider",
@@ -292,6 +300,11 @@ export async function runOfflineAcceptance(options: OfflineAcceptanceOptions): P
   await copyPlanningFixtures(root, fixtureRoot);
 
   const ai = await stagedAiDependency(parent, provider, reviewer);
+  const converterRoot = await stagedConverter(parent);
+  const aiDependency = (await resolveSkillDependencies({
+    aiSkillRoot: ai.root,
+    editableSkillRoot: converterRoot,
+  })).ai;
   await writeFile(join(root, "style", "selection.json"), `${JSON.stringify({
     schemaVersion: 1,
     styleId: "cinematic-tech",
@@ -303,9 +316,61 @@ export async function runOfflineAcceptance(options: OfflineAcceptanceOptions): P
   process.env.SUPERPPT_TEST_CALL_COUNTER = counter;
   let generation: ProjectGenerationResult;
   try {
-    await generateProjectStyleSample({ root, ai, runner: RUNNER });
+    await createProvisionalStyleLock(root, {
+      selection: { kind: "catalog", styleId: "cinematic-tech" },
+      referenceArtifacts: [],
+    });
+    await publishStyleSampleGenerationPlan(root, { aiDependency, callBudget: 1 });
+    await approveExecutionGate(root, "style-sample-generation", "style/sample/generation-plan.json");
+    const sampleJob = await prepareStyleSampleJob(root, aiDependency);
+    const samplePage = sampleJob.pages[0]!;
+    const providerConfig = ai.providers.find(({ id }) => id === ai.defaultProvider);
+    if (!providerConfig) throw new Error("offline sample provider is unavailable");
+    const output = join(root, ...samplePage.target.split("/"));
+    const admission = await admitDelegatedGenerationCall(root, {
+      jobId: sampleJob.jobId,
+      slideId: samplePage.slideId,
+      attempt: samplePage.attempt,
+      requestOrdinal: 1,
+    });
+    await generateSlide({
+      runner: RUNNER,
+      modulePath: join(ai.root, providerConfig.module),
+      callable: providerConfig.callable,
+      providerId: providerConfig.id,
+      slideId: samplePage.slideId,
+      revisionId: sampleJob.projectRevisionId,
+      prompt: samplePage.finalPrompt,
+      output,
+      attempt: samplePage.attempt,
+      allowedFormats: providerConfig.outputFormats,
+      trustedRoot: join(root, "generation", "jobs", sampleJob.jobId, "ai-image-output"),
+    });
+    await recordDelegatedResult(root, {
+      jobId: sampleJob.jobId,
+      slideId: samplePage.slideId,
+      attempt: samplePage.attempt,
+      requestOrdinal: 1,
+      admissionToken: admission.admissionToken,
+      dependency: { status: "success", provider: "openai", channel: "api", output_path: output, safe_message: "" },
+      batchReport: {
+        batch_mode: "serial-sticky-monotonic",
+        stopped: false,
+        search_candidate: "api-openai",
+        sticky_candidate: "api-openai",
+        pages: [{ page: 1, outcome: "success", candidate: "api-openai", summary: "" }],
+        switches: [],
+      },
+      actualPromptSha256: samplePage.promptSha256,
+      styleLockSha256: sampleJob.styleLockSha256,
+      styleRecipeSha256: sampleJob.styleLock.styleRecipeSha256,
+      referenceUsage: [],
+      presentationQa: null,
+    });
+    await finalizeStyleSample(root, sampleJob.jobId);
     await publishStyleSample(root);
     await approveGate(root, "style-sample");
+    await approveStyleLock(root);
     generation = await generateProject({ root, ai, runner: RUNNER, concurrency: 2 });
   } finally {
     if (previousCounter === undefined) delete process.env.SUPERPPT_TEST_CALL_COUNTER;
@@ -315,7 +380,6 @@ export async function runOfflineAcceptance(options: OfflineAcceptanceOptions): P
 
   await assembleProject({ root, operations: { buildOutputs: offlineBuildOutputs } });
   const before = await snapshot(root);
-  const converterRoot = await stagedConverter(parent);
   const conversion = await convertProjectPage({
     root,
     slideId: EDITABLE_SLIDE_ID,
