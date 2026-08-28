@@ -33,6 +33,7 @@ import {
 } from "../src/generation/delegation-result.js";
 import { ImageGenerationJobSchema, canonicalContractFile } from "../src/generation/job-schemas.js";
 import { assertJobAuthorized, prepareImageGenerationJob } from "../src/generation/jobs.js";
+import { withGenerationLease } from "../src/generation/lease.js";
 import { finalizeStyleSample, prepareStyleSampleJob } from "../src/generation/style-sample.js";
 import {
   assertTrustedGenerationAuthorizationRecord,
@@ -98,6 +99,57 @@ async function waitFor(predicate: () => Promise<boolean>, timeoutMs = 5_000): Pr
 function processExists(pid: number): boolean {
   try { process.kill(pid, 0); return true; } catch { return false; }
 }
+
+test("a delayed async descendant reacquires the generation lease after its owner settles", async (t) => {
+  const parent = await directory(t, "superppt-generation-lease-descendant-");
+  const root = join(parent, "project");
+  await initializeProject({ root, title: "Generation Lease" });
+  const events: string[] = [];
+  let releaseDescendant!: () => void;
+  const descendantMayStart = new Promise<void>((resolve) => { releaseDescendant = resolve; });
+  let descendant!: Promise<void>;
+
+  await withGenerationLease(root, async () => {
+    descendant = (async () => {
+      await descendantMayStart;
+      await withGenerationLease(root, async () => {
+        events.push("descendant-entered");
+      });
+    })();
+    events.push("owner-entered");
+  });
+
+  await withGenerationLease(root, async () => {
+    events.push("new-holder-entered");
+    releaseDescendant();
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    events.push("new-holder-exited");
+  });
+  await descendant;
+
+  assert.deepEqual(events, [
+    "owner-entered",
+    "new-holder-entered",
+    "new-holder-exited",
+    "descendant-entered",
+  ]);
+});
+
+test("a live generation lease permits nested reentry through a canonical root alias", async (t) => {
+  const parent = await directory(t, "superppt-generation-lease-alias-");
+  const root = join(parent, "project");
+  await initializeProject({ root, title: "Generation Lease Alias" });
+  const events: string[] = [];
+
+  await withGenerationLease(root, async (canonicalRoot) => {
+    events.push(`outer:${canonicalRoot}`);
+    await withGenerationLease(`${root}/.`, async (nestedRoot) => {
+      events.push(`nested:${nestedRoot}`);
+    });
+  });
+
+  assert.deepEqual(events, [`outer:${root}`, `nested:${root}`]);
+});
 
 async function approvedProject(
   t: TestContext,

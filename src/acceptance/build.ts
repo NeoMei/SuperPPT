@@ -30,6 +30,11 @@ export type AcceptanceInput = {
   }>;
   exports: { pptx: string; pdf: string; montage: string };
   exportRefs?: { pptx: string; pdf: string; montage: string };
+  candidateReview?: {
+    candidateId: string;
+    projectRevisionId: string;
+    projectBindingSha256: string;
+  };
   warnings?: string[];
 };
 
@@ -76,6 +81,7 @@ export async function buildAcceptance(input: AcceptanceInput): Promise<Acceptanc
     providerId: input.providerId,
     editablePageIds: slides.filter((slide) => slide.mode === "editable").map((slide) => slide.id),
     warnings: input.warnings ?? [],
+    ...(input.candidateReview ? { candidateReview: input.candidateReview } : {}),
     deliveryComplete: false,
     clientAcceptance: {
       application: null,

@@ -7,6 +7,46 @@ export const FileEvidenceSchema = z.object({
   sha256: Sha256Schema,
 }).strict();
 
+export const CandidateAcceptanceBindingSchema = z.object({
+  candidateId: z.string().uuid(),
+  projectRevisionId: z.string().uuid(),
+  projectBindingSha256: Sha256Schema,
+}).strict();
+
+export const DeckReviewDescriptorSchema = z.object({
+  schemaVersion: z.literal(1),
+  kind: z.literal("deck-review"),
+  candidateId: z.string().uuid(),
+  projectId: z.string().uuid(),
+  projectRevisionId: z.string().uuid(),
+  deckRevision: z.number().int().positive(),
+  candidatePath: z.string().regex(/^output\/candidates\/[0-9a-f-]{36}$/),
+  candidateMarkerSha256: Sha256Schema,
+  projectBindingSha256: Sha256Schema,
+  generationAuthorization: z.object({
+    approvalId: z.string().uuid(),
+    snapshotPath: z.string().startsWith("revisions/"),
+    snapshotManifestSha256: Sha256Schema,
+  }).strict(),
+  artifacts: z.object({
+    pptx: FileEvidenceSchema,
+    pdf: FileEvidenceSchema,
+    montage: FileEvidenceSchema,
+    acceptance: FileEvidenceSchema,
+  }).strict(),
+  actions: z.tuple([
+    z.literal("edit-page"),
+    z.literal("return-upstream"),
+    z.literal("confirm-delivery"),
+  ]),
+  confirmation: z.object({
+    action: z.literal("confirm-delivery"),
+    gate: z.literal("deck-review"),
+  }).strict(),
+  createdAt: z.string().datetime(),
+  descriptorSha256: Sha256Schema,
+}).strict();
+
 export const ClientSmokeCopyDescriptorSchema = z.object({
   descriptorVersion: z.literal(1),
   appId: z.literal("superppt"),
@@ -79,6 +119,7 @@ export const AcceptanceSchema = z.object({
   providerId: z.string().min(1),
   editablePageIds: z.array(z.string().uuid()),
   warnings: z.array(z.string().min(1)),
+  candidateReview: CandidateAcceptanceBindingSchema.nullable().optional(),
   deliveryComplete: z.boolean(),
   clientAcceptance: ClientAcceptanceSchema,
 }).strict().superRefine((value, context) => {
@@ -113,3 +154,4 @@ export const AcceptanceSchema = z.object({
 
 export type Acceptance = z.infer<typeof AcceptanceSchema>;
 export type ClientAcceptance = z.infer<typeof ClientAcceptanceSchema>;
+export type DeckReviewDescriptor = z.infer<typeof DeckReviewDescriptorSchema>;

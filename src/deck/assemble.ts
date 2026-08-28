@@ -12,6 +12,8 @@ import { validateAcceptanceManifestBinding } from "../acceptance/current.js";
 import {
   AcceptanceSchema,
   type Acceptance,
+  DeckReviewDescriptorSchema,
+  type DeckReviewDescriptor,
 } from "../acceptance/schema.js";
 import {
   validateRecordedClientSmokeCopy,
@@ -19,8 +21,9 @@ import {
 import { AttemptLedgerSchema } from "../generation/schemas.js";
 import { validateAppliedEditableBinding, validateConfirmedEditablePreview } from "../editable/render.js";
 import { assertGateCurrent } from "../planning/confirm.js";
+import { addDescriptorIntegrity, sha256Evidence } from "../project/evidence.js";
 import { syncDirectory, writeDurableExclusive } from "../project/durable.js";
-import { withProjectLease } from "../project/lock.js";
+import { withPlanningLock, withProjectLease } from "../project/lock.js";
 import { promoteExclusive } from "../project/promotion.js";
 import { readOwnedRegularFile, readRegularFileNoFollow, type SafeReadOperations } from "../project/safe-file.js";
 import { ArtifactSchema, type Artifact, type ProjectManifest } from "../project/schemas.js";
@@ -131,6 +134,7 @@ const OutputMarkerSchema = z.object({
   projectId: z.string().uuid(),
   revisionId: z.string().uuid(),
   revisionNumber: z.number().int().positive(),
+  candidateId: z.string().uuid().optional(),
   providerId: z.string().min(1),
   projectBindingSha256: z.string().regex(/^[a-f0-9]{64}$/),
   slides: z.array(z.object({
@@ -150,6 +154,36 @@ const OutputMarkerSchema = z.object({
 
 type OutputMarker = z.infer<typeof OutputMarkerSchema>;
 type OutputArtifacts = OutputMarker["artifacts"];
+const DeckCandidateMarkerSchema = z.object({
+  markerVersion: z.literal(1),
+  appId: z.literal("superppt"),
+  artifactKind: z.literal("deck-candidate"),
+  candidateId: z.string().uuid(),
+  projectId: z.string().uuid(),
+  projectRevisionId: z.string().uuid(),
+  revisionNumber: z.number().int().positive(),
+  providerId: z.string().min(1),
+  projectBindingSha256: z.string().regex(/^[a-f0-9]{64}$/),
+  generationAuthorization: z.object({
+    approvalId: z.string().uuid(),
+    snapshotPath: z.string().startsWith("revisions/"),
+    snapshotManifestSha256: z.string().regex(/^[a-f0-9]{64}$/),
+  }).strict(),
+  slides: OutputMarkerSchema.shape.slides,
+  artifacts: OutputMarkerSchema.shape.artifacts,
+  createdAt: z.string().datetime(),
+}).strict();
+type DeckCandidateMarker = z.infer<typeof DeckCandidateMarkerSchema>;
+
+export type AssembleProjectCandidateResult = {
+  candidateId: string;
+  destination: string;
+  artifacts: OutputArtifacts;
+};
+export type CandidatePromotionCheckpoint = "output-promoted" | "manifest-updated";
+export type CandidatePromotionOperations = {
+  checkpoint?: (step: CandidatePromotionCheckpoint) => Promise<void> | void;
+};
 const QuarantinedArtifactSchema = z.object({
   originalPath: z.string().min(1),
   quarantineRelativePath: z.string().regex(/^[A-Za-z0-9._-]+$/),
@@ -516,8 +550,16 @@ async function buildOutputArtifacts(
   marker: Omit<OutputMarker, "artifacts">,
   staging: string,
   warnings: string[],
+  options: {
+    refs?: Record<keyof OutputArtifacts, string>;
+    candidateReview?: {
+      candidateId: string;
+      projectRevisionId: string;
+      projectBindingSha256: string;
+    };
+  } = {},
 ): Promise<OutputMarker> {
-  const refs = canonicalArtifactRefs(marker.revisionNumber);
+  const refs = options.refs ?? canonicalArtifactRefs(marker.revisionNumber);
   const evidence = async (name: keyof typeof refs): Promise<Artifact> => ({
     path: refs[name],
     sha256: createHash("sha256").update(await readRegularFileNoFollow(join(staging, refs[name].split("/").at(-1)!))).digest("hex"),
@@ -545,6 +587,7 @@ async function buildOutputArtifacts(
       montage: join(staging, "montage.jpg"),
     },
     exportRefs: { pptx: refs.pptx, pdf: refs.pdf, montage: refs.montage },
+    candidateReview: options.candidateReview,
     warnings,
   });
   await writeDurableExclusive(join(staging, "acceptance.json"), `${JSON.stringify(acceptance, null, 2)}\n`);
@@ -587,6 +630,7 @@ async function validateOwnedOutput(
   const marker = await readOutputMarker(destination);
   if (
     marker.projectId !== expected.projectId
+    || (expected.candidateId !== undefined && marker.candidateId !== expected.candidateId)
     || marker.revisionId !== expected.revisionId
     || marker.revisionNumber !== expected.revisionNumber
     || marker.providerId !== expected.providerId
@@ -658,6 +702,388 @@ async function publishOutputManifest(root: string, revisionId: string, marker: O
         };
       }),
       exports: marker.artifacts,
+    };
+  });
+}
+
+function candidateArtifactRefs(candidateId: string): Record<keyof OutputArtifacts, string> {
+  const base = `output/candidates/${candidateId}`;
+  return {
+    pptx: `${base}/deck.pptx`,
+    pdf: `${base}/deck.pdf`,
+    montage: `${base}/montage.jpg`,
+    acceptance: `${base}/acceptance.json`,
+  };
+}
+
+function currentGenerationAuthorization(manifest: ProjectManifest): DeckCandidateMarker["generationAuthorization"] {
+  const gate = [...manifest.gates].reverse().find((item) => item.gate === "generation-authorization");
+  if (!gate?.approvalId || !gate.snapshotPath || !gate.snapshotManifestSha256) {
+    throw new Error("current generation-authorization gate is required before candidate assembly");
+  }
+  return {
+    approvalId: gate.approvalId,
+    snapshotPath: gate.snapshotPath,
+    snapshotManifestSha256: gate.snapshotManifestSha256,
+  };
+}
+
+function sameGenerationAuthorization(
+  left: DeckCandidateMarker["generationAuthorization"],
+  right: DeckCandidateMarker["generationAuthorization"],
+): boolean {
+  return JSON.stringify(left) === JSON.stringify(right);
+}
+
+async function readDeckCandidate(
+  root: string,
+  candidateId: string,
+  manifest: ProjectManifest,
+): Promise<{ marker: DeckCandidateMarker; markerBytes: Buffer; acceptance: Acceptance }> {
+  if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(candidateId)) {
+    throw new Error("candidate identity is invalid");
+  }
+  const candidatePath = `output/candidates/${candidateId}`;
+  const candidateRoot = join(root, ...candidatePath.split("/"));
+  await requireExactRegularFiles(candidateRoot, [
+    ".superppt-candidate.json",
+    "acceptance.json",
+    "deck.pdf",
+    "deck.pptx",
+    "montage.jpg",
+  ], "deck candidate");
+  const markerBytes = await readOwnedRegularFile(root, `${candidatePath}/.superppt-candidate.json`);
+  let marker: DeckCandidateMarker;
+  try {
+    marker = DeckCandidateMarkerSchema.parse(JSON.parse(markerBytes.toString("utf8")));
+  } catch (error: unknown) {
+    throw new Error("candidate marker is invalid", { cause: error });
+  }
+  if (
+    marker.candidateId !== candidateId
+    || marker.projectId !== manifest.projectId
+    || marker.projectRevisionId !== manifest.currentRevision.id
+    || marker.revisionNumber !== deckRevisionNumber(manifest)
+    || marker.projectBindingSha256 !== projectBinding(manifest)
+    || !sameGenerationAuthorization(marker.generationAuthorization, currentGenerationAuthorization(manifest))
+  ) throw new Error("candidate is stale or does not match the current project revision");
+  const refs = candidateArtifactRefs(candidateId);
+  for (const kind of Object.keys(refs) as Array<keyof OutputArtifacts>) {
+    const artifact = marker.artifacts[kind];
+    if (artifact.path !== refs[kind] || artifact.revisionId !== marker.projectRevisionId) {
+      throw new Error("candidate artifact identity is invalid");
+    }
+    const bytes = await readOwnedRegularFile(root, artifact.path);
+    if (sha256Evidence(bytes) !== artifact.sha256) throw new Error("candidate artifact hash mismatch");
+  }
+  const prepared = await projectPages(root, manifest);
+  if (
+    prepared.providerId !== marker.providerId
+    || JSON.stringify(prepared.records.map(({ id, order, mode, path, sha256 }) => ({ id, order, mode, path, sha256 })))
+      !== JSON.stringify(marker.slides)
+  ) throw new Error("candidate slide binding is invalid");
+  const renders = await validateFinalRenders(prepared.pages);
+  await verifyOutputs(renders, {
+    pptx: join(root, ...marker.artifacts.pptx.path.split("/")),
+    pdf: join(root, ...marker.artifacts.pdf.path.split("/")),
+    montage: join(root, ...marker.artifacts.montage.path.split("/")),
+  });
+  const acceptance = AcceptanceSchema.parse(JSON.parse(
+    (await readOwnedRegularFile(root, marker.artifacts.acceptance.path)).toString("utf8"),
+  ));
+  if (
+    acceptance.projectId !== marker.projectId
+    || acceptance.revisionId !== marker.projectRevisionId
+    || JSON.stringify(acceptance.candidateReview) !== JSON.stringify({
+      candidateId,
+      projectRevisionId: marker.projectRevisionId,
+      projectBindingSha256: marker.projectBindingSha256,
+    })
+    || JSON.stringify(acceptance.exports) !== JSON.stringify({
+      pptx: { path: refs.pptx, sha256: marker.artifacts.pptx.sha256 },
+      pdf: { path: refs.pdf, sha256: marker.artifacts.pdf.sha256 },
+      montage: { path: refs.montage, sha256: marker.artifacts.montage.sha256 },
+    })
+  ) throw new Error("candidate acceptance evidence is invalid");
+  return { marker, markerBytes, acceptance };
+}
+
+async function writeReplacementBytes(path: string, bytes: Buffer): Promise<void> {
+  const staging = `${path}.${randomUUID()}.staging`;
+  await writeDurableExclusive(staging, bytes);
+  await rename(staging, path);
+  await syncDirectory(dirname(path));
+}
+
+export async function assembleProjectCandidate(
+  projectRoot: string,
+  operations: AssembleProjectOperations = {},
+): Promise<AssembleProjectCandidateResult> {
+  return withProjectLease(projectRoot, "assembly", async (root) => {
+    const manifest = await readProject(root);
+    if (!await assertGateCurrent(root, "generation-authorization")) {
+      throw new Error("current generation-authorization gate is required before candidate assembly");
+    }
+    const authorization = currentGenerationAuthorization(manifest);
+    const gates = await gatesForRevision(root, manifest);
+    if (!gates.current) throw new Error("all three planning gates must be current");
+    const prepared = await projectPages(root, manifest);
+    const ordered = await validateFinalRenders(prepared.pages, { afterRenderOpened: operations.afterRenderOpened });
+    const candidateId = randomUUID();
+    const candidatePath = `output/candidates/${candidateId}`;
+    const refs = candidateArtifactRefs(candidateId);
+    const candidatesRoot = await ensureOwnedDirectory(root, "output/candidates");
+    const staging = join(candidatesRoot, `.${candidateId}.staging`);
+    await mkdir(staging, { mode: 0o700 });
+    const paths = {
+      pptx: join(staging, "deck.pptx"),
+      pdf: join(staging, "deck.pdf"),
+      montage: join(staging, "montage.jpg"),
+    };
+    await (operations.buildOutputs ?? defaultBuildOutputs)(ordered, paths);
+    await verifyOutputs(ordered, paths);
+    const markerBase = {
+      markerVersion: 1 as const,
+      appId: "superppt" as const,
+      artifactKind: "image-deck" as const,
+      projectId: manifest.projectId,
+      revisionId: manifest.currentRevision.id,
+      revisionNumber: deckRevisionNumber(manifest),
+      providerId: prepared.providerId,
+      projectBindingSha256: projectBinding(manifest),
+      slides: prepared.records.sort((left, right) => left.order - right.order).map(({ id, order, mode, path, sha256 }) => ({
+        id, order, mode, path, sha256,
+      })),
+    };
+    const built = await buildOutputArtifacts(root, markerBase, staging, [], {
+      refs,
+      candidateReview: {
+        candidateId,
+        projectRevisionId: manifest.currentRevision.id,
+        projectBindingSha256: markerBase.projectBindingSha256,
+      },
+    });
+    const candidateMarker = DeckCandidateMarkerSchema.parse({
+      markerVersion: 1,
+      appId: "superppt",
+      artifactKind: "deck-candidate",
+      candidateId,
+      projectId: manifest.projectId,
+      projectRevisionId: manifest.currentRevision.id,
+      revisionNumber: markerBase.revisionNumber,
+      providerId: markerBase.providerId,
+      projectBindingSha256: markerBase.projectBindingSha256,
+      generationAuthorization: authorization,
+      slides: markerBase.slides,
+      artifacts: built.artifacts,
+      createdAt: new Date().toISOString(),
+    });
+    await writeDurableExclusive(join(staging, ".superppt-candidate.json"), `${JSON.stringify(candidateMarker, null, 2)}\n`);
+    await syncDirectory(staging);
+    await syncDirectory(candidatesRoot);
+    await operations.checkpoint?.("outputs-built");
+    await operations.beforePromote?.();
+    const current = await readProject(root);
+    if (
+      JSON.stringify(current) !== JSON.stringify(manifest)
+      || !await assertGateCurrent(root, "generation-authorization")
+    ) throw new Error("project revision or generation authorization changed during candidate assembly");
+    const destination = join(root, ...candidatePath.split("/"));
+    await promoteExclusive(staging, destination);
+    await syncDirectory(candidatesRoot);
+    return { candidateId, destination, artifacts: built.artifacts };
+  });
+}
+
+function verifiedDeckReviewDescriptor(bytes: Buffer): DeckReviewDescriptor {
+  let descriptor: DeckReviewDescriptor;
+  try {
+    descriptor = DeckReviewDescriptorSchema.parse(JSON.parse(bytes.toString("utf8")));
+  } catch (error: unknown) {
+    throw new Error("deck-review descriptor is invalid", { cause: error });
+  }
+  const { descriptorSha256, ...base } = descriptor;
+  if (descriptorSha256 !== sha256Evidence(JSON.stringify(base))) {
+    throw new Error("deck-review descriptor integrity check failed");
+  }
+  return descriptor;
+}
+
+export async function publishDeckReview(root: string, candidateId: string): Promise<DeckReviewDescriptor> {
+  return withPlanningLock(root, async (canonicalRoot) => {
+    const manifest = await readProject(canonicalRoot);
+    if (!await assertGateCurrent(canonicalRoot, "generation-authorization")) {
+      throw new Error("current generation-authorization gate is required before deck review");
+    }
+    const candidate = await readDeckCandidate(canonicalRoot, candidateId, manifest);
+    const candidatePath = `output/candidates/${candidateId}`;
+    const currentRoot = await ensureOwnedDirectory(canonicalRoot, "output/candidates/current");
+    const existing = await readdir(currentRoot, { withFileTypes: true });
+    if (existing.some((entry) => !["montage.jpg", "review.json"].includes(entry.name)
+      || !entry.isFile() || entry.isSymbolicLink())) {
+      throw new Error("deck-review publication directory is unsafe");
+    }
+    const descriptor = DeckReviewDescriptorSchema.parse(addDescriptorIntegrity({
+      schemaVersion: 1 as const,
+      kind: "deck-review" as const,
+      candidateId,
+      projectId: manifest.projectId,
+      projectRevisionId: manifest.currentRevision.id,
+      deckRevision: candidate.marker.revisionNumber,
+      candidatePath,
+      candidateMarkerSha256: sha256Evidence(candidate.markerBytes),
+      projectBindingSha256: candidate.marker.projectBindingSha256,
+      generationAuthorization: candidate.marker.generationAuthorization,
+      artifacts: Object.fromEntries((Object.keys(candidate.marker.artifacts) as Array<keyof OutputArtifacts>).map((kind) => [kind, {
+        path: candidate.marker.artifacts[kind].path,
+        sha256: candidate.marker.artifacts[kind].sha256,
+      }])),
+      actions: ["edit-page", "return-upstream", "confirm-delivery"] as const,
+      confirmation: { action: "confirm-delivery" as const, gate: "deck-review" as const },
+      createdAt: new Date().toISOString(),
+    }));
+    const montage = await readOwnedRegularFile(canonicalRoot, candidate.marker.artifacts.montage.path);
+    if (sha256Evidence(montage) !== candidate.marker.artifacts.montage.sha256) {
+      throw new Error("candidate montage changed during deck-review publication");
+    }
+    const review = Buffer.from(`${JSON.stringify(descriptor, null, 2)}\n`);
+    await writeReplacementBytes(join(currentRoot, "montage.jpg"), montage);
+    await writeReplacementBytes(join(currentRoot, "review.json"), review);
+    await updateProject(canonicalRoot, (current) => {
+      if (JSON.stringify(current) !== JSON.stringify(manifest)) {
+        throw new Error("project revision changed during deck-review publication");
+      }
+      return { ...current, stage: "deck-review" };
+    });
+    verifiedDeckReviewDescriptor(await readOwnedRegularFile(canonicalRoot, "output/candidates/current/review.json"));
+    return descriptor;
+  });
+}
+
+export async function promoteApprovedCandidate(
+  projectRoot: string,
+  candidateId: string,
+  operations: CandidatePromotionOperations = {},
+): Promise<AssembleProjectResult> {
+  return withProjectLease(projectRoot, "assembly", async (root) => {
+    const manifest = await readProject(root);
+    const reviewBytes = await readOwnedRegularFile(root, "output/candidates/current/review.json");
+    const review = verifiedDeckReviewDescriptor(reviewBytes);
+    if (review.candidateId !== candidateId) throw new Error("candidate is not the current deck-review presentation");
+    if (!await assertGateCurrent(root, "deck-review")) {
+      throw new Error("current deck-review approval is required before candidate promotion");
+    }
+    const approved = [...manifest.gates].reverse().find((gate) => gate.gate === "deck-review");
+    if (
+      !approved?.presentation
+      || approved.presentation.kind !== "deck-review"
+      || approved.presentation.descriptorSha256 !== sha256Evidence(reviewBytes)
+    ) throw new Error("deck-review approval does not bind the current candidate");
+    const candidate = await readDeckCandidate(root, candidateId, manifest);
+    if (
+      review.projectId !== manifest.projectId
+      || review.projectRevisionId !== manifest.currentRevision.id
+      || review.deckRevision !== candidate.marker.revisionNumber
+      || review.candidatePath !== `output/candidates/${candidateId}`
+      || review.candidateMarkerSha256 !== sha256Evidence(candidate.markerBytes)
+      || review.projectBindingSha256 !== candidate.marker.projectBindingSha256
+      || !sameGenerationAuthorization(review.generationAuthorization, candidate.marker.generationAuthorization)
+      || JSON.stringify(review.artifacts) !== JSON.stringify(Object.fromEntries(
+        (Object.keys(candidate.marker.artifacts) as Array<keyof OutputArtifacts>).map((kind) => [kind, {
+          path: candidate.marker.artifacts[kind].path,
+          sha256: candidate.marker.artifacts[kind].sha256,
+        }]),
+      ))
+    ) throw new Error("deck-review descriptor does not bind the exact candidate");
+
+    const revisionsRoot = await ensureOwnedDirectory(root, "output/revisions");
+    const destination = join(revisionsRoot, String(candidate.marker.revisionNumber));
+    const expectedMarker = {
+      markerVersion: 1 as const,
+      appId: "superppt" as const,
+      artifactKind: "image-deck" as const,
+      candidateId,
+      projectId: candidate.marker.projectId,
+      revisionId: candidate.marker.projectRevisionId,
+      revisionNumber: candidate.marker.revisionNumber,
+      providerId: candidate.marker.providerId,
+      projectBindingSha256: candidate.marker.projectBindingSha256,
+      slides: candidate.marker.slides,
+    };
+    try {
+      await lstat(destination);
+      const recovered = await validateOwnedOutput(root, destination, expectedMarker, manifest);
+      if (Object.values(manifest.exports).some((artifact) => artifact !== null)) {
+        throw new Error("candidate promotion is a replay; formal revision already exists");
+      }
+      await publishOutputManifest(root, candidate.marker.projectRevisionId, recovered);
+      await operations.checkpoint?.("manifest-updated");
+      return {
+        projectId: candidate.marker.projectId,
+        revisionId: candidate.marker.projectRevisionId,
+        revisionNumber: candidate.marker.revisionNumber,
+        destination,
+        recovered: true,
+        artifacts: recovered.artifacts,
+      };
+    } catch (error: unknown) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+    }
+    const staging = join(revisionsRoot, `.staging-${candidateId}-${randomUUID()}`);
+    await mkdir(staging, { mode: 0o700 });
+    for (const [kind, name] of [["pptx", "deck.pptx"], ["pdf", "deck.pdf"], ["montage", "montage.jpg"]] as const) {
+      const bytes = await readOwnedRegularFile(root, candidate.marker.artifacts[kind].path);
+      if (sha256Evidence(bytes) !== candidate.marker.artifacts[kind].sha256) {
+        throw new Error("candidate artifact changed during promotion");
+      }
+      await writeDurableExclusive(join(staging, name), bytes);
+    }
+    const refs = canonicalArtifactRefs(candidate.marker.revisionNumber);
+    const acceptance = AcceptanceSchema.parse({
+      ...candidate.acceptance,
+      exports: {
+        pptx: { ...candidate.acceptance.exports.pptx, path: refs.pptx },
+        pdf: { ...candidate.acceptance.exports.pdf, path: refs.pdf },
+        montage: { ...candidate.acceptance.exports.montage, path: refs.montage },
+      },
+    });
+    await writeDurableExclusive(join(staging, "acceptance.json"), `${JSON.stringify(acceptance, null, 2)}\n`);
+    const evidence = async (kind: keyof OutputArtifacts, name: string): Promise<Artifact> => ({
+      path: refs[kind],
+      sha256: sha256Evidence(await readRegularFileNoFollow(join(staging, name))),
+      revisionId: candidate.marker.projectRevisionId,
+    });
+    const artifacts: OutputArtifacts = {
+      pptx: await evidence("pptx", "deck.pptx"),
+      pdf: await evidence("pdf", "deck.pdf"),
+      montage: await evidence("montage", "montage.jpg"),
+      acceptance: await evidence("acceptance", "acceptance.json"),
+    };
+    const marker = OutputMarkerSchema.parse({
+      ...expectedMarker,
+      artifacts,
+    });
+    await writeDurableExclusive(join(staging, ".superppt-output.json"), `${JSON.stringify(marker, null, 2)}\n`);
+    await syncDirectory(staging);
+    await syncDirectory(revisionsRoot);
+    const current = await readProject(root);
+    if (
+      JSON.stringify(current) !== JSON.stringify(manifest)
+      || !await assertGateCurrent(root, "deck-review")
+    ) throw new Error("project revision or deck-review approval changed during promotion");
+    await promoteExclusive(staging, destination);
+    await syncDirectory(revisionsRoot);
+    await operations.checkpoint?.("output-promoted");
+    const verified = await validateOwnedOutput(root, destination, expectedMarker);
+    await publishOutputManifest(root, marker.revisionId, verified);
+    await operations.checkpoint?.("manifest-updated");
+    return {
+      projectId: marker.projectId,
+      revisionId: marker.revisionId,
+      revisionNumber: marker.revisionNumber,
+      destination,
+      recovered: false,
+      artifacts: verified.artifacts,
     };
   });
 }
