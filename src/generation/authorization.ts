@@ -10,7 +10,7 @@ import { AiImageSkillDependencySchema } from "../dependencies/schemas.js";
 import { assertGateCurrent } from "../planning/confirm.js";
 import { loadValidatedPlan } from "../planning/load.js";
 import { SlideSpecSchema } from "../planning/schemas.js";
-import { validateExecutionGateEvidence } from "../project/evidence.js";
+import { validateExecutionGateEvidence, validateOrdinaryGateEvidence } from "../project/evidence.js";
 import { withProjectLease } from "../project/lock.js";
 import { readOwnedRegularFile, readRegularFileNoFollow } from "../project/safe-file.js";
 import { readProject } from "../project/store.js";
@@ -453,6 +453,7 @@ export async function assertAuthorizedJobBinding(root: string, job: ImageGenerat
   const plan = GenerationAuthorizationPlanSchema.parse(job.authorizationPlan);
   const digest = sha256(canonicalContractFile(plan));
   if (job.authorizationDigest !== digest) throw new Error("image generation job authorization snapshot is invalid");
+  await assertJobAuthorizationGate(root, job, plan, digest, manifest);
   if (
     job.projectId !== plan.projectId
     || job.projectRevisionId !== plan.projectRevisionId
@@ -483,6 +484,38 @@ export async function assertAuthorizedJobBinding(root: string, job: ImageGenerat
       await assertPreviousPromptPublished(root, page.slideId, original.promptSha256, digest);
     }
   }
+}
+
+async function assertJobAuthorizationGate(
+  root: string,
+  job: ImageGenerationJob,
+  plan: GenerationAuthorizationPlan,
+  digest: string,
+  manifest: Awaited<ReturnType<typeof readProject>>,
+): Promise<void> {
+  const expectedGate = job.kind === "style-sample" ? "style-sample-generation" : "generation-authorization";
+  const binding = job.authorizationGate;
+  if (binding.gate !== expectedGate || binding.authorizationPlanSha256 !== digest) {
+    throw new Error("image generation job authorization gate binding is invalid");
+  }
+  const gate = manifest.gates.find((candidate) => candidate.approvalId === binding.approvalId);
+  if (
+    !gate
+    || gate.gate !== expectedGate
+    || gate.revisionId !== job.projectRevisionId
+    || gate.snapshotPath !== binding.snapshotPath
+    || gate.snapshotManifestSha256 !== binding.snapshotManifestSha256
+  ) throw new Error("image generation job authorization gate evidence is unavailable");
+  const planPath = job.kind === "style-sample" ? SAMPLE_PLAN_PATH : DECK_PLAN_PATH;
+  const evidence = expectedGate === "style-sample-generation"
+    ? await validateExecutionGateEvidence(root, manifest, gate)
+    : await validateOrdinaryGateEvidence(root, manifest, gate);
+  const bytes = evidence.artifacts[planPath];
+  if (!bytes || sha256(bytes) !== binding.authorizationPlanSha256) {
+    throw new Error("image generation job authorization gate artifact changed");
+  }
+  const evidencePlan = parsePlan(bytes, "immutable generation authorization gate artifact");
+  if (!sameJson(evidencePlan, plan)) throw new Error("image generation job authorization does not match its gate evidence");
 }
 
 export async function assertSealedJobInputs(root: string, job: ImageGenerationJob): Promise<void> {
@@ -604,10 +637,19 @@ async function assertSerialDeckAdmission(
   const next = job.pages.find(({ slideId }) => !accepted.has(slideId));
   if (!next) throw new Error("serial delegated deck has no unresolved page to admit");
   const expectedOrdinal = next.order + 1;
-  if (request.requestOrdinal !== 1 && request.requestOrdinal !== expectedOrdinal) {
+  if (request.requestOrdinal !== expectedOrdinal) {
     throw new Error("serial delegated deck call ordinal is non-monotonic");
   }
   const states = callStates(ledger);
+  if (result?.pages.some((page) => page.slideId === next.slideId && page.attempt === next.attempt)) {
+    throw new Error("serial delegated deck page already has a terminal result");
+  }
+  if ([...states.values()].some((state) =>
+    state.admission.jobId === job.jobId
+    && state.admission.slideId === next.slideId
+    && state.admission.attempt === next.attempt
+    && state.terminal
+  )) throw new Error("serial delegated deck page already has a terminal call");
   const priorInFlight = job.pages
     .slice(0, job.pages.findIndex(({ slideId }) => slideId === next.slideId))
     .some((page) => [...states.values()].some((state) =>
@@ -757,7 +799,9 @@ export async function executeAuthorizedGenerationCall<T>(
         remaining: before.remaining,
       };
     }
+    await assertCurrentAdmissionAuthorization(canonicalRoot, job);
     if (before.remaining === 0) throw new Error("generation call budget is exhausted");
+    await assertSerialDeckAdmission(canonicalRoot, request, job, ledger);
 
     const admission = CallLedgerEntrySchema.parse({
       ...request,
@@ -814,5 +858,29 @@ export async function authorizationCallBudget(
 }
 
 export async function authorizationForPreparation(root: string, kind: ImageJobKind) {
-  return readCurrentAuthorizedPlan(root, kind);
+  const authorization = await readCurrentAuthorizedPlan(root, kind);
+  const manifest = await readProject(root);
+  const expectedGate = kind === "style-sample" ? "style-sample-generation" : "generation-authorization";
+  const gate = [...manifest.gates].reverse().find((candidate) => candidate.gate === expectedGate
+    && candidate.revisionId === manifest.currentRevision.id);
+  if (!gate?.approvalId || !gate.snapshotPath || !gate.snapshotManifestSha256) {
+    throw new Error("current generation authorization gate evidence is unavailable");
+  }
+  const planPath = kind === "style-sample" ? SAMPLE_PLAN_PATH : DECK_PLAN_PATH;
+  const evidence = expectedGate === "style-sample-generation"
+    ? await validateExecutionGateEvidence(root, manifest, gate)
+    : await validateOrdinaryGateEvidence(root, manifest, gate);
+  if (sha256(evidence.artifacts[planPath] ?? Buffer.alloc(0)) !== authorization.digest) {
+    throw new Error("current generation authorization gate artifact is stale");
+  }
+  return {
+    ...authorization,
+    gate: {
+      gate: expectedGate,
+      approvalId: gate.approvalId,
+      snapshotPath: gate.snapshotPath,
+      snapshotManifestSha256: gate.snapshotManifestSha256,
+      authorizationPlanSha256: authorization.digest,
+    },
+  };
 }

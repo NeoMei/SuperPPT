@@ -479,6 +479,7 @@ export async function prepareImageGenerationJob(
       projectRevisionId: manifest.currentRevision.id,
       authorizationDigest: authorization.digest,
       authorizationPlan: authorization.plan,
+      authorizationGate: authorization.gate,
       routePolicy: "ai-image-to-ppt-default",
       aiSkill: dependencyBinding(ai),
       styleLockPath: "style/lock.json",
