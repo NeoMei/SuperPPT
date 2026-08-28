@@ -1,7 +1,9 @@
+import { execFile } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import { fsyncSync } from "node:fs";
 import { lstat, realpath } from "node:fs/promises";
 import { join, relative, sep } from "node:path";
+import { promisify } from "node:util";
 
 import type { AiImageSkillDependency } from "../dependencies/schemas.js";
 import { AiImageSkillDependencySchema } from "../dependencies/schemas.js";
@@ -17,10 +19,12 @@ import { readApprovedStyleLock, readStyleLock, type LockedStyle } from "../style
 import { openGenerationDirectory } from "./anchored-dir.js";
 import {
   CallLedgerEntrySchema,
+  GenerationCallTupleSchema,
   GenerationAuthorizationPlanSchema,
   ImageGenerationJobSchema,
   canonicalContractFile,
   type CallLedgerEntry,
+  type GenerationCallTuple,
   type GenerationAuthorizationPlan,
   type ImageGenerationJob,
   type ImageJobKind,
@@ -30,14 +34,23 @@ import { appendPrivateInputLine } from "./private-input.js";
 const DECK_PLAN_PATH = "generation/authorization-plan.json";
 const SAMPLE_PLAN_PATH = "style/sample/generation-plan.json";
 const CALL_LEDGER_PATH = "generation/call-ledger.jsonl";
+const execFileAsync = promisify(execFile);
+
+const REQUIRED_AI_SCRIPTS = {
+  generationResult: "generation_result.py",
+  hostRoutingPolicy: "host_routing_policy.py",
+  importHostImage: "import_host_image.py",
+  prepareEditableInput: "prepare_editable_input.py",
+} as const;
 
 type PlanPublicationRequest = {
   aiDependency: AiImageSkillDependency;
   callBudget: number;
 };
 
-export type GenerationCallRecord = Omit<CallLedgerEntry, "recordedAt"> & { recordedAt?: string };
-export type CallBudgetState = { recorded: boolean; consumed: number; remaining: number };
+export type GenerationExecutionResult<T> =
+  | { executed: true; outcome: "success"; value: T; consumed: number; remaining: number }
+  | { executed: false; outcome: "in-flight" | "success" | "failed"; consumed: number; remaining: number };
 
 function sha256(value: string | Buffer): string {
   return createHash("sha256").update(value).digest("hex");
@@ -48,7 +61,44 @@ function sameJson(left: unknown, right: unknown): boolean {
 }
 
 function aiSkillBinding(ai: AiImageSkillDependency): ImageGenerationJob["aiSkill"] {
-  return { root: ai.root, skillSha256: ai.skillSha256, gitRevision: ai.gitRevision };
+  return {
+    root: ai.root,
+    skillSha256: ai.skillSha256,
+    gitRevision: ai.gitRevision,
+    scripts: {
+      generationResult: { path: ai.scripts.generationResult, sha256: ai.scriptSha256.generationResult },
+      hostRoutingPolicy: { path: ai.scripts.hostRoutingPolicy, sha256: ai.scriptSha256.hostRoutingPolicy },
+      importHostImage: { path: ai.scripts.importHostImage, sha256: ai.scriptSha256.importHostImage },
+      prepareEditableInput: { path: ai.scripts.prepareEditableInput, sha256: ai.scriptSha256.prepareEditableInput },
+    },
+  };
+}
+
+async function assertPhysicalFileIdentity(root: string, path: string, expectedSha256: string): Promise<void> {
+  const relation = relative(root, path);
+  if (!relation || relation === ".." || relation.startsWith(`..${sep}`)) {
+    throw new Error("ai-image-to-ppt Skill identity changed");
+  }
+  const info = await lstat(path).catch((error: unknown) => {
+    throw new Error("ai-image-to-ppt Skill identity changed", { cause: error });
+  });
+  if (info.isSymbolicLink() || !info.isFile() || await realpath(path) !== path) {
+    throw new Error("ai-image-to-ppt Skill identity changed");
+  }
+  if (sha256(await readRegularFileNoFollow(path)) !== expectedSha256) {
+    throw new Error("ai-image-to-ppt Skill identity changed");
+  }
+}
+
+async function assertGitRevisionCurrent(root: string, expected: string | null): Promise<void> {
+  if (expected === null) return;
+  let current: string;
+  try {
+    current = (await execFileAsync("git", ["-C", root, "rev-parse", "HEAD"])).stdout.trim();
+  } catch (error: unknown) {
+    throw new Error("ai-image-to-ppt Skill Git revision changed", { cause: error });
+  }
+  if (current !== expected) throw new Error("ai-image-to-ppt Skill Git revision changed");
 }
 
 export async function assertAiImageSkillDependencyCurrent(raw: AiImageSkillDependency): Promise<AiImageSkillDependency> {
@@ -62,13 +112,15 @@ export async function assertAiImageSkillDependencyCurrent(raw: AiImageSkillDepen
   if (ai.skillFile !== join(ai.root, "SKILL.md")) throw new Error("ai-image-to-ppt Skill identity changed");
   const skillBytes = await readRegularFileNoFollow(ai.skillFile);
   if (sha256(skillBytes) !== ai.skillSha256) throw new Error("ai-image-to-ppt Skill identity changed");
-  for (const script of Object.values(ai.scripts)) {
-    const relation = relative(ai.root, script);
-    if (!relation || relation === ".." || relation.startsWith(`..${sep}`) || await realpath(script) !== script) {
-      throw new Error("ai-image-to-ppt Skill identity changed");
-    }
-    await readRegularFileNoFollow(script);
+  for (const [name, filename] of Object.entries(REQUIRED_AI_SCRIPTS) as Array<[
+    keyof typeof REQUIRED_AI_SCRIPTS,
+    string,
+  ]>) {
+    const script = ai.scripts[name];
+    if (script !== join(ai.root, "scripts", filename)) throw new Error("ai-image-to-ppt Skill identity changed");
+    await assertPhysicalFileIdentity(ai.root, script, ai.scriptSha256[name]);
   }
+  await assertGitRevisionCurrent(ai.root, ai.gitRevision);
   return ai;
 }
 
@@ -83,6 +135,15 @@ async function assertAiSkillBindingCurrent(binding: ImageGenerationJob["aiSkill"
   if (sha256(await readRegularFileNoFollow(skillFile)) !== binding.skillSha256) {
     throw new Error("ai-image-to-ppt Skill identity changed");
   }
+  for (const [name, filename] of Object.entries(REQUIRED_AI_SCRIPTS) as Array<[
+    keyof typeof REQUIRED_AI_SCRIPTS,
+    string,
+  ]>) {
+    const script = binding.scripts[name];
+    if (script.path !== join(binding.root, "scripts", filename)) throw new Error("ai-image-to-ppt Skill identity changed");
+    await assertPhysicalFileIdentity(binding.root, script.path, script.sha256);
+  }
+  await assertGitRevisionCurrent(binding.root, binding.gitRevision);
 }
 
 async function requirePlanningGates(root: string, includeStyleSample: boolean): Promise<void> {
@@ -408,6 +469,9 @@ export async function assertAuthorizedJobBinding(root: string, job: ImageGenerat
       if (!original || original.promptSha256 === page.promptSha256) {
         throw new Error("page-regeneration requires a new prompt hash");
       }
+      if (original.order !== page.order) {
+        throw new Error("page-regeneration order does not match deck authorization");
+      }
       await assertPreviousPromptPublished(root, page.slideId, original.promptSha256, digest);
     }
   }
@@ -432,7 +496,7 @@ export async function readCallLedger(root: string): Promise<CallLedgerEntry[]> {
   }
   const text = bytes.toString("utf8");
   if (!text.endsWith("\n")) throw new Error("generation call ledger is not complete JSONL");
-  return text.slice(0, -1).split("\n").map((line, index) => {
+  const ledger = text.slice(0, -1).split("\n").map((line, index) => {
     try {
       const entry = CallLedgerEntrySchema.parse(JSON.parse(line));
       if (line !== JSON.stringify(entry)) throw new Error("non-canonical ledger line");
@@ -441,67 +505,108 @@ export async function readCallLedger(root: string): Promise<CallLedgerEntry[]> {
       throw new Error(`generation call ledger entry ${index + 1} is invalid`, { cause: error });
     }
   });
+  callStates(ledger);
+  return ledger;
+}
+
+type CallState = {
+  admission: Extract<CallLedgerEntry, { entryKind: "admission" }>;
+  terminal?: Extract<CallLedgerEntry, { entryKind: "terminal" }>;
+};
+
+function tupleKey(tuple: GenerationCallTuple): string {
+  return `${tuple.jobId}\u0000${tuple.slideId}\u0000${tuple.attempt}\u0000${tuple.requestOrdinal}`;
+}
+
+function callStates(ledger: CallLedgerEntry[]): Map<string, CallState> {
+  const states = new Map<string, CallState>();
+  for (const entry of ledger) {
+    const key = tupleKey(entry);
+    const state = states.get(key);
+    if (entry.entryKind === "admission") {
+      if (state) throw new Error("generation call ledger has a conflicting duplicate admission");
+      states.set(key, { admission: entry });
+    } else {
+      if (!state) throw new Error("generation call ledger has a terminal entry without an admission");
+      if (state.terminal) throw new Error("generation call ledger has a conflicting duplicate terminal entry");
+      state.terminal = entry;
+    }
+  }
+  return states;
 }
 
 async function callBudgetForDigest(root: string, digest: string, budget: number): Promise<{ consumed: number; remaining: number }> {
   const ledger = await readCallLedger(root);
   const jobDigests = new Map<string, string>();
-  for (const entry of ledger) {
+  const admissions = ledger.filter((entry): entry is Extract<CallLedgerEntry, { entryKind: "admission" }> =>
+    entry.entryKind === "admission"
+  );
+  for (const entry of admissions) {
     if (!jobDigests.has(entry.jobId)) jobDigests.set(entry.jobId, (await readJob(root, entry.jobId)).authorizationDigest);
   }
-  const consumed = ledger.filter(({ jobId }) => jobDigests.get(jobId) === digest).length;
+  const consumed = admissions.filter(({ jobId }) => jobDigests.get(jobId) === digest).length;
   if (consumed > budget) throw new Error("generation call ledger exceeds its authorized budget");
   return { consumed, remaining: budget - consumed };
 }
 
-export async function recordGenerationCall(root: string, raw: GenerationCallRecord): Promise<CallBudgetState> {
+export async function executeAuthorizedGenerationCall<T>(
+  root: string,
+  raw: GenerationCallTuple,
+  callback: () => Promise<T> | T,
+  operations: { afterAdmission?: () => Promise<void> | void } = {},
+): Promise<GenerationExecutionResult<T>> {
   return withProjectLease(root, "generation", async (canonicalRoot) => {
-    const entry = CallLedgerEntrySchema.parse({ ...raw, recordedAt: raw.recordedAt ?? new Date().toISOString() });
-    const job = await readJob(canonicalRoot, entry.jobId);
-    await assertAuthorizedJobBinding(canonicalRoot, job);
-    const page = job.pages.find(({ slideId }) => slideId === entry.slideId);
-    if (!page || page.attempt !== entry.attempt) throw new Error("generation call tuple is not declared by the immutable job");
-    const ledger = await readCallLedger(canonicalRoot);
-    const duplicate = ledger.find((candidate) =>
-      candidate.jobId === entry.jobId
-      && candidate.slideId === entry.slideId
-      && candidate.attempt === entry.attempt
-      && candidate.requestOrdinal === entry.requestOrdinal
-    );
-    const before = await callBudgetForDigest(canonicalRoot, job.authorizationDigest, job.callBudget);
-    if (duplicate) {
-      if (duplicate.outcome !== entry.outcome) throw new Error("duplicate generation call tuple has a conflicting outcome");
-      return { recorded: false, consumed: before.consumed, remaining: before.remaining };
-    }
-    if (before.remaining === 0) throw new Error("generation call budget is exhausted");
-    appendPrivateInputLine(join(canonicalRoot, CALL_LEDGER_PATH), JSON.stringify(entry));
-    return { recorded: true, consumed: before.consumed + 1, remaining: before.remaining - 1 };
-  });
-}
-
-export async function assertGenerationCallAuthorized(root: string, request: {
-  jobId: string;
-  slideId: string;
-  attempt: number;
-  requestOrdinal: number;
-}): Promise<{ duplicate: boolean; remaining: number }> {
-  return withProjectLease(root, "generation", async (canonicalRoot) => {
+    const request = GenerationCallTupleSchema.parse(raw);
     const job = await readJob(canonicalRoot, request.jobId);
     await assertAuthorizedJobBinding(canonicalRoot, job);
     const page = job.pages.find(({ slideId }) => slideId === request.slideId);
-    if (!page || page.attempt !== request.attempt || !Number.isInteger(request.requestOrdinal) || request.requestOrdinal < 0) {
+    if (!page || page.attempt !== request.attempt) {
       throw new Error("generation call tuple is not declared by the immutable job");
     }
     const ledger = await readCallLedger(canonicalRoot);
-    const duplicate = ledger.some((candidate) =>
-      candidate.jobId === request.jobId
-      && candidate.slideId === request.slideId
-      && candidate.attempt === request.attempt
-      && candidate.requestOrdinal === request.requestOrdinal
-    );
-    const budget = await callBudgetForDigest(canonicalRoot, job.authorizationDigest, job.callBudget);
-    if (!duplicate && budget.remaining === 0) throw new Error("generation call budget is exhausted");
-    return { duplicate, remaining: budget.remaining };
+    const existing = callStates(ledger).get(tupleKey(request));
+    const before = await callBudgetForDigest(canonicalRoot, job.authorizationDigest, job.callBudget);
+    if (existing) {
+      return {
+        executed: false,
+        outcome: existing.terminal?.outcome ?? "in-flight",
+        consumed: before.consumed,
+        remaining: before.remaining,
+      };
+    }
+    if (before.remaining === 0) throw new Error("generation call budget is exhausted");
+
+    const admission = CallLedgerEntrySchema.parse({
+      ...request,
+      entryKind: "admission",
+      outcome: "in-flight",
+      recordedAt: new Date().toISOString(),
+    });
+    appendPrivateInputLine(join(canonicalRoot, CALL_LEDGER_PATH), JSON.stringify(admission));
+    const admitted = { consumed: before.consumed + 1, remaining: before.remaining - 1 };
+    await operations.afterAdmission?.();
+
+    let value: T;
+    try {
+      value = await callback();
+    } catch (error: unknown) {
+      const terminal = CallLedgerEntrySchema.parse({
+        ...request,
+        entryKind: "terminal",
+        outcome: "failed",
+        recordedAt: new Date().toISOString(),
+      });
+      appendPrivateInputLine(join(canonicalRoot, CALL_LEDGER_PATH), JSON.stringify(terminal));
+      throw error;
+    }
+    const terminal = CallLedgerEntrySchema.parse({
+      ...request,
+      entryKind: "terminal",
+      outcome: "success",
+      recordedAt: new Date().toISOString(),
+    });
+    appendPrivateInputLine(join(canonicalRoot, CALL_LEDGER_PATH), JSON.stringify(terminal));
+    return { executed: true, outcome: "success", value, ...admitted };
   });
 }
 

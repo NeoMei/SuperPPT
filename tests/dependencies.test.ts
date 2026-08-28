@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import {
   mkdir,
   mkdtemp,
@@ -23,6 +24,7 @@ const requiredScripts = {
   importHostImage: "import_host_image.py",
   prepareEditableInput: "prepare_editable_input.py",
 } as const;
+const requiredScriptBytes = "raise SystemExit('this script must never be executed by dependency resolution')\n";
 
 type Fixture = { root: string; ai: string; editable: string };
 
@@ -36,7 +38,7 @@ async function fixture(t: TestContext, version = "0.1.0"): Promise<Fixture> {
   await writeFile(join(ai, "SKILL.md"), "---\nname: ai-image-to-ppt\n---\n");
   await Promise.all(Object.values(requiredScripts).map((script) => writeFile(
     join(ai, "scripts", script),
-    "raise SystemExit('this script must never be executed by dependency resolution')\n",
+    requiredScriptBytes,
   )));
   await writeFile(join(editable, "package.json"), JSON.stringify({
     name: "image-to-editable-pptx",
@@ -76,6 +78,12 @@ test("resolves exactly the supplied Skill roots without provider discovery", asy
     importHostImage: join(aiRoot, "scripts", "import_host_image.py"),
     prepareEditableInput: join(aiRoot, "scripts", "prepare_editable_input.py"),
   });
+  assert.deepEqual(ai.scriptSha256, Object.fromEntries(
+    Object.keys(requiredScripts).map((name) => [
+      name,
+      createHash("sha256").update(requiredScriptBytes).digest("hex"),
+    ]),
+  ));
   assert.equal(resolved.editable.root, editableRoot);
   assert.equal(resolved.editable.version, "0.1.0");
 });

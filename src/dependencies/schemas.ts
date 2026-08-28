@@ -2,11 +2,18 @@ import { z } from "zod";
 
 export const Sha256Schema = z.string().regex(/^[a-f0-9]{64}$/);
 
-const AiImageSkillScriptsSchema = z.object({
+export const AiImageSkillScriptsSchema = z.object({
   generationResult: z.string().min(1),
   hostRoutingPolicy: z.string().min(1),
   importHostImage: z.string().min(1),
   prepareEditableInput: z.string().min(1),
+}).strict();
+
+export const AiImageSkillScriptHashesSchema = z.object({
+  generationResult: Sha256Schema,
+  hostRoutingPolicy: Sha256Schema,
+  importHostImage: Sha256Schema,
+  prepareEditableInput: Sha256Schema,
 }).strict();
 
 export const AiImageSkillDependencySchema = z.object({
@@ -16,6 +23,7 @@ export const AiImageSkillDependencySchema = z.object({
   skillSha256: Sha256Schema,
   gitRevision: z.string().min(1).nullable(),
   scripts: AiImageSkillScriptsSchema,
+  scriptSha256: AiImageSkillScriptHashesSchema,
 }).strict();
 
 export const ImageToEditablePptxSkillDependencySchema = z.object({

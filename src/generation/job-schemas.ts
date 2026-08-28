@@ -14,7 +14,13 @@ export const ImageJobKindSchema = z.enum([
 const AiSkillBindingSchema = z.object({
   root: z.string().min(1),
   skillSha256: Sha256Schema,
-  gitRevision: z.string().nullable(),
+  gitRevision: z.string().min(1).nullable(),
+  scripts: z.object({
+    generationResult: z.object({ path: z.string().min(1), sha256: Sha256Schema }).strict(),
+    hostRoutingPolicy: z.object({ path: z.string().min(1), sha256: Sha256Schema }).strict(),
+    importHostImage: z.object({ path: z.string().min(1), sha256: Sha256Schema }).strict(),
+    prepareEditableInput: z.object({ path: z.string().min(1), sha256: Sha256Schema }).strict(),
+  }).strict(),
 }).strict();
 
 const OutboundDisclosureSchema = z.object({
@@ -129,14 +135,29 @@ export const ImageGenerationJobSchema = z.object({
   }
 });
 
-export const CallLedgerEntrySchema = z.object({
+export const GenerationCallTupleSchema = z.object({
   jobId: z.string().uuid(),
   slideId: z.string().uuid(),
   attempt: z.number().int().positive(),
   requestOrdinal: z.number().int().nonnegative(),
-  outcome: z.enum(["success", "failed"]),
-  recordedAt: z.string().datetime(),
 }).strict();
+
+const CallLedgerTupleShape = GenerationCallTupleSchema.shape;
+
+export const CallLedgerEntrySchema = z.discriminatedUnion("entryKind", [
+  z.object({
+    ...CallLedgerTupleShape,
+    entryKind: z.literal("admission"),
+    outcome: z.literal("in-flight"),
+    recordedAt: z.string().datetime(),
+  }).strict(),
+  z.object({
+    ...CallLedgerTupleShape,
+    entryKind: z.literal("terminal"),
+    outcome: z.enum(["success", "failed"]),
+    recordedAt: z.string().datetime(),
+  }).strict(),
+]);
 
 function validateOrderedPages(
   pages: ReadonlyArray<{ slideId: string; order: number }>,
@@ -171,4 +192,5 @@ export function canonicalContractFile(value: unknown): string {
 export type ImageJobKind = z.infer<typeof ImageJobKindSchema>;
 export type GenerationAuthorizationPlan = z.infer<typeof GenerationAuthorizationPlanSchema>;
 export type ImageGenerationJob = z.infer<typeof ImageGenerationJobSchema>;
+export type GenerationCallTuple = z.infer<typeof GenerationCallTupleSchema>;
 export type CallLedgerEntry = z.infer<typeof CallLedgerEntrySchema>;

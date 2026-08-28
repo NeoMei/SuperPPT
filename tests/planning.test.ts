@@ -388,6 +388,12 @@ test("generation authorization plan schema binds ordered prompts and a sufficien
       root: "/resolved/ai-image-to-ppt",
       skillSha256: "a".repeat(64),
       gitRevision: null,
+      scripts: {
+        generationResult: { path: "/resolved/ai-image-to-ppt/scripts/generation_result.py", sha256: "c".repeat(64) },
+        hostRoutingPolicy: { path: "/resolved/ai-image-to-ppt/scripts/host_routing_policy.py", sha256: "d".repeat(64) },
+        importHostImage: { path: "/resolved/ai-image-to-ppt/scripts/import_host_image.py", sha256: "e".repeat(64) },
+        prepareEditableInput: { path: "/resolved/ai-image-to-ppt/scripts/prepare_editable_input.py", sha256: "f".repeat(64) },
+      },
     },
     styleLockPath: "style/lock.json" as const,
     styleLockSha256: "b".repeat(64),
@@ -414,6 +420,13 @@ test("generation authorization plan schema binds ordered prompts and a sufficien
   assert.throws(
     () => GenerationAuthorizationPlanSchema.parse({ ...plan, extra: true }),
     /unrecognized/i,
+  );
+  assert.throws(
+    () => GenerationAuthorizationPlanSchema.parse({
+      ...plan,
+      aiSkill: { ...plan.aiSkill, scripts: { ...plan.aiSkill.scripts, generationResult: undefined } },
+    }),
+    /generationResult|required/i,
   );
 });
 

@@ -167,16 +167,21 @@ export async function resolveSkillDependencies(
     "ai-image-to-ppt Skill entry is missing",
     "ai-image-to-ppt Skill entry is unsafe",
   );
-  const scripts = await Promise.all(Object.entries(requiredAiScripts).map(async ([name, filename]) => [
-    name,
-    await requiredRegularFile(
+  const scripts: Array<[keyof typeof requiredAiScripts, string]> = [];
+  for (const name of Object.keys(requiredAiScripts) as Array<keyof typeof requiredAiScripts>) {
+    const filename = requiredAiScripts[name];
+    scripts.push([name, await requiredRegularFile(
       aiRoot,
       join(aiRoot, "scripts", filename),
       `ai-image-to-ppt required script is missing: ${filename}`,
       `ai-image-to-ppt required script is unsafe: ${filename}`,
-    ),
-  ] as const));
+    )]);
+  }
   const scriptPaths = Object.fromEntries(scripts) as ResolvedDependencies["ai"]["scripts"];
+  const scriptSha256 = Object.fromEntries(await Promise.all(Object.entries(scriptPaths).map(async ([name, path]) => [
+    name,
+    await sha256(path),
+  ]))) as ResolvedDependencies["ai"]["scriptSha256"];
   const ai = AiImageSkillDependencySchema.parse({
     kind: "ai-image-to-ppt",
     root: aiRoot,
@@ -184,6 +189,7 @@ export async function resolveSkillDependencies(
     skillSha256: await sha256(skillFile),
     gitRevision: await gitRevision(aiRoot),
     scripts: scriptPaths,
+    scriptSha256,
   });
   const editable = await resolveEditableSkill(editableRoot);
   return {
@@ -191,10 +197,7 @@ export async function resolveSkillDependencies(
     editable,
     integrity: {
       aiSkillSha256: ai.skillSha256,
-      aiScripts: Object.fromEntries(await Promise.all(Object.entries(ai.scripts).map(async ([name, path]) => [
-        name,
-        await sha256(path),
-      ]))) as ResolvedDependencies["integrity"]["aiScripts"],
+      aiScripts: ai.scriptSha256,
       editablePackageSha256: editable.packageSha256,
       editableSkillSha256: editable.skillSha256,
     },

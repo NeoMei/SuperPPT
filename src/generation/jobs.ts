@@ -69,7 +69,17 @@ function embeddedLock(lock: LockedStyle): ImageGenerationJob["styleLock"] {
 }
 
 function dependencyBinding(ai: AiImageSkillDependency): ImageGenerationJob["aiSkill"] {
-  return { root: ai.root, skillSha256: ai.skillSha256, gitRevision: ai.gitRevision };
+  return {
+    root: ai.root,
+    skillSha256: ai.skillSha256,
+    gitRevision: ai.gitRevision,
+    scripts: {
+      generationResult: { path: ai.scripts.generationResult, sha256: ai.scriptSha256.generationResult },
+      hostRoutingPolicy: { path: ai.scripts.hostRoutingPolicy, sha256: ai.scriptSha256.hostRoutingPolicy },
+      importHostImage: { path: ai.scripts.importHostImage, sha256: ai.scriptSha256.importHostImage },
+      prepareEditableInput: { path: ai.scripts.prepareEditableInput, sha256: ai.scriptSha256.prepareEditableInput },
+    },
+  };
 }
 
 async function readPublishedJobs(root: string): Promise<ImageGenerationJob[]> {
