@@ -1,21 +1,29 @@
-import { access, lstat } from "node:fs/promises";
-import { fileURLToPath } from "node:url";
+import { lstat, realpath } from "node:fs/promises";
+import { dirname, resolve } from "node:path";
 
-import { preflightLegacyDependencies } from "./dependencies/preflight.js";
-import { resolveDependencies, resolveSkillDependencies } from "./dependencies/resolve.js";
+import { preflightDependencies } from "./dependencies/preflight.js";
+import { resolveAiImageSkillDependency, resolveSkillDependencies } from "./dependencies/resolve.js";
 import {
-  assembleProject,
+  applyEditableReplacement,
+  assembleProjectCandidate,
   readProjectAcceptance,
   recordClientAcceptance,
-  replaceSlide,
 } from "./deck/assemble.js";
 import { createClientSmokeCopy } from "./acceptance/smoke-copy.js";
 import {
-  describeLegacyProjectGeneration,
-  generateProject,
-  recordManualQa,
-  retryProjectPage,
+  describeProjectGeneration,
+  prepareDeckJob,
+  preparePageRegenerationJob,
 } from "./generation/batch.js";
+import {
+  admitDelegatedGenerationCall,
+  publishGenerationAuthorizationPlan,
+  publishStyleSampleGenerationPlan,
+} from "./generation/authorization.js";
+import { DelegatedResultIntakeSchema, recordDelegatedResult } from "./generation/delegation-result.js";
+import { ImageGenerationJobSchema, canonicalContractFile } from "./generation/job-schemas.js";
+import { readImageGenerationJob } from "./generation/jobs.js";
+import { SerialStickyReportSchema } from "./generation/schemas.js";
 import { finalizeStyleSample, prepareStyleSampleJob } from "./generation/style-sample.js";
 import { convertProjectPage } from "./editable/adapter.js";
 import {
@@ -26,12 +34,13 @@ import {
 } from "./editable/operations.js";
 import { confirmEditablePreview, renderProjectEditablePreview } from "./editable/render.js";
 import { EditPlanSchema, type EditPlan } from "./editable/schemas.js";
-import { approveGate, type PlanningGate } from "./planning/confirm.js";
+import { approveExecutionGate, approveGate, type PlanningGate } from "./planning/confirm.js";
 import { normalizeInput, type InputRequest } from "./planning/intake.js";
 import { publishOutlineViews, publishPlanViews, publishStyleSample } from "./planning/views.js";
 import { initializeProject } from "./project/initialize.js";
 import { readRegularFileNoFollow } from "./project/safe-file.js";
 import { readProject } from "./project/store.js";
+import { applyDeckReviewAction, publishDeckReview } from "./project/promotion.js";
 import {
   applyRevision,
   approveImpact,
@@ -104,10 +113,66 @@ function inputRequest(options: Map<string, string>): InputRequest {
 }
 
 function planningGate(value: string): PlanningGate {
-  if (value === "outline" || value === "slide-specs" || value === "style-sample") {
+  if (value === "outline" || value === "slide-specs" || value === "style-sample" || value === "generation-authorization") {
     return value;
   }
   throw new Error(`invalid planning gate: ${value}`);
+}
+
+function integerFlag(value: string, label: string, minimum: number): number {
+  if (!/^\d+$/.test(value)) throw new Error(`${label} must be an integer`);
+  const parsed = Number(value);
+  if (!Number.isSafeInteger(parsed) || parsed < minimum) throw new Error(`${label} must be at least ${minimum}`);
+  return parsed;
+}
+
+const MAX_CLI_JSON_BYTES = 16 * 1024 * 1024;
+
+async function readCliJson(path: string, label: string, privateInput: boolean): Promise<unknown> {
+  const requested = resolve(path);
+  let info;
+  try {
+    info = await lstat(requested);
+  } catch (error: unknown) {
+    throw new Error(`${label} file is unsafe or invalid`, { cause: error });
+  }
+  if (info.isSymbolicLink() || !info.isFile() || info.size <= 0 || info.size > MAX_CLI_JSON_BYTES) {
+    throw new Error(`${label} file is unsafe or invalid`);
+  }
+  if (process.platform !== "win32" && privateInput && (info.mode & 0o777) !== 0o600) {
+    throw new Error(`${label} file must be private (mode 0600)`);
+  }
+  if (await realpath(requested) !== requested || await realpath(dirname(requested)) !== dirname(requested)) {
+    throw new Error(`${label} file is unsafe or invalid`);
+  }
+  let bytes: Buffer;
+  try {
+    bytes = await readRegularFileNoFollow(requested);
+  } catch (error: unknown) {
+    throw new Error(`${label} file is unsafe or invalid`, { cause: error });
+  }
+  if (bytes.length > MAX_CLI_JSON_BYTES) throw new Error(`${label} file is unsafe or invalid`);
+  try {
+    return JSON.parse(bytes.toString("utf8"));
+  } catch (error: unknown) {
+    throw new Error(`${label} file is unsafe or invalid`, { cause: error });
+  }
+}
+
+async function verifiedJob(root: string, path: string) {
+  let supplied;
+  try {
+    supplied = ImageGenerationJobSchema.parse(await readCliJson(path, "job", false));
+  } catch (error: unknown) {
+    throw new Error("job file is unsafe or invalid", { cause: error });
+  }
+  const published = await readImageGenerationJob(root, supplied.jobId);
+  if (canonicalContractFile(supplied) !== canonicalContractFile(published)) {
+    throw new Error("job file does not match the immutable published job");
+  }
+  const expected = resolve(root, "generation", "jobs", supplied.jobId, "job.json");
+  if (resolve(path) !== expected) throw new Error("job file must name the immutable published job");
+  return published;
 }
 
 async function editPlan(path: string): Promise<EditPlan> {
@@ -133,37 +198,14 @@ function editPlanSummary(plan: EditPlan): Record<string, unknown> {
   };
 }
 
-async function configuredDependencies() {
-  const aiRoot = process.env.SUPERPPT_AI_IMAGE_TO_PPT_SOURCE;
-  const editableRoot = process.env.SUPERPPT_IMAGE_TO_EDITABLE_PPTX_SOURCE;
-  if (!aiRoot || !editableRoot) {
-    throw new Error("both dependency source overrides are required by the initial CLI");
-  }
-  return resolveDependencies({ aiRoot, editableRoot });
-}
-
-async function providerRunner(): Promise<string> {
-  const candidates = [
-    fileURLToPath(new URL("../scripts/run_ai_image_provider.py", import.meta.url)),
-    fileURLToPath(new URL("../../scripts/run_ai_image_provider.py", import.meta.url)),
-  ];
-  for (const candidate of candidates) {
-    try { await access(candidate); return candidate; } catch { /* try compiled layout */ }
-  }
-  throw new Error("provider bridge is missing");
-}
-
-function concurrency(value: string): number {
-  if (!/^[1-8]$/.test(value)) throw new Error("concurrency must be between 1 and 8");
-  return Number(value);
-}
-
 async function main(argv: string[]): Promise<void> {
   const command = argv[0];
   if (command === "preflight") {
-    const report = await preflightLegacyDependencies(
-      await configuredDependencies(),
-    );
+    const options = exactFlags(argv.slice(1), ["--ai-skill", "--editable-skill"]);
+    const report = await preflightDependencies(await resolveSkillDependencies({
+      aiSkillRoot: options.get("--ai-skill")!,
+      editableSkillRoot: options.get("--editable-skill")!,
+    }));
     outputJson(report);
     if (!report.ok) {
       process.exitCode = 1;
@@ -223,24 +265,39 @@ async function main(argv: string[]): Promise<void> {
 
   if (command === "publish-style-sample") {
     const options = exactFlags(argv.slice(1), ["--project"]);
-    outputJson(await publishStyleSample(options.get("--project")!));
+    outputJson({
+      ...await publishStyleSample(options.get("--project")!),
+      nextRequiredAction: "show the published sample and ask the user to approve style-sample",
+    });
+    return;
+  }
+
+  if (command === "publish-sample-generation-plan") {
+    const options = exactFlags(argv.slice(1), ["--project", "--ai-skill"]);
+    const plan = await publishStyleSampleGenerationPlan(options.get("--project")!, {
+      aiDependency: await resolveAiImageSkillDependency(options.get("--ai-skill")!),
+      callBudget: 1,
+    });
+    outputJson({ plan, nextRequiredAction: "ask the user to approve style-sample-generation" });
     return;
   }
 
   if (command === "prepare-style-sample-job") {
-    const options = exactFlags(argv.slice(1), ["--project"]);
-    const resolved = await configuredDependencies();
-    const dependencies = await resolveSkillDependencies({
-      aiSkillRoot: resolved.ai.root,
-      editableSkillRoot: resolved.editable.root,
-    });
-    outputJson(await prepareStyleSampleJob(options.get("--project")!, dependencies.ai));
+    const options = exactFlags(argv.slice(1), ["--project", "--ai-skill"]);
+    const job = await prepareStyleSampleJob(
+      options.get("--project")!,
+      await resolveAiImageSkillDependency(options.get("--ai-skill")!),
+    );
+    outputJson({ job, nextRequiredAction: "invoke ai-image-to-ppt as the Agent, then admit and record its exact result" });
     return;
   }
 
   if (command === "finalize-style-sample") {
     const options = exactFlags(argv.slice(1), ["--project", "--job-id"]);
-    outputJson(await finalizeStyleSample(options.get("--project")!, options.get("--job-id")!));
+    outputJson({
+      ...await finalizeStyleSample(options.get("--project")!, options.get("--job-id")!),
+      nextRequiredAction: "publish the finalized style sample for user review",
+    });
     return;
   }
 
@@ -248,9 +305,95 @@ async function main(argv: string[]): Promise<void> {
     const options = exactFlags(argv.slice(1), ["--project", "--gate"]);
     const root = options.get("--project")!;
     await readProject(root);
-    const gate = planningGate(options.get("--gate")!);
+    const requestedGate = options.get("--gate")!;
+    if (requestedGate === "deck-review") {
+      throw new Error("deck-review approval requires deck-review-action --action confirm-delivery");
+    }
+    if (requestedGate === "style-sample-generation") {
+      await approveExecutionGate(root, "style-sample-generation", "style/sample/generation-plan.json");
+      outputJson({ gate: requestedGate, current: true, nextRequiredAction: "prepare the style sample job" });
+      return;
+    }
+    const gate = planningGate(requestedGate);
     await approveGate(root, gate);
-    outputJson({ gate, current: true });
+    const nextRequiredAction = gate === "outline"
+      ? "author and validate the slide specifications, then show them to the user"
+      : gate === "slide-specs"
+        ? "show the compact single-select style choices to the user"
+        : gate === "style-sample"
+          ? "publish the deck generation authorization plan for user approval"
+          : "prepare the immutable deck generation job";
+    outputJson({ gate, current: true, nextRequiredAction });
+    return;
+  }
+
+  if (command === "publish-generation-plan") {
+    const options = exactFlags(argv.slice(1), ["--project", "--ai-skill", "--call-budget"]);
+    const plan = await publishGenerationAuthorizationPlan(options.get("--project")!, {
+      aiDependency: await resolveAiImageSkillDependency(options.get("--ai-skill")!),
+      callBudget: integerFlag(options.get("--call-budget")!, "call budget", 1),
+    });
+    outputJson({ plan, nextRequiredAction: "ask the user to approve generation-authorization" });
+    return;
+  }
+
+  if (command === "prepare-deck-job") {
+    const options = exactFlags(argv.slice(1), ["--project", "--ai-skill"]);
+    const job = await prepareDeckJob(
+      options.get("--project")!,
+      await resolveAiImageSkillDependency(options.get("--ai-skill")!),
+    );
+    outputJson({ job, nextRequiredAction: "invoke ai-image-to-ppt serially as the Agent; admit each exact call first" });
+    return;
+  }
+
+  if (command === "admit-image-call") {
+    const options = exactFlags(argv.slice(1), ["--project", "--job", "--slide", "--attempt", "--request-ordinal"]);
+    const root = options.get("--project")!;
+    const job = await verifiedJob(root, options.get("--job")!);
+    const slideId = options.get("--slide")!;
+    const attempt = integerFlag(options.get("--attempt")!, "attempt", 1);
+    const requestOrdinal = integerFlag(options.get("--request-ordinal")!, "request ordinal", 0);
+    if (!job.pages.some((page) => page.slideId === slideId && page.attempt === attempt)) {
+      throw new Error("admission tuple does not name a page in the immutable job");
+    }
+    outputJson({
+      ...await admitDelegatedGenerationCall(root, { jobId: job.jobId, slideId, attempt, requestOrdinal }),
+      nextRequiredAction: "pass this one-time token only in the private result file",
+    });
+    return;
+  }
+
+  if (command === "record-image-result") {
+    const options = exactFlags(argv.slice(1), ["--project", "--job", "--result", "--route-report"]);
+    const root = options.get("--project")!;
+    const job = await verifiedJob(root, options.get("--job")!);
+    const resultBase = DelegatedResultIntakeSchema.omit({ batchReport: true }).parse(
+      await readCliJson(options.get("--result")!, "result", true),
+    );
+    const batchReport = SerialStickyReportSchema.parse(
+      await readCliJson(options.get("--route-report")!, "route report", true),
+    );
+    if (resultBase.jobId !== job.jobId) throw new Error("result does not bind the supplied immutable job");
+    const result = await recordDelegatedResult(root, { ...resultBase, batchReport });
+    outputJson({ result, nextRequiredAction: "review generation status and request the next staged user action" });
+    return;
+  }
+
+  if (command === "prepare-page-regeneration-job") {
+    const options = exactFlags(argv.slice(1), ["--project", "--request"]);
+    const job = await preparePageRegenerationJob(
+      options.get("--project")!,
+      await readCliJson(options.get("--request")!, "page-regeneration request", true) as Parameters<typeof preparePageRegenerationJob>[1],
+    );
+    outputJson({ job, nextRequiredAction: "publish and approve a new incremental generation authorization when required" });
+    return;
+  }
+
+  if (command === "generation-status") {
+    const options = exactFlags(argv.slice(1), ["--project"]);
+    const status = await describeProjectGeneration(options.get("--project")!);
+    outputJson({ ...status, nextRequiredAction: status.currentJob ? "continue the exact current serial job" : "review the completed pages before candidate assembly" });
     return;
   }
 
@@ -295,53 +438,11 @@ async function main(argv: string[]): Promise<void> {
     return;
   }
 
-  if (command === "generate") {
-    const options = exactFlags(argv.slice(1), ["--project", "--concurrency"]);
-    const root = options.get("--project")!;
-    const resolved = await configuredDependencies();
-    const runner = await providerRunner();
-    const plan = await describeLegacyProjectGeneration({ root, ai: resolved.ai });
-    outputJson({ event: "generation-plan", ...plan });
-    outputJson(await generateProject({
-      root,
-      ai: resolved.ai,
-      runner,
-      concurrency: concurrency(options.get("--concurrency")!),
-    }));
-    return;
-  }
-
-  if (command === "record-qa") {
-    const options = exactFlags(argv.slice(1), ["--project", "--slide", "--input"]);
-    const resolved = await configuredDependencies();
-    const result = await recordManualQa({
-      root: options.get("--project")!,
-      slideId: options.get("--slide")!,
-      input: options.get("--input")!,
-      ai: resolved.ai,
-    });
-    outputJson(result);
-    return;
-  }
-
-  if (command === "retry-page") {
-    const options = exactFlags(argv.slice(1), ["--project", "--slide"]);
-    const root = options.get("--project")!;
-    const slideId = options.get("--slide")!;
-    const resolved = await configuredDependencies();
-    const runner = await providerRunner();
-    const plan = await describeLegacyProjectGeneration({ root, ai: resolved.ai, selectedIds: new Set([slideId]) });
-    outputJson({ event: "generation-plan", ...plan });
-    outputJson(await retryProjectPage({ root, slideId, ai: resolved.ai, runner }));
-    return;
-  }
-
   if (command === "convert-page") {
-    const options = exactFlags(argv.slice(1), ["--project", "--slide"]);
-    const configured = await configuredDependencies();
+    const options = exactFlags(argv.slice(1), ["--project", "--slide", "--ai-skill", "--editable-skill"]);
     const resolved = await resolveSkillDependencies({
-      aiSkillRoot: configured.ai.root,
-      editableSkillRoot: configured.editable.root,
+      aiSkillRoot: options.get("--ai-skill")!,
+      editableSkillRoot: options.get("--editable-skill")!,
     });
     const result = await convertProjectPage({
       root: options.get("--project")!,
@@ -462,20 +563,59 @@ async function main(argv: string[]): Promise<void> {
 
   if (command === "replace-slide") {
     const options = exactFlags(argv.slice(1), ["--project", "--slide", "--revision", "--record-sha256"]);
-    outputJson(await replaceSlide({
+    outputJson({
+      ...await applyEditableReplacement({
       root: options.get("--project")!,
       slideId: options.get("--slide")!,
       modifiedRevisionId: options.get("--revision")!,
       expectedModifiedRevisionRecordSha256: options.get("--record-sha256")!,
-    }));
+      }),
+      nextRequiredAction: "assemble and review a new candidate before delivery",
+    });
     return;
   }
 
-  if (command === "assemble") {
+  if (command === "assemble-candidate") {
     const options = exactFlags(argv.slice(1), ["--project"]);
-    outputJson(await assembleProject({
-      root: options.get("--project")!,
-    }));
+    const candidate = await assembleProjectCandidate(options.get("--project")!);
+    outputJson({ ...candidate, nextRequiredAction: "publish this exact candidate for deck review" });
+    return;
+  }
+
+  if (command === "publish-deck-review") {
+    const options = exactFlags(argv.slice(1), ["--project", "--candidate-id"]);
+    const review = await publishDeckReview(options.get("--project")!, options.get("--candidate-id")!);
+    outputJson({ review, nextRequiredAction: "ask the user to choose edit-page, return-upstream, or confirm-delivery" });
+    return;
+  }
+
+  if (command === "deck-review-action") {
+    const parsed = flags(argv.slice(1));
+    for (const key of parsed.keys()) {
+      if (!["--project", "--candidate-id", "--descriptor-sha256", "--action", "--slide-id"].includes(key)) {
+        throw new Error(`unknown CLI flag: ${key}`);
+      }
+    }
+    for (const key of ["--project", "--candidate-id", "--descriptor-sha256", "--action"]) {
+      if (!parsed.has(key)) throw new Error("required CLI flags: --project --candidate-id --descriptor-sha256 --action");
+    }
+    const action = parsed.get("--action")!;
+    if (action === "edit-page" && !parsed.has("--slide-id")) throw new Error("edit-page requires exactly one --slide-id");
+    if (action !== "edit-page" && parsed.has("--slide-id")) throw new Error("only edit-page accepts --slide-id");
+    const outcome = await applyDeckReviewAction(parsed.get("--project")!, {
+      action,
+      candidateId: parsed.get("--candidate-id")!,
+      descriptorSha256: parsed.get("--descriptor-sha256")!,
+      ...(action === "edit-page" ? { slideId: parsed.get("--slide-id")! } : {}),
+    } as Parameters<typeof applyDeckReviewAction>[1]);
+    outputJson({
+      ...outcome,
+      nextRequiredAction: action === "confirm-delivery"
+        ? "perform client edit-save-reopen acceptance on a smoke copy"
+        : action === "edit-page"
+          ? "convert only the selected page, confirm its preview, then assemble a new candidate"
+          : "revise the upstream generation inputs with the user",
+    });
     return;
   }
 

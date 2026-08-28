@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { readFile } from "node:fs/promises";
+import { access, readFile } from "node:fs/promises";
 import test from "node:test";
 
 async function json(path: string): Promise<Record<string, any>> {
@@ -26,4 +26,29 @@ test("packages the approved SuperPPT identity", async () => {
   assert.match(skill, /^# SuperPPT$/m);
   assert.match(ui, /display_name: "SuperPPT"/);
   assert.doesNotMatch(`${skill}\n${ui}`, new RegExp(`\\[${"TO" + "DO"}:|${"T" + "BD"}`));
+});
+
+test("the shipped module surface contains no executable provider bridge or direct-generation compatibility API", async () => {
+  const [batch, dependencies, preflight, deck] = await Promise.all([
+    import("../src/generation/batch.js"),
+    import("../src/dependencies/resolve.js"),
+    import("../src/dependencies/preflight.js"),
+    import("../src/deck/assemble.js"),
+  ]);
+  for (const [module, names] of [
+    [batch, ["runBatch", "describeLegacyProjectGeneration", "generateProject", "retryProjectPage", "recordManualQa"]],
+    [dependencies, ["resolveDependencies", "resolveFromSkillEntries"]],
+    [preflight, ["preflightLegacyDependencies"]],
+    [deck, ["assembleProject"]],
+  ] as const) {
+    for (const name of names) assert.equal(name in module, false, name);
+  }
+  for (const path of [
+    "src/generation/provider.ts",
+    "src/generation/bridge-process.ts",
+    "scripts/run_ai_image_provider.py",
+    "tests/fixtures/fake_ai_provider.py",
+  ]) {
+    await assert.rejects(access(path), { code: "ENOENT" }, path);
+  }
 });

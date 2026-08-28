@@ -1,11 +1,10 @@
 import { createHash } from "node:crypto";
-import { copyFile, mkdir, readFile, readdir, realpath, writeFile } from "node:fs/promises";
+import { copyFile, mkdir, readFile, realpath, writeFile } from "node:fs/promises";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 
 import JSZip from "jszip";
 import sharp from "sharp";
 
-import type { LegacyResolvedDependencies } from "../dependencies/schemas.js";
 import { applyEditableReplacement, assembleProjectCandidate, type FinalRender } from "../deck/assemble.js";
 import { prepareEditableSlide } from "../deck/editable-slide.js";
 import { buildMontage } from "../deck/montage.js";
@@ -13,14 +12,14 @@ import { exportPdf } from "../deck/pdf.js";
 import { convertProjectPage } from "../editable/adapter.js";
 import { applyProjectEditPlan } from "../editable/operations.js";
 import { confirmEditablePreview, renderProjectEditablePreview } from "../editable/render.js";
-import { generateProject } from "../generation/batch.js";
+import { prepareDeckJob } from "../generation/batch.js";
 import {
   admitDelegatedGenerationCall,
   publishGenerationAuthorizationPlan,
   publishStyleSampleGenerationPlan,
+  readCallLedger,
 } from "../generation/authorization.js";
 import { recordDelegatedResult } from "../generation/delegation-result.js";
-import { generateSlide } from "../generation/provider.js";
 import { finalizeStyleSample, prepareStyleSampleJob } from "../generation/style-sample.js";
 import { configureGenerationAuthorizationTrustForTests } from "../generation/trusted-authorization.js";
 import { approveExecutionGate, approveGate } from "../planning/confirm.js";
@@ -57,14 +56,16 @@ export type OfflineAcceptanceResult = {
 type OfflineAcceptanceOptions = {
   root: string;
   fixtures: string;
-  provider: string;
-  reviewer: string;
   editable: string;
 };
 
-type ProjectGenerationResult = Awaited<ReturnType<typeof generateProject>>;
-
-const RUNNER = join(process.cwd(), "scripts", "run_ai_image_provider.py");
+type ProjectGenerationResult = {
+  jobId: string;
+  providerId: "api-openai";
+  pageCount: number;
+  callCount: number;
+  pages: Array<{ id: string; status: "ready" }>;
+};
 const EDITABLE_SLIDE_ID = "00000000-0000-4000-8000-000000000702";
 
 function portable(root: string, path: string): string {
@@ -159,30 +160,14 @@ async function copyPlanningFixtures(projectRoot: string, fixtures: string): Prom
   await approveGate(projectRoot, "slide-specs");
 }
 
-async function stagedAiDependency(parent: string, provider: string, reviewer: string): Promise<LegacyResolvedDependencies["ai"]> {
+async function stagedAiDependency(parent: string): Promise<string> {
   const root = join(parent, "offline-ai-image-to-ppt");
   await mkdir(join(root, "scripts"), { recursive: true, mode: 0o700 });
-  await mkdir(join(root, "references"), { mode: 0o700 });
   await writeFile(join(root, "SKILL.md"), "---\nname: ai-image-to-ppt\n---\n", { flag: "wx", mode: 0o600 });
-  await copyFile(provider, join(root, "scripts", "provider.py"));
-  await copyFile(reviewer, join(root, "scripts", "reviewer.py"));
   for (const script of ["generation_result.py", "host_routing_policy.py", "import_host_image.py", "prepare_editable_input.py"]) {
     await writeFile(join(root, "scripts", script), "raise SystemExit('not executed by offline delegated sample')\n", { flag: "wx", mode: 0o600 });
   }
-  const capabilities = {
-    contractVersion: 1 as const,
-    defaultProvider: "offline-fixture-provider",
-    providers: [{
-      id: "offline-fixture-provider",
-      module: "scripts/provider.py",
-      callable: "gen" as const,
-      outputFormats: ["png" as const],
-      supportsReferenceImages: false,
-    }],
-    reviewer: { module: "scripts/reviewer.py", callable: "check" as const },
-  };
-  await writeFile(join(root, "references", "capabilities.json"), `${JSON.stringify(capabilities, null, 2)}\n`, { flag: "wx", mode: 0o600 });
-  return { ...capabilities, root: await realpath(root), source: "manifest" };
+  return realpath(root);
 }
 
 async function stagedConverter(parent: string): Promise<string> {
@@ -283,20 +268,89 @@ async function snapshot(root: string): Promise<AcceptanceSnapshot> {
   };
 }
 
-async function providerCalls(root: string, generation: ProjectGenerationResult, counter: string): Promise<{ total: number; perSlide: number[] }> {
-  const total = (await readFile(counter, "utf8")).trim().split("\n").filter(Boolean).length;
-  const perSlide = await Promise.all(generation.pages.map(async ({ id }) => {
-    const entries = await readdir(join(root, "images", id));
-    return entries.filter((name) => /^attempt-[1-3]$/.test(name)).length;
+async function delegatedCalls(root: string, generation: ProjectGenerationResult): Promise<{ total: number; perSlide: number[] }> {
+  const ledger = await readCallLedger(root);
+  const admissions = ledger.filter((entry) => entry.entryKind === "admission" && entry.jobId === generation.jobId);
+  const perSlide = generation.pages.map(({ id }) => admissions.filter((entry) => entry.slideId === id).length);
+  return { total: generation.callCount + 1, perSlide };
+}
+
+async function normalizedSha256(path: string): Promise<string> {
+  return sha256(await sharp(await readFile(path), { failOn: "error" })
+    .resize(1920, 1080, { fit: "fill", kernel: sharp.kernel.lanczos3 })
+    .png({ compressionLevel: 9, adaptiveFiltering: false, palette: false })
+    .toBuffer());
+}
+
+async function materializeDelegatedPage(
+  root: string,
+  job: Awaited<ReturnType<typeof prepareDeckJob>>,
+  pageIndex: number,
+  styleSample: boolean,
+): Promise<void> {
+  const page = job.pages[pageIndex]!;
+  const output = join(root, ...page.target.split("/"));
+  await sharp({
+    create: {
+      width: 1920,
+      height: 1080,
+      channels: 3,
+      background: pageIndex % 2 === 0 ? "#142536" : "#2b4058",
+    },
+  }).png().toFile(output);
+  const requestOrdinal = pageIndex + 1;
+  const admission = await admitDelegatedGenerationCall(root, {
+    jobId: job.jobId,
+    slideId: page.slideId,
+    attempt: page.attempt,
+    requestOrdinal,
+  });
+  const routingPages = job.pages.slice(0, pageIndex + 1).map((_candidate, index) => ({
+    page: index + 1,
+    outcome: "success" as const,
+    candidate: "api-openai" as const,
+    summary: "",
   }));
-  return { total, perSlide };
+  await recordDelegatedResult(root, {
+    jobId: job.jobId,
+    slideId: page.slideId,
+    attempt: page.attempt,
+    requestOrdinal,
+    admissionToken: admission.admissionToken,
+    dependency: { status: "success", provider: "openai", channel: "api", output_path: output, safe_message: "" },
+    batchReport: {
+      batch_mode: "serial-sticky-monotonic",
+      stopped: false,
+      search_candidate: "api-openai",
+      sticky_candidate: "api-openai",
+      pages: routingPages,
+      switches: [],
+    },
+    actualPromptSha256: page.promptSha256,
+    styleLockSha256: job.styleLockSha256,
+    styleRecipeSha256: job.styleLock.styleRecipeSha256,
+    referenceUsage: [],
+    presentationQa: styleSample ? null : {
+      approvedSampleSha256: job.styleLock.approvedSample!.sha256,
+      normalizedImageSha256: await normalizedSha256(output),
+      slideSpecSha256: page.specSnapshot.sha256,
+      pageRole: page.spec.role,
+      decision: {
+        ok: true,
+        issues: [],
+        requiredText: page.spec.requiredText.map((text) => ({ text, present: true, exact: true })),
+        styleConsistent: true,
+        hierarchyClear: true,
+        richDetail: true,
+        noForbiddenContent: true,
+      },
+    },
+  });
 }
 
 export async function runOfflineAcceptance(options: OfflineAcceptanceOptions): Promise<OfflineAcceptanceResult> {
   const fixtureRoot = await realpath(resolveFixture(options.fixtures));
   const editableFixture = await realpath(resolveFixture(options.editable));
-  const provider = await realpath(resolveFixture(options.provider));
-  const reviewer = await realpath(resolveFixture(options.reviewer));
   const requestedRoot = resolve(options.root);
   await mkdir(dirname(requestedRoot), { recursive: true, mode: 0o700 });
   const parent = await realpath(dirname(requestedRoot));
@@ -306,10 +360,10 @@ export async function runOfflineAcceptance(options: OfflineAcceptanceOptions): P
   await normalizeInput(root, { kind: "markdown", path: join(fixtureRoot, "source.md") });
   await copyPlanningFixtures(root, fixtureRoot);
 
-  const ai = await stagedAiDependency(parent, provider, reviewer);
+  const aiRoot = await stagedAiDependency(parent);
   const converterRoot = await stagedConverter(parent);
   const dependencies = await resolveSkillDependencies({
-    aiSkillRoot: ai.root,
+    aiSkillRoot: aiRoot,
     editableSkillRoot: converterRoot,
   });
   const aiDependency = dependencies.ai;
@@ -318,82 +372,39 @@ export async function runOfflineAcceptance(options: OfflineAcceptanceOptions): P
     styleId: "cinematic-tech",
     representativeSlideId: EDITABLE_SLIDE_ID,
   }, null, 2)}\n`, { flag: "wx", mode: 0o600 });
-  const counter = join(parent, "offline-provider-calls.log");
-  await writeFile(counter, "", { flag: "wx", mode: 0o600 });
-  const previousCounter = process.env.SUPERPPT_TEST_CALL_COUNTER;
-  process.env.SUPERPPT_TEST_CALL_COUNTER = counter;
   let generation: ProjectGenerationResult;
-  try {
-    await createProvisionalStyleLock(root, {
-      selection: { kind: "catalog", styleId: "cinematic-tech" },
-      referenceArtifacts: [],
-    });
-    await publishStyleSampleGenerationPlan(root, { aiDependency, callBudget: 1 });
-    await approveExecutionGate(root, "style-sample-generation", "style/sample/generation-plan.json");
-    const sampleJob = await prepareStyleSampleJob(root, aiDependency);
-    const samplePage = sampleJob.pages[0]!;
-    const providerConfig = ai.providers.find(({ id }) => id === ai.defaultProvider);
-    if (!providerConfig) throw new Error("offline sample provider is unavailable");
-    const output = join(root, ...samplePage.target.split("/"));
-    const admission = await admitDelegatedGenerationCall(root, {
-      jobId: sampleJob.jobId,
-      slideId: samplePage.slideId,
-      attempt: samplePage.attempt,
-      requestOrdinal: 1,
-    });
-    await generateSlide({
-      runner: RUNNER,
-      modulePath: join(ai.root, providerConfig.module),
-      callable: providerConfig.callable,
-      providerId: providerConfig.id,
-      slideId: samplePage.slideId,
-      revisionId: sampleJob.projectRevisionId,
-      prompt: samplePage.finalPrompt,
-      output,
-      attempt: samplePage.attempt,
-      allowedFormats: providerConfig.outputFormats,
-      trustedRoot: join(root, "generation", "jobs", sampleJob.jobId, "ai-image-output"),
-    });
-    await recordDelegatedResult(root, {
-      jobId: sampleJob.jobId,
-      slideId: samplePage.slideId,
-      attempt: samplePage.attempt,
-      requestOrdinal: 1,
-      admissionToken: admission.admissionToken,
-      dependency: { status: "success", provider: "openai", channel: "api", output_path: output, safe_message: "" },
-      batchReport: {
-        batch_mode: "serial-sticky-monotonic",
-        stopped: false,
-        search_candidate: "api-openai",
-        sticky_candidate: "api-openai",
-        pages: [{ page: 1, outcome: "success", candidate: "api-openai", summary: "" }],
-        switches: [],
-      },
-      actualPromptSha256: samplePage.promptSha256,
-      styleLockSha256: sampleJob.styleLockSha256,
-      styleRecipeSha256: sampleJob.styleLock.styleRecipeSha256,
-      referenceUsage: [],
-      presentationQa: null,
-    });
-    await finalizeStyleSample(root, sampleJob.jobId);
-    await publishStyleSample(root);
-    await approveGate(root, "style-sample");
-    await approveStyleLock(root);
-    await configureGenerationAuthorizationTrustForTests(root, {
-      root: join(parent, "authorization-trust"),
-      deterministicKeySeed: `superppt-offline-acceptance:${root}`,
-    });
-    await publishGenerationAuthorizationPlan(root, {
-      aiDependency,
-      callBudget: 3,
-    });
-    await approveGate(root, "generation-authorization");
-    generation = await generateProject({ root, ai, runner: RUNNER, concurrency: 2 });
-  } finally {
-    if (previousCounter === undefined) delete process.env.SUPERPPT_TEST_CALL_COUNTER;
-    else process.env.SUPERPPT_TEST_CALL_COUNTER = previousCounter;
+  await createProvisionalStyleLock(root, {
+    selection: { kind: "catalog", styleId: "cinematic-tech" },
+    referenceArtifacts: [],
+  });
+  await configureGenerationAuthorizationTrustForTests(root, {
+    root: join(parent, "authorization-trust"),
+    deterministicKeySeed: `superppt-offline-acceptance:${root}`,
+  });
+  await publishStyleSampleGenerationPlan(root, { aiDependency, callBudget: 1 });
+  await approveExecutionGate(root, "style-sample-generation", "style/sample/generation-plan.json");
+  const sampleJob = await prepareStyleSampleJob(root, aiDependency);
+  await materializeDelegatedPage(root, sampleJob, 0, true);
+  await finalizeStyleSample(root, sampleJob.jobId);
+  await publishStyleSample(root);
+  await approveGate(root, "style-sample");
+  await approveStyleLock(root);
+  await publishGenerationAuthorizationPlan(root, {
+    aiDependency,
+    callBudget: 3,
+  });
+  await approveGate(root, "generation-authorization");
+  const deckJob = await prepareDeckJob(root, aiDependency);
+  for (let index = 0; index < deckJob.pages.length; index += 1) {
+    await materializeDelegatedPage(root, deckJob, index, false);
   }
-  if (generation.pages.some(({ status }) => status !== "ready")) throw new Error("offline fixture generation did not pass QA");
+  generation = {
+    jobId: deckJob.jobId,
+    providerId: "api-openai",
+    pageCount: deckJob.pages.length,
+    callCount: deckJob.pages.length,
+    pages: deckJob.pages.map(({ slideId }) => ({ id: slideId, status: "ready" })),
+  };
 
   const candidate = await assembleProjectCandidate(root, { buildOutputs: offlineBuildOutputs });
   const review = await publishDeckReview(root, candidate.candidateId);
@@ -474,7 +485,7 @@ export async function runOfflineAcceptance(options: OfflineAcceptanceOptions): P
     throw new Error("offline editable replacement was not confirmed for delivery");
   }
   const after = await snapshot(root);
-  const calls = await providerCalls(root, generation, counter);
+  const calls = await delegatedCalls(root, generation);
   const logs = [
     `provider=${generation.providerId}`,
     `generated-pages=${generation.pageCount}`,

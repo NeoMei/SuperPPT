@@ -99,7 +99,10 @@ test("makes model disclosure, QA, preview rejection, editability, and real deliv
   for (const boundary of ["提供者", "页数", "最大调用次数", "出站", "输出位置"]) {
     assert.match(workflow, new RegExp(boundary));
   }
-  assert.match(workflow, /record-qa/);
+  assert.match(workflow, /admit-image-call/);
+  assert.match(workflow, /record-image-result/);
+  assert.match(workflow, /deck-review-action/);
+  assert.doesNotMatch(workflow, /approve --project .*deck-review/);
   assert.match(workflow, /slide-preview/);
   assert.match(workflow, /promote-editable --project --slide --revision --element --kind/);
   assert.match(workflow, /不修改内容.*promote-editable|promote-editable.*不修改内容/is);

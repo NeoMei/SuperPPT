@@ -17,10 +17,10 @@ import { AcceptanceSchema } from "../src/acceptance/schema.js";
 import { configureGenerationAuthorizationTrustForTests } from "../src/generation/trusted-authorization.js";
 import {
   assembleDeck,
-  assembleProject,
   assembleProjectCandidate,
   readProjectAcceptance,
   recordClientAcceptance,
+  type AssembleProjectOperations,
   type FinalRender,
 } from "../src/deck/assemble.js";
 import { exportPdf } from "../src/deck/pdf.js";
@@ -38,7 +38,6 @@ import { ClientSmokeCopyAnchorSchema } from "../src/project/schemas.js";
 import { readProject, updateProject } from "../src/project/store.js";
 import * as projectStore from "../src/project/store.js";
 import { applyRevision, approveImpact, publishImpactPlan } from "../src/revisions/apply.js";
-import { publishRevisionSnapshot } from "../src/revisions/snapshot.js";
 import { finalizeDelegatedStyleSampleForTest } from "./helpers/delegated-style-sample.js";
 
 const execFileAsync = promisify(execFile);
@@ -209,6 +208,27 @@ async function authorizeDeckGeneration(root: string): Promise<void> {
     revisionId: (await readProject(root)).currentRevision.id,
   }, null, 2)}\n`);
   await approveGate(root, "generation-authorization");
+}
+
+async function deliverReviewedCandidate(options: {
+  root: string;
+  warnings?: string[];
+  operations?: AssembleProjectOperations;
+}) {
+  if (!await assertGateCurrent(options.root, "generation-authorization")) {
+    await authorizeDeckGeneration(options.root);
+  }
+  const candidate = await assembleProjectCandidate(options.root, options.operations);
+  const review = await publishDeckReview(options.root, candidate.candidateId);
+  const outcome = await applyDeckReviewAction(options.root, {
+    action: "confirm-delivery",
+    candidateId: candidate.candidateId,
+    descriptorSha256: review.descriptorSha256,
+  });
+  if (outcome.action !== "confirm-delivery" || !outcome.delivery) {
+    throw new Error("candidate delivery was not promoted");
+  }
+  return outcome.delivery;
 }
 
 async function writeCompletedClientEvidence(
@@ -443,7 +463,7 @@ test("refuses stale gates, non-ready pages, duplicate order, and render tamperin
 
 test("assembles into an owned revision destination and publishes exact manifest refs", async (t) => {
   const fixture = await readyProject(t);
-  const result = await assembleProject({
+  const result = await deliverReviewedCandidate({
     root: fixture.root,
     operations: { buildOutputs: fakeOutputs },
   });
@@ -642,7 +662,7 @@ test("promote approved candidate recovers a formal revision published before a m
 test("retains partial staging without mutating the manifest", async (t) => {
   const fixture = await readyProject(t);
   const before = await readProject(fixture.root);
-  await assert.rejects(assembleProject({
+  await assert.rejects(deliverReviewedCandidate({
     root: fixture.root,
     operations: {
       buildOutputs: async (renders, paths) => {
@@ -656,64 +676,9 @@ test("retains partial staging without mutating the manifest", async (t) => {
   await assert.rejects(access(join(fixture.root, "output", "revisions", "1")));
 });
 
-test("recovers a promoted output after a crash before the manifest update", async (t) => {
-  const fixture = await readyProject(t);
-  await assert.rejects(assembleProject({
-    root: fixture.root,
-    operations: {
-      buildOutputs: fakeOutputs,
-      checkpoint: (step) => {
-        if (step === "output-promoted") throw new Error("simulated promotion crash");
-      },
-    },
-  }), /simulated promotion crash/);
-  assert.equal((await readProject(fixture.root)).exports.pptx, null);
-
-  const recovered = await assembleProject({
-    root: fixture.root,
-    operations: { buildOutputs: async () => { throw new Error("must reuse promoted output"); } },
-  });
-  assert.equal(recovered.recovered, true);
-  assert.ok((await readProject(fixture.root)).exports.pptx);
-});
-
-test("serializes concurrent assembly and never overwrites an unowned or tampered destination", async (t) => {
-  const fixture = await readyProject(t);
-  let builds = 0;
-  const operations = {
-    buildOutputs: async (renders: FinalRender[], paths: { pptx: string; pdf: string; montage: string }) => {
-      builds += 1;
-      await fakeOutputs(renders, paths);
-    },
-  };
-  const results = await Promise.all([
-    assembleProject({ root: fixture.root, operations }),
-    assembleProject({ root: fixture.root, operations }),
-  ]);
-  assert.equal(builds, 1);
-  assert.equal(results.filter((result) => result.recovered).length, 1);
-
-  const pptx = join(fixture.root, results[0]!.artifacts.pptx!.path);
-  await writeFile(pptx, "tampered");
-  await assert.rejects(assembleProject({
-    root: fixture.root,
-    operations,
-  }), /owned output evidence is invalid/);
-
-  const second = await readyProject(t);
-  const destination = join(second.root, "output", "revisions", "1");
-  await mkdir(destination, { recursive: true });
-  await writeFile(join(destination, "foreign.txt"), "do not delete");
-  await assert.rejects(assembleProject({
-    root: second.root,
-    operations,
-  }), /destination is not owned by SuperPPT/);
-  assert.equal(await readFile(join(destination, "foreign.txt"), "utf8"), "do not delete");
-});
-
 test("aborts promotion when the current revision changes during assembly", async (t) => {
   const fixture = await readyProject(t);
-  await assert.rejects(assembleProject({
+  await assert.rejects(deliverReviewedCandidate({
     root: fixture.root,
     operations: {
       buildOutputs: fakeOutputs,
@@ -724,13 +689,13 @@ test("aborts promotion when the current revision changes during assembly", async
         await applyRevision(fixture.root, plan, change);
       },
     },
-  }), /revision changed during assembly/);
+  }), /project revision or generation authorization changed during candidate assembly/);
   await assert.rejects(access(join(fixture.root, "output", "revisions", "1")));
 });
 
 test("records delivery only from an edited owned smoke copy while preserving the canonical deck", async (t) => {
   const fixture = await readyProject(t);
-  await assembleProject({
+  await deliverReviewedCandidate({
     root: fixture.root,
     operations: { buildOutputs: fakeOutputs },
   });
@@ -820,7 +785,7 @@ test("records delivery only from an edited owned smoke copy while preserving the
 
 test("rejects unchanged smoke copies, forged source evidence, and post-acceptance copy tampering", async (t) => {
   const fixture = await readyProject(t);
-  await assembleProject({ root: fixture.root, operations: { buildOutputs: fakeOutputs } });
+  await deliverReviewedCandidate({ root: fixture.root, operations: { buildOutputs: fakeOutputs } });
   const smoke = await createClientSmokeCopy(fixture.root);
   const evidence = join(fixture.root, "smoke-evidence.json");
   const base = {
@@ -870,7 +835,7 @@ test("rejects unchanged smoke copies, forged source evidence, and post-acceptanc
 
 test("FORGE_ACCEPTED cannot self-attest a smoke descriptor without a trusted project anchor", async (t) => {
   const fixture = await readyProject(t);
-  await assembleProject({ root: fixture.root, operations: { buildOutputs: fakeOutputs } });
+  await deliverReviewedCandidate({ root: fixture.root, operations: { buildOutputs: fakeOutputs } });
   const manifest = await readProject(fixture.root);
   const revisionNumber = manifest.deckRevision ?? manifest.currentRevision.number;
   const directoryRef = `output/revisions/${revisionNumber}/client-smoke`;
@@ -915,7 +880,7 @@ test("FORGE_ACCEPTED cannot self-attest a smoke descriptor without a trusted pro
 
 test("FORGE_ACCEPTED cannot construct trust through exported store transitions", async (t) => {
   const fixture = await readyProject(t);
-  await assembleProject({ root: fixture.root, operations: { buildOutputs: fakeOutputs } });
+  await deliverReviewedCandidate({ root: fixture.root, operations: { buildOutputs: fakeOutputs } });
   const manifest = await readProject(fixture.root);
   const revisionNumber = manifest.deckRevision ?? manifest.currentRevision.number;
   const directoryRef = `output/revisions/${revisionNumber}/client-smoke`;
@@ -975,7 +940,7 @@ test("FORGE_ACCEPTED cannot construct trust through exported store transitions",
 
 test("FORGE_ACCEPTED cannot publish a self-authored acceptance record through the store", async (t) => {
   const fixture = await readyProject(t);
-  await assembleProject({ root: fixture.root, operations: { buildOutputs: fakeOutputs } });
+  await deliverReviewedCandidate({ root: fixture.root, operations: { buildOutputs: fakeOutputs } });
   const smoke = await createClientSmokeCopy(fixture.root);
   const manifest = await readProject(fixture.root);
   const copy = join(fixture.root, smoke.copy.path);
@@ -1054,7 +1019,7 @@ test("non-completed smoke anchors reject every partial completion field", () => 
 
 test("serializes smoke-copy creation and recovers every trusted anchor publication boundary", async (t) => {
   const concurrent = await readyProject(t);
-  await assembleProject({ root: concurrent.root, operations: { buildOutputs: fakeOutputs } });
+  await deliverReviewedCandidate({ root: concurrent.root, operations: { buildOutputs: fakeOutputs } });
   const [left, right] = await Promise.all([
     createClientSmokeCopy(concurrent.root),
     createClientSmokeCopy(concurrent.root),
@@ -1064,7 +1029,7 @@ test("serializes smoke-copy creation and recovers every trusted anchor publicati
 
   for (const checkpoint of ["before-anchor-commit", "anchor-committed", "files-promoted", "anchor-ready"] as const) {
     const fixture = await readyProject(t);
-    await assembleProject({ root: fixture.root, operations: { buildOutputs: fakeOutputs } });
+    await deliverReviewedCandidate({ root: fixture.root, operations: { buildOutputs: fakeOutputs } });
     await assert.rejects(createClientSmokeCopy(fixture.root, {
       checkpoint: (step) => {
         if (step === checkpoint) throw new Error(`crash at ${checkpoint}`);
@@ -1086,7 +1051,7 @@ test("serializes smoke-copy creation and recovers every trusted anchor publicati
 
 test("rejects ordinary anchor forgery plus linked or stale anchored smoke evidence", async (t) => {
   const fixture = await readyProject(t);
-  await assembleProject({ root: fixture.root, operations: { buildOutputs: fakeOutputs } });
+  await deliverReviewedCandidate({ root: fixture.root, operations: { buildOutputs: fakeOutputs } });
   const smoke = await createClientSmokeCopy(fixture.root);
   await assert.rejects(updateProject(fixture.root, (manifest) => ({
     ...manifest,
@@ -1129,7 +1094,7 @@ test("rejects ordinary anchor forgery plus linked or stale anchored smoke eviden
 
 test("invalidates completed acceptance when a same-revision slide becomes editable", async (t) => {
   const fixture = await readyProject(t);
-  await assembleProject({
+  await deliverReviewedCandidate({
     root: fixture.root,
     operations: { buildOutputs: fakeOutputs },
   });
@@ -1152,7 +1117,7 @@ test("invalidates completed acceptance when a same-revision slide becomes editab
 test("rejects delivery when immutable gate snapshots or presentation pointers are tampered", async (t) => {
   for (const tamper of ["snapshot", "presentation"] as const) {
     const fixture = await readyProject(t);
-    await assembleProject({ root: fixture.root, operations: { buildOutputs: fakeOutputs } });
+    await deliverReviewedCandidate({ root: fixture.root, operations: { buildOutputs: fakeOutputs } });
     const evidence = await writeCompletedClientEvidence(fixture.root, `gate-${tamper}.json`);
     const manifest = await readProject(fixture.root);
     const styleGate = [...manifest.gates].reverse().find((gate) => gate.gate === "style-sample")!;
@@ -1167,7 +1132,7 @@ test("rejects delivery when immutable gate snapshots or presentation pointers ar
   }
 });
 
-test("exposes assemble, acceptance, acceptance-smoke-copy, and acceptance-record as strict CLI routes", async (t) => {
+test("exposes candidate assembly and acceptance as strict CLI routes without legacy direct assembly", async (t) => {
   const root = await directory(t);
   const cli = join(process.cwd(), "src", "cli.ts");
   const invoke = async (args: string[], env: NodeJS.ProcessEnv = process.env) => {
@@ -1178,7 +1143,14 @@ test("exposes assemble, acceptance, acceptance-smoke-copy, and acceptance-record
       return String((error as { stderr?: string }).stderr ?? error);
     }
   };
-  const assembleError = await invoke(["assemble", "--project", root], {
+  const legacyAssembleError = await invoke(["assemble", "--project", root], {
+    ...process.env,
+    SUPERPPT_AI_IMAGE_TO_PPT_SOURCE: "",
+    SUPERPPT_IMAGE_TO_EDITABLE_PPTX_SOURCE: "",
+  });
+  assert.match(legacyAssembleError, /unknown command/);
+
+  const assembleError = await invoke(["assemble-candidate", "--project", root], {
     ...process.env,
     SUPERPPT_AI_IMAGE_TO_PPT_SOURCE: "",
     SUPERPPT_IMAGE_TO_EDITABLE_PPTX_SOURCE: "",
@@ -1207,7 +1179,7 @@ test("exposes assemble, acceptance, acceptance-smoke-copy, and acceptance-record
 
 test("rejects a PPTX that names pages but has no bound media relationships", async (t) => {
   const fixture = await readyProject(t);
-  await assert.rejects(assembleProject({
+  await assert.rejects(deliverReviewedCandidate({
     root: fixture.root,
     operations: { buildOutputs: fakeUnboundOutputs },
   }), /PPTX.*media|media.*PPTX/i);
@@ -1220,7 +1192,7 @@ test("derives provider identity from every accepted attempt ledger", async (t) =
     providerId: "spoofed-provider",
     operations: { buildOutputs: fakeOutputs },
   };
-  await assembleProject(untrustedCallerOptions);
+  await deliverReviewedCandidate(untrustedCallerOptions);
   assert.equal((await readProjectAcceptance(fixture.root)).providerId, "ledger-provider");
   const ledgerPath = join(fixture.root, "images", PROJECT_SLIDES[0], "attempt-1", "ledger.json");
   const ledger = JSON.parse(await readFile(ledgerPath, "utf8"));
@@ -1231,65 +1203,9 @@ test("derives provider identity from every accepted attempt ledger", async (t) =
   );
 });
 
-test("recovery rejects self-consistent output markers with noncanonical artifact paths", async (t) => {
-  const fixture = await readyProject(t);
-  const result = await assembleProject({
-    root: fixture.root,
-    operations: { buildOutputs: fakeOutputs },
-  });
-  const destination = result.destination;
-  const markerPath = join(destination, ".superppt-output.json");
-  const acceptancePath = join(destination, "acceptance.json");
-  const wrongPptx = join(destination, "renamed-deck.pptx");
-  await copyFile(join(destination, "deck.pptx"), wrongPptx);
-  const marker = JSON.parse(await readFile(markerPath, "utf8"));
-  const acceptance = JSON.parse(await readFile(acceptancePath, "utf8"));
-  const wrongRef = `output/revisions/1/renamed-deck.pptx`;
-  marker.artifacts.pptx.path = wrongRef;
-  acceptance.exports.pptx.path = wrongRef;
-  const acceptanceBytes = Buffer.from(`${JSON.stringify(acceptance, null, 2)}\n`);
-  await writeFile(acceptancePath, acceptanceBytes);
-  marker.artifacts.acceptance.sha256 = createHash("sha256").update(acceptanceBytes).digest("hex");
-  await writeFile(markerPath, `${JSON.stringify(marker, null, 2)}\n`);
-
-  await assert.rejects(assembleProject({
-    root: fixture.root,
-    operations: { buildOutputs: fakeOutputs },
-  }), /canonical artifact paths/);
-});
-
-test("aborts and quarantines output when a same-revision render changes after promotion", async (t) => {
-  const fixture = await readyProject(t);
-  const replacementRoot = join(fixture.root, "images", PROJECT_SLIDES[0], "attempt-2");
-  await mkdir(replacementRoot, { recursive: true });
-  const replacement = await image(join(replacementRoot, "slide.png"), "#777777");
-  await assert.rejects(assembleProject({
-    root: fixture.root,
-    operations: {
-      buildOutputs: fakeOutputs,
-      checkpoint: async (step) => {
-        if (step !== "output-promoted") return;
-        await publishRevisionSnapshot(fixture.root, await readProject(fixture.root));
-        await updateProject(fixture.root, (manifest) => ({
-          ...manifest,
-          slides: manifest.slides.map((slide) => slide.id === PROJECT_SLIDES[0] ? {
-            ...slide,
-            image: {
-              path: `images/${slide.id}/attempt-2/slide.png`,
-              sha256: replacement.sha256,
-              revisionId: manifest.currentRevision.id,
-            },
-          } : slide),
-        }));
-      },
-    },
-  }), /slide binding changed during assembly/);
-  await assert.rejects(access(join(fixture.root, "output", "revisions", "1")));
-});
-
 test("recovers acceptance after a hard crash following immutable record promotion", async (t) => {
   const fixture = await readyProject(t);
-  await assembleProject({
+  await deliverReviewedCandidate({
     root: fixture.root,
     operations: { buildOutputs: fakeOutputs },
   });
@@ -1311,7 +1227,7 @@ test("recovers acceptance after a hard crash following immutable record promotio
 
 test("rejects a coordinated rewrite of an orphaned immutable acceptance record", async (t) => {
   const fixture = await readyProject(t);
-  await assembleProject({
+  await deliverReviewedCandidate({
     root: fixture.root,
     operations: { buildOutputs: fakeOutputs },
   });

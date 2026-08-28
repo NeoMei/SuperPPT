@@ -22,13 +22,13 @@ Read [references/工作区契约.md](references/工作区契约.md) before creat
 
 ## Nine stages
 
-0. **preflight** — Resolve both dependency capabilities and compatible versions. Do not branch on a model name.
+0. **preflight** — Resolve both explicitly supplied Skill roots and compatible versions. Do not branch on a model name or discover dependencies from environment variables or sibling directories.
 1. **intake** — Agent 编排 converts the original description/text/Markdown into validated `brief.json`; deterministic code validates and records artifacts but does not perform the semantic writing.
 2. **outline** — Agent orchestration expands the brief into ordered `outline.json`/`.md` with stable UUIDs, page roles, purpose, and source coverage. Run `validate-outline` and show the complete outline at the ordinary `outline` gate before any spec is required.
 3. **slide-specs** — Expand every outline page into `slides/<stable-id>/spec.json`/`.md`: one core message, concise authorized text, visual subject, composition, relationships, forbidden content, and source references. Run `validate-plan` and show all specs at the ordinary `slide-specs` gate.
-4. **style-sample** — Show the compact built-in high-detail preview grid, accept exactly one built-in recipe, choose a content-rich representative page, and run `generate-style-sample` for its real provider-backed sample before the ordinary `style-sample` gate. V1 does not accept a custom or project-local recipe.
-5. **generation** — Before any model call disclose the 提供者, 页数, 最大调用次数, 出站文本/参考图, and 输出位置. Generate only stale/failed pages. If no reviewer is available, visually inspect the exact current attempt and submit private `record-qa` evidence; rejection can trigger only a targeted retry, within the three-attempt cap.
-6. **assembly** — Assemble ordered final renders into PPTX, PDF, montage, and acceptance evidence in an owned staged output revision.
+4. **style-sample** — Show the compact built-in high-detail preview grid, accept exactly one built-in recipe, choose a content-rich representative page, publish and explicitly approve its one-call generation plan, then prepare the immutable job. The Agent invokes `ai-image-to-ppt` only after an exact `admit-image-call`, records the private result, finalizes it, and publishes the real sample before the ordinary `style-sample` gate. V1 does not accept a custom or project-local recipe.
+5. **generation** — Before any model call disclose the 提供者, 页数, 最大调用次数, 出站文本/参考图, and 输出位置. Publish and explicitly approve the generation authorization, prepare an immutable job, then have the Agent invoke `ai-image-to-ppt` serially. Every call requires an exact one-time admission and private `record-image-result`; rejection can trigger only a targeted page-regeneration job, within the three-attempt cap.
+6. **assembly** — Assemble ordered final renders into a review-only candidate, publish its exact descriptor, and ask the user to choose `edit-page`, `return-upstream`, or `confirm-delivery`. Only the authenticated `confirm-delivery` action promotes PPTX, PDF, montage, and acceptance evidence into the owned output revision.
 7. **revision** — On demand, use [references/修改路由.md](references/修改路由.md). Upstream changes require `revision-impact`; selected editable reconstruction requires `slide-preview`.
 8. **delivery** — Deliver current artifacts and perform the real client smoke check described below.
 

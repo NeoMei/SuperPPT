@@ -1,10 +1,11 @@
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 
 import { runOfflineAcceptance } from "../src/acceptance/offline.js";
+import { assembleProjectCandidate } from "../src/deck/assemble.js";
 import { sha256 } from "../src/project/store.js";
 
 test("runs intake through mixed-slide replacement without changing untouched renders", async (t) => {
@@ -18,8 +19,6 @@ test("runs intake through mixed-slide replacement without changing untouched ren
   const result = await runOfflineAcceptance({
     root,
     fixtures: "tests/fixtures/e2e",
-    provider: "tests/fixtures/fake_ai_provider.py",
-    reviewer: "tests/fixtures/e2e/fake_ai_reviewer.py",
     editable: "tests/fixtures/editable",
   });
 
@@ -64,4 +63,23 @@ test("runs intake through mixed-slide replacement without changing untouched ren
       assert.equal(acceptance.exports[kind].sha256, sha256(bytes));
     }
   }
+
+  const jobsRoot = join(result.root, "generation", "jobs");
+  let deckJobId: string | null = null;
+  for (const entry of await readdir(jobsRoot)) {
+    const job = JSON.parse(await readFile(join(jobsRoot, entry, "job.json"), "utf8"));
+    if (job.kind === "deck") {
+      deckJobId = entry;
+      break;
+    }
+  }
+  assert.ok(deckJobId);
+  const aggregatePath = join(jobsRoot, deckJobId, "result.json");
+  const aggregate = JSON.parse(await readFile(aggregatePath, "utf8"));
+  aggregate.pages[0].recordedAt = "2000-01-01T00:00:00.000Z";
+  await writeFile(aggregatePath, `${JSON.stringify(aggregate, null, 2)}\n`);
+  await assert.rejects(
+    assembleProjectCandidate(result.root),
+    /aggregate pages do not match immutable page results|delegated.*evidence/i,
+  );
 });

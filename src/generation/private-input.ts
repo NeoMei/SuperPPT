@@ -1,8 +1,7 @@
-import { closeSync, constants, fstatSync, fsyncSync, readFileSync, writeSync } from "node:fs";
+import { closeSync, constants, fstatSync, fsyncSync, writeSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
 
-import { GenerationDirectory, openGenerationDirectory } from "./anchored-dir.js";
-import { cleanupAbandonedProviderFiles, ownedTemporaryName } from "./abandoned.js";
+import { openGenerationDirectory } from "./anchored-dir.js";
 
 export function privateSecurityPolicy(platform: NodeJS.Platform = process.platform): {
   directoryMode: 0o700 | undefined;
@@ -13,22 +12,6 @@ export function privateSecurityPolicy(platform: NodeJS.Platform = process.platfo
   return platform === "win32"
     ? { directoryMode: undefined, fileMode: undefined, requireExactMode: false, transport: "anonymous-pipe" }
     : { directoryMode: 0o700, fileMode: 0o600, requireExactMode: true, transport: "unlinked-regular-file" };
-}
-
-export function readPrivateInputFile(path: string): Buffer {
-  const directory = openGenerationDirectory(dirname(path));
-  let fd: number | undefined;
-  try {
-    fd = directory.openRegular(basename(path));
-    const policy = privateSecurityPolicy();
-    if (policy.requireExactMode && (fstatSync(fd).mode & 0o777) !== policy.fileMode) {
-      throw new Error("private input must have mode 0600");
-    }
-    return readFileSync(fd);
-  } finally {
-    if (fd !== undefined) closeSync(fd);
-    directory.close();
-  }
 }
 
 export function appendPrivateInputLine(path: string, value: string): void {
@@ -55,51 +38,5 @@ export function appendPrivateInputLine(path: string, value: string): void {
   } finally {
     if (fd !== undefined) closeSync(fd);
     directory.close();
-  }
-}
-
-export async function withPrivateInput<T>(options: {
-  target: string;
-  suffix: string;
-  value: string;
-  parent?: GenerationDirectory;
-  beforeExecute?: (path: string) => Promise<void>;
-  action: (input: { path: string; fd: number; value: string }) => Promise<T>;
-}): Promise<T> {
-  if (privateSecurityPolicy().transport === "anonymous-pipe") {
-    await options.beforeExecute?.("@anonymous-private-input");
-    return options.action({ path: "@anonymous-private-input", fd: -1, value: options.value });
-  }
-  const ownsParent = options.parent === undefined;
-  const parent = options.parent ?? openGenerationDirectory(dirname(options.target));
-  let directory: GenerationDirectory | undefined;
-  let fd: number | undefined;
-  let created = false;
-  const name = ownedTemporaryName(options.suffix);
-  try {
-    directory = parent.child(".private");
-    cleanupAbandonedProviderFiles(parent);
-    const path = join(directory.path, name);
-    directory.writeExclusive(name, options.value);
-    created = true;
-    fd = directory.openRegular(name);
-    parent.assertCurrent();
-    directory.assertCurrent();
-    await options.beforeExecute?.(path);
-    parent.assertCurrent();
-    directory.assertCurrent();
-    // POSIX children consume the already-opened descriptor. Removing its directory
-    // entry before spawn leaves no plaintext pathname behind if the orchestrator dies.
-    if (process.platform !== "win32") {
-      directory.remove(name);
-      created = false;
-    }
-    return await options.action({ path, fd, value: options.value });
-  } finally {
-    if (fd !== undefined) closeSync(fd);
-    try { if (directory && created) directory.remove(name); } finally {
-      directory?.close();
-      if (ownsParent) parent.close();
-    }
   }
 }

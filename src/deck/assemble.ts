@@ -17,6 +17,7 @@ import {
   validateRecordedClientSmokeCopy,
 } from "../acceptance/smoke-copy.js";
 import { AttemptLedgerSchema } from "../generation/schemas.js";
+import { readAndReauthenticateDelegatedResult } from "../generation/delegation-result.js";
 import { validateAppliedEditableBinding, validateConfirmedEditablePreview } from "../editable/render.js";
 import { assertGateCurrent } from "../planning/confirm.js";
 import { sha256Evidence } from "../project/evidence.js";
@@ -182,34 +183,7 @@ export type CandidatePromotionCheckpoint = "output-promoted" | "manifest-updated
 export type CandidatePromotionOperations = {
   checkpoint?: (step: CandidatePromotionCheckpoint) => Promise<void> | void;
 };
-const QuarantinedArtifactSchema = z.object({
-  originalPath: z.string().min(1),
-  quarantineRelativePath: z.string().regex(/^[A-Za-z0-9._-]+$/),
-  sha256: z.string().regex(/^[a-f0-9]{64}$/),
-}).strict();
-const QuarantinedOutputSchema = z.object({
-  markerVersion: z.literal(1),
-  appId: z.literal("superppt"),
-  artifactKind: z.literal("quarantined-output"),
-  projectId: z.string().uuid(),
-  revisionId: z.string().uuid(),
-  revisionNumber: z.number().int().positive(),
-  originalPath: z.string().min(1),
-  quarantinePath: z.string().min(1),
-  reason: z.literal("superseded-editable-replacement-candidate"),
-  quarantinedAt: z.string().datetime(),
-  candidateMarkerSha256: z.string().regex(/^[a-f0-9]{64}$/),
-  artifacts: z.object({
-    pptx: QuarantinedArtifactSchema,
-    pdf: QuarantinedArtifactSchema,
-    montage: QuarantinedArtifactSchema,
-    acceptance: QuarantinedArtifactSchema,
-  }).strict(),
-}).strict();
-export type QuarantinedOutput = z.infer<typeof QuarantinedOutputSchema>;
-const QUARANTINE_DESCRIPTOR = ".superppt-quarantine.json";
-export type AssembleProjectCheckpoint = "outputs-built" | "output-promoted" | "manifest-updated";
-export type QuarantineCheckpoint = "descriptor-staged" | "output-quarantined" | "descriptor-promoted" | "descriptor-validated";
+export type AssembleProjectCheckpoint = "outputs-built";
 export type AssembleProjectOperations = {
   buildOutputs?: (
     renders: FinalRender[],
@@ -218,10 +192,6 @@ export type AssembleProjectOperations = {
   checkpoint?: (step: AssembleProjectCheckpoint) => Promise<void> | void;
   beforePromote?: () => Promise<void> | void;
   afterRenderOpened?: (path: string) => Promise<void> | void;
-  quarantineCheckpoint?: (
-    step: QuarantineCheckpoint,
-    paths: { destination: string; quarantine: string; descriptorStaging: string },
-  ) => Promise<void> | void;
 };
 
 export type AssembleProjectResult = {
@@ -309,6 +279,7 @@ async function projectPages(root: string, manifest: ProjectManifest): Promise<{
   });
   const pages: DeckPage[] = [];
   const providers = new Set<string>();
+  const delegatedResults = new Map<string, Awaited<ReturnType<typeof readAndReauthenticateDelegatedResult>>>();
   for (const record of records) {
     await readOwnedRegularFile(root, record.path);
     const absolute = await realpath(join(root, record.path.split("/").join(sep)));
@@ -334,18 +305,40 @@ async function projectPages(root: string, manifest: ProjectManifest): Promise<{
     if (!imageArtifact || imageArtifact.revisionId !== manifest.currentRevision.id) {
       throw new Error("every page must bind an accepted generation attempt");
     }
-    const match = new RegExp(`^images/${record.id.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}/attempt-[1-3]/slide\\.(?:png|jpg|jpeg)$`).exec(imageArtifact.path);
-    if (!match) throw new Error("accepted generation artifact path is invalid");
-    const ledgerPath = posix.join(posix.dirname(imageArtifact.path), "ledger.json");
-    const ledger = AttemptLedgerSchema.parse(JSON.parse((await readOwnedRegularFile(root, ledgerPath)).toString("utf8")));
+    const escapedSlideId = record.id.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    const legacyMatch = new RegExp(`^images/${escapedSlideId}/attempt-[1-3]/slide\\.(?:png|jpg|jpeg)$`).exec(imageArtifact.path);
+    if (legacyMatch) {
+      const ledgerPath = posix.join(posix.dirname(imageArtifact.path), "ledger.json");
+      const ledger = AttemptLedgerSchema.parse(JSON.parse((await readOwnedRegularFile(root, ledgerPath)).toString("utf8")));
+      if (
+        ledger.slideId !== record.id
+        || ledger.revisionId !== manifest.currentRevision.id
+        || ledger.outcome !== "accepted"
+        || ledger.output !== imageArtifact.path
+        || ledger.outputSha256 !== imageArtifact.sha256
+      ) throw new Error("accepted attempt ledger does not bind the current page");
+      providers.add(ledger.providerId);
+      continue;
+    }
+    const delegatedMatch = new RegExp(`^generation/jobs/([0-9a-f-]{36})/normalized/${escapedSlideId}\\.png$`).exec(imageArtifact.path);
+    if (!delegatedMatch) throw new Error("accepted generation artifact path is invalid");
+    const jobId = delegatedMatch[1]!;
+    const authenticated = delegatedResults.get(jobId)
+      ?? await readAndReauthenticateDelegatedResult(root, jobId);
+    delegatedResults.set(jobId, authenticated);
+    const resultPage = authenticated.result.pages.find((page) => page.slideId === record.id);
     if (
-      ledger.slideId !== record.id
-      || ledger.revisionId !== manifest.currentRevision.id
-      || ledger.outcome !== "accepted"
-      || ledger.output !== imageArtifact.path
-      || ledger.outputSha256 !== imageArtifact.sha256
-    ) throw new Error("accepted attempt ledger does not bind the current page");
-    providers.add(ledger.providerId);
+      authenticated.job.projectRevisionId !== manifest.currentRevision.id
+      || !resultPage
+      || (resultPage.status !== "success" && resultPage.status !== "cached")
+      || resultPage.styleConsistency !== "accepted"
+      || !resultPage.artifacts
+      || resultPage.artifacts.normalized.path !== imageArtifact.path
+      || resultPage.artifacts.normalized.sha256 !== imageArtifact.sha256
+      || resultPage.artifacts.normalized.revisionId !== manifest.currentRevision.id
+      || resultPage.dependency.status !== "success"
+    ) throw new Error("authenticated delegated result does not bind the current page");
+    providers.add(`${resultPage.dependency.channel}-${resultPage.dependency.provider}`);
   }
   if (providers.size !== 1) throw new Error("all pages must use one accepted provider identity");
   return { pages, records, providerId: [...providers][0]! };
@@ -897,113 +890,6 @@ export async function assembleProjectCandidate(
   });
 }
 
-export async function assembleProject(options: {
-  root: string;
-  warnings?: string[];
-  operations?: AssembleProjectOperations;
-}): Promise<AssembleProjectResult> {
-  return withProjectLease(options.root, "assembly", async (root) => {
-    const manifest = await readProject(root);
-    const revisionId = manifest.currentRevision.id;
-    const gates = await gatesForRevision(root, manifest);
-    if (!gates.current) throw new Error("all three planning gates must be current");
-    const prepared = await projectPages(root, manifest);
-    const ordered = await validateFinalRenders(prepared.pages, { afterRenderOpened: options.operations?.afterRenderOpened });
-    const markerBase = {
-      markerVersion: 1 as const,
-      appId: "superppt" as const,
-      artifactKind: "image-deck" as const,
-      projectId: manifest.projectId,
-      revisionId,
-      revisionNumber: manifest.deckRevision ?? manifest.currentRevision.number,
-      providerId: prepared.providerId,
-      projectBindingSha256: projectBinding(manifest),
-      slides: prepared.records.sort((left, right) => left.order - right.order).map((record) => ({
-        id: record.id,
-        order: record.order,
-        mode: record.mode,
-        path: record.path,
-        sha256: record.sha256,
-      })),
-    };
-    const revisionsRoot = await ensureOwnedDirectory(root, "output/revisions");
-    const outputRevision = deckRevisionNumber(manifest);
-    const destination = join(revisionsRoot, String(outputRevision));
-    try {
-      await lstat(destination);
-      const recovered = await validateOwnedOutput(root, destination, markerBase);
-      if (manifest.stage === "delivered") {
-        await readProjectAcceptance(root);
-        return {
-          projectId: manifest.projectId,
-          revisionId,
-          revisionNumber: outputRevision,
-          destination,
-          recovered: true,
-          artifacts: {
-            ...recovered.artifacts,
-            acceptance: manifest.exports.acceptance!,
-          },
-        };
-      }
-      await publishOutputManifest(root, revisionId, recovered);
-      return {
-        projectId: manifest.projectId,
-        revisionId,
-        revisionNumber: outputRevision,
-        destination,
-        recovered: true,
-        artifacts: recovered.artifacts,
-      };
-    } catch (error: unknown) {
-      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
-    }
-
-    const staging = join(revisionsRoot, `.staging-${randomUUID()}`);
-    await mkdir(staging, { mode: 0o700 });
-    const paths = {
-      pptx: join(staging, "deck.pptx"),
-      pdf: join(staging, "deck.pdf"),
-      montage: join(staging, "montage.jpg"),
-    };
-    await (options.operations?.buildOutputs ?? defaultBuildOutputs)(ordered, paths);
-    await verifyOutputs(ordered, paths);
-    const outputMarker = await buildOutputArtifacts(root, markerBase, staging, options.warnings ?? []);
-    await writeDurableExclusive(join(staging, ".superppt-output.json"), `${JSON.stringify(outputMarker, null, 2)}\n`);
-    await syncDirectory(staging);
-    await syncDirectory(revisionsRoot);
-    await options.operations?.checkpoint?.("outputs-built");
-    await options.operations?.beforePromote?.();
-    const beforePromotion = await readProject(root);
-    if (beforePromotion.currentRevision.id !== revisionId) throw new Error("project revision changed during assembly");
-    if (projectBinding(beforePromotion) !== markerBase.projectBindingSha256) throw new Error("slide binding changed during assembly");
-    await promoteExclusive(staging, destination);
-    await syncDirectory(revisionsRoot);
-    await options.operations?.checkpoint?.("output-promoted");
-    let verified: OutputMarker;
-    try {
-      verified = await validateOwnedOutput(root, destination, markerBase);
-      await publishOutputManifest(root, revisionId, verified);
-    } catch (error: unknown) {
-      const marker = await readOutputMarker(destination).catch(() => null);
-      if (marker?.projectId === markerBase.projectId && marker.revisionId === markerBase.revisionId) {
-        await rename(destination, join(revisionsRoot, `.failed-${outputRevision}-${randomUUID()}`));
-        await syncDirectory(revisionsRoot);
-      }
-      throw error;
-    }
-    await options.operations?.checkpoint?.("manifest-updated");
-    return {
-      projectId: manifest.projectId,
-      revisionId,
-      revisionNumber: outputRevision,
-      destination,
-      recovered: false,
-      artifacts: verified.artifacts,
-    };
-  });
-}
-
 function completedExports(manifest: ProjectManifest): manifest is ProjectManifest & {
   exports: { pptx: Artifact; pdf: Artifact; montage: Artifact; acceptance: Artifact };
 } {
@@ -1110,356 +996,6 @@ async function unlinkOwnedDescriptor(path: string, identity: OwnedDescriptorIden
   const actual = createHash("sha256").update(await readRegularFileNoFollow(path)).digest("hex");
   if (actual !== identity.sha256) throw new Error("refusing to unlink a changed quarantine descriptor");
   await unlink(path);
-}
-
-export async function validateQuarantinedOutput(root: string, projectPath: string): Promise<QuarantinedOutput> {
-  if (
-    isAbsolute(projectPath)
-    || projectPath.includes("\\")
-    || projectPath.split("/").some((part) => !part || part === "." || part === "..")
-  ) throw new Error("quarantine path must be project-relative and canonical");
-  const project = await readProject(root);
-  const canonicalRoot = await realpath(root);
-  const quarantine = join(canonicalRoot, ...projectPath.split("/"));
-  const info = await lstat(quarantine);
-  if (info.isSymbolicLink() || !info.isDirectory() || await realpath(quarantine) !== quarantine) {
-    throw new Error("quarantine directory is unsafe");
-  }
-  await requireExactRegularFiles(quarantine, [
-    ".superppt-output.json",
-    QUARANTINE_DESCRIPTOR,
-    "deck.pptx",
-    "deck.pdf",
-    "montage.jpg",
-    "acceptance.json",
-  ], "quarantine directory");
-  const descriptor = QuarantinedOutputSchema.parse(JSON.parse(
-    (await readRegularFileNoFollow(join(quarantine, QUARANTINE_DESCRIPTOR))).toString("utf8"),
-  ));
-  if (
-    descriptor.projectId !== project.projectId
-    || !project.revisions.some((revision) => revision.id === descriptor.revisionId)
-    || descriptor.originalPath !== `output/revisions/${descriptor.revisionNumber}`
-    || descriptor.quarantinePath !== projectPath
-    || !new RegExp(`^output/revisions/\\.failed-${descriptor.revisionNumber}-[0-9a-f-]{36}$`).test(projectPath)
-  ) throw new Error("quarantine descriptor identity is invalid");
-  const markerBytes = await readRegularFileNoFollow(join(quarantine, ".superppt-output.json"));
-  if (createHash("sha256").update(markerBytes).digest("hex") !== descriptor.candidateMarkerSha256) {
-    throw new Error("quarantine candidate marker hash mismatch");
-  }
-  const marker = OutputMarkerSchema.parse(JSON.parse(markerBytes.toString("utf8")));
-  if (
-    marker.projectId !== descriptor.projectId
-    || marker.revisionId !== descriptor.revisionId
-    || marker.revisionNumber !== descriptor.revisionNumber
-  ) throw new Error("quarantine candidate marker identity mismatch");
-  const localNames: Record<keyof OutputArtifacts, string> = {
-    pptx: "deck.pptx",
-    pdf: "deck.pdf",
-    montage: "montage.jpg",
-    acceptance: "acceptance.json",
-  };
-  for (const kind of Object.keys(localNames) as Array<keyof OutputArtifacts>) {
-    const artifact = descriptor.artifacts[kind];
-    if (
-      artifact.originalPath !== marker.artifacts[kind].path
-      || artifact.sha256 !== marker.artifacts[kind].sha256
-      || artifact.quarantineRelativePath !== localNames[kind]
-    ) throw new Error("quarantine artifact descriptor does not match the candidate marker");
-    const bytes = await readRegularFileNoFollow(join(quarantine, artifact.quarantineRelativePath));
-    if (createHash("sha256").update(bytes).digest("hex") !== artifact.sha256) {
-      throw new Error("quarantine artifact hash mismatch");
-    }
-  }
-  return descriptor;
-}
-
-async function quarantineConflictingReplacementCandidate(options: {
-  root: string;
-  revisionsRoot: string;
-  destination: string;
-  before: ProjectManifest;
-  expected: Omit<OutputMarker, "artifacts">;
-  operations?: AssembleProjectOperations;
-}): Promise<void> {
-  const marker = await readOutputMarker(options.destination);
-  if (
-    marker.projectId !== options.before.projectId
-    || marker.revisionId !== options.before.currentRevision.id
-    || marker.revisionNumber !== options.expected.revisionNumber
-    || marker.projectBindingSha256 === options.expected.projectBindingSha256
-    || outputRevisionReferenced(options.before, marker.revisionNumber)
-  ) throw new Error("conflicting replacement output is not an unreferenced current orphan candidate");
-
-  const orphanGate = [...options.before.gates].reverse().find((gate) => {
-    if (gate.gate !== "slide-preview" || !gate.slidePreview) return false;
-    return projectBinding(replacementCandidate(options.before, gate.slidePreview.slideId, gate.slidePreview))
-      === marker.projectBindingSha256;
-  });
-  if (!orphanGate?.slidePreview) {
-    throw new Error("conflicting replacement output does not bind an authenticated preview candidate");
-  }
-  const binding = await validateConfirmedEditablePreview(
-    options.root,
-    options.before,
-    orphanGate.slidePreview.slideId,
-    orphanGate.slidePreview.modifiedRevisionId,
-    orphanGate.slidePreview.expectedModifiedRevisionRecordSha256,
-  );
-  const orphanCandidate = replacementCandidate(options.before, binding.slideId, binding);
-  const { artifacts: _artifacts, ...orphanMarkerBase } = marker;
-  await validateOwnedOutput(options.root, options.destination, orphanMarkerBase, orphanCandidate);
-  const candidateFiles = [
-    ".superppt-output.json",
-    "deck.pptx",
-    "deck.pdf",
-    "montage.jpg",
-    "acceptance.json",
-  ] as const;
-  await requireExactRegularFiles(options.destination, candidateFiles, "replacement orphan candidate");
-
-  while (true) {
-    const quarantine = join(options.revisionsRoot, `.failed-${marker.revisionNumber}-${randomUUID()}`);
-    const quarantinePath = portable(options.root, quarantine);
-    const candidateMarkerBytes = await readRegularFileNoFollow(join(options.destination, ".superppt-output.json"));
-    const localNames: Record<keyof OutputArtifacts, string> = {
-      pptx: "deck.pptx",
-      pdf: "deck.pdf",
-      montage: "montage.jpg",
-      acceptance: "acceptance.json",
-    };
-    const descriptor = QuarantinedOutputSchema.parse({
-      markerVersion: 1,
-      appId: "superppt",
-      artifactKind: "quarantined-output",
-      projectId: marker.projectId,
-      revisionId: marker.revisionId,
-      revisionNumber: marker.revisionNumber,
-      originalPath: portable(options.root, options.destination),
-      quarantinePath,
-      reason: "superseded-editable-replacement-candidate",
-      quarantinedAt: new Date().toISOString(),
-      candidateMarkerSha256: createHash("sha256").update(candidateMarkerBytes).digest("hex"),
-      artifacts: Object.fromEntries((Object.keys(localNames) as Array<keyof OutputArtifacts>).map((kind) => [kind, {
-        originalPath: marker.artifacts[kind].path,
-        quarantineRelativePath: localNames[kind],
-        sha256: marker.artifacts[kind].sha256,
-      }])),
-    });
-    const descriptorStaging = join(options.revisionsRoot, `.quarantine-${randomUUID()}.json`);
-    const descriptorBytes = Buffer.from(`${JSON.stringify(descriptor, null, 2)}\n`);
-    const descriptorSha256 = createHash("sha256").update(descriptorBytes).digest("hex");
-    await writeDurableExclusive(descriptorStaging, descriptorBytes);
-    const descriptorIdentity = await ownedDescriptorIdentity(descriptorStaging, descriptorSha256);
-    await syncDirectory(options.revisionsRoot);
-    try {
-      await options.operations?.quarantineCheckpoint?.("descriptor-staged", {
-        destination: options.destination,
-        quarantine,
-        descriptorStaging,
-      });
-      await requireExactRegularFiles(options.destination, candidateFiles, "replacement orphan candidate");
-    } catch (error: unknown) {
-      await unlinkOwnedDescriptor(descriptorStaging, descriptorIdentity);
-      await syncDirectory(options.revisionsRoot);
-      throw error;
-    }
-    try {
-      await promoteExclusive(options.destination, quarantine);
-    } catch (error: unknown) {
-      await unlinkOwnedDescriptor(descriptorStaging, descriptorIdentity);
-      await syncDirectory(options.revisionsRoot);
-      if ((error as NodeJS.ErrnoException).code === "EEXIST") continue;
-      throw error;
-    }
-    let descriptorPromoted = false;
-    try {
-      await options.operations?.quarantineCheckpoint?.("output-quarantined", {
-        destination: options.destination,
-        quarantine,
-        descriptorStaging,
-      });
-      await requireExactRegularFiles(quarantine, candidateFiles, "replacement orphan candidate");
-      await promoteExclusive(descriptorStaging, join(quarantine, QUARANTINE_DESCRIPTOR));
-      descriptorPromoted = true;
-      await options.operations?.quarantineCheckpoint?.("descriptor-promoted", {
-        destination: options.destination,
-        quarantine,
-        descriptorStaging,
-      });
-      await syncDirectory(quarantine);
-      await syncDirectory(options.revisionsRoot);
-      await validateQuarantinedOutput(options.root, quarantinePath);
-      await options.operations?.quarantineCheckpoint?.("descriptor-validated", {
-        destination: options.destination,
-        quarantine,
-        descriptorStaging,
-      });
-      return;
-    } catch (error: unknown) {
-      try {
-        await promoteExclusive(quarantine, options.destination);
-        if (descriptorPromoted) {
-          await unlinkOwnedDescriptor(join(options.destination, QUARANTINE_DESCRIPTOR), descriptorIdentity);
-        } else {
-          await unlinkOwnedDescriptor(descriptorStaging, descriptorIdentity);
-        }
-        await syncDirectory(options.destination);
-        await syncDirectory(options.revisionsRoot);
-      } catch (rollbackError: unknown) {
-        throw new AggregateError([error, rollbackError], "quarantine publication failed and rollback failed");
-      }
-      throw error;
-    }
-  }
-}
-
-async function buildCandidateOutput(options: {
-  root: string;
-  before: ProjectManifest;
-  candidate: ProjectManifest;
-  warnings: string[];
-  operations?: AssembleProjectOperations;
-}): Promise<AssembleProjectResult> {
-  const { root, before, candidate } = options;
-  const gates = await gatesForRevision(root, before);
-  if (!gates.current) throw new Error("all three planning gates must be current");
-  const prepared = await projectPages(root, candidate);
-  const ordered = await validateFinalRenders(prepared.pages, { afterRenderOpened: options.operations?.afterRenderOpened });
-  const revisionId = candidate.currentRevision.id;
-  const outputRevision = deckRevisionNumber(candidate);
-  const markerBase = {
-    markerVersion: 1 as const,
-    appId: "superppt" as const,
-    artifactKind: "image-deck" as const,
-    projectId: candidate.projectId,
-    revisionId,
-    revisionNumber: outputRevision,
-    providerId: prepared.providerId,
-    projectBindingSha256: projectBinding(candidate),
-    slides: prepared.records.sort((left, right) => left.order - right.order).map((record) => ({
-      id: record.id,
-      order: record.order,
-      mode: record.mode,
-      path: record.path,
-      sha256: record.sha256,
-    })),
-  };
-  const revisionsRoot = await ensureOwnedDirectory(root, "output/revisions");
-  const destination = join(revisionsRoot, String(outputRevision));
-  let recovered = false;
-  let verified: OutputMarker | null = null;
-  try {
-    await lstat(destination);
-    try {
-      verified = await validateOwnedOutput(root, destination, markerBase, candidate);
-      recovered = true;
-    } catch {
-      await quarantineConflictingReplacementCandidate({
-        root,
-        revisionsRoot,
-        destination,
-        before,
-        expected: markerBase,
-        operations: options.operations,
-      });
-    }
-  } catch (error: unknown) {
-    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
-  }
-  if (!verified) {
-    const staging = join(revisionsRoot, `.staging-${randomUUID()}`);
-    await mkdir(staging, { mode: 0o700 });
-    const paths = {
-      pptx: join(staging, "deck.pptx"),
-      pdf: join(staging, "deck.pdf"),
-      montage: join(staging, "montage.jpg"),
-    };
-    await (options.operations?.buildOutputs ?? defaultBuildOutputs)(ordered, paths);
-    await verifyOutputs(ordered, paths);
-    const outputMarker = await buildOutputArtifacts(root, markerBase, staging, options.warnings);
-    await writeDurableExclusive(join(staging, ".superppt-output.json"), `${JSON.stringify(outputMarker, null, 2)}\n`);
-    await syncDirectory(staging);
-    await syncDirectory(revisionsRoot);
-    await options.operations?.checkpoint?.("outputs-built");
-    await options.operations?.beforePromote?.();
-    const beforePromotion = await readProject(root);
-    if (JSON.stringify(beforePromotion) !== JSON.stringify(before)) {
-      throw new Error("project changed during slide replacement");
-    }
-    await promoteExclusive(staging, destination);
-    await syncDirectory(revisionsRoot);
-    await options.operations?.checkpoint?.("output-promoted");
-    try {
-      verified = await validateOwnedOutput(root, destination, markerBase, candidate);
-    } catch (error: unknown) {
-      const marker = await readOutputMarker(destination).catch(() => null);
-      if (marker?.projectId === markerBase.projectId && marker.revisionId === markerBase.revisionId) {
-        await rename(destination, join(revisionsRoot, `.failed-${outputRevision}-${randomUUID()}`));
-        await syncDirectory(revisionsRoot);
-      }
-      throw error;
-    }
-  }
-  await updateProject(root, (current) => {
-    if (JSON.stringify(current) !== JSON.stringify(before)) {
-      throw new Error("project changed during slide replacement");
-    }
-    return {
-      ...candidate,
-      stage: "assembling",
-      exports: verified.artifacts,
-    };
-  });
-  await options.operations?.checkpoint?.("manifest-updated");
-  return {
-    projectId: candidate.projectId,
-    revisionId,
-    revisionNumber: outputRevision,
-    destination,
-    recovered,
-    artifacts: verified.artifacts,
-  };
-}
-
-export async function replaceSlide(options: {
-  root: string;
-  slideId: string;
-  modifiedRevisionId: string;
-  expectedModifiedRevisionRecordSha256: string;
-  warnings?: string[];
-  operations?: AssembleProjectOperations;
-}): Promise<AssembleProjectResult> {
-  return withProjectLease(options.root, "slide-replacement", async (root) => {
-    const before = await readProject(root);
-    const existing = before.slides.find((slide) => slide.id === options.slideId);
-    if (!existing) throw new Error("replacement slide ID is not in the current project");
-    if (
-      existing.status === "editable"
-      && existing.editableRevision?.modifiedRevisionId === options.modifiedRevisionId
-      && existing.editableRevision.expectedModifiedRevisionRecordSha256 === options.expectedModifiedRevisionRecordSha256
-      && JSON.stringify(existing.finalRender) === JSON.stringify(existing.editableRevision.preview)
-    ) {
-      await validateAppliedEditableBinding(root, before, existing.id);
-      const result = await assembleProject({ root, warnings: options.warnings, operations: options.operations });
-      return { ...result, recovered: true };
-    }
-    const binding = await validateConfirmedEditablePreview(
-      root,
-      before,
-      options.slideId,
-      options.modifiedRevisionId,
-      options.expectedModifiedRevisionRecordSha256,
-    );
-    const candidate = replacementCandidate(before, options.slideId, binding);
-    return buildCandidateOutput({
-      root,
-      before,
-      candidate,
-      warnings: options.warnings ?? [],
-      operations: options.operations,
-    });
-  });
 }
 
 export type ApplyEditableReplacementResult = {

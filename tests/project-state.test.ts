@@ -711,3 +711,60 @@ test("CLI initializes and reports project status without changing preflight rout
     /unknown command/,
   );
 });
+
+test("delegation CLI exposes only explicit Agent-mediated image routes", async () => {
+  const invocation = ["--import", "tsx", "src/cli.ts"];
+  const invoke = async (args: string[], env: NodeJS.ProcessEnv = process.env): Promise<string> => {
+    try {
+      await execFileAsync(process.execPath, [...invocation, ...args], { cwd: process.cwd(), env });
+      return "";
+    } catch (error: unknown) {
+      return String((error as { stderr?: string }).stderr ?? error);
+    }
+  };
+
+  for (const command of [
+    "preflight",
+    "publish-sample-generation-plan",
+    "prepare-style-sample-job",
+    "record-image-result",
+    "finalize-style-sample",
+    "publish-generation-plan",
+    "prepare-deck-job",
+    "admit-image-call",
+    "prepare-page-regeneration-job",
+    "generation-status",
+    "assemble-candidate",
+    "publish-deck-review",
+    "deck-review-action",
+  ]) {
+    const error = await invoke([command]);
+    assert.match(error, /required CLI flags/);
+    assert.doesNotMatch(error, /unknown command/, command);
+  }
+
+  for (const command of ["generate-style-sample", "generate", "retry-page", "record-qa", "assemble", "promote-delivery"]) {
+    assert.match(await invoke([command]), /unknown command/, command);
+  }
+
+  assert.match(await invoke([
+    "preflight",
+    "--ai-skill", "/missing-ai",
+    "--editable-skill", "/missing-editable",
+    "--provider", "openai",
+  ]), /unknown CLI flag: --provider/);
+  assert.match(await invoke([
+    "prepare-deck-job",
+    "--project", "/missing-project",
+    "--ai-skill", "/missing-ai",
+    "--concurrency", "2",
+  ]), /unknown CLI flag: --concurrency/);
+  assert.match(await invoke(["generation-status", "--project"]), /invalid or duplicate CLI flag/);
+
+  const environmentOnly = {
+    ...process.env,
+    SUPERPPT_AI_IMAGE_TO_PPT_SOURCE: "/environment-ai",
+    SUPERPPT_IMAGE_TO_EDITABLE_PPTX_SOURCE: "/environment-editable",
+  };
+  assert.match(await invoke(["preflight"], environmentOnly), /required CLI flags/);
+});
