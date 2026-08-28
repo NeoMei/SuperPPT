@@ -9,7 +9,6 @@ import { z } from "zod";
 import { AiImageSkillDependencySchema, type AiImageSkillDependency } from "../dependencies/schemas.js";
 import { loadValidatedPlan } from "../planning/load.js";
 import type { SlideSpec } from "../planning/schemas.js";
-import { withProjectLease } from "../project/lock.js";
 import { readOwnedRegularFile } from "../project/safe-file.js";
 import { readProject } from "../project/store.js";
 import { canonicalStyleSample } from "../styles/sample-contract.js";
@@ -23,6 +22,7 @@ import {
   authorizationForPreparation,
 } from "./authorization.js";
 import { openGenerationDirectory, type GenerationDirectory } from "./anchored-dir.js";
+import { withGenerationLease } from "./lease.js";
 import {
   ImageGenerationJobSchema,
   canonicalContractFile,
@@ -454,7 +454,7 @@ export async function prepareImageGenerationJob(
   } catch (error: unknown) {
     throw new Error("invalid image generation job request", { cause: error });
   }
-  return withProjectLease(root, "generation", async (canonicalRoot) => {
+  return withGenerationLease(root, async (canonicalRoot) => {
     const ai = await assertAiImageSkillDependencyCurrent(request.aiDependency);
     const authorization = await authorizationForPreparation(canonicalRoot, request.kind);
     const [manifest, lock] = await Promise.all([
@@ -524,7 +524,7 @@ export async function readImageGenerationJob(root: string, jobId: string): Promi
 }
 
 export async function assertJobAuthorized(root: string, job: ImageGenerationJob): Promise<void> {
-  await withProjectLease(root, "generation", async (canonicalRoot) => {
+  await withGenerationLease(root, async (canonicalRoot) => {
     await assertAuthorizedJobBinding(canonicalRoot, ImageGenerationJobSchema.parse(job));
   });
 }

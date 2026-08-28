@@ -3,6 +3,7 @@ import { createHash, randomUUID } from "node:crypto";
 
 import type { AiImageSkillDependency } from "../dependencies/schemas.js";
 import { withProjectLease } from "../project/lock.js";
+import { withGenerationLease } from "./lease.js";
 import { readOwnedRegularFile } from "../project/safe-file.js";
 import {
   canonicalStyleSample,
@@ -159,7 +160,7 @@ export async function prepareStyleSampleJob(
 }
 
 export async function finalizeStyleSample(root: string, jobId: string): Promise<StyleSampleArtifacts> {
-  return withProjectLease(root, "state", async (canonicalRoot) => {
+  return withGenerationLease(root, (generationRoot) => withProjectLease(generationRoot, "state", async (canonicalRoot) => {
     const { job } = await readAndReauthenticateDelegatedResult(canonicalRoot, jobId);
     const result = await assertAcceptedSampleResult(canonicalRoot, job);
     const normalized = await readOwnedRegularFile(canonicalRoot, result.pages[0]!.artifacts!.normalized.path);
@@ -245,5 +246,5 @@ export async function finalizeStyleSample(root: string, jobId: string): Promise<
     }
     await assertFinalizedStyleSample(canonicalRoot, finalized);
     return finalized;
-  });
+  }));
 }

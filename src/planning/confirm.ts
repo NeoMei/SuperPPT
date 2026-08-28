@@ -31,6 +31,7 @@ import {
   type StyleSampleArtifacts,
 } from "../styles/sample-contract.js";
 import { appendTrustedGenerationAuthorizationRecord } from "../generation/trusted-authorization.js";
+import { withGenerationLease } from "../generation/lease.js";
 
 export type OrdinaryGate =
   | "outline"
@@ -289,7 +290,7 @@ export async function approveGate(
 ): Promise<void> {
   assertOrdinaryGate(gate);
   const options = approvalOptions(rawOptions);
-  await withPlanningLock(root, async (canonicalRoot) => {
+  const approve = () => withPlanningLock(root, async (canonicalRoot) => {
     await updateProject(canonicalRoot, async (manifest) => {
       const required = previousOrdinaryGate[gate];
       if (required && !await gateCurrentWithManifest(canonicalRoot, required, manifest)) {
@@ -355,6 +356,8 @@ export async function approveGate(
     });
     await options.operations?.checkpoint?.("manifest-published");
   }, options.lock);
+  if (gate === "generation-authorization") await withGenerationLease(root, approve);
+  else await approve();
 }
 
 export async function readGateSnapshot(root: string, gate: PlanningGate): Promise<GateSnapshot> {

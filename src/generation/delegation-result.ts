@@ -5,8 +5,16 @@ import { isAbsolute, join } from "node:path";
 import sharp from "sharp";
 import { z } from "zod";
 
-import { assertAiImageSkillDependencyCurrent, assertAuthorizedJobBinding, assertSealedJobInputs, readCallLedger, settleDelegatedGenerationCall } from "./authorization.js";
+import {
+  assertAiImageSkillDependencyCurrent,
+  assertAuthorizedJobBinding,
+  assertSealedJobInputs,
+  readCallLedger,
+  readCallLedgerUnderGenerationLease,
+  settleDelegatedGenerationCall,
+} from "./authorization.js";
 import { openGenerationDirectory } from "./anchored-dir.js";
+import { withGenerationLease } from "./lease.js";
 import { canonicalContractFile, type ImageGenerationJob } from "./job-schemas.js";
 import { readImageGenerationJob } from "./jobs.js";
 import {
@@ -19,7 +27,6 @@ import {
   type SerialStickyReport,
 } from "./schemas.js";
 import { DelegatedPresentationQaSchema, delegatedStyleConsistency } from "./quality.js";
-import { withProjectLease } from "../project/lock.js";
 import { readOwnedRegularFile } from "../project/safe-file.js";
 import { readProject, updateProject } from "../project/store.js";
 import { Sha256Schema, type Artifact, type ProjectManifest } from "../project/schemas.js";
@@ -569,9 +576,9 @@ export async function recordDelegatedResult(
     outcome: preflight.intake.dependency.status === "success" ? "success" : "failed",
   });
 
-  const publication = await withProjectLease(root, "generation", async (canonicalRoot) => {
+  const publication = await withGenerationLease(root, async (canonicalRoot) => {
     const authenticated = await authenticateIntake(canonicalRoot, raw, false);
-    const ledger = await readCallLedger(canonicalRoot);
+    const ledger = await readCallLedgerUnderGenerationLease(canonicalRoot);
     const requestCount = ledger.filter((entry) =>
       entry.entryKind === "admission"
       && entry.jobId === authenticated.job.jobId

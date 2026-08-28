@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { execFile, spawn } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import { closeSync, constants, openSync } from "node:fs";
-import { access, chmod, lstat, mkdir, mkdtemp, readFile, readdir, realpath, rename, stat, symlink, unlink, writeFile } from "node:fs/promises";
+import { access, chmod, lstat, mkdir, mkdtemp, open, readFile, readdir, realpath, rename, rm, stat, symlink, unlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { isAbsolute, join } from "node:path";
 import { Writable } from "node:stream";
@@ -1073,6 +1073,40 @@ test("trust publication crash points leave no partial final and exact retry conv
   assert.deepEqual(retry.authorizationTrust, first.authorizationTrust);
 });
 
+test("project registry publication crash points leave no partial state and retry advances monotonically", async (t) => {
+  const fixture = await approvedProject(t, "superppt-registry-publication-crash-", lockedStyle);
+  const trustRoot = `${fixture.authorizationTrustRoot}-registry-crash`;
+  const seed = "superppt-registry-publication-crash-seed";
+  const configure = async (crashAt?: string) => configureGenerationAuthorizationTrustForTests(fixture.root, {
+    root: trustRoot,
+    deterministicKeySeed: seed,
+    operations: crashAt ? {
+      checkpoint(step: string) {
+        if (step === crashAt) throw new Error(`injected ${step}`);
+      },
+    } : undefined,
+  });
+  await publishGenerationAuthorizationPlan(fixture.root, { aiDependency: fixture.aiDependency, callBudget: 3 });
+  const projectId = (await readProject(fixture.root)).projectId;
+  const registrationPath = join(trustRoot, "project-registrations", `${projectId}.json`);
+
+  await configure("registration-temp-synced");
+  await assert.rejects(approveGate(fixture.root, "generation-authorization"), /injected registration-temp-synced/);
+  await assert.rejects(access(registrationPath), { code: "ENOENT" });
+
+  await configure("registry-state-temp-synced");
+  await assert.rejects(approveGate(fixture.root, "generation-authorization"), /injected registry-state-temp-synced/);
+  const statesRoot = join(trustRoot, "project-registry", projectId, "states");
+  assert.deepEqual((await readdir(statesRoot)).filter((name) => name.endsWith(".json")), []);
+  assert.equal((await readdir(statesRoot)).some((name) => name.endsWith(".tmp")), false);
+
+  await configure();
+  await approveGate(fixture.root, "generation-authorization");
+  const job = await prepareImageGenerationJob(fixture.root, { kind: "deck", aiDependency: fixture.aiDependency });
+  await assertJobAuthorized(fixture.root, job);
+  assert.equal((await readdir(statesRoot)).filter((name) => name.endsWith(".json")).length, 2);
+});
+
 test("external authorization head rejects project rollback, gate reorder, and older signed head replay", async (t) => {
   const fixture = await authorizedDeckProject(t, "superppt-trust-monotonic-head-");
   const manifestPath = join(fixture.root, "superppt.json");
@@ -1135,6 +1169,48 @@ test("external authorization head rejects project rollback, gate reorder, and ol
     (await prepareImageGenerationJob(fixture.root, { kind: "deck", aiDependency: fixture.aiDependency })).authorizationTrust,
     jobB.authorizationTrust,
   );
+});
+
+test("external project high-water rejects deleting the newest authorization head and restoring the old project gate", async (t) => {
+  const fixture = await authorizedDeckProject(t, "superppt-trust-high-water-authorization-");
+  const manifestPath = join(fixture.root, "superppt.json");
+  const planPath = join(fixture.root, "generation", "authorization-plan.json");
+  const manifestA = await readFile(manifestPath);
+  const planA = await readFile(planPath);
+  const projectId = (await readProject(fixture.root)).projectId;
+  const headsRoot = join(fixture.authorizationTrustRoot, "authorization-heads", projectId, "heads");
+
+  await publishGenerationAuthorizationPlan(fixture.root, { aiDependency: fixture.aiDependency, callBudget: 4 });
+  await approveGate(fixture.root, "generation-authorization");
+  const latestHead = (await readdir(headsRoot)).filter((name) => name.endsWith(".json")).sort().at(-1)!;
+  await unlink(join(headsRoot, latestHead));
+  await writeFile(manifestPath, manifestA, { mode: 0o600 });
+  await writeFile(planPath, planA, { mode: 0o600 });
+
+  await assert.rejects(
+    prepareImageGenerationJob(fixture.root, { kind: "deck", aiDependency: fixture.aiDependency }),
+    /registry|high-water|authorization.*(?:truncated|rollback)/i,
+  );
+});
+
+test("external project registry missing or tampered after registration fails closed", async (t) => {
+  await t.test("missing registry", async (t) => {
+    const fixture = await authorizedDeckProject(t, "superppt-trust-registry-missing-");
+    const projectId = (await readProject(fixture.root)).projectId;
+    await rm(join(fixture.authorizationTrustRoot, "project-registry", projectId), { recursive: true, force: true });
+    await assert.rejects(readCallLedger(fixture.root), /project registry.*missing|registered project.*registry/i);
+  });
+
+  await t.test("tampered registry", async (t) => {
+    const fixture = await authorizedDeckProject(t, "superppt-trust-registry-tampered-");
+    const projectId = (await readProject(fixture.root)).projectId;
+    const statesRoot = join(fixture.authorizationTrustRoot, "project-registry", projectId, "states");
+    await mkdir(statesRoot, { recursive: true, mode: 0o700 });
+    const names = (await readdir(statesRoot)).filter((name) => name.endsWith(".json")).sort();
+    const statePath = join(statesRoot, names.at(-1) ?? "0000000000000001.json");
+    await writeFile(statePath, "{}\n", { mode: 0o600 });
+    await assert.rejects(readCallLedger(fixture.root), /project registry.*(?:invalid|signature|tampered)/i);
+  });
 });
 
 test("coordinated project-root authorization rewrites cannot replace external approval trust", async (t) => {
@@ -1539,6 +1615,211 @@ test("external call ledger rejects oversized events, oversized or mismatched hea
   const head = JSON.parse(headBytes.toString("utf8"));
   await writeFile(headPath, `${JSON.stringify({ ...head, eventSha256: "0".repeat(64) }, null, 2)}\n`, { mode: 0o600 });
   await assert.rejects(readCallLedger(fixture.root), /trusted call ledger.*head|signature/i);
+});
+
+test("external call high-water rejects deleting the complete call subtree and project mirror", async (t) => {
+  const fixture = await authorizedDeckProject(t, "superppt-call-high-water-delete-");
+  const job = await prepareImageGenerationJob(fixture.root, { kind: "deck", aiDependency: fixture.aiDependency });
+  const request = {
+    jobId: job.jobId,
+    slideId: job.pages[0]!.slideId,
+    attempt: job.pages[0]!.attempt,
+    requestOrdinal: 1,
+  };
+  let callbacks = 0;
+  await executeAuthorizedGenerationCall(fixture.root, request, () => {
+    callbacks += 1;
+    return "generated";
+  });
+  const projectId = (await readProject(fixture.root)).projectId;
+  await rm(join(fixture.authorizationTrustRoot, "call-ledgers", projectId), { recursive: true, force: true });
+  await unlink(join(fixture.root, "generation", "call-ledger.jsonl"));
+
+  await assert.rejects(executeAuthorizedGenerationCall(fixture.root, request, () => {
+    callbacks += 1;
+    return "must not run";
+  }), /registry|high-water|trusted call ledger.*missing/i);
+  assert.equal(callbacks, 1);
+});
+
+test("a valid call head exactly ahead of project high-water recovers without invoking the callback", async (t) => {
+  const fixture = await authorizedDeckProject(t, "superppt-call-registry-crash-");
+  const job = await prepareImageGenerationJob(fixture.root, { kind: "deck", aiDependency: fixture.aiDependency });
+  const request = {
+    jobId: job.jobId,
+    slideId: job.pages[0]!.slideId,
+    attempt: job.pages[0]!.attempt,
+    requestOrdinal: 1,
+  };
+  let callbacks = 0;
+  await configureGenerationAuthorizationTrustForTests(fixture.root, {
+    root: fixture.authorizationTrustRoot,
+    deterministicKeySeed: "call-registry-crash-seed",
+    operations: {
+      checkpoint(step: string) {
+        if (step === "registry-before-call-advance") throw new Error("injected registry call advance crash");
+      },
+    },
+  });
+  await assert.rejects(executeAuthorizedGenerationCall(fixture.root, request, () => {
+    callbacks += 1;
+    return "must not run";
+  }), /injected registry call advance crash/);
+  assert.equal(callbacks, 0);
+
+  await configureGenerationAuthorizationTrustForTests(fixture.root, {
+    root: fixture.authorizationTrustRoot,
+    deterministicKeySeed: "call-registry-crash-seed",
+  });
+  assert.deepEqual(await executeAuthorizedGenerationCall(fixture.root, request, () => {
+    callbacks += 1;
+    return "must not run";
+  }), { executed: false, outcome: "in-flight", consumed: 1, remaining: 2 });
+  assert.equal(callbacks, 0);
+});
+
+test("progress recovery and exact replay serialize one missing project ledger line", async (t) => {
+  const fixture = await authorizedDeckProject(t, "superppt-call-recovery-lease-race-");
+  const job = await prepareImageGenerationJob(fixture.root, { kind: "deck", aiDependency: fixture.aiDependency });
+  const request = {
+    jobId: job.jobId,
+    slideId: job.pages[0]!.slideId,
+    attempt: job.pages[0]!.attempt,
+    requestOrdinal: 1,
+  };
+  await configureGenerationAuthorizationTrustForTests(fixture.root, {
+    root: fixture.authorizationTrustRoot,
+    deterministicKeySeed: "call-recovery-race-seed",
+    operations: {
+      checkpoint(step: string) {
+        if (step === "call-event-published") throw new Error("injected admission orphan");
+      },
+    },
+  });
+  await assert.rejects(executeAuthorizedGenerationCall(fixture.root, request, () => "must not run"), /injected admission orphan/);
+
+  let releaseRecovery!: () => void;
+  let signalRecovery!: () => void;
+  const released = new Promise<void>((resolve) => { releaseRecovery = resolve; });
+  const signaled = new Promise<void>((resolve) => { signalRecovery = resolve; });
+  let recoveryEntrants = 0;
+  await configureGenerationAuthorizationTrustForTests(fixture.root, {
+    root: fixture.authorizationTrustRoot,
+    deterministicKeySeed: "call-recovery-race-seed",
+    operations: {
+      async checkpoint(step: string) {
+        if (step !== "call-recovery-before-project-append") return;
+        recoveryEntrants += 1;
+        signalRecovery();
+        await released;
+      },
+    },
+  });
+  const progress = describeProjectGeneration(fixture.root);
+  await Promise.race([
+    signaled,
+    new Promise<never>((_resolve, reject) => setTimeout(() => reject(new Error("recovery checkpoint was not reached")), 2_000)),
+  ]);
+  let callbacks = 0;
+  const replay = executeAuthorizedGenerationCall(fixture.root, request, () => {
+    callbacks += 1;
+    return "must not run";
+  });
+  await new Promise((resolve) => setTimeout(resolve, 100));
+  assert.equal(recoveryEntrants, 1, "the replay must wait behind the progress recovery lease");
+  releaseRecovery();
+  await Promise.all([progress, replay]);
+  assert.equal(callbacks, 0);
+  assert.equal((await readCallLedger(fixture.root)).filter((entry) =>
+    entry.jobId === job.jobId && entry.entryKind === "admission"
+  ).length, 1);
+});
+
+test("trusted directory scans are bounded before parsing and reject path replacement", async (t) => {
+  await t.test("authorization heads", async (t) => {
+    const fixture = await authorizedDeckProject(t, "superppt-trust-directory-auth-limit-");
+    const job = await prepareImageGenerationJob(fixture.root, { kind: "deck", aiDependency: fixture.aiDependency });
+    const projectId = (await readProject(fixture.root)).projectId;
+    const headsRoot = join(fixture.authorizationTrustRoot, "authorization-heads", projectId, "heads");
+    for (const name of ["9999999999999997.json", "9999999999999998.json", "9999999999999999.json"]) {
+      await writeFile(join(headsRoot, name), "{}\n", { mode: 0o600 });
+    }
+    await configureGenerationAuthorizationTrustForTests(fixture.root, {
+      root: fixture.authorizationTrustRoot,
+      deterministicKeySeed: "directory-limit-seed",
+      operations: { limits: { authorizationHeads: 3 } },
+    } as never);
+    await assert.rejects(assertJobAuthorized(fixture.root, job), /authorization head history is too large/i);
+  });
+
+  await t.test("call heads and events", async (t) => {
+    const fixture = await authorizedDeckProject(t, "superppt-trust-directory-call-limit-");
+    const projectId = (await readProject(fixture.root)).projectId;
+    const callRoot = join(fixture.authorizationTrustRoot, "call-ledgers", projectId);
+    const job = await prepareImageGenerationJob(fixture.root, { kind: "deck", aiDependency: fixture.aiDependency });
+    await admitDelegatedGenerationCall(fixture.root, {
+      jobId: job.jobId,
+      slideId: job.pages[0]!.slideId,
+      attempt: job.pages[0]!.attempt,
+      requestOrdinal: 1,
+    });
+    await configureGenerationAuthorizationTrustForTests(fixture.root, {
+      root: fixture.authorizationTrustRoot,
+      deterministicKeySeed: "directory-limit-seed",
+      operations: { limits: { callHeads: 3, callEvents: 2 } },
+    } as never);
+    await assert.rejects(readCallLedger(fixture.root), /call ledger head history is too large/i);
+
+    await configureGenerationAuthorizationTrustForTests(fixture.root, {
+      root: fixture.authorizationTrustRoot,
+      deterministicKeySeed: "directory-limit-seed",
+      operations: { limits: { callHeads: 100, callEvents: 2 } },
+    } as never);
+    await assert.rejects(readCallLedger(fixture.root), /call ledger event history is too large/i);
+    assert.ok((await readdir(join(callRoot, "events"))).length > 2);
+  });
+
+  await t.test("authorization head directory replacement", async (t) => {
+    const fixture = await authorizedDeckProject(t, "superppt-trust-directory-replace-");
+    const job = await prepareImageGenerationJob(fixture.root, { kind: "deck", aiDependency: fixture.aiDependency });
+    const projectId = (await readProject(fixture.root)).projectId;
+    const headsRoot = join(fixture.authorizationTrustRoot, "authorization-heads", projectId, "heads");
+    const detached = `${headsRoot}.detached`;
+    let replaced = false;
+    await configureGenerationAuthorizationTrustForTests(fixture.root, {
+      root: fixture.authorizationTrustRoot,
+      deterministicKeySeed: "directory-replace-seed",
+      operations: {
+        async checkpoint(step: string) {
+          if (step !== "authorization-head-directory-opened" || replaced) return;
+          replaced = true;
+          await rename(headsRoot, detached);
+          await mkdir(headsRoot, { mode: 0o700 });
+        },
+      },
+    });
+    await assert.rejects(assertJobAuthorized(fixture.root, job), /authorization head directory changed/i);
+  });
+});
+
+test("project call-ledger mirror rejects oversized bytes and too many entries before use", async (t) => {
+  await t.test("oversized bytes", async (t) => {
+    const fixture = await authorizedDeckProject(t, "superppt-project-ledger-byte-limit-");
+    const ledgerPath = join(fixture.root, "generation", "call-ledger.jsonl");
+    const handle = await open(ledgerPath, "r+");
+    try { await handle.truncate(64 * 1024 * 1024 + 1); } finally { await handle.close(); }
+    await assert.rejects(readCallLedger(fixture.root), /project call ledger.*size.*large/i);
+  });
+
+  await t.test("too many entries", async (t) => {
+    const fixture = await authorizedDeckProject(t, "superppt-project-ledger-entry-limit-");
+    await configureGenerationAuthorizationTrustForTests(fixture.root, {
+      root: fixture.authorizationTrustRoot,
+      deterministicKeySeed: "project-ledger-entry-limit-seed",
+      operations: { limits: { projectLedgerEntries: 1 } },
+    } as never);
+    await assert.rejects(readCallLedger(fixture.root), /project call ledger has too many entries/i);
+  });
 });
 
 test("signed external admission crash gaps conservatively spend once and exact replay never calls twice", async (t) => {

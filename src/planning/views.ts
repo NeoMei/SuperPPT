@@ -29,6 +29,7 @@ import {
   validateCanonicalStyleSample,
 } from "../styles/sample-contract.js";
 import { assertFinalizedStyleSample } from "../generation/style-sample.js";
+import { withGenerationLease } from "../generation/lease.js";
 import { resolveStyleRecipe } from "../styles/catalog.js";
 import { readStyleLockIfPresent } from "../styles/style-lock.js";
 import { StyleSampleSelectionSchema, type StyleSampleSelection } from "../styles/schemas.js";
@@ -278,7 +279,7 @@ async function styleArtifacts(root: string): Promise<{
 }
 
 export async function publishStyleSample(root: string): Promise<StylePublicationDescriptor> {
-  return withPlanningLock(root, async (canonicalRoot) => {
+  return withGenerationLease(root, (generationRoot) => withPlanningLock(generationRoot, async (canonicalRoot) => {
     return withProjectLease(canonicalRoot, "state", async () => {
       const manifest = await readProject(canonicalRoot);
       const { values, selection } = await styleArtifacts(canonicalRoot);
@@ -313,7 +314,7 @@ export async function publishStyleSample(root: string): Promise<StylePublication
       await writeReplacement(join(canonicalRoot, "style-sample.json"), `${JSON.stringify(pointer, null, 2)}\n`);
       return pointer;
     });
-  });
+  }));
 }
 
 export async function readPublishedPlanViews(root: string): Promise<PublishedPlanViews> {

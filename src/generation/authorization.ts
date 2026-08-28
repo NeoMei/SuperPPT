@@ -11,7 +11,6 @@ import { assertGateCurrent } from "../planning/confirm.js";
 import { loadValidatedPlan } from "../planning/load.js";
 import { SlideSpecSchema } from "../planning/schemas.js";
 import { validateExecutionGateEvidence, validateOrdinaryGateEvidence } from "../project/evidence.js";
-import { withProjectLease } from "../project/lock.js";
 import { readOwnedRegularFile, readRegularFileNoFollow } from "../project/safe-file.js";
 import { readProject } from "../project/store.js";
 import { canonicalStyleSample } from "../styles/sample-contract.js";
@@ -19,6 +18,7 @@ import { compileSlidePrompt } from "../styles/prompt-compiler.js";
 import { readApprovedStyleLock, readStyleLock, type LockedStyle } from "../styles/style-lock.js";
 import { StyleLockSchema, StyleRecipeSchema } from "../styles/schemas.js";
 import { openGenerationDirectory } from "./anchored-dir.js";
+import { assertGenerationLeaseHeld, withGenerationLease } from "./lease.js";
 import {
   CallLedgerEntrySchema,
   GenerationCallTupleSchema,
@@ -36,7 +36,7 @@ import {
   assertTrustedCallEventJobBinding,
   assertTrustedGenerationAuthorizationCurrent,
   assertTrustedGenerationAuthorizationRecord,
-  readTrustedGenerationCallLedger,
+  readTrustedGenerationCallLedgerUnderLease,
   trustedGenerationAuthorizationForGate,
   type TrustedGenerationCallEvent,
 } from "./trusted-authorization.js";
@@ -223,7 +223,7 @@ export async function publishGenerationAuthorizationPlan(
   root: string,
   request: PlanPublicationRequest,
 ): Promise<GenerationAuthorizationPlan> {
-  return withProjectLease(root, "generation", async (canonicalRoot) => {
+  return withGenerationLease(root, async (canonicalRoot) => {
     await requirePlanningGates(canonicalRoot, true);
     const [ai, manifest, lock, plan] = await Promise.all([
       assertAiImageSkillDependencyCurrent(request.aiDependency),
@@ -258,7 +258,7 @@ export async function publishStyleSampleGenerationPlan(
   request: PlanPublicationRequest,
 ): Promise<GenerationAuthorizationPlan> {
   if (request.callBudget !== 1) throw new Error("style-sample call budget must be exactly 1");
-  return withProjectLease(root, "generation", async (canonicalRoot) => {
+  return withGenerationLease(root, async (canonicalRoot) => {
     await requirePlanningGates(canonicalRoot, false);
     const [ai, manifest, lock, sample, plan] = await Promise.all([
       assertAiImageSkillDependencyCurrent(request.aiDependency),
@@ -291,7 +291,7 @@ export async function publishPageRegenerationAuthorizationPlan(root: string, req
   finalPrompt: string;
   callBudget: number;
 }): Promise<GenerationAuthorizationPlan> {
-  return withProjectLease(root, "generation", async (canonicalRoot) => {
+  return withGenerationLease(root, async (canonicalRoot) => {
     await requirePlanningGates(canonicalRoot, true);
     const [ai, manifest, lock, plan, currentAuthorization] = await Promise.all([
       assertAiImageSkillDependencyCurrent(request.aiDependency),
@@ -572,17 +572,23 @@ export async function assertSealedJobInputs(root: string, job: ImageGenerationJo
   }
 }
 
-async function authenticatedCallLedger(root: string): Promise<{
+async function authenticatedCallLedgerUnderLease(root: string): Promise<{
   entries: CallLedgerEntry[];
   events: TrustedGenerationCallEvent[];
 }> {
-  const trusted = await readTrustedGenerationCallLedger(root);
+  assertGenerationLeaseHeld(root);
+  const trusted = await readTrustedGenerationCallLedgerUnderLease(root);
   callStates(trusted.entries);
   return trusted;
 }
 
 export async function readCallLedger(root: string): Promise<CallLedgerEntry[]> {
-  return (await authenticatedCallLedger(root)).entries;
+  return withGenerationLease(root, (canonicalRoot) => readCallLedgerUnderGenerationLease(canonicalRoot));
+}
+
+export async function readCallLedgerUnderGenerationLease(root: string): Promise<CallLedgerEntry[]> {
+  assertGenerationLeaseHeld(root);
+  return (await authenticatedCallLedgerUnderLease(root)).entries;
 }
 
 type CallState = {
@@ -702,10 +708,10 @@ export async function admitDelegatedGenerationCall(
   root: string,
   raw: GenerationCallTuple,
 ): Promise<DelegatedGenerationAdmission> {
-  return withProjectLease(root, "generation", async (canonicalRoot) => {
+  return withGenerationLease(root, async (canonicalRoot) => {
     const { request, job } = await validateCallTuple(canonicalRoot, raw);
     await assertCurrentAdmissionAuthorization(canonicalRoot, job);
-    const ledger = await readCallLedger(canonicalRoot);
+    const ledger = await readCallLedgerUnderGenerationLease(canonicalRoot);
     if (callStates(ledger).has(tupleKey(request))) {
       throw new Error("delegated generation call tuple already has a durable admission");
     }
@@ -734,7 +740,7 @@ export async function settleDelegatedGenerationCall(
   root: string,
   raw: GenerationCallTuple & { admissionToken: string; outcome: "success" | "failed" },
 ): Promise<{ consumed: number; remaining: number }> {
-  return withProjectLease(root, "generation", async (canonicalRoot) => {
+  return withGenerationLease(root, async (canonicalRoot) => {
     const request = GenerationCallTupleSchema.parse({
       jobId: raw.jobId,
       slideId: raw.slideId,
@@ -742,7 +748,7 @@ export async function settleDelegatedGenerationCall(
       requestOrdinal: raw.requestOrdinal,
     });
     const { job } = await validateCallTuple(canonicalRoot, request, { allowStaleRevision: true });
-    const ledger = await readCallLedger(canonicalRoot);
+    const ledger = await readCallLedgerUnderGenerationLease(canonicalRoot);
     const state = callStates(ledger).get(tupleKey(request));
     if (!state) throw new Error("delegated generation result has no prior admission");
     const tokenSha256 = sha256(raw.admissionToken);
@@ -768,7 +774,8 @@ export async function settleDelegatedGenerationCall(
 }
 
 async function callBudgetForDigest(root: string, digest: string, budget: number): Promise<{ consumed: number; remaining: number }> {
-  const trusted = await authenticatedCallLedger(root);
+  assertGenerationLeaseHeld(root);
+  const trusted = await authenticatedCallLedgerUnderLease(root);
   const jobs = new Map<string, ImageGenerationJob>();
   for (const event of trusted.events) {
     let historicalJob = jobs.get(event.entry.jobId);
@@ -796,9 +803,9 @@ export async function executeAuthorizedGenerationCall<T>(
   callback: () => Promise<T> | T,
   operations: { afterAdmission?: () => Promise<void> | void } = {},
 ): Promise<GenerationExecutionResult<T>> {
-  return withProjectLease(root, "generation", async (canonicalRoot) => {
+  return withGenerationLease(root, async (canonicalRoot) => {
     const { request, job } = await validateCallTuple(canonicalRoot, raw);
-    const ledger = await readCallLedger(canonicalRoot);
+    const ledger = await readCallLedgerUnderGenerationLease(canonicalRoot);
     const existing = callStates(ledger).get(tupleKey(request));
     const before = await callBudgetForDigest(canonicalRoot, job.authorizationDigest, job.callBudget);
     if (existing) {
@@ -851,11 +858,17 @@ export async function executeAuthorizedGenerationCall<T>(
 }
 
 export async function generationCallBudget(root: string, job: ImageGenerationJob): Promise<{ authorized: number; consumed: number; remaining: number }> {
-  return withProjectLease(root, "generation", async (canonicalRoot) => {
-    await assertAuthorizedJobBinding(canonicalRoot, job);
-    const state = await callBudgetForDigest(canonicalRoot, job.authorizationDigest, job.callBudget);
-    return { authorized: job.callBudget, ...state };
-  });
+  return withGenerationLease(root, (canonicalRoot) => generationCallBudgetUnderGenerationLease(canonicalRoot, job));
+}
+
+export async function generationCallBudgetUnderGenerationLease(
+  root: string,
+  job: ImageGenerationJob,
+): Promise<{ authorized: number; consumed: number; remaining: number }> {
+  assertGenerationLeaseHeld(root);
+  await assertAuthorizedJobBinding(root, job);
+  const state = await callBudgetForDigest(root, job.authorizationDigest, job.callBudget);
+  return { authorized: job.callBudget, ...state };
 }
 
 export async function authorizationCallBudget(
@@ -863,8 +876,10 @@ export async function authorizationCallBudget(
   digest: string,
   authorized: number,
 ): Promise<{ authorized: number; consumed: number; remaining: number }> {
-  const state = await callBudgetForDigest(root, digest, authorized);
-  return { authorized, ...state };
+  return withGenerationLease(root, async (canonicalRoot) => {
+    const state = await callBudgetForDigest(canonicalRoot, digest, authorized);
+    return { authorized, ...state };
+  });
 }
 
 export async function authorizationForPreparation(root: string, kind: ImageJobKind) {

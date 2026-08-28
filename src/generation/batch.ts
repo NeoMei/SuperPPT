@@ -12,7 +12,6 @@ import {
 import { assertGateCurrent } from "../planning/confirm.js";
 import { loadValidatedPlan } from "../planning/load.js";
 import { StyleSelectionSchema } from "../planning/schemas.js";
-import { withProjectLease } from "../project/lock.js";
 import { readOwnedRegularFile } from "../project/safe-file.js";
 import type { Artifact, ProjectManifest, SlideRecord } from "../project/schemas.js";
 import { readProject, updateProject } from "../project/store.js";
@@ -21,9 +20,13 @@ import { compileSlidePrompt } from "../styles/prompt-compiler.js";
 import { hasStyleLockEvidence, readApprovedStyleLock } from "../styles/style-lock.js";
 import { GenerationDirectory, openGenerationDirectory } from "./anchored-dir.js";
 import { cleanupAbandonedProjectStaging, ownedTemporaryName } from "./abandoned.js";
-import { generationCallBudget, readCallLedger } from "./authorization.js";
+import {
+  generationCallBudgetUnderGenerationLease,
+  readCallLedgerUnderGenerationLease,
+} from "./authorization.js";
 import { readAndReauthenticateDelegatedResult } from "./delegation-result.js";
 import { type ImageGenerationJob } from "./job-schemas.js";
+import { withGenerationLease } from "./lease.js";
 import { assertJobAuthorized, prepareImageGenerationJob, readImageGenerationJob } from "./jobs.js";
 import { readPrivateInputFile } from "./private-input.js";
 import type { QualityDecision } from "./schemas.js";
@@ -156,6 +159,10 @@ export async function prepareDeckJob(
  * call ledger. It intentionally exposes no provider or channel selection.
  */
 export async function describeProjectGeneration(root: string): Promise<GenerationProgress> {
+  return withGenerationLease(root, describeProjectGenerationUnderLease);
+}
+
+async function describeProjectGenerationUnderLease(root: string): Promise<GenerationProgress> {
   const jobs = await currentGenerationJobs(root);
   if (jobs.length === 0) {
     return {
@@ -166,7 +173,7 @@ export async function describeProjectGeneration(root: string): Promise<Generatio
     };
   }
   const pageState = new Map<string, GenerationProgress["pages"][number]>();
-  const ledger = await readCallLedger(root);
+  const ledger = await readCallLedgerUnderGenerationLease(root);
   const pausedCapabilityDecisions: GenerationProgress["pausedCapabilityDecisions"] = [];
   const actionableJobs: ImageGenerationJob[] = [];
   const jobBudgets = new Map<string, GenerationProgress["calls"]>();
@@ -221,7 +228,7 @@ export async function describeProjectGeneration(root: string): Promise<Generatio
         target.status = "not-reviewed";
       } else if (admissions.length > 0) target.status = "failed";
     }
-    const budget = await generationCallBudget(root, job);
+    const budget = await generationCallBudgetUnderGenerationLease(root, job);
     jobBudgets.set(job.jobId, budget);
     const nextUnresolved = [...jobPageState.values()]
       .sort((left, right) => left.order - right.order)
@@ -731,7 +738,7 @@ async function generateSelected(options: {
   }
   const provider = options.ai.providers.find(({ id }) => id === options.ai.defaultProvider);
   if (!provider) throw new Error("default provider is unavailable");
-  return withProjectLease(options.root, "generation", async (root) => {
+  return withGenerationLease(options.root, async (root) => {
     const gated = await gateGeneration(root);
     const revisionId = gated.currentRevision.id;
     const recoveryPlan = await loadValidatedPlan(root);
@@ -908,7 +915,7 @@ export async function recordManualQa(options: {
     }
     throw new Error("manual QA evidence is invalid");
   }
-  return withProjectLease(options.root, "generation", async (root) => {
+  return withGenerationLease(options.root, async (root) => {
     const manifest = await gateGeneration(root);
     const page = (await projectPages(root, manifest)).pages.find(({ id }) => id === options.slideId);
     const slide = manifest.slides.find(({ id }) => id === options.slideId);
