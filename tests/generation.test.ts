@@ -419,6 +419,67 @@ test("page regeneration preserves the Style Lock and derives a new sanitized pro
   await access(join(fixture.root, ...rejectedResultPath.split("/")));
 });
 
+test("historical rejected deck evidence survives incremental authorization through regeneration progress", async (t) => {
+  const fixture = await authorizedDeckProject(t, "superppt-historical-regeneration-");
+  const deck = await prepareDeckJob(fixture.root, fixture.aiDependency);
+  const page = deck.pages[0]!;
+  const report = {
+    batch_mode: "serial-sticky-monotonic" as const,
+    stopped: false,
+    search_candidate: "api-openai" as const,
+    sticky_candidate: "api-openai" as const,
+    pages: [{ page: 1, outcome: "success" as const, candidate: "api-openai" as const, summary: "" }],
+    switches: [],
+  };
+  const rejected = await admittedApiSuccessIntake(fixture.root, deck, page, 1, report, "#405060");
+  await recordDelegatedResult(fixture.root, {
+    ...rejected,
+    presentationQa: {
+      ...rejected.presentationQa,
+      decision: {
+        ...rejected.presentationQa.decision,
+        ok: false,
+        issues: ["Improve the visual hierarchy"],
+        hierarchyClear: false,
+      },
+    },
+  });
+  const rejectedResultPath = `generation/jobs/${deck.jobId}/results/${page.slideId}-${page.attempt}.json`;
+  for (const _ of [0, 1]) {
+    const budgetJob = await prepareImageGenerationJob(fixture.root, { kind: "deck", aiDependency: fixture.aiDependency });
+    const budgetPage = budgetJob.pages[0]!;
+    await executeAuthorizedGenerationCall(fixture.root, {
+      jobId: budgetJob.jobId,
+      slideId: budgetPage.slideId,
+      attempt: budgetPage.attempt,
+      requestOrdinal: 1,
+    }, () => undefined);
+  }
+  const correctedPrompt = compileSlidePrompt({
+    spec: page.spec,
+    styleLock: deck.styleLock,
+    correction: { issues: ["Improve the visual hierarchy"] },
+  }).text;
+  await publishPageRegenerationAuthorizationPlan(fixture.root, {
+    aiDependency: fixture.aiDependency,
+    slideId: page.slideId,
+    previousPromptSha256: page.promptSha256,
+    finalPrompt: correctedPrompt,
+    callBudget: 1,
+  });
+  await approveGate(fixture.root, "generation-authorization");
+  const regeneration = await preparePageRegenerationJob(fixture.root, {
+    slideId: page.slideId,
+    rejectedResultPath,
+    correction: { issues: ["Improve the visual hierarchy"] },
+  });
+  await recordDelegatedResult(fixture.root, await admittedApiSuccessIntake(fixture.root, regeneration, regeneration.pages[0]!, 1, report, "#203040"));
+
+  const progress = await describeProjectGeneration(fixture.root);
+  assert.equal(progress.pages.find(({ slideId }) => slideId === page.slideId)?.status, "accepted");
+  assert.equal(progress.currentJob, null);
+});
+
 test("authorized budget rejects a fourth delegated result admission", async (t) => {
   const fixture = await authorizedDeckProject(t, "superppt-authorized-budget-");
   const job = await prepareDeckJob(fixture.root, fixture.aiDependency);

@@ -168,20 +168,27 @@ export async function describeProjectGeneration(root: string): Promise<Generatio
   const pageState = new Map<string, GenerationProgress["pages"][number]>();
   const ledger = await readCallLedger(root);
   const pausedCapabilityDecisions: GenerationProgress["pausedCapabilityDecisions"] = [];
+  const actionableJobs: ImageGenerationJob[] = [];
   for (const job of jobs) {
+    const jobPageState = new Map<string, GenerationProgress["pages"][number]>();
     for (const page of job.pages) {
-      pageState.set(page.slideId, {
+      const target = {
         slideId: page.slideId,
         order: page.order,
         promptSha256: page.promptSha256,
         status: "pending",
         artifacts: { master: null, normalized: null },
-      });
+      } as GenerationProgress["pages"][number];
+      jobPageState.set(page.slideId, target);
+      pageState.set(page.slideId, target);
+      for (let index = pausedCapabilityDecisions.length - 1; index >= 0; index -= 1) {
+        if (pausedCapabilityDecisions[index]!.slideId === page.slideId) pausedCapabilityDecisions.splice(index, 1);
+      }
     }
     const authenticated = await authenticatedResultOrNull(root, job);
     if (!authenticated) continue;
     for (const page of authenticated.result.pages) {
-      const target = pageState.get(page.slideId);
+      const target = jobPageState.get(page.slideId);
       if (!target) throw new Error("authenticated delegated result has a page outside its immutable job");
       target.status = progressStatus(page);
       target.artifacts = page.artifacts ? {
@@ -197,7 +204,7 @@ export async function describeProjectGeneration(root: string): Promise<Generatio
       if (target.status === "paused" && unsupported.length > 0) pausedCapabilityDecisions.push({ slideId: page.slideId, references: unsupported });
     }
     for (const page of job.pages) {
-      const target = pageState.get(page.slideId)!;
+      const target = jobPageState.get(page.slideId)!;
       if (target.status !== "pending") continue;
       const admissions = ledger.filter((entry) => entry.entryKind === "admission"
         && entry.jobId === job.jobId && entry.slideId === page.slideId && entry.attempt === page.attempt);
@@ -205,14 +212,24 @@ export async function describeProjectGeneration(root: string): Promise<Generatio
         && entry.jobId === admission.jobId && entry.slideId === admission.slideId
         && entry.attempt === admission.attempt && entry.requestOrdinal === admission.requestOrdinal))) {
         target.status = "in-flight";
+      } else if (admissions.some((admission) => ledger.some((entry) => entry.entryKind === "terminal"
+        && entry.jobId === admission.jobId && entry.slideId === admission.slideId
+        && entry.attempt === admission.attempt && entry.requestOrdinal === admission.requestOrdinal
+        && entry.outcome === "success"))) {
+        target.status = "not-reviewed";
       } else if (admissions.length > 0) target.status = "failed";
     }
+    if (
+      [...jobPageState.values()].some(({ status }) => status !== "accepted")
+      && (await generationCallBudget(root, job)).remaining > 0
+    ) actionableJobs.push(job);
   }
-  const current = jobs.at(-1)!;
+  const current = actionableJobs.at(-1) ?? null;
+  const budgetJob = current ?? jobs.at(-1)!;
   return {
     pages: [...pageState.values()].sort((left, right) => left.order - right.order),
-    calls: await generationCallBudget(root, current),
-    currentJob: { jobId: current.jobId, kind: current.kind },
+    calls: await generationCallBudget(root, budgetJob),
+    currentJob: current ? { jobId: current.jobId, kind: current.kind } : null,
     pausedCapabilityDecisions,
   };
 }
