@@ -3,6 +3,7 @@ import {
   mkdir,
   mkdtemp,
   realpath,
+  rename,
   rm,
   symlink,
   unlink,
@@ -107,6 +108,19 @@ test("rejects required scripts reached through a symbolic link", async (t) => {
   );
 });
 
+test("rejects required scripts reached through an in-root symbolic link", async (t) => {
+  const current = await fixture(t);
+  const aiRoot = await realpath(current.ai);
+  const realScripts = join(aiRoot, "real-scripts");
+  await rename(join(aiRoot, "scripts"), realScripts);
+  await symlink(realScripts, join(aiRoot, "scripts"));
+
+  await assert.rejects(
+    resolveSkillDependencies(request(current)),
+    /ai-image-to-ppt required script is unsafe: generation_result\.py/,
+  );
+});
+
 test("rejects a missing ai-image-to-ppt SKILL.md", async (t) => {
   const current = await fixture(t);
   await unlink(join(current.ai, "SKILL.md"));
@@ -157,6 +171,76 @@ test("preflight reports a removed required script after resolution", async (t) =
   assert.equal(report.ok, false);
   assert.deepEqual(report.errors, [{
     dependency: "ai-image-to-ppt",
+    code: "identity_changed",
+    safeMessage: "required Skill files changed after resolution",
+  }]);
+});
+
+test("preflight rejects an AI Skill root replaced by a symlink after resolution", async (t) => {
+  const current = await fixture(t);
+  const resolved = await resolveSkillDependencies(request(current));
+  const aiRoot = await realpath(current.ai);
+  const retainedRoot = join(await realpath(current.root), "retained-ai-skill");
+  await rename(aiRoot, retainedRoot);
+  await symlink(retainedRoot, aiRoot);
+
+  const report = await preflightDependencies(resolved);
+
+  assert.equal(report.ok, false);
+  assert.deepEqual(report.errors, [{
+    dependency: "ai-image-to-ppt",
+    code: "identity_changed",
+    safeMessage: "required Skill files changed after resolution",
+  }]);
+});
+
+test("preflight rejects an AI Skill ancestor replaced by a symlink after resolution", async (t) => {
+  const current = await fixture(t);
+  const resolved = await resolveSkillDependencies(request(current));
+  const aiRoot = await realpath(current.ai);
+  const scripts = join(aiRoot, "scripts");
+  const retainedScripts = join(aiRoot, "retained-scripts");
+  await rename(scripts, retainedScripts);
+  await symlink(retainedScripts, scripts);
+
+  const report = await preflightDependencies(resolved);
+
+  assert.equal(report.ok, false);
+  assert.deepEqual(report.errors, [{
+    dependency: "ai-image-to-ppt",
+    code: "identity_changed",
+    safeMessage: "required Skill files changed after resolution",
+  }]);
+});
+
+test("preflight rejects an editable package identity changed after resolution", async (t) => {
+  const current = await fixture(t);
+  const resolved = await resolveSkillDependencies(request(current));
+  await writeFile(join(current.editable, "package.json"), JSON.stringify({
+    name: "other-package",
+    version: "9.9.9",
+  }));
+
+  const report = await preflightDependencies(resolved);
+
+  assert.equal(report.ok, false);
+  assert.deepEqual(report.errors, [{
+    dependency: "image-to-editable-pptx",
+    code: "identity_changed",
+    safeMessage: "required Skill files changed after resolution",
+  }]);
+});
+
+test("preflight rejects a removed editable package identity after resolution", async (t) => {
+  const current = await fixture(t);
+  const resolved = await resolveSkillDependencies(request(current));
+  await unlink(join(current.editable, "package.json"));
+
+  const report = await preflightDependencies(resolved);
+
+  assert.equal(report.ok, false);
+  assert.deepEqual(report.errors, [{
+    dependency: "image-to-editable-pptx",
     code: "identity_changed",
     safeMessage: "required Skill files changed after resolution",
   }]);

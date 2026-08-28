@@ -21,6 +21,8 @@ export const AiImageSkillDependencySchema = z.object({
 export const ImageToEditablePptxSkillDependencySchema = z.object({
   kind: z.literal("image-to-editable-pptx"),
   root: z.string().min(1),
+  packageFile: z.string().min(1),
+  packageSha256: Sha256Schema,
   skillFile: z.string().min(1),
   skillSha256: Sha256Schema,
   version: z.string().min(1).nullable(),
@@ -35,6 +37,7 @@ export type ResolvedDependencies = {
   integrity: {
     aiSkillSha256: string;
     aiScripts: Record<keyof AiImageSkillDependency["scripts"], string>;
+    editablePackageSha256: string;
     editableSkillSha256: string;
   };
 };

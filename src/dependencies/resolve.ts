@@ -103,7 +103,7 @@ async function requiredRegularFile(
   if (info.isSymbolicLink() || !info.isFile()) throw new Error(unsafeMessage);
   const physicalPath = await realpath(path);
   const relation = relative(root, physicalPath);
-  if (relation === "" || relation === ".." || relation.startsWith(`..${sep}`)) {
+  if (physicalPath !== path || relation === "" || relation === ".." || relation.startsWith(`..${sep}`)) {
     throw new Error(unsafeMessage);
   }
   return path;
@@ -148,6 +148,8 @@ async function resolveEditableSkill(root: string) {
   return ImageToEditablePptxSkillDependencySchema.parse({
     kind: "image-to-editable-pptx",
     root,
+    packageFile,
+    packageSha256: await sha256(packageFile),
     skillFile,
     skillSha256: await sha256(skillFile),
     version: pkg.version,
@@ -193,6 +195,7 @@ export async function resolveSkillDependencies(
         name,
         await sha256(path),
       ]))) as ResolvedDependencies["integrity"]["aiScripts"],
+      editablePackageSha256: editable.packageSha256,
       editableSkillSha256: editable.skillSha256,
     },
   };
