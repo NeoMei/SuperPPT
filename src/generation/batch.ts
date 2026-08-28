@@ -169,6 +169,7 @@ export async function describeProjectGeneration(root: string): Promise<Generatio
   const ledger = await readCallLedger(root);
   const pausedCapabilityDecisions: GenerationProgress["pausedCapabilityDecisions"] = [];
   const actionableJobs: ImageGenerationJob[] = [];
+  const jobBudgets = new Map<string, GenerationProgress["calls"]>();
   for (const job of jobs) {
     const jobPageState = new Map<string, GenerationProgress["pages"][number]>();
     for (const page of job.pages) {
@@ -186,22 +187,23 @@ export async function describeProjectGeneration(root: string): Promise<Generatio
       }
     }
     const authenticated = await authenticatedResultOrNull(root, job);
-    if (!authenticated) continue;
-    for (const page of authenticated.result.pages) {
-      const target = jobPageState.get(page.slideId);
-      if (!target) throw new Error("authenticated delegated result has a page outside its immutable job");
-      target.status = progressStatus(page);
-      target.artifacts = page.artifacts ? {
-        master: { path: page.artifacts.master.path, sha256: page.artifacts.master.sha256 },
-        normalized: { path: page.artifacts.normalized.path, sha256: page.artifacts.normalized.sha256 },
-      } : { master: null, normalized: null };
-      for (let index = pausedCapabilityDecisions.length - 1; index >= 0; index -= 1) {
-        if (pausedCapabilityDecisions[index]!.slideId === page.slideId) pausedCapabilityDecisions.splice(index, 1);
+    if (authenticated) {
+      for (const page of authenticated.result.pages) {
+        const target = jobPageState.get(page.slideId);
+        if (!target) throw new Error("authenticated delegated result has a page outside its immutable job");
+        target.status = progressStatus(page);
+        target.artifacts = page.artifacts ? {
+          master: { path: page.artifacts.master.path, sha256: page.artifacts.master.sha256 },
+          normalized: { path: page.artifacts.normalized.path, sha256: page.artifacts.normalized.sha256 },
+        } : { master: null, normalized: null };
+        for (let index = pausedCapabilityDecisions.length - 1; index >= 0; index -= 1) {
+          if (pausedCapabilityDecisions[index]!.slideId === page.slideId) pausedCapabilityDecisions.splice(index, 1);
+        }
+        const unsupported = page.referenceUsage
+          .filter(({ usage }) => usage === "unsupported")
+          .map(({ path, sha256 }) => ({ path, sha256 }));
+        if (target.status === "paused" && unsupported.length > 0) pausedCapabilityDecisions.push({ slideId: page.slideId, references: unsupported });
       }
-      const unsupported = page.referenceUsage
-        .filter(({ usage }) => usage === "unsupported")
-        .map(({ path, sha256 }) => ({ path, sha256 }));
-      if (target.status === "paused" && unsupported.length > 0) pausedCapabilityDecisions.push({ slideId: page.slideId, references: unsupported });
     }
     for (const page of job.pages) {
       const target = jobPageState.get(page.slideId)!;
@@ -219,16 +221,22 @@ export async function describeProjectGeneration(root: string): Promise<Generatio
         target.status = "not-reviewed";
       } else if (admissions.length > 0) target.status = "failed";
     }
-    if (
-      [...jobPageState.values()].some(({ status }) => status !== "accepted")
-      && (await generationCallBudget(root, job)).remaining > 0
-    ) actionableJobs.push(job);
+    const budget = await generationCallBudget(root, job);
+    jobBudgets.set(job.jobId, budget);
+    const nextUnresolved = [...jobPageState.values()]
+      .sort((left, right) => left.order - right.order)
+      .find(({ status }) => status !== "accepted");
+    if (nextUnresolved && (
+      nextUnresolved.status === "in-flight"
+      || nextUnresolved.status === "not-reviewed"
+      || (nextUnresolved.status === "pending" && budget.remaining > 0)
+    )) actionableJobs.push(job);
   }
   const current = actionableJobs.at(-1) ?? null;
   const budgetJob = current ?? jobs.at(-1)!;
   return {
     pages: [...pageState.values()].sort((left, right) => left.order - right.order),
-    calls: await generationCallBudget(root, budgetJob),
+    calls: jobBudgets.get(budgetJob.jobId)!,
     currentJob: current ? { jobId: current.jobId, kind: current.kind } : null,
     pausedCapabilityDecisions,
   };

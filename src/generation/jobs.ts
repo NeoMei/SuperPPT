@@ -480,6 +480,7 @@ export async function prepareImageGenerationJob(
       authorizationDigest: authorization.digest,
       authorizationPlan: authorization.plan,
       authorizationGate: authorization.gate,
+      authorizationTrust: authorization.trust,
       routePolicy: "ai-image-to-ppt-default",
       aiSkill: dependencyBinding(ai),
       styleLockPath: "style/lock.json",

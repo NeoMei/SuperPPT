@@ -43,6 +43,11 @@ const AuthorizationGateBindingSchema = z.object({
   authorizationPlanSha256: Sha256Schema,
 }).strict();
 
+const AuthorizationTrustBindingSchema = z.object({
+  recordId: z.string().uuid(),
+  recordSha256: Sha256Schema,
+}).strict();
+
 export const GenerationAuthorizationPlanSchema = z.object({
   contractVersion: z.literal(1),
   kind: ImageJobKindSchema,
@@ -116,6 +121,7 @@ export const ImageGenerationJobSchema = z.object({
   authorizationDigest: Sha256Schema,
   authorizationPlan: GenerationAuthorizationPlanSchema,
   authorizationGate: AuthorizationGateBindingSchema,
+  authorizationTrust: AuthorizationTrustBindingSchema.nullable(),
   routePolicy: z.literal("ai-image-to-ppt-default"),
   aiSkill: AiSkillBindingSchema,
   styleLockPath: z.literal("style/lock.json"),
@@ -141,6 +147,13 @@ export const ImageGenerationJobSchema = z.object({
     job.authorizationGate.gate !== (job.kind === "style-sample" ? "style-sample-generation" : "generation-authorization")
     || job.authorizationGate.authorizationPlanSha256 !== job.authorizationDigest
   ) context.addIssue({ code: "custom", path: ["authorizationGate"], message: "immutable job authorization gate does not bind the job" });
+  if (job.kind === "style-sample" ? job.authorizationTrust !== null : job.authorizationTrust === null) {
+    context.addIssue({
+      code: "custom",
+      path: ["authorizationTrust"],
+      message: "deck and page-regeneration jobs require external authorization trust; style-sample jobs do not",
+    });
+  }
   if (job.styleLockSha256 !== sha256(`${canonicalJson(job.styleLock)}\n`)) {
     context.addIssue({ code: "custom", path: ["styleLockSha256"], message: "style lock hash must bind the embedded style lock" });
   }

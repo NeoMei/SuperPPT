@@ -32,6 +32,10 @@ import {
   type ImageJobKind,
 } from "./job-schemas.js";
 import { appendPrivateInputLine } from "./private-input.js";
+import {
+  assertTrustedGenerationAuthorizationRecord,
+  trustedGenerationAuthorizationForGate,
+} from "./trusted-authorization.js";
 
 const DECK_PLAN_PATH = "generation/authorization-plan.json";
 const SAMPLE_PLAN_PATH = "style/sample/generation-plan.json";
@@ -437,9 +441,11 @@ export async function assertAuthorizedJobBinding(root: string, job: ImageGenerat
   const manifest = await readProject(root);
   if (manifest.currentRevision.id === job.projectRevisionId) {
     const currentLock = job.kind === "style-sample" ? await readStyleLock(root) : await readApprovedStyleLock(root);
-    const { styleLockSha256, ...embeddedStyleLock } = currentLock;
-    if (styleLockSha256 !== job.styleLockSha256 || !sameJson(embeddedStyleLock, job.styleLock)) {
-      throw new Error("image generation job style lock changed after publication");
+    if (job.kind !== "style-sample" || currentLock.approvalState === "provisional") {
+      const { styleLockSha256, ...embeddedStyleLock } = currentLock;
+      if (styleLockSha256 !== job.styleLockSha256 || !sameJson(embeddedStyleLock, job.styleLock)) {
+        throw new Error("image generation job style lock changed after publication");
+      }
     }
   }
   for (const page of job.pages) {
@@ -516,6 +522,13 @@ async function assertJobAuthorizationGate(
   }
   const evidencePlan = parsePlan(bytes, "immutable generation authorization gate artifact");
   if (!sameJson(evidencePlan, plan)) throw new Error("image generation job authorization does not match its gate evidence");
+  if (expectedGate === "generation-authorization") {
+    if (!job.authorizationTrust) throw new Error("image generation job has no trusted authorization record");
+    if (!("presentation" in evidence.descriptor)) throw new Error("generation authorization gate evidence is not ordinary approval evidence");
+    await assertTrustedGenerationAuthorizationRecord(root, job.authorizationTrust, plan, binding, evidence.descriptor);
+  } else if (job.authorizationTrust !== null) {
+    throw new Error("style-sample image generation job cannot carry deck authorization trust");
+  }
 }
 
 export async function assertSealedJobInputs(root: string, job: ImageGenerationJob): Promise<void> {
@@ -773,7 +786,14 @@ async function callBudgetForDigest(root: string, digest: string, budget: number)
     entry.entryKind === "admission"
   );
   for (const entry of admissions) {
-    if (!jobDigests.has(entry.jobId)) jobDigests.set(entry.jobId, (await readJob(root, entry.jobId)).authorizationDigest);
+    if (jobDigests.has(entry.jobId)) continue;
+    const historicalJob = await readJob(root, entry.jobId);
+    try {
+      await assertAuthorizedJobBinding(root, historicalJob);
+    } catch (error: unknown) {
+      throw new Error(`historical image generation job is not authorized: ${entry.jobId}`, { cause: error });
+    }
+    jobDigests.set(entry.jobId, historicalJob.authorizationDigest);
   }
   const consumed = admissions.filter(({ jobId }) => jobDigests.get(jobId) === digest).length;
   if (consumed > budget) throw new Error("generation call ledger exceeds its authorized budget");
@@ -873,14 +893,21 @@ export async function authorizationForPreparation(root: string, kind: ImageJobKi
   if (sha256(evidence.artifacts[planPath] ?? Buffer.alloc(0)) !== authorization.digest) {
     throw new Error("current generation authorization gate artifact is stale");
   }
+  const gateBinding: Parameters<typeof trustedGenerationAuthorizationForGate>[2] = {
+    gate: expectedGate,
+    approvalId: gate.approvalId,
+    snapshotPath: gate.snapshotPath,
+    snapshotManifestSha256: gate.snapshotManifestSha256,
+    authorizationPlanSha256: authorization.digest,
+  };
+  let trust: Awaited<ReturnType<typeof trustedGenerationAuthorizationForGate>> | null = null;
+  if (expectedGate === "generation-authorization") {
+    if (!("presentation" in evidence.descriptor)) throw new Error("generation authorization gate evidence is not ordinary approval evidence");
+    trust = await trustedGenerationAuthorizationForGate(root, authorization.plan, gateBinding, evidence.descriptor);
+  }
   return {
     ...authorization,
-    gate: {
-      gate: expectedGate,
-      approvalId: gate.approvalId,
-      snapshotPath: gate.snapshotPath,
-      snapshotManifestSha256: gate.snapshotManifestSha256,
-      authorizationPlanSha256: authorization.digest,
-    },
+    gate: gateBinding,
+    trust,
   };
 }

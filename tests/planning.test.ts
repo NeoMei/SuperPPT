@@ -8,6 +8,7 @@ import { promisify } from "node:util";
 import sharp from "sharp";
 
 import { GenerationAuthorizationPlanSchema } from "../src/generation/job-schemas.js";
+import { configureGenerationAuthorizationTrustForTests } from "../src/generation/trusted-authorization.js";
 import {
   approveExecutionGate,
   approveGate,
@@ -43,8 +44,13 @@ async function temporaryParent(t: TestContext, prefix: string): Promise<string> 
 }
 
 async function project(t: TestContext, prefix: string): Promise<string> {
-  const root = join(await temporaryParent(t, prefix), "project");
+  const parent = await temporaryParent(t, prefix);
+  const root = join(parent, "project");
   await initializeProject({ root, title: "Demo", idFactory: () => PROJECT_ID });
+  await configureGenerationAuthorizationTrustForTests(root, {
+    root: join(parent, "authorization-trust"),
+    deterministicKeySeed: `superppt-planning-test:${prefix}`,
+  });
   return root;
 }
 

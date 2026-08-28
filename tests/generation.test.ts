@@ -34,6 +34,10 @@ import {
 import { ImageGenerationJobSchema, canonicalContractFile } from "../src/generation/job-schemas.js";
 import { assertJobAuthorized, prepareImageGenerationJob } from "../src/generation/jobs.js";
 import { finalizeStyleSample, prepareStyleSampleJob } from "../src/generation/style-sample.js";
+import {
+  assertTrustedGenerationAuthorizationRecord,
+  configureGenerationAuthorizationTrustForTests,
+} from "../src/generation/trusted-authorization.js";
 import { generateSlide } from "../src/generation/provider.js";
 import { reviewSlide } from "../src/generation/quality.js";
 import { privateSecurityPolicy } from "../src/generation/private-input.js";
@@ -52,6 +56,8 @@ import { approveExecutionGate, approveGate, assertGateCurrent } from "../src/pla
 import { loadValidatedPlan } from "../src/planning/load.js";
 import { publishPlanViews, publishStyleSample } from "../src/planning/views.js";
 import { initializeProject } from "../src/project/initialize.js";
+import { addDescriptorIntegrity, sha256Evidence, snapshotManifestEvidenceHash } from "../src/project/evidence.js";
+import { ProjectManifestSchema } from "../src/project/schemas.js";
 import { readProject } from "../src/project/store.js";
 import { applyRevision, approveImpact, publishImpactPlan } from "../src/revisions/apply.js";
 import { loadBuiltInStyleCatalog } from "../src/styles/catalog.js";
@@ -98,10 +104,21 @@ async function approvedProject(
   prefix: string,
   styleLock?: Parameters<typeof createProvisionalStyleLock>[1],
   prepareStyleSample = true,
-): Promise<{ root: string; ai: LegacyResolvedDependencies["ai"]; aiDependency: AiImageSkillDependency; editableRoot: string }> {
+): Promise<{
+  root: string;
+  ai: LegacyResolvedDependencies["ai"];
+  aiDependency: AiImageSkillDependency;
+  editableRoot: string;
+  authorizationTrustRoot: string;
+}> {
   const parent = await directory(t, prefix);
   const root = join(parent, "project");
   await initializeProject({ root, title: "Generation Demo" });
+  const authorizationTrustRoot = join(parent, "authorization-trust");
+  await configureGenerationAuthorizationTrustForTests(root, {
+    root: authorizationTrustRoot,
+    deterministicKeySeed: `superppt-generation-test:${prefix}`,
+  });
   const outline = {
     schemaVersion: 1,
     slides: SLIDE_IDS.map((id, order) => ({
@@ -186,6 +203,7 @@ async function approvedProject(
   return {
     root,
     editableRoot,
+    authorizationTrustRoot,
     aiDependency,
     ai: {
       ...capabilities as LegacyResolvedDependencies["ai"],
@@ -202,6 +220,64 @@ const lockedStyle = {
 
 function sha256(value: string | Buffer): string {
   return createHash("sha256").update(value).digest("hex");
+}
+
+function trustedAuthorizationRecordPath(
+  fixture: { authorizationTrustRoot: string },
+  job: Awaited<ReturnType<typeof prepareImageGenerationJob>>,
+): string {
+  return join(fixture.authorizationTrustRoot, "records", `${job.authorizationTrust!.recordId}.json`);
+}
+
+async function rewriteProjectAuthorizationEvidence(
+  root: string,
+  job: Awaited<ReturnType<typeof prepareImageGenerationJob>>,
+  forgedPlan: Awaited<ReturnType<typeof prepareImageGenerationJob>>["authorizationPlan"],
+) {
+  const planBytes = Buffer.from(canonicalContractFile(forgedPlan));
+  const forgedDigest = sha256(planBytes);
+  const manifestPath = join(root, "superppt.json");
+  const manifest = ProjectManifestSchema.parse(JSON.parse(await readFile(manifestPath, "utf8")));
+  const gate = manifest.gates.find(({ approvalId }) => approvalId === job.authorizationGate.approvalId)!;
+  gate.artifactHashes["generation/authorization-plan.json"] = forgedDigest;
+  gate.presentation = { ...gate.presentation!, descriptorSha256: forgedDigest };
+  gate.snapshotManifestSha256 = snapshotManifestEvidenceHash(manifest, gate.approvalId!);
+  const manifestBytes = Buffer.from(`${JSON.stringify(manifest, null, 2)}\n`);
+  const snapshotRoot = join(root, ...gate.snapshotPath!.split("/"));
+  await writeFile(join(snapshotRoot, "superppt.json"), manifestBytes, { mode: 0o600 });
+  await writeFile(
+    join(snapshotRoot, "artifacts", "generation", "authorization-plan.json"),
+    planBytes,
+    { mode: 0o600 },
+  );
+  const previousDescriptor = JSON.parse(await readFile(join(snapshotRoot, "snapshot.json"), "utf8"));
+  const { descriptorSha256: _oldIntegrity, ...descriptorBase } = previousDescriptor;
+  const descriptor = addDescriptorIntegrity({
+    ...descriptorBase,
+    manifestSha256: sha256Evidence(manifestBytes),
+    artifactHashes: { "generation/authorization-plan.json": forgedDigest },
+    artifactSizes: { "generation/authorization-plan.json": planBytes.length },
+    presentation: { ...descriptorBase.presentation, descriptorSha256: forgedDigest },
+  });
+  await writeFile(join(snapshotRoot, "snapshot.json"), `${JSON.stringify(descriptor, null, 2)}\n`, { mode: 0o600 });
+  await writeFile(manifestPath, manifestBytes, { mode: 0o600 });
+  const forged = ImageGenerationJobSchema.parse({
+    ...job,
+    authorizationDigest: forgedDigest,
+    authorizationPlan: forgedPlan,
+    authorizationGate: {
+      ...job.authorizationGate,
+      snapshotManifestSha256: gate.snapshotManifestSha256,
+      authorizationPlanSha256: forgedDigest,
+    },
+    callBudget: forgedPlan.callBudget,
+  });
+  await writeFile(
+    join(root, "generation", "jobs", job.jobId, "job.json"),
+    canonicalContractFile(forged),
+    { mode: 0o600 },
+  );
+  return forged;
 }
 
 async function normalizedImageSha256(masterPath: string): Promise<string> {
@@ -340,6 +416,65 @@ test("resume delegated generation keeps authenticated accepted pages without ano
   assert.equal(progress.pages[0]!.artifacts.normalized?.sha256, (await readProject(fixture.root)).slides[0]!.image?.sha256);
 });
 
+test("delegated progress reports a pending job without an aggregate result as actionable", async (t) => {
+  const fixture = await authorizedDeckProject(t, "superppt-progress-pending-no-aggregate-");
+  const job = await prepareDeckJob(fixture.root, fixture.aiDependency);
+
+  const progress = await describeProjectGeneration(fixture.root);
+  assert.deepEqual(progress.pages.map(({ status }) => status), ["pending", "pending", "pending"]);
+  assert.deepEqual(progress.currentJob, { jobId: job.jobId, kind: "deck" });
+});
+
+test("delegated progress reports an admitted call without an aggregate result as in-flight", async (t) => {
+  const fixture = await authorizedDeckProject(t, "superppt-progress-in-flight-no-aggregate-");
+  const job = await prepareDeckJob(fixture.root, fixture.aiDependency);
+  const page = job.pages[0]!;
+  await admitDelegatedGenerationCall(fixture.root, {
+    jobId: job.jobId,
+    slideId: page.slideId,
+    attempt: page.attempt,
+    requestOrdinal: 1,
+  });
+
+  const progress = await describeProjectGeneration(fixture.root);
+  assert.equal(progress.pages[0]!.status, "in-flight");
+  assert.deepEqual(progress.currentJob, { jobId: job.jobId, kind: "deck" });
+});
+
+test("delegated progress reports terminal success awaiting aggregate publication as not-reviewed", async (t) => {
+  const fixture = await authorizedDeckProject(t, "superppt-progress-success-no-aggregate-");
+  const job = await prepareDeckJob(fixture.root, fixture.aiDependency);
+  const page = job.pages[0]!;
+  await executeAuthorizedGenerationCall(fixture.root, {
+    jobId: job.jobId,
+    slideId: page.slideId,
+    attempt: page.attempt,
+    requestOrdinal: 1,
+  }, () => "generated outside aggregate intake");
+
+  const progress = await describeProjectGeneration(fixture.root);
+  assert.equal(progress.pages[0]!.status, "not-reviewed");
+  assert.deepEqual(progress.currentJob, { jobId: job.jobId, kind: "deck" });
+});
+
+test("delegated progress reports terminal failure without treating the blocked job as actionable", async (t) => {
+  const fixture = await authorizedDeckProject(t, "superppt-progress-failed-no-aggregate-");
+  const job = await prepareDeckJob(fixture.root, fixture.aiDependency);
+  const page = job.pages[0]!;
+  await assert.rejects(executeAuthorizedGenerationCall(fixture.root, {
+    jobId: job.jobId,
+    slideId: page.slideId,
+    attempt: page.attempt,
+    requestOrdinal: 1,
+  }, () => {
+    throw new Error("injected generation failure");
+  }), /injected generation failure/);
+
+  const progress = await describeProjectGeneration(fixture.root);
+  assert.equal(progress.pages[0]!.status, "failed");
+  assert.equal(progress.currentJob, null);
+});
+
 test("provider switch evidence leaves serial delegated prompt hashes unchanged", async (t) => {
   const fixture = await authorizedDeckProject(t, "superppt-provider-switch-prompt-");
   const job = await prepareDeckJob(fixture.root, fixture.aiDependency);
@@ -448,12 +583,14 @@ test("historical rejected deck evidence survives incremental authorization throu
   for (const _ of [0, 1]) {
     const budgetJob = await prepareImageGenerationJob(fixture.root, { kind: "deck", aiDependency: fixture.aiDependency });
     const budgetPage = budgetJob.pages[0]!;
-    await executeAuthorizedGenerationCall(fixture.root, {
+    await assert.rejects(executeAuthorizedGenerationCall(fixture.root, {
       jobId: budgetJob.jobId,
       slideId: budgetPage.slideId,
       attempt: budgetPage.attempt,
       requestOrdinal: 1,
-    }, () => undefined);
+    }, () => {
+      throw new Error("injected spent budget call");
+    }), /injected spent budget call/);
   }
   const correctedPrompt = compileSlidePrompt({
     spec: page.spec,
@@ -740,6 +877,156 @@ test("image generation job rejects a self-consistent forged authorization snapsh
   await assert.rejects(assertJobAuthorized(fixture.root, forged), /authorization.*gate|gate.*authorization/i);
 });
 
+test("generation authorization trust fails closed for missing, tampered, and symlinked external evidence", async (t) => {
+  await t.test("missing signed record", async (t) => {
+    const fixture = await authorizedDeckProject(t, "superppt-trust-record-missing-");
+    const job = await prepareImageGenerationJob(fixture.root, { kind: "deck", aiDependency: fixture.aiDependency });
+    await unlink(trustedAuthorizationRecordPath(fixture, job));
+    await assert.rejects(assertJobAuthorized(fixture.root, job), /trusted authorization.*record|record.*trusted authorization/i);
+  });
+
+  await t.test("tampered signed record", async (t) => {
+    const fixture = await authorizedDeckProject(t, "superppt-trust-record-tampered-");
+    const job = await prepareImageGenerationJob(fixture.root, { kind: "deck", aiDependency: fixture.aiDependency });
+    const path = trustedAuthorizationRecordPath(fixture, job);
+    const record = JSON.parse(await readFile(path, "utf8"));
+    record.callBudget += 1;
+    await writeFile(path, `${JSON.stringify(record, null, 2)}\n`, { mode: 0o600 });
+    await assert.rejects(assertJobAuthorized(fixture.root, job), /trusted authorization.*(?:digest|signature)|(?:digest|signature).*trusted authorization/i);
+  });
+
+  await t.test("symlinked signed record", async (t) => {
+    const fixture = await authorizedDeckProject(t, "superppt-trust-record-symlink-");
+    const job = await prepareImageGenerationJob(fixture.root, { kind: "deck", aiDependency: fixture.aiDependency });
+    const path = trustedAuthorizationRecordPath(fixture, job);
+    const backup = `${path}.backup`;
+    await rename(path, backup);
+    await symlink(backup, path);
+    await assert.rejects(assertJobAuthorized(fixture.root, job), /trusted authorization.*regular file|regular file.*trusted authorization|symbolic link/i);
+  });
+
+  await t.test("missing HMAC key", async (t) => {
+    const fixture = await authorizedDeckProject(t, "superppt-trust-key-missing-");
+    const job = await prepareImageGenerationJob(fixture.root, { kind: "deck", aiDependency: fixture.aiDependency });
+    await unlink(join(fixture.authorizationTrustRoot, "hmac.key"));
+    await assert.rejects(assertJobAuthorized(fixture.root, job), /trusted authorization.*key|key.*trusted authorization/i);
+  });
+
+  await t.test("tampered HMAC key", async (t) => {
+    const fixture = await authorizedDeckProject(t, "superppt-trust-key-tampered-");
+    const job = await prepareImageGenerationJob(fixture.root, { kind: "deck", aiDependency: fixture.aiDependency });
+    await writeFile(join(fixture.authorizationTrustRoot, "hmac.key"), Buffer.alloc(32, 0x5a), { mode: 0o600 });
+    await assert.rejects(assertJobAuthorized(fixture.root, job), /trusted authorization.*signature|signature.*trusted authorization/i);
+  });
+});
+
+test("a valid signed authorization record cannot authenticate a different project", async (t) => {
+  const source = await approvedProject(t, "superppt-trust-wrong-project-source-", lockedStyle);
+  const target = await approvedProject(t, "superppt-trust-wrong-project-target-", lockedStyle);
+  const sharedTrustRoot = await directory(t, "superppt-shared-authorization-trust-");
+  await configureGenerationAuthorizationTrustForTests(source.root, {
+    root: sharedTrustRoot,
+    deterministicKeySeed: "shared-wrong-project-seed",
+  });
+  await configureGenerationAuthorizationTrustForTests(target.root, {
+    root: sharedTrustRoot,
+    deterministicKeySeed: "shared-wrong-project-seed",
+  });
+  await publishGenerationAuthorizationPlan(source.root, { aiDependency: source.aiDependency, callBudget: 3 });
+  await approveGate(source.root, "generation-authorization");
+  const sourceJob = await prepareImageGenerationJob(source.root, { kind: "deck", aiDependency: source.aiDependency });
+
+  await assert.rejects(assertTrustedGenerationAuthorizationRecord(
+    target.root,
+    sourceJob.authorizationTrust!,
+    sourceJob.authorizationPlan,
+    sourceJob.authorizationGate,
+  ), /trusted authorization.*project|project.*trusted authorization/i);
+});
+
+test("authorization trust store creation is private and safe under concurrent project approvals", async (t) => {
+  const first = await approvedProject(t, "superppt-trust-concurrent-first-", lockedStyle);
+  const second = await approvedProject(t, "superppt-trust-concurrent-second-", lockedStyle);
+  const sharedTrustRoot = await directory(t, "superppt-concurrent-authorization-trust-");
+  for (const fixture of [first, second]) {
+    await configureGenerationAuthorizationTrustForTests(fixture.root, {
+      root: sharedTrustRoot,
+      deterministicKeySeed: "concurrent-deterministic-key-seed",
+    });
+    await publishGenerationAuthorizationPlan(fixture.root, { aiDependency: fixture.aiDependency, callBudget: 3 });
+  }
+
+  await Promise.all([
+    approveGate(first.root, "generation-authorization"),
+    approveGate(second.root, "generation-authorization"),
+  ]);
+  const [firstJob, secondJob] = await Promise.all([
+    prepareImageGenerationJob(first.root, { kind: "deck", aiDependency: first.aiDependency }),
+    prepareImageGenerationJob(second.root, { kind: "deck", aiDependency: second.aiDependency }),
+  ]);
+  await Promise.all([
+    assertJobAuthorized(first.root, firstJob),
+    assertJobAuthorized(second.root, secondJob),
+  ]);
+  if (process.platform !== "win32") {
+    assert.equal((await stat(sharedTrustRoot)).mode & 0o777, 0o700);
+    assert.equal((await stat(join(sharedTrustRoot, "records"))).mode & 0o777, 0o700);
+    assert.equal((await stat(join(sharedTrustRoot, "hmac.key"))).mode & 0o777, 0o600);
+    assert.equal((await stat(trustedAuthorizationRecordPath({ authorizationTrustRoot: sharedTrustRoot }, firstJob))).mode & 0o777, 0o600);
+  }
+});
+
+test("authorization trust store rejects a symlinked ancestor outside the project", async (t) => {
+  const fixture = await approvedProject(t, "superppt-trust-symlink-ancestor-", lockedStyle);
+  const parent = await directory(t, "superppt-trust-symlink-parent-");
+  const actual = join(parent, "actual");
+  const alias = join(parent, "alias");
+  await mkdir(actual, { mode: 0o700 });
+  await symlink(actual, alias);
+  await configureGenerationAuthorizationTrustForTests(fixture.root, {
+    root: join(alias, "authorization-trust"),
+    deterministicKeySeed: "symlink-ancestor-key-seed",
+  });
+  await publishGenerationAuthorizationPlan(fixture.root, { aiDependency: fixture.aiDependency, callBudget: 3 });
+
+  await assert.rejects(
+    approveGate(fixture.root, "generation-authorization"),
+    /trusted authorization.*symbolic link ancestor|symbolic link ancestor.*trusted authorization/i,
+  );
+  assert.equal((await readProject(fixture.root)).gates.some(({ gate }) => gate === "generation-authorization"), false);
+});
+
+test("coordinated project-root authorization rewrites cannot replace external approval trust", async (t) => {
+  const fixture = await authorizedDeckProject(t, "superppt-trust-coordinated-rewrite-");
+  const job = await prepareImageGenerationJob(fixture.root, { kind: "deck", aiDependency: fixture.aiDependency });
+  const forgedPlan = { ...job.authorizationPlan, callBudget: job.callBudget + 1 };
+  const forged = await rewriteProjectAuthorizationEvidence(fixture.root, job, forgedPlan);
+
+  await assert.rejects(assertJobAuthorized(fixture.root, forged), /trusted authorization/i);
+});
+
+test("an external approval orphan cannot authorize before manifest publication and exact preparation retry is idempotent", async (t) => {
+  const fixture = await approvedProject(t, "superppt-trust-orphan-transition-", lockedStyle);
+  await publishGenerationAuthorizationPlan(fixture.root, { aiDependency: fixture.aiDependency, callBudget: 3 });
+  await assert.rejects(approveGate(fixture.root, "generation-authorization", {
+    operations: {
+      checkpoint(step) {
+        if (step === "snapshot-published") throw new Error("injected after trusted authorization publication");
+      },
+    },
+  }), /injected after trusted authorization publication/);
+  assert.equal((await readProject(fixture.root)).gates.some(({ gate }) => gate === "generation-authorization"), false);
+  await assert.rejects(
+    prepareImageGenerationJob(fixture.root, { kind: "deck", aiDependency: fixture.aiDependency }),
+    /generation authorization.*absent|generation-authorization.*current/i,
+  );
+
+  await approveGate(fixture.root, "generation-authorization");
+  const first = await prepareImageGenerationJob(fixture.root, { kind: "deck", aiDependency: fixture.aiDependency });
+  const retry = await prepareImageGenerationJob(fixture.root, { kind: "deck", aiDependency: fixture.aiDependency });
+  assert.deepEqual(retry.authorizationTrust, first.authorizationTrust);
+});
+
 test("image generation job rejects a changed non-null Skill Git revision", async (t) => {
   const fixture = await approvedProject(t, "superppt-image-job-git-identity-", lockedStyle);
   await execFileAsync("git", ["-C", fixture.aiDependency.root, "init"]);
@@ -999,6 +1286,37 @@ test("generation call ledger rejects conflicting duplicate tuple entries", async
   await assert.rejects(readCallLedger(fixture.root), /conflicting duplicate admission/i);
 });
 
+test("call budget rejects digest laundering through a rewritten historical job", async (t) => {
+  const fixture = await authorizedDeckProject(t, "superppt-call-budget-digest-laundering-");
+  const historical = await prepareImageGenerationJob(fixture.root, { kind: "deck", aiDependency: fixture.aiDependency });
+  const historicalPage = historical.pages[0]!;
+  await admitDelegatedGenerationCall(fixture.root, {
+    jobId: historical.jobId,
+    slideId: historicalPage.slideId,
+    attempt: historicalPage.attempt,
+    requestOrdinal: 1,
+  });
+
+  await publishGenerationAuthorizationPlan(fixture.root, { aiDependency: fixture.aiDependency, callBudget: 4 });
+  await approveGate(fixture.root, "generation-authorization");
+  const current = await prepareImageGenerationJob(fixture.root, { kind: "deck", aiDependency: fixture.aiDependency });
+  assert.notEqual(current.authorizationDigest, historical.authorizationDigest);
+  const forgedHistorical = ImageGenerationJobSchema.parse({
+    ...historical,
+    authorizationDigest: current.authorizationDigest,
+    authorizationPlan: current.authorizationPlan,
+    authorizationGate: current.authorizationGate,
+    callBudget: current.callBudget,
+  });
+  await writeFile(
+    join(fixture.root, "generation", "jobs", historical.jobId, "job.json"),
+    canonicalContractFile(forgedHistorical),
+    { mode: 0o600 },
+  );
+
+  await assert.rejects(generationCallBudget(fixture.root, current), /trusted authorization|historical.*job|job.*authorization/i);
+});
+
 test("call budget keeps an exact page-regeneration duplicate idempotent after its last call", async (t) => {
   const fixture = await approvedProject(t, "superppt-image-job-regeneration-duplicate-", lockedStyle);
   await approveStyleLock(fixture.root);
@@ -1102,6 +1420,33 @@ test("page-regeneration requires a new prompt hash and incremental authorization
   await assertJobAuthorized(fixture.root, regeneration);
 });
 
+test("external authorization trust preserves a nonzero page-regeneration order", async (t) => {
+  const fixture = await authorizedDeckProject(t, "superppt-image-job-regeneration-nonzero-order-");
+  const deck = await prepareImageGenerationJob(fixture.root, { kind: "deck", aiDependency: fixture.aiDependency });
+  const original = deck.pages[1]!;
+  const correctedPrompt = `${original.finalPrompt}\n\nCorrection: emphasize the second slide's comparison.`;
+
+  await publishPageRegenerationAuthorizationPlan(fixture.root, {
+    aiDependency: fixture.aiDependency,
+    slideId: original.slideId,
+    previousPromptSha256: original.promptSha256,
+    finalPrompt: correctedPrompt,
+    callBudget: 1,
+  });
+  await approveGate(fixture.root, "generation-authorization");
+  const regeneration = await prepareImageGenerationJob(fixture.root, {
+    kind: "page-regeneration",
+    aiDependency: fixture.aiDependency,
+    slideId: original.slideId,
+    previousPromptSha256: original.promptSha256,
+    finalPrompt: correctedPrompt,
+  });
+
+  assert.equal(regeneration.pages[0]!.order, original.order);
+  assert.ok(regeneration.pages[0]!.order > 0);
+  await assertJobAuthorized(fixture.root, regeneration);
+});
+
 test("page-regeneration borrowing deck authorization binds the authorized page order", async (t) => {
   const fixture = await approvedProject(t, "superppt-image-job-regeneration-order-", lockedStyle);
   await approveStyleLock(fixture.root);
@@ -1161,7 +1506,10 @@ test("two workers cannot both execute the last authorized generation call", asyn
   const settled = await Promise.allSettled(contenders);
   assert.equal(settled.filter(({ status }) => status === "fulfilled").length, 1);
   assert.equal(settled.filter(({ status }) => status === "rejected").length, 1);
-  assert.match(String((settled.find(({ status }) => status === "rejected") as PromiseRejectedResult).reason), /call budget.*exhausted/i);
+  assert.match(
+    String((settled.find(({ status }) => status === "rejected") as PromiseRejectedResult).reason),
+    /call budget.*exhausted|serial delegated deck call ordinal is non-monotonic/i,
+  );
   assert.equal(actualCalls, 1);
   assert.deepEqual(await generationCallBudget(fixture.root, job), { authorized: 4, consumed: 4, remaining: 0 });
 });

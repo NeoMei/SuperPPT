@@ -15,7 +15,7 @@ import {
 import { withPlanningLock, type ProjectLockOptions } from "../project/lock.js";
 import { promoteExclusive } from "../project/promotion.js";
 import { localProjectPath, readOwnedRegularFile, type SafeReadOperations } from "../project/safe-file.js";
-import type { ProjectManifest } from "../project/schemas.js";
+import { ProjectManifestSchema, type ProjectManifest } from "../project/schemas.js";
 import { readProject, updateProject } from "../project/store.js";
 import { loadValidatedOutline, loadValidatedPlan } from "./load.js";
 import {
@@ -30,6 +30,7 @@ import {
   validateCanonicalStyleSample,
   type StyleSampleArtifacts,
 } from "../styles/sample-contract.js";
+import { appendTrustedGenerationAuthorizationRecord } from "../generation/trusted-authorization.js";
 
 export type OrdinaryGate =
   | "outline"
@@ -318,19 +319,29 @@ export async function approveGate(
         presentation,
         confirmedAt: new Date().toISOString(),
       };
-      const provisional: ProjectManifest = {
+      const provisional = ProjectManifestSchema.parse({
         ...manifest,
         gates: [...manifest.gates, gateRecord],
-      };
+      });
       const nextGate = {
         ...gateRecord,
         snapshotManifestSha256: snapshotManifestEvidenceHash(provisional, approvalId),
       };
-      const next: ProjectManifest = {
+      const next = ProjectManifestSchema.parse({
         ...manifest,
         gates: [...manifest.gates, nextGate],
-      };
+      });
+      const normalizedNextGate = next.gates.at(-1)!;
       await publishSnapshot(canonicalRoot, gate, approvalId, snapshotPath, next, artifacts, presentation);
+      if (gate === "generation-authorization") {
+        const evidence = await validateOrdinaryGateEvidence(canonicalRoot, next, normalizedNextGate);
+        await appendTrustedGenerationAuthorizationRecord(canonicalRoot, {
+          manifest: next,
+          gate: normalizedNextGate,
+          planBytes: artifacts["generation/authorization-plan.json"]!,
+          descriptor: evidence.descriptor,
+        });
+      }
       await options.operations?.checkpoint?.("snapshot-published");
       if (required && !await gateCurrentWithManifest(canonicalRoot, required, manifest)) {
         throw new Error(`${required} gate must be current`);
