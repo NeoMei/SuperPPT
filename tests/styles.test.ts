@@ -11,7 +11,7 @@ import { approveGate } from "../src/planning/confirm.js";
 import { initializeProject } from "../src/project/initialize.js";
 import { publishPlanViews, publishStyleSample } from "../src/planning/views.js";
 import { approveStyleLock, createProvisionalStyleLock, readApprovedStyleLock, readStyleLock } from "../src/styles/style-lock.js";
-import { writeCanonicalStyleSample } from "./helpers/style-sample.js";
+import { finalizeDelegatedStyleSampleForTest } from "./helpers/delegated-style-sample.js";
 
 const catalogPath = "skills/superppt/assets/styles/catalog.json";
 const promptSpec = { title: "AI Agent 协作系统", role: "content" as const, coreMessage: "Specialists cooperate", requiredText: ["AI Agent 协作系统"], visualSubject: "central orchestration core", composition: "one focal hub with six satellites", relationships: ["hub routes work"], forbidden: ["watermark"] };
@@ -234,12 +234,10 @@ async function lockProject(t: test.TestContext, prefix: string): Promise<string>
 }
 
 async function approveCanonicalSample(root: string): Promise<void> {
-  await writeCanonicalStyleSample(root);
   await publishPlanViews(root);
   await approveGate(root, "outline");
   await approveGate(root, "slide-specs");
-  await publishStyleSample(root);
-  await approveGate(root, "style-sample");
+  await finalizeDelegatedStyleSampleForTest(root);
 }
 
 test("Style Lock persists one catalog recipe, hashes references, and promotes only after the accepted sample", async (t) => {
@@ -348,14 +346,10 @@ test("custom Style Lock drives the representative sample and becomes an approved
     referenceArtifacts: [{ path: "style/references/custom.png", role: "art-direction" }],
   });
   await assert.rejects(readApprovedStyleLock(root), /approved before deck generation/);
-  await writeCanonicalStyleSample(root);
+  await approveCanonicalSample(root);
   const samplePrompt = await readFile(join(root, "style", "sample", "prompt.txt"), "utf8");
   assert.match(samplePrompt, /lab-notebook/);
   assert.match(samplePrompt, /Dependency default style must not be appended/);
-  await publishPlanViews(root);
-  await approveGate(root, "outline");
-  await approveGate(root, "slide-specs");
-  await publishStyleSample(root);
   assert.equal((JSON.parse(await readFile(join(root, "style-sample.json"), "utf8")) as { styleId: string }).styleId, "lab-notebook");
   await approveGate(root, "style-sample");
   const approved = await approveStyleLock(root);

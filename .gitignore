@@ -1,7 +1,7 @@
 .worktrees/
 node_modules/
 dist/
-.superpowers/
+/.superpowers/sdd/2026-08-28-superppt-ai-image-delegation/
 .DS_Store
 output/
 *.failed-runs/

@@ -25,8 +25,10 @@ import {
   representativeSlideId,
   readStyleSampleArtifacts,
   STYLE_SAMPLE_ARTIFACTS,
+  type StyleSampleArtifacts,
   validateCanonicalStyleSample,
 } from "../styles/sample-contract.js";
+import { assertFinalizedStyleSample } from "../generation/style-sample.js";
 import { resolveStyleRecipe } from "../styles/catalog.js";
 import { readStyleLockIfPresent } from "../styles/style-lock.js";
 import { StyleSampleSelectionSchema, type StyleSampleSelection } from "../styles/schemas.js";
@@ -266,7 +268,7 @@ export async function publishPlanViews(
 }
 
 async function styleArtifacts(root: string): Promise<{
-  values: Record<string, Buffer>;
+  values: StyleSampleArtifacts;
   selection: StyleSampleSelection;
 }> {
   const values = await readStyleSampleArtifacts(root);
@@ -280,7 +282,9 @@ export async function publishStyleSample(root: string): Promise<StylePublication
     return withProjectLease(canonicalRoot, "state", async () => {
       const manifest = await readProject(canonicalRoot);
       const { values, selection } = await styleArtifacts(canonicalRoot);
-      const recipe = (await readStyleLockIfPresent(canonicalRoot))?.recipe
+      const styleLock = await readStyleLockIfPresent(canonicalRoot);
+      if (styleLock) await assertFinalizedStyleSample(canonicalRoot, values);
+      const recipe = styleLock?.recipe
         ?? await resolveStyleRecipe(lockSelection(selection));
       const publicationId = randomUUID();
       const publicationPath = `revisions/${manifest.currentRevision.id}/style-samples/${publicationId}`;

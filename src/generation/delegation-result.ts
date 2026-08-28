@@ -5,7 +5,7 @@ import { isAbsolute, join } from "node:path";
 import sharp from "sharp";
 import { z } from "zod";
 
-import { assertAiImageSkillDependencyCurrent, assertSealedJobInputs, readCallLedger, settleDelegatedGenerationCall } from "./authorization.js";
+import { assertAiImageSkillDependencyCurrent, assertAuthorizedJobBinding, assertSealedJobInputs, readCallLedger, settleDelegatedGenerationCall } from "./authorization.js";
 import { openGenerationDirectory } from "./anchored-dir.js";
 import { canonicalContractFile, type ImageGenerationJob } from "./job-schemas.js";
 import { readImageGenerationJob } from "./jobs.js";
@@ -470,6 +470,28 @@ async function reauthenticateAggregate(
   if (aggregate.outcome !== aggregateOutcome(job, aggregate.pages, aggregate.batchReport)) {
     throw new Error("delegated aggregate outcome conflicts with authenticated page evidence");
   }
+}
+
+export type ReauthenticatedDelegatedResult = {
+  job: ImageGenerationJob;
+  result: ImageGenerationResult;
+};
+
+export async function readAndReauthenticateDelegatedResult(
+  root: string,
+  jobId: string,
+): Promise<ReauthenticatedDelegatedResult> {
+  const job = await readImageGenerationJob(root, jobId);
+  await assertAuthorizedJobBinding(root, job);
+  const result = await readAggregate(root, jobId);
+  if (!result) throw new Error("delegated aggregate result is unavailable");
+  const ledger = await readCallLedger(root);
+  await reauthenticateAggregate(root, job, result, ledger);
+  const storedPages = await pageResults(root, job);
+  if (!sameJson(storedPages, result.pages)) {
+    throw new Error("delegated aggregate pages do not match immutable page results");
+  }
+  return { job, result };
 }
 
 function aggregateOutcome(job: ImageGenerationJob, pages: ImagePageResult[], report: SerialStickyReport): ImageGenerationResult["outcome"] {

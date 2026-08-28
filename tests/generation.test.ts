@@ -50,6 +50,7 @@ import { loadBuiltInStyleCatalog } from "../src/styles/catalog.js";
 import { compileSlidePrompt } from "../src/styles/prompt-compiler.js";
 import { approveStyleLock, createProvisionalStyleLock, readApprovedStyleLock } from "../src/styles/style-lock.js";
 import { writeCanonicalStyleSample } from "./helpers/style-sample.js";
+import { finalizeDelegatedStyleSampleForTest } from "./helpers/delegated-style-sample.js";
 
 const runner = join(process.cwd(), "scripts", "run_ai_image_provider.py");
 const fakeProvider = join(process.cwd(), "tests", "fixtures", "fake_ai_provider.py");
@@ -136,14 +137,10 @@ async function approvedProject(
     styleId: "cinematic-tech",
     representativeSlideId: SLIDE_IDS[1],
   })}\n`);
-  if (styleLock) await createProvisionalStyleLock(root, styleLock);
   await writeCanonicalStyleSample(root);
   await publishPlanViews(root);
   await approveGate(root, "outline");
   await approveGate(root, "slide-specs");
-  await publishStyleSample(root);
-  await approveGate(root, "style-sample");
-
   const aiRoot = join(parent, "ai-image-to-ppt");
   await mkdir(join(aiRoot, "scripts"), { recursive: true });
   await mkdir(join(aiRoot, "references"));
@@ -169,6 +166,14 @@ async function approvedProject(
     aiSkillRoot: aiRoot,
     editableSkillRoot: editableRoot,
   })).ai;
+  if (styleLock) {
+    await createProvisionalStyleLock(root, styleLock);
+    await finalizeDelegatedStyleSampleForTest(root);
+    await approveStyleLock(root);
+  } else {
+    await publishStyleSample(root);
+    await approveGate(root, "style-sample");
+  }
   return {
     root,
     editableRoot,
@@ -327,6 +332,7 @@ test("image job publication failure removes only its owned nested staging inputs
     selection: { kind: "catalog", styleId: "cinematic-tech" },
     referenceArtifacts: [{ path: referencePath, role: "content-reference" }],
   });
+  await finalizeDelegatedStyleSampleForTest(fixture.root);
   await approveStyleLock(fixture.root);
   await publishGenerationAuthorizationPlan(fixture.root, {
     aiDependency: fixture.aiDependency,
@@ -335,6 +341,7 @@ test("image job publication failure removes only its owned nested staging inputs
   await approveGate(fixture.root, "generation-authorization");
 
   const jobsRoot = join(fixture.root, "generation", "jobs");
+  const committedJobs = await readdir(jobsRoot);
   const unrelatedRoot = join(jobsRoot, ".unrelated-staging");
   const unrelatedMarker = join(unrelatedRoot, "keep.txt");
   await mkdir(unrelatedRoot, { recursive: true });
@@ -356,7 +363,7 @@ test("image job publication failure removes only its owned nested staging inputs
 
   assert.notEqual(ownedStaging, "", "the failure must occur after nested inputs exist");
   await assert.rejects(access(ownedStaging), /ENOENT/);
-  assert.deepEqual(await readdir(jobsRoot), [".unrelated-staging"]);
+  assert.deepEqual((await readdir(jobsRoot)).sort(), [...committedJobs, ".unrelated-staging"].sort());
   assert.equal(await readFile(unrelatedMarker, "utf8"), "unrelated evidence must remain\n");
 });
 
@@ -429,8 +436,16 @@ test("image generation job rejects a changed non-null Skill Git revision", async
 });
 
 test("delegated style sample requires execution authorization, finalizes its authenticated artifact, then approves the lock", async (t) => {
-  const fixture = await approvedProject(t, "superppt-image-job-sample-", lockedStyle);
-  await createProvisionalStyleLock(fixture.root, lockedStyle);
+  const fixture = await approvedProject(t, "superppt-image-job-sample-");
+  const referencePath = "style/references/style-direction.txt";
+  await mkdir(join(fixture.root, "style", "references"), { recursive: true });
+  await writeFile(join(fixture.root, ...referencePath.split("/")), "required art direction");
+  await createProvisionalStyleLock(fixture.root, {
+    ...lockedStyle,
+    referenceArtifacts: [{ path: referencePath, role: "art-direction" }],
+  });
+  await writeCanonicalStyleSample(fixture.root);
+  await assert.rejects(publishStyleSample(fixture.root), /completion receipt|delegated style sample/i);
   await assert.rejects(
     publishStyleSampleGenerationPlan(fixture.root, { aiDependency: fixture.aiDependency, callBudget: 2 }),
     /exactly 1/i,
@@ -478,15 +493,39 @@ test("delegated style sample requires execution authorization, finalizes its aut
     actualPromptSha256: page.promptSha256,
     styleLockSha256: job.styleLockSha256,
     styleRecipeSha256: job.styleLock.styleRecipeSha256,
-    referenceUsage: [],
+    referenceUsage: job.styleLock.referenceArtifacts.map(({ path, sha256 }) => ({ path, sha256, usage: "used" as const })),
     presentationQa: null,
   });
   assert.equal(result.outcome, "success");
   assert.equal(result.pages[0]!.styleConsistency, "not-reviewed");
   assert.deepEqual((await readProject(fixture.root)).slides, [], "a provisional sample is never attached as a deck page");
 
+  const aggregatePath = join(fixture.root, "generation", "jobs", job.jobId, "result.json");
+  const aggregateBytes = await readFile(aggregatePath);
+  const aggregate = JSON.parse(aggregateBytes.toString("utf8")) as {
+    pages: Array<{ referenceUsage: Array<{ usage: string }> }>;
+    batchReport: { search_candidate: string; sticky_candidate: string; pages: Array<{ candidate: string }> };
+  };
+  aggregate.pages[0]!.referenceUsage[0]!.usage = "unsupported";
+  await writeFile(aggregatePath, `${JSON.stringify(aggregate, null, 2)}\n`);
+  await assert.rejects(finalizeStyleSample(fixture.root, job.jobId), /reference usage|status conflicts/i);
+  await writeFile(aggregatePath, aggregateBytes);
+  const routed = JSON.parse(aggregateBytes.toString("utf8")) as typeof aggregate;
+  routed.batchReport.search_candidate = "host-openai";
+  routed.batchReport.sticky_candidate = "host-openai";
+  routed.batchReport.pages[0]!.candidate = "host-openai";
+  await writeFile(aggregatePath, `${JSON.stringify(routed, null, 2)}\n`);
+  await assert.rejects(finalizeStyleSample(fixture.root, job.jobId), /routing.*provider|provider.*routing/i);
+  await writeFile(aggregatePath, aggregateBytes);
+  const staleTemp = join(fixture.root, "style", "sample", ".style-sample-finalize-00000000-0000-4000-8000-000000000000-director.json");
+  await writeFile(staleTemp, "stale owned finalization temporary");
   const finalized = await finalizeStyleSample(fixture.root, job.jobId);
   assert.deepEqual(Object.keys(finalized).sort(), ["style/sample/director.json", "style/sample/ledger.json", "style/sample/prompt.txt", "style/sample/slide.png", "style/selection.json"]);
+  await assert.rejects(access(staleTemp), { code: "ENOENT" });
+  const receiptPath = join(fixture.root, "style", "sample", "completion.json");
+  const receipt = await readFile(receiptPath);
+  await finalizeStyleSample(fixture.root, job.jobId);
+  assert.deepEqual(await readFile(receiptPath), receipt, "receipt-last finalization is idempotent after a crash retry");
   await publishStyleSample(fixture.root);
   await approveGate(fixture.root, "style-sample");
   const approved = await approveStyleLock(fixture.root);
@@ -537,7 +576,7 @@ test("generation execution admits before the callback, counts failures, and repl
   const fixture = await authorizedDeckProject(t, "superppt-image-job-ledger-");
   const job = await prepareImageGenerationJob(fixture.root, { kind: "deck", aiDependency: fixture.aiDependency });
   const first = { jobId: job.jobId, slideId: job.pages[0]!.slideId, attempt: 1, requestOrdinal: 1 };
-  assert.equal((await readCallLedger(fixture.root)).length, 0, "capability discovery without a generation request consumes no budget");
+  assert.equal((await readCallLedger(fixture.root)).filter(({ jobId }) => jobId === job.jobId).length, 0, "job preparation consumes no deck-call budget");
   let firstCalls = 0;
   await assert.rejects(executeAuthorizedGenerationCall(fixture.root, first, async () => {
     firstCalls += 1;
@@ -570,7 +609,7 @@ test("generation execution admits before the callback, counts failures, and repl
     attempt: 1,
     requestOrdinal: 4,
   }, async () => "over budget"), /call budget.*exhausted/i);
-  assert.equal((await readCallLedger(fixture.root)).length, 6);
+  assert.equal((await readCallLedger(fixture.root)).filter(({ jobId }) => jobId === job.jobId).length, 6);
   assert.deepEqual(await generationCallBudget(fixture.root, job), { authorized: 3, consumed: 3, remaining: 0 });
 });
 
@@ -583,7 +622,7 @@ test("generation call ledger rejects conflicting duplicate tuple entries", async
     attempt: job.pages[0]!.attempt,
     requestOrdinal: 1,
   }, async () => "image");
-  const admission = (await readCallLedger(fixture.root))[0]!;
+  const admission = (await readCallLedger(fixture.root)).find(({ jobId }) => jobId === job.jobId)!;
   await writeFile(
     join(fixture.root, "generation", "call-ledger.jsonl"),
     `${JSON.stringify({ ...admission, recordedAt: new Date().toISOString() })}\n`,
@@ -761,7 +800,7 @@ test("an orphaned in-flight admission remains spent and its replay never invokes
     afterAdmission: () => { throw new Error("injected crash after durable admission"); },
   }), /injected crash after durable admission/);
   assert.equal(actualCalls, 0);
-  assert.deepEqual((await readCallLedger(fixture.root)).map(({ entryKind, outcome }) => ({ entryKind, outcome })), [
+  assert.deepEqual((await readCallLedger(fixture.root)).filter(({ jobId }) => jobId === job.jobId).map(({ entryKind, outcome }) => ({ entryKind, outcome })), [
     { entryKind: "admission", outcome: "in-flight" },
   ]);
   assert.deepEqual(await generationCallBudget(fixture.root, job), { authorized: 3, consumed: 1, remaining: 2 });

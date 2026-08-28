@@ -1,9 +1,11 @@
 import { createHash } from "node:crypto";
 
 import sharp from "sharp";
+import { z } from "zod";
 
 import { AttemptLedgerSchema, type AttemptLedger } from "../generation/schemas.js";
 import { loadValidatedPlan } from "../planning/load.js";
+import { Sha256Schema } from "../project/schemas.js";
 import { readOwnedRegularFile } from "../project/safe-file.js";
 import { readProject } from "../project/store.js";
 import { resolveStyleRecipe } from "./catalog.js";
@@ -19,8 +21,32 @@ export const STYLE_SAMPLE_ARTIFACTS = [
   "style/sample/ledger.json",
 ] as const;
 
+export const STYLE_SAMPLE_COMPLETION_RECEIPT = "style/sample/completion.json";
+
+const ReceiptArtifactSchema = z.object({
+  path: z.string().min(1),
+  sha256: Sha256Schema,
+}).strict();
+
+export const StyleSampleCompletionReceiptSchema = z.object({
+  receiptVersion: z.literal(1),
+  jobId: z.string().uuid(),
+  job: ReceiptArtifactSchema,
+  result: ReceiptArtifactSchema,
+  authorization: ReceiptArtifactSchema,
+  artifactHashes: z.object({
+    "style/selection.json": Sha256Schema,
+    "style/sample/director.json": Sha256Schema,
+    "style/sample/prompt.txt": Sha256Schema,
+    "style/sample/slide.png": Sha256Schema,
+    "style/sample/ledger.json": Sha256Schema,
+  }).strict(),
+  finalizedAt: z.string().datetime(),
+}).strict();
+
 export type StyleSampleArtifactPath = typeof STYLE_SAMPLE_ARTIFACTS[number];
 export type StyleSampleArtifacts = Record<StyleSampleArtifactPath, Buffer>;
+export type StyleSampleCompletionReceipt = z.infer<typeof StyleSampleCompletionReceiptSchema>;
 
 const digest = (value: Buffer | string): string => createHash("sha256").update(value).digest("hex");
 
@@ -41,6 +67,7 @@ export function delegatedStyleSampleArtifacts(
   canonical: CanonicalStyleSample,
   normalizedSample: Buffer,
   providerId: string,
+  durationMs: number,
 ): StyleSampleArtifacts {
   const ledger = AttemptLedgerSchema.parse({
     ledgerVersion: 1,
@@ -53,7 +80,7 @@ export function delegatedStyleSampleArtifacts(
     output: STYLE_SAMPLE_ARTIFACTS[3],
     outputSha256: digest(normalizedSample),
     outputBytes: normalizedSample.length,
-    durationMs: 0,
+    durationMs,
     quality: null,
     outcome: "generated",
     errorCode: null,
