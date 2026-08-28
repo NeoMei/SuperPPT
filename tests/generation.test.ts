@@ -17,11 +17,13 @@ import { bridgeContainmentPolicy } from "../src/generation/bridge-process.js";
 import { AttemptLedgerSchema, QualityDecisionSchema } from "../src/generation/schemas.js";
 import type { LegacyResolvedDependencies } from "../src/dependencies/schemas.js";
 import { approveGate, assertGateCurrent } from "../src/planning/confirm.js";
+import { loadValidatedPlan } from "../src/planning/load.js";
 import { publishPlanViews, publishStyleSample } from "../src/planning/views.js";
 import { initializeProject } from "../src/project/initialize.js";
 import { readProject } from "../src/project/store.js";
 import { loadBuiltInStyleCatalog } from "../src/styles/catalog.js";
 import { compileSlidePrompt } from "../src/styles/prompt-compiler.js";
+import { approveStyleLock, createProvisionalStyleLock, readApprovedStyleLock } from "../src/styles/style-lock.js";
 import { writeCanonicalStyleSample } from "./helpers/style-sample.js";
 
 const runner = join(process.cwd(), "scripts", "run_ai_image_provider.py");
@@ -57,7 +59,11 @@ function processExists(pid: number): boolean {
   try { process.kill(pid, 0); return true; } catch { return false; }
 }
 
-async function approvedProject(t: TestContext, prefix: string): Promise<{ root: string; ai: LegacyResolvedDependencies["ai"]; editableRoot: string }> {
+async function approvedProject(
+  t: TestContext,
+  prefix: string,
+  styleLock?: Parameters<typeof createProvisionalStyleLock>[1],
+): Promise<{ root: string; ai: LegacyResolvedDependencies["ai"]; editableRoot: string }> {
   const parent = await directory(t, prefix);
   const root = join(parent, "project");
   await initializeProject({ root, title: "Generation Demo" });
@@ -105,6 +111,7 @@ async function approvedProject(t: TestContext, prefix: string): Promise<{ root: 
     styleId: "cinematic-tech",
     representativeSlideId: SLIDE_IDS[1],
   })}\n`);
+  if (styleLock) await createProvisionalStyleLock(root, styleLock);
   await writeCanonicalStyleSample(root);
   await publishPlanViews(root);
   await approveGate(root, "outline");
@@ -667,6 +674,39 @@ test("rejects generation when any of the three planning gates is no longer curre
   assert.equal((await readProject(fixture.root)).slides.length, 0);
 });
 
+test("deck generation refuses an existing provisional Style Lock", async (t) => {
+  const fixture = await approvedProject(t, "superppt-provisional-style-lock-");
+  await createProvisionalStyleLock(fixture.root, {
+    selection: { kind: "catalog", styleId: "cinematic-tech" },
+    referenceArtifacts: [],
+  });
+  await assert.rejects(
+    generateProject({ root: fixture.root, ai: fixture.ai, runner, concurrency: 1 }),
+    /style lock must be approved before deck generation/,
+  );
+});
+
+test("deck generation consumes the approved custom Style Lock rather than mutable selection", async (t) => {
+  const recipe = (await loadBuiltInStyleCatalog()).styles.find(({ id }) => id === "cinematic-tech")!;
+  const fixture = await approvedProject(t, "superppt-custom-style-lock-generation-", {
+    selection: {
+      kind: "custom",
+      name: "Custom cinematic notes",
+      description: "Warm handcrafted scientific cinematic direction.",
+      recipe: { ...recipe, id: "custom-cinematic-notes", name: "Custom cinematic notes" },
+    },
+    referenceArtifacts: [],
+  });
+  await approveStyleLock(fixture.root);
+  const result = await generateProject({ root: fixture.root, ai: fixture.ai, runner, concurrency: 1 });
+  assert.equal(result.pageCount, 3);
+  const ledger = AttemptLedgerSchema.parse(JSON.parse(await readFile(join(fixture.root, "images", SLIDE_IDS[0], "attempt-1", "ledger.json"), "utf8")));
+  const lock = await readApprovedStyleLock(fixture.root);
+  const expected = compileSlidePrompt({ spec: (await loadValidatedPlan(fixture.root)).specs[0]!, styleLock: lock });
+  assert.equal(lock.recipe.id, "custom-cinematic-notes");
+  assert.equal(ledger.promptSha256, expected.sha256);
+});
+
 test("manual QA requires a regular 0600 JSON file and exact reviewer schema", async (t) => {
   const fixture = await approvedProject(t, "superppt-manual-private-");
   fixture.ai.reviewer = null;
@@ -779,7 +819,7 @@ test("CLI generates and publishes a canonical representative style sample with p
   assert.deepEqual(Object.keys(director).sort(), ["background", "foreground", "microDetails", "midground", "readingOrder", "textSafeArea"]);
   assert.equal(ledger.providerId, generated.providerId);
   assert.equal(ledger.slideId, generated.representativeSlideId);
-  assert.equal(ledger.output, "style/sample/sample.png");
+  assert.equal(ledger.output, "style/sample/slide.png");
   assert.doesNotMatch(JSON.stringify(ledger), /BEGIN SUPERPPT CANONICAL INPUT/);
   assert.equal((await sharp(join(fixture.root, generated.artifacts.sample)).metadata()).width, 1920);
 

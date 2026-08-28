@@ -1,4 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
+import { closeSync } from "node:fs";
 
 import { assertGateCurrent } from "../planning/confirm.js";
 import { withProjectLease } from "../project/lock.js";
@@ -6,10 +7,8 @@ import { readOwnedRegularFile } from "../project/safe-file.js";
 import { readProject } from "../project/store.js";
 import { openGenerationDirectory } from "../generation/anchored-dir.js";
 import { resolveStyleRecipe } from "./catalog.js";
-import { canonicalStyleSample } from "./sample-contract.js";
 import {
   StyleLockSchema,
-  StyleRecipeSchema,
   StyleSelectionSchema,
   type StyleLock,
   type StyleRecipe,
@@ -18,7 +17,7 @@ import {
 
 const RECIPE_PATH = "style/recipe.json";
 const LOCK_PATH = "style/lock.json";
-const SAMPLE_PATH = "style/sample/sample.png";
+const SAMPLE_PATH = "style/sample/slide.png";
 
 export type LockedStyle = StyleLock & { styleLockSha256: string };
 
@@ -41,6 +40,24 @@ export function canonicalJson(value: unknown): string {
 
 function canonicalFile(value: unknown): string {
   return `${canonicalJson(value)}\n`;
+}
+
+function sameJson(left: unknown, right: unknown): boolean {
+  return canonicalJson(left) === canonicalJson(right);
+}
+
+function isMissing(error: unknown): boolean {
+  return (error as NodeJS.ErrnoException).code === "ENOENT";
+}
+
+function regularFileExists(style: ReturnType<typeof openGenerationDirectory>, name: string): boolean {
+  try {
+    const fd = style.openRegular(name);
+    try { return true; } finally { closeSync(fd); }
+  } catch (error: unknown) {
+    if (isMissing(error)) return false;
+    throw error;
+  }
 }
 
 async function referenceArtifacts(root: string, references: StyleReferenceInput[]) {
@@ -82,12 +99,40 @@ async function verifyLock(root: string, lock: LockedStyle): Promise<void> {
   }
 }
 
-function writeLockFiles(root: string, recipe: StyleRecipe, lock: StyleLock): void {
+function createLockFiles(root: string, recipe: StyleRecipe, lock: StyleLock, afterLockPublished?: () => Promise<void> | void): Promise<void> {
+  const project = openGenerationDirectory(root);
+  const style = project.child("style", false);
+  return Promise.resolve().then(async () => {
+    try {
+      style.writeExclusive("lock.json", canonicalFile(lock));
+      await afterLockPublished?.();
+      style.writeExclusive("recipe.json", canonicalFile(recipe));
+    } finally {
+      style.close();
+      project.close();
+    }
+  });
+}
+
+function replaceApprovedLock(root: string, lock: StyleLock): void {
   const project = openGenerationDirectory(root);
   const style = project.child("style", false);
   try {
-    style.replace("recipe.json", canonicalFile(recipe), `.${randomUUID()}.recipe`);
     style.replace("lock.json", canonicalFile(lock), `.${randomUUID()}.lock`);
+  } finally {
+    style.close();
+    project.close();
+  }
+}
+
+export async function hasStyleLockEvidence(root: string): Promise<boolean> {
+  const project = openGenerationDirectory(root);
+  const style = project.child("style", false);
+  try {
+    const lock = regularFileExists(style, "lock.json");
+    const recipe = regularFileExists(style, "recipe.json");
+    if (lock !== recipe) throw new Error("style lock transaction is incomplete");
+    return lock;
   } finally {
     style.close();
     project.close();
@@ -97,6 +142,7 @@ function writeLockFiles(root: string, recipe: StyleRecipe, lock: StyleLock): voi
 export async function createProvisionalStyleLock(root: string, input: {
   selection: StyleSelection;
   referenceArtifacts: StyleReferenceInput[];
+  operations?: { afterLockPublished?: () => Promise<void> | void };
 }): Promise<LockedStyle> {
   const selection = StyleSelectionSchema.parse(input.selection);
   return withProjectLease(root, "state", async (canonicalRoot) => {
@@ -118,12 +164,24 @@ export async function createProvisionalStyleLock(root: string, input: {
       applyDependencyDefaultStyle: false,
       createdAt: new Date().toISOString(),
     });
-    writeLockFiles(canonicalRoot, recipe, lock);
+    if (await hasStyleLockEvidence(canonicalRoot)) {
+      const existing = await readStyleLock(canonicalRoot);
+      if (
+        existing.approvalState === "provisional"
+        && existing.projectId === lock.projectId
+        && existing.revisionId === lock.revisionId
+        && sameJson(existing.recipe, lock.recipe)
+        && sameJson(existing.referenceArtifacts, lock.referenceArtifacts)
+      ) return existing;
+      throw new Error("style lock already exists and cannot be replaced");
+    }
+    await createLockFiles(canonicalRoot, recipe, lock, input.operations?.afterLockPublished);
     return { ...lock, styleLockSha256: sha256(canonicalFile(lock)) };
   });
 }
 
 export async function readStyleLock(root: string): Promise<LockedStyle> {
+  if (!await hasStyleLockEvidence(root)) throw new Error("style lock is missing");
   const lock = parseExactLock(await readOwnedRegularFile(root, LOCK_PATH));
   const manifest = await readProject(root);
   if (lock.projectId !== manifest.projectId || lock.revisionId !== manifest.currentRevision.id) {
@@ -133,24 +191,29 @@ export async function readStyleLock(root: string): Promise<LockedStyle> {
   return lock;
 }
 
+export async function readStyleLockIfPresent(root: string): Promise<LockedStyle | null> {
+  return await hasStyleLockEvidence(root) ? readStyleLock(root) : null;
+}
+
 export async function readApprovedStyleLock(root: string): Promise<LockedStyle> {
   const lock = await readStyleLock(root);
   if (lock.approvalState !== "approved" || !lock.approvedSample) throw new Error("style lock must be approved before deck generation");
   return lock;
 }
 
-export async function approveStyleLock(root: string): Promise<LockedStyle> {
+export async function approveStyleLock(
+  root: string,
+  options: { operations?: { afterExpectedProvisionalRead?: () => Promise<void> | void } } = {},
+): Promise<LockedStyle> {
   return withProjectLease(root, "state", async (canonicalRoot) => {
     if (!await assertGateCurrent(canonicalRoot, "style-sample")) {
       throw new Error("style-sample gate must be current before style lock approval");
     }
+    const expectedLockBytes = await readOwnedRegularFile(canonicalRoot, LOCK_PATH);
     const lock = await readStyleLock(canonicalRoot);
     if (lock.approvalState === "approved") return lock;
+    await options.operations?.afterExpectedProvisionalRead?.();
     const manifest = await readProject(canonicalRoot);
-    const canonicalSample = await canonicalStyleSample(canonicalRoot);
-    if (canonicalJson(canonicalSample.style) !== canonicalJson(lock.recipe)) {
-      throw new Error("style-sample gate recipe does not match the provisional style lock");
-    }
     const gate = [...manifest.gates].reverse().find(({ gate: kind }) => kind === "style-sample");
     const sample = await readOwnedRegularFile(canonicalRoot, SAMPLE_PATH);
     const sampleSha256 = sha256(sample);
@@ -163,7 +226,10 @@ export async function approveStyleLock(root: string): Promise<LockedStyle> {
       approvalState: "approved",
       approvedSample: { path: SAMPLE_PATH, sha256: sampleSha256, revisionId: lock.revisionId },
     });
-    writeLockFiles(canonicalRoot, approved.recipe, approved);
+    if (!expectedLockBytes.equals(await readOwnedRegularFile(canonicalRoot, LOCK_PATH))) {
+      throw new Error("style lock changed during approval");
+    }
+    replaceApprovedLock(canonicalRoot, approved);
     return { ...approved, styleLockSha256: sha256(canonicalFile(approved)) };
   });
 }

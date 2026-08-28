@@ -348,7 +348,7 @@ test("ordinary gates derive and validate fixed artifact sets in exact order", as
     "style/sample/director.json",
     "style/sample/ledger.json",
     "style/sample/prompt.txt",
-    "style/sample/sample.png",
+    "style/sample/slide.png",
     "style/selection.json",
   ]);
   assert.equal(await assertGateCurrent(root, "style-sample"), true);
@@ -498,12 +498,12 @@ test("style publication requires a built-in recipe and an exact decodable canoni
     representativeSlideId: SLIDE_IDS[1],
   }));
   await writeCanonicalStyleSample(root);
-  await writeFile(join(root, "style", "sample", "sample.png"), await sharp({
+  await writeFile(join(root, "style", "sample", "slide.png"), await sharp({
     create: { width: 800, height: 800, channels: 3, background: "#102030" },
   }).png().toBuffer());
   await assert.rejects(publishStyleSample(root), /exact 1920x1080 PNG/);
 
-  await writeFile(join(root, "style", "sample", "sample.png"), Buffer.from("not a png"));
+  await writeFile(join(root, "style", "sample", "slide.png"), Buffer.from("not a png"));
   await assert.rejects(publishStyleSample(root));
 
   const complete = await sharp({
@@ -511,7 +511,7 @@ test("style publication requires a built-in recipe and an exact decodable canoni
   }).png().toBuffer();
   const truncated = complete.subarray(0, complete.length - 64);
   assert.equal((await sharp(truncated).metadata()).format, "png", "regression fixture must retain a valid PNG header");
-  await writeFile(join(root, "style", "sample", "sample.png"), truncated);
+  await writeFile(join(root, "style", "sample", "slide.png"), truncated);
   await assert.rejects(publishStyleSample(root));
 });
 
@@ -1233,7 +1233,7 @@ test("CLI publishes authoritative style evidence before the existing approval ga
     "style/sample/director.json",
     "style/sample/ledger.json",
     "style/sample/prompt.txt",
-    "style/sample/sample.png",
+    "style/sample/slide.png",
     "style/selection.json",
   ]);
   assert.equal((await readProject(root)).gates.some(({ gate }) => gate === "style-sample"), false);

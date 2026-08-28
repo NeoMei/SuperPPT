@@ -10,7 +10,7 @@ import { StyleCatalogSchema } from "../src/styles/schemas.js";
 import { approveGate } from "../src/planning/confirm.js";
 import { initializeProject } from "../src/project/initialize.js";
 import { publishPlanViews, publishStyleSample } from "../src/planning/views.js";
-import { approveStyleLock, createProvisionalStyleLock, readStyleLock } from "../src/styles/style-lock.js";
+import { approveStyleLock, createProvisionalStyleLock, readApprovedStyleLock, readStyleLock } from "../src/styles/style-lock.js";
 import { writeCanonicalStyleSample } from "./helpers/style-sample.js";
 
 const catalogPath = "skills/superppt/assets/styles/catalog.json";
@@ -264,10 +264,18 @@ test("Style Lock persists one catalog recipe, hashes references, and promotes on
   await approveCanonicalSample(root);
   const approved = await approveStyleLock(root);
   assert.equal(approved.approvalState, "approved");
-  assert.equal(approved.approvedSample?.path, "style/sample/sample.png");
+  assert.equal(approved.approvedSample?.path, "style/sample/slide.png");
   assert.equal(approved.approvedSample?.revisionId, approved.revisionId);
   assert.notEqual(approved.styleLockSha256, beforeApproval);
   assert.deepEqual(await approveStyleLock(root), approved, "same authenticated sample is idempotent");
+  const recipeBytes = await readFile(join(root, "style", "recipe.json"));
+  await writeFile(join(root, "style", "recipe.json"), "{}\n");
+  await assert.rejects(readStyleLock(root), /style recipe hash mismatch/);
+  await writeFile(join(root, "style", "recipe.json"), recipeBytes);
+  const sampleBytes = await readFile(join(root, "style", "sample", "slide.png"));
+  await writeFile(join(root, "style", "sample", "slide.png"), "tampered");
+  await assert.rejects(readStyleLock(root), /approved style sample hash mismatch/);
+  await writeFile(join(root, "style", "sample", "slide.png"), sampleBytes);
   await writeFile(join(root, "style", "references", "map.png"), "tampered");
   await assert.rejects(readStyleLock(root), /reference artifact hash mismatch/);
 });
@@ -295,4 +303,62 @@ test("Style Lock accepts a complete custom recipe and never loads its origin dow
   for (const direction of ["Palette", "Materials", "Lighting", "Medium", "Typography", "Detail language", "Composition", "Dependency default style must not be appended", "Increase contrast only"]) {
     assert.match(compiled.text, new RegExp(direction, "i"));
   }
+});
+
+test("Style Lock fails closed when initial publication is interrupted after the lock record", async (t) => {
+  const root = await lockProject(t, "superppt-style-lock-interrupted-");
+  await assert.rejects(createProvisionalStyleLock(root, {
+    selection: { kind: "catalog", styleId: "scientific-atlas" },
+    referenceArtifacts: [],
+    operations: { afterLockPublished: () => { throw new Error("interrupted"); } },
+  }), /interrupted/);
+  await assert.rejects(readStyleLock(root), /style lock transaction is incomplete/);
+  await assert.rejects(createProvisionalStyleLock(root, {
+    selection: { kind: "catalog", styleId: "scientific-atlas" },
+    referenceArtifacts: [],
+  }), /style lock transaction is incomplete/);
+});
+
+test("Style Lock approval compares the expected provisional bytes before promotion", async (t) => {
+  const root = await lockProject(t, "superppt-style-lock-cas-");
+  await createProvisionalStyleLock(root, {
+    selection: { kind: "catalog", styleId: "scientific-atlas" },
+    referenceArtifacts: [],
+  });
+  await approveCanonicalSample(root);
+  await assert.rejects(approveStyleLock(root, {
+    operations: {
+      afterExpectedProvisionalRead: async () => {
+        await writeFile(join(root, "style", "lock.json"), "{}\n");
+      },
+    },
+  }), /style lock changed during approval/);
+});
+
+test("custom Style Lock drives the representative sample and becomes an approved downstream recipe", async (t) => {
+  const root = await lockProject(t, "superppt-custom-style-approval-");
+  await writeFile(join(root, "style", "references", "custom.png"), "custom-art-direction");
+  const provisional = await createProvisionalStyleLock(root, {
+    selection: {
+      kind: "custom",
+      name: "Lab notebook",
+      description: "Hand-drawn scientific notes with restrained mineral colors.",
+      recipe: { ...promptStyle, id: "lab-notebook", name: "Lab notebook" },
+    },
+    referenceArtifacts: [{ path: "style/references/custom.png", role: "art-direction" }],
+  });
+  await assert.rejects(readApprovedStyleLock(root), /approved before deck generation/);
+  await writeCanonicalStyleSample(root);
+  const samplePrompt = await readFile(join(root, "style", "sample", "prompt.txt"), "utf8");
+  assert.match(samplePrompt, /lab-notebook/);
+  assert.match(samplePrompt, /Dependency default style must not be appended/);
+  await publishPlanViews(root);
+  await approveGate(root, "outline");
+  await approveGate(root, "slide-specs");
+  await publishStyleSample(root);
+  assert.equal((JSON.parse(await readFile(join(root, "style-sample.json"), "utf8")) as { styleId: string }).styleId, "lab-notebook");
+  await approveGate(root, "style-sample");
+  const approved = await approveStyleLock(root);
+  assert.equal(approved.recipe.id, provisional.recipe.id);
+  assert.equal((await readApprovedStyleLock(root)).recipe.id, "lab-notebook");
 });

@@ -28,6 +28,7 @@ import {
   validateCanonicalStyleSample,
 } from "../styles/sample-contract.js";
 import { resolveStyleRecipe } from "../styles/catalog.js";
+import { readStyleLockIfPresent } from "../styles/style-lock.js";
 import { StyleSampleSelectionSchema, type StyleSampleSelection } from "../styles/schemas.js";
 
 export type ViewCheckpoint = "snapshot-published" | "authority-published" | "convenience-written";
@@ -276,7 +277,8 @@ export async function publishStyleSample(root: string): Promise<StylePublication
     return withProjectLease(canonicalRoot, "state", async () => {
       const manifest = await readProject(canonicalRoot);
       const { values, selection } = await styleArtifacts(canonicalRoot);
-      const recipe = await resolveStyleRecipe(lockSelection(selection));
+      const recipe = (await readStyleLockIfPresent(canonicalRoot))?.recipe
+        ?? await resolveStyleRecipe(lockSelection(selection));
       const publicationId = randomUUID();
       const publicationPath = `revisions/${manifest.currentRevision.id}/style-samples/${publicationId}`;
       const pointer = StylePublicationDescriptorSchema.parse(addDescriptorIntegrity({

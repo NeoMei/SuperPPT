@@ -54,8 +54,8 @@ export async function generateProjectStyleSample(options: {
     const sampleDirectory = openGenerationDirectory(join(root, "style", "sample"));
     const stagingName = `.style-sample-${randomUUID()}.staging`;
     const staging = sampleDirectory.child(stagingName);
-    const output = join(staging.path, "sample.png");
-    const cleanupNames = ["sample.png", "director.json", "prompt.txt", "ledger.json"];
+    const output = join(staging.path, "slide.png");
+    const cleanupNames = ["slide.png", "director.json", "prompt.txt", "ledger.json"];
     try {
       const rawLedger = await generateSlide({
         runner: options.runner,
@@ -81,7 +81,7 @@ export async function generateProjectStyleSample(options: {
         [STYLE_SAMPLE_ARTIFACTS[0]]: await readOwnedRegularFile(root, STYLE_SAMPLE_ARTIFACTS[0]),
         [STYLE_SAMPLE_ARTIFACTS[1]]: staging.read("director.json"),
         [STYLE_SAMPLE_ARTIFACTS[2]]: staging.read("prompt.txt"),
-        [STYLE_SAMPLE_ARTIFACTS[3]]: staging.read("sample.png"),
+        [STYLE_SAMPLE_ARTIFACTS[3]]: staging.read("slide.png"),
         [STYLE_SAMPLE_ARTIFACTS[4]]: staging.read("ledger.json"),
       } as StyleSampleArtifacts;
       await validateCanonicalStyleSample(root, values);

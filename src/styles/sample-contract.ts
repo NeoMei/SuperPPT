@@ -7,14 +7,15 @@ import { loadValidatedPlan } from "../planning/load.js";
 import { readOwnedRegularFile } from "../project/safe-file.js";
 import { readProject } from "../project/store.js";
 import { resolveStyleRecipe } from "./catalog.js";
-import { compilePrompt, visualDirectorForSpec, type CompiledPrompt } from "./prompt-compiler.js";
+import { compilePrompt, compileSlidePrompt, visualDirectorForSpec, type CompiledPrompt } from "./prompt-compiler.js";
+import { readStyleLockIfPresent } from "./style-lock.js";
 import { StyleSampleSelectionSchema, VisualDirectorSchema, type StyleRecipe, type StyleSampleSelection, type VisualDirector } from "./schemas.js";
 
 export const STYLE_SAMPLE_ARTIFACTS = [
   "style/selection.json",
   "style/sample/director.json",
   "style/sample/prompt.txt",
-  "style/sample/sample.png",
+  "style/sample/slide.png",
   "style/sample/ledger.json",
 ] as const;
 
@@ -55,7 +56,8 @@ export async function canonicalStyleSample(root: string): Promise<CanonicalStyle
   const selection = StyleSampleSelectionSchema.parse(JSON.parse(selectionBytes.toString("utf8")));
   const spec = plan.specs.find(({ slideId }) => slideId === representativeSlideId(selection));
   if (!spec) throw new Error("representative slide must exist in current outline");
-  const style = await resolveStyleRecipe(lockSelection(selection));
+  const styleLock = await readStyleLockIfPresent(root);
+  const style = styleLock?.recipe ?? await resolveStyleRecipe(lockSelection(selection));
   const director = visualDirectorForSpec(spec, style);
   return {
     projectRevisionId: manifest.currentRevision.id,
@@ -63,7 +65,9 @@ export async function canonicalStyleSample(root: string): Promise<CanonicalStyle
     spec,
     style,
     director,
-    compiled: compilePrompt({ spec, style, director }),
+    compiled: styleLock
+      ? compileSlidePrompt({ spec, styleLock })
+      : compilePrompt({ spec, style, director }),
   };
 }
 

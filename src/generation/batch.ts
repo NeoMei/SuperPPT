@@ -14,7 +14,7 @@ import type { Artifact, ProjectManifest, SlideRecord } from "../project/schemas.
 import { readProject, updateProject } from "../project/store.js";
 import { loadBuiltInStyleCatalog } from "../styles/catalog.js";
 import { compileSlidePrompt } from "../styles/prompt-compiler.js";
-import { readApprovedStyleLock } from "../styles/style-lock.js";
+import { hasStyleLockEvidence, readApprovedStyleLock } from "../styles/style-lock.js";
 import { GenerationDirectory, openGenerationDirectory } from "./anchored-dir.js";
 import { cleanupAbandonedProjectStaging, ownedTemporaryName } from "./abandoned.js";
 import { readPrivateInputFile } from "./private-input.js";
@@ -244,13 +244,11 @@ async function projectPages(root: string, manifest: ProjectManifest): Promise<{ 
   const plan = await loadValidatedPlan(root);
   let styleName: string;
   let compile: (spec: typeof plan.specs[number]) => { text: string };
-  try {
-    await lstat(join(root, "style", "lock.json"));
+  if (await hasStyleLockEvidence(root)) {
     const lock = await readApprovedStyleLock(root);
     styleName = lock.recipe.name;
     compile = (spec) => compileSlidePrompt({ spec, styleLock: lock });
-  } catch (error: unknown) {
-    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+  } else {
     // Compatibility for projects authored before the Style Lock contract. Once
     // a lock exists it is mandatory and a provisional lock can never leak here.
     const selection = StyleSelectionSchema.parse(JSON.parse((await readOwnedRegularFile(root, "style/selection.json")).toString("utf8")));

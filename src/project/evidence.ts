@@ -244,7 +244,7 @@ export async function validateStylePublicationEvidence(
     "style/selection.json",
     "style/sample/director.json",
     "style/sample/prompt.txt",
-    "style/sample/sample.png",
+    "style/sample/slide.png",
     "style/sample/ledger.json",
   ];
   if (!sameJson(Object.keys(descriptor.sourceHashes).sort(), [...keys].sort())) {
@@ -317,7 +317,7 @@ function assertExactGateKeys(
       "style/sample/director.json",
       "style/sample/ledger.json",
       "style/sample/prompt.txt",
-      "style/sample/sample.png",
+      "style/sample/slide.png",
       "style/selection.json",
     ];
     if (!sameJson(keys, expected)) throw new Error("ordinary gate evidence has invalid style keys");
