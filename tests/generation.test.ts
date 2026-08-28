@@ -316,6 +316,49 @@ test("image generation job publishes an immutable approved deck binding", async 
   await assert.rejects(assertJobAuthorized(fixture.root, job), /prompt.*changed|prompt.*hash/i);
 });
 
+test("image job publication failure removes only its owned nested staging inputs", async (t) => {
+  const fixture = await approvedProject(t, "superppt-image-job-staging-cleanup-");
+  const referencePath = "style/references/private-round-2.bin";
+  const referenceBytes = Buffer.from("private reference bytes that must not remain in abandoned staging\n");
+  await mkdir(join(fixture.root, "style", "references"), { recursive: true });
+  await writeFile(join(fixture.root, ...referencePath.split("/")), referenceBytes);
+  await createProvisionalStyleLock(fixture.root, {
+    selection: { kind: "catalog", styleId: "cinematic-tech" },
+    referenceArtifacts: [{ path: referencePath, role: "content-reference" }],
+  });
+  await approveStyleLock(fixture.root);
+  await publishGenerationAuthorizationPlan(fixture.root, {
+    aiDependency: fixture.aiDependency,
+    callBudget: 3,
+  });
+  await approveGate(fixture.root, "generation-authorization");
+
+  const jobsRoot = join(fixture.root, "generation", "jobs");
+  const unrelatedRoot = join(jobsRoot, ".unrelated-staging");
+  const unrelatedMarker = join(unrelatedRoot, "keep.txt");
+  await mkdir(unrelatedRoot, { recursive: true });
+  await writeFile(unrelatedMarker, "unrelated evidence must remain\n");
+  let ownedStaging = "";
+
+  await assert.rejects(prepareImageGenerationJob(
+    fixture.root,
+    { kind: "deck", aiDependency: fixture.aiDependency },
+    {
+      checkpoint: (step, stagingRoot) => {
+        if (step === "sealed-inputs-synced") {
+          ownedStaging = stagingRoot;
+          throw new Error("injected failure after sealed inputs fsync");
+        }
+      },
+    },
+  ), /injected failure after sealed inputs fsync/);
+
+  assert.notEqual(ownedStaging, "", "the failure must occur after nested inputs exist");
+  await assert.rejects(access(ownedStaging), /ENOENT/);
+  assert.deepEqual(await readdir(jobsRoot), [".unrelated-staging"]);
+  assert.equal(await readFile(unrelatedMarker, "utf8"), "unrelated evidence must remain\n");
+});
+
 test("generation authorization rejects absent and stale deck approval", async (t) => {
   const fixture = await approvedProject(t, "superppt-image-job-authorization-", lockedStyle);
   await approveStyleLock(fixture.root);

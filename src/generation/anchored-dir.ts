@@ -182,6 +182,21 @@ export class GenerationDirectory {
     return child;
   }
 
+  createChildExclusive(name: string): GenerationDirectory {
+    safeName(name);
+    if (nativeAt) {
+      if (nativeAt.mkdirat(this.fd, name, 0o700) !== 0) throw nativeError("exclusive mkdirat");
+    } else {
+      mkdirSync(join(this.path, name), { mode: 0o700 });
+    }
+    try {
+      return this.child(name, false);
+    } catch (error: unknown) {
+      try { this.removeEmptyChild(name); } catch { /* retain a non-empty or changed directory */ }
+      throw error;
+    }
+  }
+
   writeExclusive(name: string, value: string | Buffer): void {
     safeName(name);
     const flags = constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | (constants.O_NOFOLLOW ?? 0);

@@ -1,5 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
-import { fsyncSync } from "node:fs";
+import { fsyncSync, readdirSync } from "node:fs";
+import type { Dirent } from "node:fs";
 import { readdir } from "node:fs/promises";
 import { join } from "node:path";
 
@@ -55,6 +56,15 @@ const PrepareImageGenerationJobRequestSchema = z.discriminatedUnion("kind", [
 ]);
 
 export type PrepareImageGenerationJobRequest = z.input<typeof PrepareImageGenerationJobRequestSchema>;
+
+export type PrepareImageGenerationJobCheckpoint = "sealed-inputs-synced";
+
+export type PrepareImageGenerationJobOperations = {
+  checkpoint?: (
+    step: PrepareImageGenerationJobCheckpoint,
+    stagingRoot: string,
+  ) => Promise<void> | void;
+};
 
 function sha256(value: string | Buffer): string {
   return createHash("sha256").update(value).digest("hex");
@@ -278,14 +288,121 @@ function writePromptArtifacts(root: string, job: ImageGenerationJob): void {
   }
 }
 
-function publishJob(root: string, job: ImageGenerationJob, sealed: SealedJobBytes): void {
+function entries(directory: GenerationDirectory): Dirent[] {
+  directory.assertCurrent();
+  const values = readdirSync(directory.path, { withFileTypes: true });
+  directory.assertCurrent();
+  return values;
+}
+
+function validateOwnedEntries(
+  directory: GenerationDirectory,
+  allowedFiles: ReadonlySet<string>,
+  allowedDirectories: ReadonlySet<string>,
+): Dirent[] {
+  const values = entries(directory);
+  for (const entry of values) {
+    if (
+      entry.isSymbolicLink()
+      || (allowedFiles.has(entry.name) ? !entry.isFile() : (
+        allowedDirectories.has(entry.name) ? !entry.isDirectory() : true
+      ))
+    ) throw new Error("image job staging contains unexpected or unsafe evidence");
+  }
+  return values;
+}
+
+function cleanupOwnedJobStaging(
+  jobs: GenerationDirectory,
+  stagingName: string,
+  job: ImageGenerationJob,
+): void {
+  const staging = jobs.child(stagingName, false);
+  let output: GenerationDirectory | undefined;
+  let inputs: GenerationDirectory | undefined;
+  let references: GenerationDirectory | undefined;
+  let specs: GenerationDirectory | undefined;
+  try {
+    const rootEntries = validateOwnedEntries(
+      staging,
+      new Set(["job.json"]),
+      new Set(["ai-image-output", "inputs"]),
+    );
+    const rootDirectoryNames = new Set(rootEntries.filter((entry) => entry.isDirectory()).map(({ name }) => name));
+    output = rootDirectoryNames.has("ai-image-output") ? staging.child("ai-image-output", false) : undefined;
+    const outputEntries = output ? validateOwnedEntries(output, new Set(), new Set()) : [];
+    inputs = rootDirectoryNames.has("inputs") ? staging.child("inputs", false) : undefined;
+    const inputEntries = inputs ? validateOwnedEntries(
+      inputs,
+      new Set([
+        "style-lock.json",
+        "style-recipe.json",
+        ...(job.sealedInputs.approvedSample ? ["approved-sample.bin"] : []),
+      ]),
+      new Set(["references", "specs"]),
+    ) : [];
+    const inputDirectoryNames = new Set(inputEntries.filter((entry) => entry.isDirectory()).map(({ name }) => name));
+    references = inputs && inputDirectoryNames.has("references") ? inputs.child("references", false) : undefined;
+    const referenceEntries = references ? validateOwnedEntries(
+      references,
+      new Set(job.sealedInputs.references.map((_reference, index) => `${index}.bin`)),
+      new Set(),
+    ) : [];
+    specs = inputs && inputDirectoryNames.has("specs") ? inputs.child("specs", false) : undefined;
+    const specEntries = specs ? validateOwnedEntries(
+      specs,
+      new Set(job.pages.map(({ slideId }) => `${slideId}.json`)),
+      new Set(),
+    ) : [];
+
+    for (const entry of referenceEntries) references!.remove(entry.name);
+    if (references) {
+      references.close();
+      references = undefined;
+      inputs!.removeEmptyChild("references");
+    }
+    for (const entry of specEntries) specs!.remove(entry.name);
+    if (specs) {
+      specs.close();
+      specs = undefined;
+      inputs!.removeEmptyChild("specs");
+    }
+    for (const entry of inputEntries.filter((entry) => entry.isFile())) inputs!.remove(entry.name);
+    if (inputs) {
+      inputs.close();
+      inputs = undefined;
+      staging.removeEmptyChild("inputs");
+    }
+    if (output) {
+      for (const entry of outputEntries) output.remove(entry.name);
+      output.close();
+      output = undefined;
+      staging.removeEmptyChild("ai-image-output");
+    }
+    for (const entry of rootEntries.filter((entry) => entry.isFile())) staging.remove(entry.name);
+  } finally {
+    specs?.close();
+    references?.close();
+    inputs?.close();
+    output?.close();
+    staging.close();
+  }
+  jobs.removeEmptyChild(stagingName);
+}
+
+async function publishJob(
+  root: string,
+  job: ImageGenerationJob,
+  sealed: SealedJobBytes,
+  operations: PrepareImageGenerationJobOperations,
+): Promise<void> {
   const project = openGenerationDirectory(root);
   const generation = project.child("generation");
   if (project.fd >= 0) fsyncSync(project.fd);
   const jobs = generation.child("jobs");
   if (generation.fd >= 0) fsyncSync(generation.fd);
   const stagingName = `.${job.jobId}.staging`;
-  const staging = jobs.child(stagingName);
+  const staging = jobs.createChildExclusive(stagingName);
   let stagingClosed = false;
   try {
     const output = staging.child("ai-image-output");
@@ -307,6 +424,7 @@ function publishJob(root: string, job: ImageGenerationJob, sealed: SealedJobByte
       } finally { specs.close(); }
       if (inputs.fd >= 0) fsyncSync(inputs.fd);
     } finally { inputs.close(); }
+    await operations.checkpoint?.("sealed-inputs-synced", staging.path);
     staging.writeExclusive("job.json", canonicalContractFile(job));
     if (staging.fd >= 0) fsyncSync(staging.fd);
     staging.close();
@@ -314,19 +432,9 @@ function publishJob(root: string, job: ImageGenerationJob, sealed: SealedJobByte
     jobs.promoteChildExclusive(stagingName, job.jobId);
   } catch (error: unknown) {
     if (!stagingClosed) {
-      try { staging.remove("job.json"); } catch { /* absent */ }
-      try { staging.removeEmptyChild("ai-image-output"); } catch { /* absent or non-empty */ }
-      staging.close();
-    } else {
-      try {
-        const abandoned = jobs.child(stagingName, false);
-        try {
-          abandoned.remove("job.json");
-          abandoned.removeEmptyChild("ai-image-output");
-        } finally { abandoned.close(); }
-        jobs.removeEmptyChild(stagingName);
-      } catch { /* retain unexpected evidence for inspection */ }
+      try { staging.close(); } catch { /* cleanup reopens the anchored owned directory */ }
     }
+    try { cleanupOwnedJobStaging(jobs, stagingName, job); } catch { /* retain unexpected evidence for inspection */ }
     throw error;
   } finally {
     jobs.close();
@@ -338,6 +446,7 @@ function publishJob(root: string, job: ImageGenerationJob, sealed: SealedJobByte
 export async function prepareImageGenerationJob(
   root: string,
   rawRequest: PrepareImageGenerationJobRequest,
+  operations: PrepareImageGenerationJobOperations = {},
 ): Promise<ImageGenerationJob> {
   let request: z.output<typeof PrepareImageGenerationJobRequestSchema>;
   try {
@@ -391,7 +500,7 @@ export async function prepareImageGenerationJob(
       createdAt: new Date().toISOString(),
     });
     writePromptArtifacts(canonicalRoot, job);
-    publishJob(canonicalRoot, job, sealed.bytes);
+    await publishJob(canonicalRoot, job, sealed.bytes, operations);
     await assertAuthorizedJobBinding(canonicalRoot, job);
     return job;
   });
