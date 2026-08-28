@@ -1005,12 +1005,17 @@ test("call budget keeps an exact page-regeneration duplicate idempotent after it
   await publishGenerationAuthorizationPlan(fixture.root, { aiDependency: fixture.aiDependency, callBudget: 4 });
   await approveGate(fixture.root, "generation-authorization");
   const deck = await prepareImageGenerationJob(fixture.root, { kind: "deck", aiDependency: fixture.aiDependency });
-  for (const [index, page] of deck.pages.entries()) {
+  const budgetJobs = await Promise.all(deck.pages.map(() => prepareImageGenerationJob(fixture.root, {
+    kind: "deck",
+    aiDependency: fixture.aiDependency,
+  })));
+  for (const [index, budgetJob] of budgetJobs.entries()) {
+    const page = budgetJob.pages[0]!;
     await executeAuthorizedGenerationCall(fixture.root, {
-      jobId: deck.jobId,
+      jobId: budgetJob.jobId,
       slideId: page.slideId,
       attempt: 1,
-      requestOrdinal: index + 1,
+      requestOrdinal: 1,
     }, async () => `deck-${index}`);
   }
   const regeneration = await prepareImageGenerationJob(fixture.root, {
