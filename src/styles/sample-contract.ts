@@ -4,12 +4,11 @@ import sharp from "sharp";
 
 import { AttemptLedgerSchema, type AttemptLedger } from "../generation/schemas.js";
 import { loadValidatedPlan } from "../planning/load.js";
-import { StyleSelectionSchema, type StyleSelection } from "../planning/schemas.js";
 import { readOwnedRegularFile } from "../project/safe-file.js";
 import { readProject } from "../project/store.js";
-import { loadBuiltInStyleCatalog } from "./catalog.js";
+import { resolveStyleRecipe } from "./catalog.js";
 import { compilePrompt, visualDirectorForSpec, type CompiledPrompt } from "./prompt-compiler.js";
-import { VisualDirectorSchema, type StyleRecipe, type VisualDirector } from "./schemas.js";
+import { StyleSampleSelectionSchema, VisualDirectorSchema, type StyleRecipe, type StyleSampleSelection, type VisualDirector } from "./schemas.js";
 
 export const STYLE_SAMPLE_ARTIFACTS = [
   "style/selection.json",
@@ -30,25 +29,33 @@ function sameJson(left: unknown, right: unknown): boolean {
 
 export type CanonicalStyleSample = {
   projectRevisionId: string;
-  selection: StyleSelection;
+  selection: StyleSampleSelection;
   spec: Awaited<ReturnType<typeof loadValidatedPlan>>["specs"][number];
   style: StyleRecipe;
   director: VisualDirector;
   compiled: CompiledPrompt;
 };
 
+export function representativeSlideId(selection: StyleSampleSelection): string {
+  return selection.representativeSlideId;
+}
+
+export function lockSelection(selection: StyleSampleSelection) {
+  return "selection" in selection
+    ? selection.selection
+    : { kind: "catalog" as const, styleId: selection.styleId };
+}
+
 export async function canonicalStyleSample(root: string): Promise<CanonicalStyleSample> {
-  const [manifest, plan, catalog, selectionBytes] = await Promise.all([
+  const [manifest, plan, selectionBytes] = await Promise.all([
     readProject(root),
     loadValidatedPlan(root),
-    loadBuiltInStyleCatalog(),
     readOwnedRegularFile(root, STYLE_SAMPLE_ARTIFACTS[0]),
   ]);
-  const selection = StyleSelectionSchema.parse(JSON.parse(selectionBytes.toString("utf8")));
-  const spec = plan.specs.find(({ slideId }) => slideId === selection.representativeSlideId);
+  const selection = StyleSampleSelectionSchema.parse(JSON.parse(selectionBytes.toString("utf8")));
+  const spec = plan.specs.find(({ slideId }) => slideId === representativeSlideId(selection));
   if (!spec) throw new Error("representative slide must exist in current outline");
-  const style = catalog.styles.find(({ id }) => id === selection.styleId);
-  if (!style) throw new Error(`unknown built-in style: ${selection.styleId}`);
+  const style = await resolveStyleRecipe(lockSelection(selection));
   const director = visualDirectorForSpec(spec, style);
   return {
     projectRevisionId: manifest.currentRevision.id,
@@ -72,7 +79,7 @@ export async function validateCanonicalStyleSample(
   values: StyleSampleArtifacts,
 ): Promise<{ canonical: CanonicalStyleSample; ledger: AttemptLedger }> {
   const canonical = await canonicalStyleSample(root);
-  const selection = StyleSelectionSchema.parse(JSON.parse(values[STYLE_SAMPLE_ARTIFACTS[0]].toString("utf8")));
+  const selection = StyleSampleSelectionSchema.parse(JSON.parse(values[STYLE_SAMPLE_ARTIFACTS[0]].toString("utf8")));
   if (!sameJson(selection, canonical.selection)) throw new Error("style sample selection is not canonical");
 
   const director = VisualDirectorSchema.parse(JSON.parse(values[STYLE_SAMPLE_ARTIFACTS[1]].toString("utf8")));
@@ -96,7 +103,7 @@ export async function validateCanonicalStyleSample(
   const ledger = AttemptLedgerSchema.parse(JSON.parse(ledgerText));
   if (ledgerText !== `${JSON.stringify(ledger, null, 2)}\n`) throw new Error("style sample provider ledger is not canonical");
   if (
-    ledger.slideId !== canonical.selection.representativeSlideId
+    ledger.slideId !== representativeSlideId(canonical.selection)
     || ledger.revisionId !== canonical.projectRevisionId
     || ledger.attempt !== 1
     || ledger.promptSha256 !== canonical.compiled.sha256

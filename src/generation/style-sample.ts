@@ -8,6 +8,7 @@ import { readOwnedRegularFile } from "../project/safe-file.js";
 import { readProject } from "../project/store.js";
 import {
   canonicalStyleSample,
+  representativeSlideId,
   STYLE_SAMPLE_ARTIFACTS,
   validateCanonicalStyleSample,
   type StyleSampleArtifacts,
@@ -61,7 +62,7 @@ export async function generateProjectStyleSample(options: {
         modulePath: join(options.ai.root, provider.module),
         callable: provider.callable,
         providerId: provider.id,
-        slideId: canonical.selection.representativeSlideId,
+        slideId: representativeSlideId(canonical.selection),
         revisionId,
         prompt: canonical.compiled.text,
         output,
@@ -93,7 +94,7 @@ export async function generateProjectStyleSample(options: {
       }
       return {
         providerId: provider.id,
-        representativeSlideId: canonical.selection.representativeSlideId,
+        representativeSlideId: representativeSlideId(canonical.selection),
         artifacts: ARTIFACT_RESULT,
       };
     } finally {

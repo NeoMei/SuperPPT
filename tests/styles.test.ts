@@ -1,12 +1,17 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdtemp, mkdir, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import sharp from "sharp";
 import { loadBuiltInStyleCatalog, loadStyleCatalog, selectRepresentativeSlide } from "../src/styles/catalog.js";
 import { compilePrompt, compileSlidePrompt } from "../src/styles/prompt-compiler.js";
 import { StyleCatalogSchema } from "../src/styles/schemas.js";
+import { approveGate } from "../src/planning/confirm.js";
+import { initializeProject } from "../src/project/initialize.js";
+import { publishPlanViews, publishStyleSample } from "../src/planning/views.js";
+import { approveStyleLock, createProvisionalStyleLock, readStyleLock } from "../src/styles/style-lock.js";
+import { writeCanonicalStyleSample } from "./helpers/style-sample.js";
 
 const catalogPath = "skills/superppt/assets/styles/catalog.json";
 const promptSpec = { title: "AI Agent 协作系统", role: "content" as const, coreMessage: "Specialists cooperate", requiredText: ["AI Agent 协作系统"], visualSubject: "central orchestration core", composition: "one focal hub with six satellites", relationships: ["hub routes work"], forbidden: ["watermark"] };
@@ -188,4 +193,106 @@ test("compiler canonical input remains valid JSON when optional recipe fields ar
   const match = result.text.match(/BEGIN SUPERPPT CANONICAL INPUT\n([^\n]+)\nEND SUPERPPT CANONICAL INPUT/);
   assert.ok(match?.[1]);
   assert.doesNotThrow(() => JSON.parse(match[1]!));
+});
+
+const LOCK_PROJECT_ID = "00000000-0000-4000-8000-000000000301";
+const LOCK_REVISION_SLIDE_IDS = [
+  "00000000-0000-4000-8000-000000000311",
+  "00000000-0000-4000-8000-000000000312",
+  "00000000-0000-4000-8000-000000000313",
+] as const;
+
+async function lockProject(t: test.TestContext, prefix: string): Promise<string> {
+  const root = join(await realpath(await mkdtemp(join(tmpdir(), prefix))), "project");
+  t.after(async () => rm(dirname(root), { recursive: true, force: true }));
+  await initializeProject({ root, title: "Style Lock", idFactory: () => LOCK_PROJECT_ID });
+  const outline = {
+    schemaVersion: 1,
+    slides: LOCK_REVISION_SLIDE_IDS.map((id, order) => ({
+      id, order, title: `Slide ${order + 1}`, role: order === 0 ? "cover" : order === 1 ? "content" : "summary",
+      purpose: `Purpose ${order + 1}`, sourceRefs: [`L${order + 1}`],
+    })),
+  };
+  await writeFile(join(root, "brief.json"), `${JSON.stringify({
+    schemaVersion: 1, title: "Style Lock", purpose: "Test", audience: "Testers", language: "en",
+    targetSlides: 3, mustCover: ["Slide 1", "Slide 2", "Slide 3"], constraints: ["16:9"],
+  }, null, 2)}\n`);
+  await writeFile(join(root, "outline.json"), `${JSON.stringify(outline, null, 2)}\n`);
+  for (const [order, slide] of outline.slides.entries()) {
+    await mkdir(join(root, "slides", slide.id));
+    await writeFile(join(root, "slides", slide.id, "spec.json"), `${JSON.stringify({
+      schemaVersion: 1, slideId: slide.id, title: slide.title, role: slide.role,
+      coreMessage: `Core ${order + 1}`, requiredText: [slide.title], visualSubject: "One central subject",
+      composition: "layered foreground, midground, background", relationships: ["A leads to B"],
+      forbidden: ["watermark"], sourceRefs: slide.sourceRefs,
+    }, null, 2)}\n`);
+  }
+  await writeFile(join(root, "style", "selection.json"), `${JSON.stringify({
+    schemaVersion: 1, styleId: "scientific-atlas", representativeSlideId: LOCK_REVISION_SLIDE_IDS[1],
+  }, null, 2)}\n`);
+  return root;
+}
+
+async function approveCanonicalSample(root: string): Promise<void> {
+  await writeCanonicalStyleSample(root);
+  await publishPlanViews(root);
+  await approveGate(root, "outline");
+  await approveGate(root, "slide-specs");
+  await publishStyleSample(root);
+  await approveGate(root, "style-sample");
+}
+
+test("Style Lock persists one catalog recipe, hashes references, and promotes only after the accepted sample", async (t) => {
+  const root = await lockProject(t, "superppt-style-lock-");
+  const reference = Buffer.from("art-direction-reference");
+  await writeFile(join(root, "style", "references", "map.png"), reference);
+
+  const provisional = await createProvisionalStyleLock(root, {
+    selection: { kind: "catalog", styleId: "scientific-atlas" },
+    referenceArtifacts: [{ path: "style/references/map.png", role: "art-direction" }],
+  });
+  assert.equal(provisional.approvalState, "provisional");
+  assert.equal(provisional.applyDependencyDefaultStyle, false);
+  assert.equal(provisional.approvedSample, null);
+  assert.equal(provisional.recipe.id, "scientific-atlas");
+  assert.equal(provisional.referenceArtifacts[0]?.sha256, "d611ad5437269f20c2b3a539b7edb56b73a51b850773a0a8c99acb10f873063c");
+  const recipe = JSON.parse(await readFile(join(root, "style", "recipe.json"), "utf8"));
+  assert.deepEqual(recipe, provisional.recipe);
+  const beforeApproval = provisional.styleLockSha256;
+
+  await assert.rejects(approveStyleLock(root), /style-sample gate must be current/);
+  await approveCanonicalSample(root);
+  const approved = await approveStyleLock(root);
+  assert.equal(approved.approvalState, "approved");
+  assert.equal(approved.approvedSample?.path, "style/sample/sample.png");
+  assert.equal(approved.approvedSample?.revisionId, approved.revisionId);
+  assert.notEqual(approved.styleLockSha256, beforeApproval);
+  assert.deepEqual(await approveStyleLock(root), approved, "same authenticated sample is idempotent");
+  await writeFile(join(root, "style", "references", "map.png"), "tampered");
+  await assert.rejects(readStyleLock(root), /reference artifact hash mismatch/);
+});
+
+test("Style Lock accepts a complete custom recipe and never loads its origin downstream", async (t) => {
+  const root = await lockProject(t, "superppt-custom-style-lock-");
+  const custom = await createProvisionalStyleLock(root, {
+    selection: {
+      kind: "custom",
+      name: "Lab notebook",
+      description: "Hand-drawn scientific notes with restrained mineral colors.",
+      recipe: { ...promptStyle, id: "lab-notebook", name: "Lab notebook" },
+    },
+    referenceArtifacts: [],
+  });
+  assert.equal(custom.recipe.id, "lab-notebook");
+  assert.equal(custom.recipe.name, "Lab notebook");
+  assert.equal("selection" in custom, false);
+  assert.equal((await readStyleLock(root)).styleLockSha256, custom.styleLockSha256);
+  const compiled = compileSlidePrompt({
+    spec: promptSpec,
+    styleLock: custom,
+    correction: { issues: ["Increase contrast only around the required title."] },
+  });
+  for (const direction of ["Palette", "Materials", "Lighting", "Medium", "Typography", "Detail language", "Composition", "Dependency default style must not be appended", "Increase contrast only"]) {
+    assert.match(compiled.text, new RegExp(direction, "i"));
+  }
 });

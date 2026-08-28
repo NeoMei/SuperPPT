@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { z } from "zod";
 import type { SlideSpec } from "../planning/schemas.js";
-import { StyleRecipeSchema, VisualDirectorSchema, type StyleRecipe, type VisualDirector } from "./schemas.js";
+import { StyleLockSchema, StyleRecipeSchema, VisualDirectorSchema, type StyleLock, type StyleRecipe, type VisualDirector } from "./schemas.js";
 
 type PromptSpec = {
   title: string;
@@ -119,10 +119,26 @@ export function compilePrompt(input: { spec: PromptSpec | SlideSpec; style: Styl
   return { text, sha256: createHash("sha256").update(text).digest("hex") };
 }
 
-export function compileSlidePrompt(input: { spec: PromptSpec | SlideSpec; style: StyleRecipe }): CompiledPrompt {
-  return compilePrompt({
+export function compileSlidePrompt(input: {
+  spec: PromptSpec | SlideSpec;
+  styleLock: StyleLock;
+  correction?: { issues: string[] };
+} | { spec: PromptSpec | SlideSpec; style: StyleRecipe }): CompiledPrompt {
+  const style = "styleLock" in input
+    ? (() => {
+      const { styleLockSha256: _styleLockSha256, ...lock } = input.styleLock as StyleLock & { styleLockSha256?: string };
+      return StyleLockSchema.parse(lock).recipe;
+    })()
+    : input.style;
+  const base = compilePrompt({
     spec: input.spec,
-    style: input.style,
-    director: visualDirectorForSpec(input.spec, input.style),
+    style,
+    director: visualDirectorForSpec(input.spec, style),
   });
+  if (!("styleLock" in input)) return base;
+  const corrections = input.correction?.issues.length
+    ? `\n\nPAGE-SPECIFIC QUALITY CORRECTIONS ONLY:\n${input.correction.issues.map((issue) => `- ${issue}`).join("\n")}`
+    : "";
+  const text = `${base.text}\n\nSTYLE LOCK: use the exact locked recipe above. Dependency default style must not be appended.${corrections}\nDo not mutate the locked style recipe.`;
+  return { text, sha256: createHash("sha256").update(text).digest("hex") };
 }

@@ -20,12 +20,15 @@ import { localProjectPath, readOwnedRegularFile } from "../project/safe-file.js"
 import { readProject } from "../project/store.js";
 import { loadValidatedOutline, loadValidatedPlan } from "./load.js";
 import { renderBrief, renderOutline, renderSlideSpec } from "./render.js";
-import { StyleSelectionSchema, type StyleSelection } from "./schemas.js";
 import {
+  lockSelection,
+  representativeSlideId,
   readStyleSampleArtifacts,
   STYLE_SAMPLE_ARTIFACTS,
   validateCanonicalStyleSample,
 } from "../styles/sample-contract.js";
+import { resolveStyleRecipe } from "../styles/catalog.js";
+import { StyleSampleSelectionSchema, type StyleSampleSelection } from "../styles/schemas.js";
 
 export type ViewCheckpoint = "snapshot-published" | "authority-published" | "convenience-written";
 export type PublishPlanOptions = {
@@ -40,7 +43,7 @@ export type PublishedPlanViews = {
 };
 export type PublishedStyleSample = {
   descriptor: StylePublicationDescriptor;
-  selection: StyleSelection;
+  selection: StyleSampleSelection;
   prompt: Buffer;
   sample: Buffer;
 };
@@ -260,10 +263,10 @@ export async function publishPlanViews(
 
 async function styleArtifacts(root: string): Promise<{
   values: Record<string, Buffer>;
-  selection: StyleSelection;
+  selection: StyleSampleSelection;
 }> {
   const values = await readStyleSampleArtifacts(root);
-  const selection = StyleSelectionSchema.parse(JSON.parse(values[STYLE_KEYS[0]]!.toString("utf8")));
+  const selection = StyleSampleSelectionSchema.parse(JSON.parse(values[STYLE_KEYS[0]]!.toString("utf8")));
   await validateCanonicalStyleSample(root, values);
   return { values, selection };
 }
@@ -273,6 +276,7 @@ export async function publishStyleSample(root: string): Promise<StylePublication
     return withProjectLease(canonicalRoot, "state", async () => {
       const manifest = await readProject(canonicalRoot);
       const { values, selection } = await styleArtifacts(canonicalRoot);
+      const recipe = await resolveStyleRecipe(lockSelection(selection));
       const publicationId = randomUUID();
       const publicationPath = `revisions/${manifest.currentRevision.id}/style-samples/${publicationId}`;
       const pointer = StylePublicationDescriptorSchema.parse(addDescriptorIntegrity({
@@ -282,8 +286,8 @@ export async function publishStyleSample(root: string): Promise<StylePublication
         revisionId: manifest.currentRevision.id,
         publicationId,
         publicationPath,
-        styleId: selection.styleId,
-        representativeSlideId: selection.representativeSlideId,
+        styleId: recipe.id,
+        representativeSlideId: representativeSlideId(selection),
         sourceHashes: Object.fromEntries(Object.entries(values).map(([path, value]) => [path, sha256Evidence(value)])),
         publishedAt: new Date().toISOString(),
       }));
@@ -316,7 +320,7 @@ export async function readPublishedOutlineViews(root: string): Promise<Published
 export async function readPublishedStyleSample(root: string): Promise<PublishedStyleSample> {
   await readProject(root);
   const descriptor = await readStylePointer(root);
-  const selection = StyleSelectionSchema.parse(JSON.parse(
+  const selection = StyleSampleSelectionSchema.parse(JSON.parse(
     (await readOwnedRegularFile(root, `${descriptor.publicationPath}/sources/${STYLE_KEYS[0]}`)).toString("utf8"),
   ));
   return {

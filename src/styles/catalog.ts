@@ -1,7 +1,7 @@
 import { access, readFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { StyleCatalogSchema } from "./schemas.js";
+import { StyleCatalogSchema, StyleRecipeSchema, type StyleRecipe, type StyleSelection } from "./schemas.js";
 
 const BUILT_IN_STYLE_CATALOG_RELATIVE_PATH = "skills/superppt/assets/styles/catalog.json";
 
@@ -28,6 +28,14 @@ export async function loadBuiltInStyleCatalog() {
     }
   }
   throw new Error("built-in style catalog is missing from the SuperPPT plugin root");
+}
+
+export async function resolveStyleRecipe(selection: StyleSelection): Promise<StyleRecipe> {
+  if (selection.kind === "custom") return StyleRecipeSchema.parse(selection.recipe);
+  const catalog = await loadBuiltInStyleCatalog();
+  const recipe = catalog.styles.find(({ id }) => id === selection.styleId);
+  if (!recipe) throw new Error(`unknown built-in style: ${selection.styleId}`);
+  return StyleRecipeSchema.parse(recipe);
 }
 
 export function selectRepresentativeSlide<T extends { id: string; role: string; requiredText: string[]; relationships: string[] }>(slides: T[]): T {

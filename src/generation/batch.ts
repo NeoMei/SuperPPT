@@ -14,6 +14,7 @@ import type { Artifact, ProjectManifest, SlideRecord } from "../project/schemas.
 import { readProject, updateProject } from "../project/store.js";
 import { loadBuiltInStyleCatalog } from "../styles/catalog.js";
 import { compileSlidePrompt } from "../styles/prompt-compiler.js";
+import { readApprovedStyleLock } from "../styles/style-lock.js";
 import { GenerationDirectory, openGenerationDirectory } from "./anchored-dir.js";
 import { cleanupAbandonedProjectStaging, ownedTemporaryName } from "./abandoned.js";
 import { readPrivateInputFile } from "./private-input.js";
@@ -241,14 +242,28 @@ async function recoverProjectAttempts(
 
 async function projectPages(root: string, manifest: ProjectManifest): Promise<{ pages: ProjectPage[]; styleName: string }> {
   const plan = await loadValidatedPlan(root);
-  const selection = StyleSelectionSchema.parse(JSON.parse((await readOwnedRegularFile(root, "style/selection.json")).toString("utf8")));
-  const catalog = await loadBuiltInStyleCatalog();
-  const style = catalog.styles.find(({ id }) => id === selection.styleId);
-  if (!style) throw new Error("selected style is not in the built-in catalog");
+  let styleName: string;
+  let compile: (spec: typeof plan.specs[number]) => { text: string };
+  try {
+    await lstat(join(root, "style", "lock.json"));
+    const lock = await readApprovedStyleLock(root);
+    styleName = lock.recipe.name;
+    compile = (spec) => compileSlidePrompt({ spec, styleLock: lock });
+  } catch (error: unknown) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+    // Compatibility for projects authored before the Style Lock contract. Once
+    // a lock exists it is mandatory and a provisional lock can never leak here.
+    const selection = StyleSelectionSchema.parse(JSON.parse((await readOwnedRegularFile(root, "style/selection.json")).toString("utf8")));
+    const catalog = await loadBuiltInStyleCatalog();
+    const style = catalog.styles.find(({ id }) => id === selection.styleId);
+    if (!style) throw new Error("selected style is not in the built-in catalog");
+    styleName = style.name;
+    compile = (spec) => compileSlidePrompt({ spec, style });
+  }
   const records = new Map(manifest.slides.map((slide) => [slide.id, slide]));
   const pages: ProjectPage[] = [];
   for (const [index, spec] of plan.specs.entries()) {
-    const { text: prompt } = compileSlidePrompt({ spec, style });
+    const { text: prompt } = compile(spec);
     pages.push({
       id: spec.slideId,
       order: index,
@@ -264,7 +279,7 @@ async function projectPages(root: string, manifest: ProjectManifest): Promise<{ 
   if (manifest.slides.some((slide) => !pages.some((page) => page.id === slide.id))) {
     throw new Error("manifest slides do not match the current slide specifications");
   }
-  return { pages, styleName: style.name };
+  return { pages, styleName };
 }
 
 function initialRecord(page: ProjectPage, revisionId: string): SlideRecord {

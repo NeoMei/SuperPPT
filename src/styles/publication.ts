@@ -1,18 +1,18 @@
 import sharp from "sharp";
 
-import type { SlideSpec, StyleSelection } from "../planning/schemas.js";
-import { loadBuiltInStyleCatalog } from "./catalog.js";
+import type { SlideSpec } from "../planning/schemas.js";
+import { resolveStyleRecipe } from "./catalog.js";
+import { lockSelection, representativeSlideId } from "./sample-contract.js";
+import { StyleSampleSelectionSchema, type StyleSampleSelection } from "./schemas.js";
 
 export async function validateStylePublication(
   specs: SlideSpec[],
-  selection: StyleSelection,
+  selection: StyleSampleSelection,
   sample: Buffer,
 ): Promise<void> {
-  const catalog = await loadBuiltInStyleCatalog();
-  if (!catalog.styles.some(({ id }) => id === selection.styleId)) {
-    throw new Error(`unknown built-in style: ${selection.styleId}`);
-  }
-  if (!specs.some(({ slideId }) => slideId === selection.representativeSlideId)) {
+  StyleSampleSelectionSchema.parse(selection);
+  await resolveStyleRecipe(lockSelection(selection));
+  if (!specs.some(({ slideId }) => slideId === representativeSlideId(selection))) {
     throw new Error("representative slide must exist in current outline");
   }
 
