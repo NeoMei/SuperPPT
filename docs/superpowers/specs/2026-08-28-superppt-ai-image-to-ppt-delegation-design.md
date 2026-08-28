@@ -1,7 +1,7 @@
 # SuperPPT 与 ai-image-to-ppt 薄委托设计
 
 - 日期：2026-08-28
-- 状态：用户已确认架构方向，待审核书面设计
+- 状态：用户已确认
 - 范围：SuperPPT 通过 Skill 级委托使用 `ai-image-to-ppt`
 - 上位设计：`docs/superpowers/specs/2026-08-26-superppt-design.md`
 
@@ -61,7 +61,7 @@ SuperPPT 在项目所有的 `generation/jobs/<job-id>/` 下创建不可变任务
     "approvalState": "provisional | approved",
     "recipeArtifact": "style/recipe.json",
     "recipeSha256": "sha256",
-    "approvedSample": "style/sample/sample.png",
+    "approvedSample": "style/sample/slide.png",
     "approvedSampleSha256": "sha256",
     "referenceArtifacts": [
       {
@@ -122,12 +122,12 @@ SuperPPT 将依赖 Skill 返回的结构化结果收敛为：
   "projectRevisionId": "revision-id",
   "styleRecipeSha256": "sha256",
   "approvedSampleSha256": "sha256 | null",
-  "outcome": "success | partial | fatal | exhausted",
+  "outcome": "success | partial | fatal | exhausted | attention-required",
   "batchReport": {},
   "pages": [
     {
       "slideId": "stable-slide-id",
-      "status": "success | cached | failed",
+      "status": "success | cached | failed | paused",
       "provider": "openai | gemini | doubao | null",
       "channel": "host | api | null",
       "promptSha256": "sha256",
@@ -149,6 +149,8 @@ SuperPPT 将依赖 Skill 返回的结构化结果收敛为：
 `batchReport` 保留 `ai-image-to-ppt` 的串行粘性报告语义，包括页面结果和安全的切换原因。SuperPPT 不往其中添加原始 Provider 响应、密钥或未脱敏错误。API 成功页可以没有单独 raw 文件；宿主成功页必须保留 raw 与 master。
 
 `styleConsistency` 由 SuperPPT 的演示文稿质量门根据 Style Lock、已批准样页和当前页面角色判定，不要求 `ai-image-to-ppt` 证明审美结论。依赖 Skill 只负责确保它实际使用了 job 中的完整提示词与 Style Lock 语义。
+
+`paused` / `attention-required` 用于必须由用户决定的能力差异，例如当前候选无法使用 `art-direction` 参考图。它不是可静默降级的失败，也不得自动消耗新授权继续执行。
 
 SuperPPT 只提供一个薄的结果记录命令：它消费 `ai-image-to-ppt` 脚本产生的 `GenerationResult` JSON 和 `SerialStickyRouter.report()` JSON，校验 job 与产物后原子更新 `ImageGenerationResult`。命令不解析自然语言回复，不调用模型，不判断候选顺序。这使现有 `ai-image-to-ppt` 无需增加 SuperPPT 专用 Provider 或重复路由代码。
 
