@@ -11,7 +11,7 @@ import {
 } from "./deck/assemble.js";
 import { createClientSmokeCopy } from "./acceptance/smoke-copy.js";
 import {
-  describeProjectGeneration,
+  describeLegacyProjectGeneration,
   generateProject,
   recordManualQa,
   retryProjectPage,
@@ -300,7 +300,7 @@ async function main(argv: string[]): Promise<void> {
     const root = options.get("--project")!;
     const resolved = await configuredDependencies();
     const runner = await providerRunner();
-    const plan = await describeProjectGeneration({ root, ai: resolved.ai });
+    const plan = await describeLegacyProjectGeneration({ root, ai: resolved.ai });
     outputJson({ event: "generation-plan", ...plan });
     outputJson(await generateProject({
       root,
@@ -330,7 +330,7 @@ async function main(argv: string[]): Promise<void> {
     const slideId = options.get("--slide")!;
     const resolved = await configuredDependencies();
     const runner = await providerRunner();
-    const plan = await describeProjectGeneration({ root, ai: resolved.ai, selectedIds: new Set([slideId]) });
+    const plan = await describeLegacyProjectGeneration({ root, ai: resolved.ai, selectedIds: new Set([slideId]) });
     outputJson({ event: "generation-plan", ...plan });
     outputJson(await retryProjectPage({ root, slideId, ai: resolved.ai, runner }));
     return;

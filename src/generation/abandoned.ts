@@ -9,6 +9,10 @@ const UUID = "[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12
 const PRIVATE_NAME = new RegExp(`^pid-(\\d+)-(${UUID})\\.(prompt\\.txt|review\\.json)$`);
 const PROVIDER_NAME = new RegExp(`^\\.pid-(\\d+)-(${UUID})\\.(provider-image|normalized\\.png)$`);
 const STAGING_NAME = new RegExp(`^\\.attempt-[1-3]\\.pid-(\\d+)-(${UUID})\\.staging$`);
+// This cleanup is intentionally limited to the pre-delegation direct-provider
+// staging tree. Immutable delegated jobs, results, and call ledgers are audit
+// records and must never be discovered here for deletion.
+const LEGACY_STAGING_ROOT = "images";
 
 export function ownedTemporaryName(suffix: string): string {
   if (!suffix || suffix.includes("/") || suffix.includes("\\")) throw new Error("unsafe temporary suffix");
@@ -123,7 +127,7 @@ function removeValidatedStaging(slide: GenerationDirectory, name: string, ownerP
 
 export async function cleanupAbandonedProjectStaging(root: string, slideIds: readonly string[]): Promise<void> {
   const project = openGenerationDirectory(await realpath(root));
-  const images = project.child("images", false);
+  const images = project.child(LEGACY_STAGING_ROOT, false);
   try {
     for (const slideId of slideIds) {
       let slide: GenerationDirectory;

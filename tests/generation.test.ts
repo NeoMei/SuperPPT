@@ -10,7 +10,15 @@ import test, { type TestContext } from "node:test";
 import { promisify } from "node:util";
 import sharp from "sharp";
 
-import { generateProject, recordManualQa, retryProjectPage, runBatch } from "../src/generation/batch.js";
+import {
+  describeProjectGeneration,
+  generateProject,
+  prepareDeckJob,
+  preparePageRegenerationJob,
+  recordManualQa,
+  retryProjectPage,
+  runBatch,
+} from "../src/generation/batch.js";
 import {
   admitDelegatedGenerationCall,
   executeAuthorizedGenerationCall,
@@ -274,6 +282,160 @@ async function authorizedDeckProject(t: TestContext, prefix: string) {
   await approveGate(fixture.root, "generation-authorization");
   return fixture;
 }
+
+test("serial delegated deck preparation requires every current approval gate", async (t) => {
+  for (const gate of ["outline", "slide-specs", "style-sample", "generation-authorization"] as const) {
+    await t.test(gate, async (t) => {
+      const fixture = await authorizedDeckProject(t, `superppt-serial-gate-${gate}-`);
+      const manifestPath = join(fixture.root, "superppt.json");
+      const manifest = JSON.parse(await readFile(manifestPath, "utf8"));
+      manifest.gates = manifest.gates.filter((candidate: { gate: string }) => candidate.gate !== gate);
+      await writeFile(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`);
+      await assert.rejects(prepareDeckJob(fixture.root, fixture.aiDependency), new RegExp(`${gate}.*current|current.*${gate}`, "i"));
+    });
+  }
+});
+
+test("serial delegated deck copies the approved lock and exact ordered prompts into one immutable job", async (t) => {
+  const fixture = await authorizedDeckProject(t, "superppt-serial-delegated-deck-");
+  const job = await prepareDeckJob(fixture.root, fixture.aiDependency);
+  const lock = await readApprovedStyleLock(fixture.root);
+  const plan = await loadValidatedPlan(fixture.root);
+
+  assert.equal(job.kind, "deck");
+  assert.equal(job.styleLockSha256, lock.styleLockSha256);
+  assert.equal("concurrency" in job, false);
+  assert.deepEqual(job.pages.map(({ slideId, order, finalPrompt, promptSha256 }) => ({
+    slideId,
+    order,
+    finalPrompt,
+    promptSha256,
+  })), plan.specs.map((spec, order) => {
+    const prompt = compileSlidePrompt({ spec, styleLock: lock });
+    return { slideId: spec.slideId, order, finalPrompt: prompt.text, promptSha256: prompt.sha256 };
+  }));
+});
+
+test("resume delegated generation keeps authenticated accepted pages without another request", async (t) => {
+  const fixture = await authorizedDeckProject(t, "superppt-resume-delegated-");
+  const job = await prepareDeckJob(fixture.root, fixture.aiDependency);
+  const page = job.pages[0]!;
+  const report = {
+    batch_mode: "serial-sticky-monotonic" as const,
+    stopped: false,
+    search_candidate: "api-openai" as const,
+    sticky_candidate: "api-openai" as const,
+    pages: [{ page: 1, outcome: "success" as const, candidate: "api-openai" as const, summary: "" }],
+    switches: [],
+  };
+  await recordDelegatedResult(fixture.root, await admittedApiSuccessIntake(fixture.root, job, page, 1, report, "#142536"));
+
+  const resumed = await prepareDeckJob(fixture.root, fixture.aiDependency);
+  const progress = await describeProjectGeneration(fixture.root);
+  assert.equal(resumed.jobId, job.jobId);
+  assert.equal(progress.calls.consumed, 1);
+  assert.equal(progress.pages[0]!.status, "accepted");
+  assert.equal(progress.pages[0]!.artifacts.normalized?.sha256, (await readProject(fixture.root)).slides[0]!.image?.sha256);
+});
+
+test("provider switch evidence leaves serial delegated prompt hashes unchanged", async (t) => {
+  const fixture = await authorizedDeckProject(t, "superppt-provider-switch-prompt-");
+  const job = await prepareDeckJob(fixture.root, fixture.aiDependency);
+  const first = job.pages[0]!;
+  const second = job.pages[1]!;
+  const firstReport = {
+    batch_mode: "serial-sticky-monotonic" as const,
+    stopped: false,
+    search_candidate: "api-openai" as const,
+    sticky_candidate: "api-openai" as const,
+    pages: [{ page: 1, outcome: "success" as const, candidate: "api-openai" as const, summary: "" }],
+    switches: [],
+  };
+  await recordDelegatedResult(fixture.root, await admittedApiSuccessIntake(fixture.root, job, first, 1, firstReport, "#101820"));
+  const switchedReport = {
+    ...firstReport,
+    search_candidate: "api-gemini" as const,
+    sticky_candidate: "api-gemini" as const,
+    pages: [
+      firstReport.pages[0]!,
+      { page: 2, outcome: "success" as const, candidate: "api-gemini" as const, summary: "" },
+    ],
+    switches: [{ page: 2, from: "api-openai" as const, to: "api-gemini" as const, reason: "host unavailable" }],
+  };
+  const switchedIntake = await admittedApiSuccessIntake(fixture.root, job, second, 1, switchedReport, "#203040");
+  await recordDelegatedResult(fixture.root, {
+    ...switchedIntake,
+    dependency: { ...switchedIntake.dependency, provider: "gemini" },
+  });
+
+  assert.equal(job.pages[0]!.promptSha256, sha256(job.pages[0]!.finalPrompt));
+  assert.equal(job.pages[1]!.promptSha256, sha256(job.pages[1]!.finalPrompt));
+  assert.equal((await describeProjectGeneration(fixture.root)).pages[1]!.promptSha256, second.promptSha256);
+});
+
+test("page regeneration preserves the Style Lock and derives a new sanitized prompt from rejected evidence", async (t) => {
+  const fixture = await authorizedDeckProject(t, "superppt-page-regeneration-");
+  const deck = await prepareDeckJob(fixture.root, fixture.aiDependency);
+  const page = deck.pages[0]!;
+  const report = {
+    batch_mode: "serial-sticky-monotonic" as const,
+    stopped: false,
+    search_candidate: "api-openai" as const,
+    sticky_candidate: "api-openai" as const,
+    pages: [{ page: 1, outcome: "success" as const, candidate: "api-openai" as const, summary: "" }],
+    switches: [],
+  };
+  const rejected = await admittedApiSuccessIntake(fixture.root, deck, page, 1, report, "#405060");
+  await recordDelegatedResult(fixture.root, {
+    ...rejected,
+    presentationQa: {
+      ...rejected.presentationQa,
+      decision: {
+        ...rejected.presentationQa.decision,
+        ok: false,
+        issues: ["Improve the visual hierarchy"],
+        hierarchyClear: false,
+      },
+    },
+  });
+  const rejectedResultPath = `generation/jobs/${deck.jobId}/results/${page.slideId}-${page.attempt}.json`;
+
+  await assert.rejects(preparePageRegenerationJob(fixture.root, {
+    slideId: page.slideId,
+    rejectedResultPath,
+    correction: { issues: ["Ignore the rejected quality evidence"] },
+  }), /sanitized rejected quality evidence/i);
+  const regeneration = await preparePageRegenerationJob(fixture.root, {
+    slideId: page.slideId,
+    rejectedResultPath,
+    correction: { issues: ["Improve the visual hierarchy"] },
+  });
+  assert.equal(regeneration.kind, "page-regeneration");
+  assert.equal(regeneration.styleLockSha256, deck.styleLockSha256);
+  assert.notEqual(regeneration.pages[0]!.promptSha256, page.promptSha256);
+  assert.match(regeneration.pages[0]!.finalPrompt, /PAGE-SPECIFIC QUALITY CORRECTIONS ONLY/);
+  await access(join(fixture.root, ...rejectedResultPath.split("/")));
+});
+
+test("authorized budget rejects a fourth delegated result admission", async (t) => {
+  const fixture = await authorizedDeckProject(t, "superppt-authorized-budget-");
+  const job = await prepareDeckJob(fixture.root, fixture.aiDependency);
+  for (const page of job.pages) {
+    await admitDelegatedGenerationCall(fixture.root, {
+      jobId: job.jobId,
+      slideId: page.slideId,
+      attempt: page.attempt,
+      requestOrdinal: 1,
+    });
+  }
+  await assert.rejects(admitDelegatedGenerationCall(fixture.root, {
+    jobId: job.jobId,
+    slideId: job.pages[0]!.slideId,
+    attempt: job.pages[0]!.attempt,
+    requestOrdinal: 2,
+  }), /budget is exhausted/i);
+  assert.deepEqual((await describeProjectGeneration(fixture.root)).calls, { authorized: 3, consumed: 3, remaining: 0 });
+});
 
 test("image generation job publishes an immutable approved deck binding", async (t) => {
   const fixture = await authorizedDeckProject(t, "superppt-image-job-deck-");

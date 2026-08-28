@@ -4,7 +4,11 @@ import { join, relative, sep } from "node:path";
 import { z } from "zod";
 import sharp from "sharp";
 
-import type { LegacyResolvedDependencies } from "../dependencies/schemas.js";
+import {
+  AiImageSkillDependencySchema,
+  type AiImageSkillDependency,
+  type LegacyResolvedDependencies,
+} from "../dependencies/schemas.js";
 import { assertGateCurrent } from "../planning/confirm.js";
 import { loadValidatedPlan } from "../planning/load.js";
 import { StyleSelectionSchema } from "../planning/schemas.js";
@@ -17,12 +21,242 @@ import { compileSlidePrompt } from "../styles/prompt-compiler.js";
 import { hasStyleLockEvidence, readApprovedStyleLock } from "../styles/style-lock.js";
 import { GenerationDirectory, openGenerationDirectory } from "./anchored-dir.js";
 import { cleanupAbandonedProjectStaging, ownedTemporaryName } from "./abandoned.js";
+import { generationCallBudget } from "./authorization.js";
+import { readAndReauthenticateDelegatedResult } from "./delegation-result.js";
+import { type ImageGenerationJob } from "./job-schemas.js";
+import { assertJobAuthorized, prepareImageGenerationJob, readImageGenerationJob } from "./jobs.js";
 import { readPrivateInputFile } from "./private-input.js";
 import type { QualityDecision } from "./schemas.js";
-import { AttemptLedgerSchema, QualityDecisionSchema, type AttemptLedger } from "./schemas.js";
+import {
+  AttemptLedgerSchema,
+  QualityDecisionSchema,
+  type AttemptLedger,
+  type ImagePageResult,
+} from "./schemas.js";
 import { generateSlide } from "./provider.js";
 import { correctivePrompt, correctivePromptFromEvidence, qualityEvidence } from "./quality.js";
 import { reviewSlide } from "./quality.js";
+
+const DeckGateSchema = z.enum(["outline", "slide-specs", "style-sample", "generation-authorization"]);
+const QualityCorrectionSchema = z.object({
+  issues: z.array(z.string().trim().min(1).max(300)).min(1).max(12),
+}).strict();
+const RejectedResultPathSchema = z.string().regex(
+  /^generation\/jobs\/([0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12})\/results\/([0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12})-(\d+)\.json$/,
+  "rejected result path must name an immutable delegated page result",
+);
+
+export type QualityCorrection = z.infer<typeof QualityCorrectionSchema>;
+
+export type GenerationProgress = {
+  pages: Array<{
+    slideId: string;
+    order: number;
+    promptSha256: string;
+    status: "pending" | "accepted" | "rejected" | "failed" | "paused";
+    artifacts: {
+      master: { path: string; sha256: string } | null;
+      normalized: { path: string; sha256: string } | null;
+    };
+  }>;
+  calls: { authorized: number; consumed: number; remaining: number };
+  currentJob: { jobId: string; kind: ImageGenerationJob["kind"] } | null;
+  pausedCapabilityDecisions: Array<{
+    slideId: string;
+    references: Array<{ path: string; sha256: string }>;
+  }>;
+};
+
+function sameJson(left: unknown, right: unknown): boolean {
+  return JSON.stringify(left) === JSON.stringify(right);
+}
+
+function dependencyFromJob(job: ImageGenerationJob): AiImageSkillDependency {
+  return AiImageSkillDependencySchema.parse({
+    kind: "ai-image-to-ppt",
+    root: job.aiSkill.root,
+    skillFile: join(job.aiSkill.root, "SKILL.md"),
+    skillSha256: job.aiSkill.skillSha256,
+    gitRevision: job.aiSkill.gitRevision,
+    scripts: Object.fromEntries(Object.entries(job.aiSkill.scripts).map(([name, script]) => [name, script.path])),
+    scriptSha256: Object.fromEntries(Object.entries(job.aiSkill.scripts).map(([name, script]) => [name, script.sha256])),
+  });
+}
+
+async function assertCurrentDeckGates(root: string): Promise<void> {
+  for (const gate of DeckGateSchema.options) {
+    if (!await assertGateCurrent(root, gate)) throw new Error(`${gate} gate must be current before serial delegated deck generation`);
+  }
+}
+
+async function currentGenerationJobs(root: string): Promise<ImageGenerationJob[]> {
+  let entries;
+  try {
+    entries = await readdir(join(root, "generation", "jobs"), { withFileTypes: true });
+  } catch (error: unknown) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return [];
+    throw error;
+  }
+  const jobs: ImageGenerationJob[] = [];
+  for (const entry of entries) {
+    if (entry.isSymbolicLink() || (!entry.isDirectory() && !entry.name.startsWith("."))) {
+      throw new Error("generation jobs directory contains an unsafe entry");
+    }
+    if (!entry.isDirectory() || entry.name.startsWith(".")) continue;
+    const job = await readImageGenerationJob(root, entry.name);
+    if (job.kind === "style-sample") continue;
+    const manifest = await readProject(root);
+    if (job.projectRevisionId !== manifest.currentRevision.id) continue;
+    await assertJobAuthorized(root, job);
+    jobs.push(job);
+  }
+  return jobs.sort((left, right) => left.createdAt.localeCompare(right.createdAt));
+}
+
+async function authenticatedResultOrNull(root: string, job: ImageGenerationJob) {
+  try {
+    return await readAndReauthenticateDelegatedResult(root, job.jobId);
+  } catch (error: unknown) {
+    if (error instanceof Error && error.message.startsWith("delegated aggregate result is unavailable")) return null;
+    throw error;
+  }
+}
+
+function progressStatus(page: ImagePageResult): GenerationProgress["pages"][number]["status"] {
+  if (page.status === "paused") return "paused";
+  if (page.status === "failed") return "failed";
+  return page.styleConsistency === "accepted" ? "accepted" : "rejected";
+}
+
+/**
+ * Creates or resumes the single immutable, serially delegated deck job for
+ * the current authorization. Provider execution remains entirely outside
+ * SuperPPT in ai-image-to-ppt.
+ */
+export async function prepareDeckJob(
+  root: string,
+  aiDependency: AiImageSkillDependency,
+): Promise<ImageGenerationJob> {
+  await assertCurrentDeckGates(root);
+  const jobs = await currentGenerationJobs(root);
+  const existing = [...jobs].reverse().find((job) =>
+    job.kind === "deck" && sameJson(dependencyFromJob(job), AiImageSkillDependencySchema.parse(aiDependency))
+  );
+  if (existing) {
+    await authenticatedResultOrNull(root, existing);
+    return existing;
+  }
+  return prepareImageGenerationJob(root, { kind: "deck", aiDependency });
+}
+
+/**
+ * Reads only immutable jobs, authenticated delegated results, and the durable
+ * call ledger. It intentionally exposes no provider or channel selection.
+ */
+export async function describeProjectGeneration(root: string): Promise<GenerationProgress> {
+  const jobs = await currentGenerationJobs(root);
+  if (jobs.length === 0) {
+    return {
+      pages: [],
+      calls: { authorized: 0, consumed: 0, remaining: 0 },
+      currentJob: null,
+      pausedCapabilityDecisions: [],
+    };
+  }
+  const pageState = new Map<string, GenerationProgress["pages"][number]>();
+  const pausedCapabilityDecisions: GenerationProgress["pausedCapabilityDecisions"] = [];
+  for (const job of jobs) {
+    for (const page of job.pages) {
+      pageState.set(page.slideId, {
+        slideId: page.slideId,
+        order: page.order,
+        promptSha256: page.promptSha256,
+        status: "pending",
+        artifacts: { master: null, normalized: null },
+      });
+    }
+    const authenticated = await authenticatedResultOrNull(root, job);
+    if (!authenticated) continue;
+    for (const page of authenticated.result.pages) {
+      const target = pageState.get(page.slideId);
+      if (!target) throw new Error("authenticated delegated result has a page outside its immutable job");
+      target.status = progressStatus(page);
+      target.artifacts = page.artifacts ? {
+        master: { path: page.artifacts.master.path, sha256: page.artifacts.master.sha256 },
+        normalized: { path: page.artifacts.normalized.path, sha256: page.artifacts.normalized.sha256 },
+      } : { master: null, normalized: null };
+      const unsupported = page.referenceUsage
+        .filter(({ usage }) => usage === "unsupported")
+        .map(({ path, sha256 }) => ({ path, sha256 }));
+      if (unsupported.length > 0) pausedCapabilityDecisions.push({ slideId: page.slideId, references: unsupported });
+    }
+  }
+  const current = jobs.at(-1)!;
+  return {
+    pages: [...pageState.values()].sort((left, right) => left.order - right.order),
+    calls: await generationCallBudget(root, current),
+    currentJob: { jobId: current.jobId, kind: current.kind },
+    pausedCapabilityDecisions,
+  };
+}
+
+/**
+ * Publishes a one-page immutable correction job from a reauthenticated quality
+ * rejection. The original result remains the audit record; no result is
+ * overwritten or deleted.
+ */
+export async function preparePageRegenerationJob(
+  root: string,
+  rawRequest: {
+    slideId: string;
+    rejectedResultPath: string;
+    correction: QualityCorrection;
+  },
+): Promise<ImageGenerationJob> {
+  await assertCurrentDeckGates(root);
+  const request = z.object({
+    slideId: z.string().uuid(),
+    rejectedResultPath: RejectedResultPathSchema,
+    correction: QualityCorrectionSchema,
+  }).strict().parse(rawRequest);
+  const path = RejectedResultPathSchema.parse(request.rejectedResultPath);
+  const match = /^generation\/jobs\/([^/]+)\/results\/([^/]+)-(\d+)\.json$/.exec(path)!;
+  const [jobId, resultSlideId, attemptText] = [match[1]!, match[2]!, match[3]!];
+  if (request.slideId !== resultSlideId) throw new Error("page-regeneration slide does not match the rejected result path");
+
+  const authenticated = await readAndReauthenticateDelegatedResult(root, jobId);
+  const rejected = authenticated.result.pages.find(({ slideId, attempt }) =>
+    slideId === request.slideId && attempt === Number(attemptText)
+  );
+  if (!rejected || rejected.styleConsistency !== "rejected" || !rejected.presentationQa || !rejected.artifacts) {
+    throw new Error("page-regeneration requires an authenticated rejected quality result");
+  }
+  const sealedPage = authenticated.job.pages.find(({ slideId, attempt }) =>
+    slideId === request.slideId && attempt === rejected.attempt
+  );
+  if (!sealedPage || rejected.actualPromptSha256 !== sealedPage.promptSha256) {
+    throw new Error("rejected quality result does not bind the immutable original prompt");
+  }
+  const correction: QualityCorrection = {
+    issues: [...new Set(request.correction.issues.map((issue) => issue.trim()))],
+  };
+  const rejectedIssues = [...new Set(rejected.presentationQa.decision.issues.map((issue) => issue.trim()))];
+  if (!sameJson(correction.issues, rejectedIssues)) {
+    throw new Error("page-regeneration correction must match sanitized rejected quality evidence");
+  }
+  const finalPrompt = compileSlidePrompt({
+    spec: sealedPage.spec,
+    styleLock: authenticated.job.styleLock,
+    correction,
+  }).text;
+  return prepareImageGenerationJob(root, {
+    kind: "page-regeneration",
+    aiDependency: dependencyFromJob(authenticated.job),
+    slideId: request.slideId,
+    previousPromptSha256: rejected.actualPromptSha256,
+    finalPrompt,
+  });
+}
 
 const BatchPageSchema = z.object({
   id: z.string().min(1),
@@ -562,7 +796,8 @@ async function generateSelected(options: {
   });
 }
 
-export async function describeProjectGeneration(options: {
+/** @deprecated Kept only while the legacy CLI still uses direct generation. */
+export async function describeLegacyProjectGeneration(options: {
   root: string;
   ai: LegacyResolvedDependencies["ai"];
   selectedIds?: Set<string>;
