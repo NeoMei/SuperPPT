@@ -7,6 +7,7 @@ import test, { type TestContext } from "node:test";
 import { promisify } from "node:util";
 import sharp from "sharp";
 
+import { GenerationAuthorizationPlanSchema } from "../src/generation/job-schemas.js";
 import {
   approveExecutionGate,
   approveGate,
@@ -375,6 +376,45 @@ test("generation authorization and deck review extend the ordinary gate chain", 
   ]);
   assert.equal(await assertGateCurrent(root, "generation-authorization"), false);
   assert.equal(await assertGateCurrent(root, "deck-review"), false);
+});
+
+test("generation authorization plan schema binds ordered prompts and a sufficient call budget", () => {
+  const plan = {
+    contractVersion: 1 as const,
+    kind: "deck" as const,
+    projectId: PROJECT_ID,
+    projectRevisionId: "00000000-0000-4000-8000-000000000301",
+    aiSkill: {
+      root: "/resolved/ai-image-to-ppt",
+      skillSha256: "a".repeat(64),
+      gitRevision: null,
+    },
+    styleLockPath: "style/lock.json" as const,
+    styleLockSha256: "b".repeat(64),
+    callBudget: 3,
+    outboundDisclosure: { sendsText: true as const, references: [] },
+    pages: SLIDE_IDS.map((slideId, order) => ({
+      slideId,
+      order,
+      promptSha256: String(order + 1).repeat(64),
+    })),
+    previousAuthorizationDigest: null,
+    previousPromptSha256: null,
+    createdAt: "2026-08-28T00:00:00.000Z",
+  };
+  assert.doesNotThrow(() => GenerationAuthorizationPlanSchema.parse(plan));
+  assert.throws(
+    () => GenerationAuthorizationPlanSchema.parse({ ...plan, callBudget: 2 }),
+    /budget.*page count|page count.*budget/i,
+  );
+  assert.throws(
+    () => GenerationAuthorizationPlanSchema.parse({ ...plan, pages: [...plan.pages].reverse() }),
+    /order/i,
+  );
+  assert.throws(
+    () => GenerationAuthorizationPlanSchema.parse({ ...plan, extra: true }),
+    /unrecognized/i,
+  );
 });
 
 test("generation authorization and deck review snapshots bind their published artifacts", async (t) => {

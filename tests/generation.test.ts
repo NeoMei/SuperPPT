@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { execFile, spawn } from "node:child_process";
+import { createHash } from "node:crypto";
 import { closeSync, constants, openSync } from "node:fs";
 import { access, chmod, lstat, mkdir, mkdtemp, readFile, readdir, realpath, rename, stat, symlink, unlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -10,13 +11,23 @@ import { promisify } from "node:util";
 import sharp from "sharp";
 
 import { generateProject, recordManualQa, retryProjectPage, runBatch } from "../src/generation/batch.js";
+import {
+  publishGenerationAuthorizationPlan,
+  publishPageRegenerationAuthorizationPlan,
+  publishStyleSampleGenerationPlan,
+  readCallLedger,
+  recordGenerationCall,
+} from "../src/generation/authorization.js";
+import { ImageGenerationJobSchema } from "../src/generation/job-schemas.js";
+import { assertJobAuthorized, prepareImageGenerationJob } from "../src/generation/jobs.js";
 import { generateSlide } from "../src/generation/provider.js";
 import { reviewSlide } from "../src/generation/quality.js";
 import { privateSecurityPolicy } from "../src/generation/private-input.js";
 import { bridgeContainmentPolicy } from "../src/generation/bridge-process.js";
 import { AttemptLedgerSchema, QualityDecisionSchema } from "../src/generation/schemas.js";
-import type { LegacyResolvedDependencies } from "../src/dependencies/schemas.js";
-import { approveGate, assertGateCurrent } from "../src/planning/confirm.js";
+import { resolveSkillDependencies } from "../src/dependencies/resolve.js";
+import type { AiImageSkillDependency, LegacyResolvedDependencies } from "../src/dependencies/schemas.js";
+import { approveExecutionGate, approveGate, assertGateCurrent } from "../src/planning/confirm.js";
 import { loadValidatedPlan } from "../src/planning/load.js";
 import { publishPlanViews, publishStyleSample } from "../src/planning/views.js";
 import { initializeProject } from "../src/project/initialize.js";
@@ -63,7 +74,7 @@ async function approvedProject(
   t: TestContext,
   prefix: string,
   styleLock?: Parameters<typeof createProvisionalStyleLock>[1],
-): Promise<{ root: string; ai: LegacyResolvedDependencies["ai"]; editableRoot: string }> {
+): Promise<{ root: string; ai: LegacyResolvedDependencies["ai"]; aiDependency: AiImageSkillDependency; editableRoot: string }> {
   const parent = await directory(t, prefix);
   const root = join(parent, "project");
   await initializeProject({ root, title: "Generation Demo" });
@@ -125,6 +136,9 @@ async function approvedProject(
   await writeFile(join(aiRoot, "SKILL.md"), "---\nname: ai-image-to-ppt\n---\n");
   await writeFile(join(aiRoot, "scripts", "provider.py"), await readFile(fakeProvider));
   await writeFile(join(aiRoot, "scripts", "reviewer.py"), await readFile(fakeReviewer));
+  for (const script of ["generation_result.py", "host_routing_policy.py", "import_host_image.py", "prepare_editable_input.py"]) {
+    await writeFile(join(aiRoot, "scripts", script), "raise SystemExit('not executed by job preparation')\n");
+  }
   const capabilities = {
     contractVersion: 1,
     defaultProvider: "openai-gpt-image-2",
@@ -137,9 +151,14 @@ async function approvedProject(
   await writeFile(join(editableRoot, "package.json"), JSON.stringify({ name: "image-to-editable-pptx", version: "0.1.0" }));
   await writeFile(join(editableRoot, "package-lock.json"), JSON.stringify({ lockfileVersion: 3 }));
   await writeFile(join(editableRoot, "skills", "image-to-editable-pptx", "SKILL.md"), "---\nname: image-to-editable-pptx\n---\n");
+  const aiDependency = (await resolveSkillDependencies({
+    aiSkillRoot: aiRoot,
+    editableSkillRoot: editableRoot,
+  })).ai;
   return {
     root,
     editableRoot,
+    aiDependency,
     ai: {
       ...capabilities as LegacyResolvedDependencies["ai"],
       root: aiRoot,
@@ -147,6 +166,246 @@ async function approvedProject(
     },
   };
 }
+
+const lockedStyle = {
+  selection: { kind: "catalog" as const, styleId: "cinematic-tech" },
+  referenceArtifacts: [],
+};
+
+function sha256(value: string | Buffer): string {
+  return createHash("sha256").update(value).digest("hex");
+}
+
+async function authorizedDeckProject(t: TestContext, prefix: string) {
+  const fixture = await approvedProject(t, prefix, lockedStyle);
+  await approveStyleLock(fixture.root);
+  await publishGenerationAuthorizationPlan(fixture.root, {
+    aiDependency: fixture.aiDependency,
+    callBudget: 3,
+  });
+  await approveGate(fixture.root, "generation-authorization");
+  return fixture;
+}
+
+test("image generation job publishes an immutable approved deck binding", async (t) => {
+  const fixture = await authorizedDeckProject(t, "superppt-image-job-deck-");
+  const job = await prepareImageGenerationJob(fixture.root, {
+    kind: "deck",
+    aiDependency: fixture.aiDependency,
+  });
+
+  assert.equal(job.styleLock.approvalState, "approved");
+  assert.equal(job.pages.length, 3);
+  assert.equal(job.callBudget, 3);
+  assert.deepEqual(job.pages.map(({ order }) => order), [0, 1, 2]);
+  assert.equal(job.pages[0]!.promptSha256, sha256(job.pages[0]!.finalPrompt));
+  assert.equal(job.pages[0]!.target, `generation/jobs/${job.jobId}/ai-image-output/${job.pages[0]!.slideId}.png`);
+  assert.deepEqual(
+    ImageGenerationJobSchema.parse(JSON.parse(await readFile(join(
+      fixture.root,
+      "generation",
+      "jobs",
+      job.jobId,
+      "job.json",
+    ), "utf8"))),
+    job,
+  );
+  await assertJobAuthorized(fixture.root, job);
+
+  await assert.rejects(
+    prepareImageGenerationJob(fixture.root, { kind: "deck", aiDependency: fixture.aiDependency, callBudget: 2 } as never),
+    /budget.*page count|page count.*budget/i,
+  );
+  assert.throws(
+    () => ImageGenerationJobSchema.parse({ ...job, pages: [...job.pages].reverse() }),
+    /order/i,
+  );
+
+  const promptPath = join(fixture.root, ...job.pages[0]!.promptArtifact.split("/"));
+  await writeFile(promptPath, "mutated after immutable job publication\n", { mode: 0o600 });
+  await assert.rejects(assertJobAuthorized(fixture.root, job), /prompt.*changed|prompt.*hash/i);
+});
+
+test("generation authorization rejects absent and stale deck approval", async (t) => {
+  const fixture = await approvedProject(t, "superppt-image-job-authorization-", lockedStyle);
+  await approveStyleLock(fixture.root);
+  await assert.rejects(
+    prepareImageGenerationJob(fixture.root, { kind: "deck", aiDependency: fixture.aiDependency }),
+    /generation authorization/i,
+  );
+
+  await publishGenerationAuthorizationPlan(fixture.root, { aiDependency: fixture.aiDependency, callBudget: 3 });
+  await approveGate(fixture.root, "generation-authorization");
+  await writeFile(join(fixture.root, "generation", "authorization-plan.json"), "{}\n", { mode: 0o600 });
+  await assert.rejects(
+    prepareImageGenerationJob(fixture.root, { kind: "deck", aiDependency: fixture.aiDependency }),
+    /generation authorization/i,
+  );
+});
+
+test("image generation job rejects mutated style and dependency identities", async (t) => {
+  const styleFixture = await authorizedDeckProject(t, "superppt-image-job-style-identity-");
+  const styleJob = await prepareImageGenerationJob(styleFixture.root, {
+    kind: "deck",
+    aiDependency: styleFixture.aiDependency,
+  });
+  const lockPath = join(styleFixture.root, "style", "lock.json");
+  const lock = JSON.parse(await readFile(lockPath, "utf8")) as Record<string, unknown>;
+  await writeFile(lockPath, `${JSON.stringify({ ...lock, createdAt: new Date().toISOString() })}\n`, { mode: 0o600 });
+  await assert.rejects(assertJobAuthorized(styleFixture.root, styleJob), /style lock/i);
+
+  const dependencyFixture = await authorizedDeckProject(t, "superppt-image-job-dependency-identity-");
+  const dependencyJob = await prepareImageGenerationJob(dependencyFixture.root, {
+    kind: "deck",
+    aiDependency: dependencyFixture.aiDependency,
+  });
+  await writeFile(dependencyFixture.aiDependency.skillFile, "changed Skill identity\n");
+  await assert.rejects(assertJobAuthorized(dependencyFixture.root, dependencyJob), /Skill identity changed/);
+});
+
+test("image generation job keeps style-sample authorization separate and one-call", async (t) => {
+  const fixture = await approvedProject(t, "superppt-image-job-sample-", lockedStyle);
+  await assert.rejects(
+    publishStyleSampleGenerationPlan(fixture.root, { aiDependency: fixture.aiDependency, callBudget: 2 }),
+    /exactly 1/i,
+  );
+  const plan = await publishStyleSampleGenerationPlan(fixture.root, {
+    aiDependency: fixture.aiDependency,
+    callBudget: 1,
+  });
+  assert.equal(plan.kind, "style-sample");
+  assert.equal(plan.pages.length, 1);
+  await assert.rejects(
+    prepareImageGenerationJob(fixture.root, { kind: "style-sample", aiDependency: fixture.aiDependency }),
+    /style sample generation authorization/i,
+  );
+
+  await approveExecutionGate(fixture.root, "style-sample-generation", "style/sample/generation-plan.json");
+  const job = await prepareImageGenerationJob(fixture.root, {
+    kind: "style-sample",
+    aiDependency: fixture.aiDependency,
+  });
+  assert.equal(job.callBudget, 1);
+  assert.equal(job.pages.length, 1);
+  assert.equal(job.styleLock.approvalState, "provisional");
+  await assertJobAuthorized(fixture.root, job);
+  await writeFile(join(fixture.root, "slides", job.pages[0]!.slideId, "spec.json"), "{}\n", { mode: 0o600 });
+  await assert.rejects(assertJobAuthorized(fixture.root, job), /outline and slide-specs|authorization.*stale/i);
+});
+
+test("call budget counts actual failed requests once and ignores duplicate ingestion", async (t) => {
+  const fixture = await authorizedDeckProject(t, "superppt-image-job-ledger-");
+  const job = await prepareImageGenerationJob(fixture.root, { kind: "deck", aiDependency: fixture.aiDependency });
+  const first = { jobId: job.jobId, slideId: job.pages[0]!.slideId, attempt: 1, requestOrdinal: 1, outcome: "failed" as const };
+  await assert.rejects(recordGenerationCall(fixture.root, { ...first, outcome: "discovery" } as never), /invalid_value|success|failed/i);
+  assert.equal((await readCallLedger(fixture.root)).length, 0, "capability discovery without a generation request consumes no budget");
+  assert.deepEqual(await recordGenerationCall(fixture.root, first), { recorded: true, consumed: 1, remaining: 2 });
+  assert.deepEqual(await recordGenerationCall(fixture.root, first), { recorded: false, consumed: 1, remaining: 2 });
+  assert.deepEqual(await recordGenerationCall(fixture.root, {
+    jobId: job.jobId,
+    slideId: job.pages[1]!.slideId,
+    attempt: 1,
+    requestOrdinal: 2,
+    outcome: "success",
+  }), { recorded: true, consumed: 2, remaining: 1 });
+  assert.deepEqual(await recordGenerationCall(fixture.root, {
+    jobId: job.jobId,
+    slideId: job.pages[2]!.slideId,
+    attempt: 1,
+    requestOrdinal: 3,
+    outcome: "failed",
+  }), { recorded: true, consumed: 3, remaining: 0 });
+  await assert.rejects(recordGenerationCall(fixture.root, {
+    jobId: job.jobId,
+    slideId: job.pages[0]!.slideId,
+    attempt: 1,
+    requestOrdinal: 4,
+    outcome: "success",
+  }), /call budget.*exhausted/i);
+  assert.equal((await readCallLedger(fixture.root)).length, 3);
+});
+
+test("call budget keeps an exact page-regeneration duplicate idempotent after its last call", async (t) => {
+  const fixture = await approvedProject(t, "superppt-image-job-regeneration-duplicate-", lockedStyle);
+  await approveStyleLock(fixture.root);
+  await publishGenerationAuthorizationPlan(fixture.root, { aiDependency: fixture.aiDependency, callBudget: 4 });
+  await approveGate(fixture.root, "generation-authorization");
+  const deck = await prepareImageGenerationJob(fixture.root, { kind: "deck", aiDependency: fixture.aiDependency });
+  for (const [index, page] of deck.pages.entries()) {
+    await recordGenerationCall(fixture.root, {
+      jobId: deck.jobId,
+      slideId: page.slideId,
+      attempt: 1,
+      requestOrdinal: index + 1,
+      outcome: "success",
+    });
+  }
+  const regeneration = await prepareImageGenerationJob(fixture.root, {
+    kind: "page-regeneration",
+    aiDependency: fixture.aiDependency,
+    slideId: deck.pages[0]!.slideId,
+    previousPromptSha256: deck.pages[0]!.promptSha256,
+    finalPrompt: `${deck.pages[0]!.finalPrompt}\n\nCorrection: use a stronger focal point.`,
+  });
+  const actual = {
+    jobId: regeneration.jobId,
+    slideId: regeneration.pages[0]!.slideId,
+    attempt: regeneration.pages[0]!.attempt,
+    requestOrdinal: 4,
+    outcome: "failed" as const,
+  };
+  assert.deepEqual(await recordGenerationCall(fixture.root, actual), { recorded: true, consumed: 4, remaining: 0 });
+  assert.deepEqual(await recordGenerationCall(fixture.root, actual), { recorded: false, consumed: 4, remaining: 0 });
+});
+
+test("page-regeneration requires a new prompt hash and incremental authorization after exhaustion", async (t) => {
+  const fixture = await authorizedDeckProject(t, "superppt-image-job-regeneration-");
+  const deck = await prepareImageGenerationJob(fixture.root, { kind: "deck", aiDependency: fixture.aiDependency });
+  for (const [index, page] of deck.pages.entries()) {
+    await recordGenerationCall(fixture.root, {
+      jobId: deck.jobId,
+      slideId: page.slideId,
+      attempt: 1,
+      requestOrdinal: index + 1,
+      outcome: index === 0 ? "failed" : "success",
+    });
+  }
+  await assert.rejects(prepareImageGenerationJob(fixture.root, {
+    kind: "page-regeneration",
+    aiDependency: fixture.aiDependency,
+    slideId: deck.pages[0]!.slideId,
+    previousPromptSha256: deck.pages[0]!.promptSha256,
+    finalPrompt: deck.pages[0]!.finalPrompt,
+  }), /new prompt hash/i);
+  const correctedPrompt = `${deck.pages[0]!.finalPrompt}\n\nCorrection: strengthen hierarchy.`;
+  await assert.rejects(prepareImageGenerationJob(fixture.root, {
+    kind: "page-regeneration",
+    aiDependency: fixture.aiDependency,
+    slideId: deck.pages[0]!.slideId,
+    previousPromptSha256: deck.pages[0]!.promptSha256,
+    finalPrompt: correctedPrompt,
+  }), /incremental generation authorization/i);
+
+  await publishPageRegenerationAuthorizationPlan(fixture.root, {
+    aiDependency: fixture.aiDependency,
+    slideId: deck.pages[0]!.slideId,
+    previousPromptSha256: deck.pages[0]!.promptSha256,
+    finalPrompt: correctedPrompt,
+    callBudget: 1,
+  });
+  await approveGate(fixture.root, "generation-authorization");
+  const regeneration = await prepareImageGenerationJob(fixture.root, {
+    kind: "page-regeneration",
+    aiDependency: fixture.aiDependency,
+    slideId: deck.pages[0]!.slideId,
+    previousPromptSha256: deck.pages[0]!.promptSha256,
+    finalPrompt: correctedPrompt,
+  });
+  assert.equal(regeneration.pages.length, 1);
+  assert.notEqual(regeneration.pages[0]!.promptSha256, deck.pages[0]!.promptSha256);
+  assert.equal(regeneration.callBudget, 1);
+  await assertJobAuthorized(fixture.root, regeneration);
+});
 
 test("passes prompts through a 0600 file in a 0700 directory and atomically normalizes output", async (t) => {
   const root = await directory(t, "superppt-provider-");

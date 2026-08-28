@@ -1,0 +1,334 @@
+import { createHash, randomUUID } from "node:crypto";
+import { fsyncSync } from "node:fs";
+import { readdir } from "node:fs/promises";
+import { join } from "node:path";
+
+import { z } from "zod";
+
+import { AiImageSkillDependencySchema, type AiImageSkillDependency } from "../dependencies/schemas.js";
+import { loadValidatedPlan } from "../planning/load.js";
+import { withProjectLease } from "../project/lock.js";
+import { readOwnedRegularFile } from "../project/safe-file.js";
+import { readProject } from "../project/store.js";
+import { canonicalStyleSample } from "../styles/sample-contract.js";
+import { compileSlidePrompt } from "../styles/prompt-compiler.js";
+import { readApprovedStyleLock, readStyleLock, type LockedStyle } from "../styles/style-lock.js";
+import {
+  assertAiImageSkillDependencyCurrent,
+  assertAuthorizedJobBinding,
+  assertPreviousPromptPublished,
+  authorizationCallBudget,
+  authorizationForPreparation,
+} from "./authorization.js";
+import { openGenerationDirectory, type GenerationDirectory } from "./anchored-dir.js";
+import {
+  ImageGenerationJobSchema,
+  canonicalContractFile,
+  type GenerationAuthorizationPlan,
+  type ImageGenerationJob,
+} from "./job-schemas.js";
+
+const DeckRequestSchema = z.object({
+  kind: z.literal("deck"),
+  aiDependency: AiImageSkillDependencySchema,
+  callBudget: z.number().int().positive().optional(),
+}).strict();
+
+const StyleSampleRequestSchema = z.object({
+  kind: z.literal("style-sample"),
+  aiDependency: AiImageSkillDependencySchema,
+}).strict();
+
+const PageRegenerationRequestSchema = z.object({
+  kind: z.literal("page-regeneration"),
+  aiDependency: AiImageSkillDependencySchema,
+  slideId: z.string().uuid(),
+  previousPromptSha256: z.string().regex(/^[a-f0-9]{64}$/),
+  finalPrompt: z.string().min(1),
+}).strict();
+
+const PrepareImageGenerationJobRequestSchema = z.discriminatedUnion("kind", [
+  DeckRequestSchema,
+  StyleSampleRequestSchema,
+  PageRegenerationRequestSchema,
+]);
+
+export type PrepareImageGenerationJobRequest = z.input<typeof PrepareImageGenerationJobRequestSchema>;
+
+function sha256(value: string | Buffer): string {
+  return createHash("sha256").update(value).digest("hex");
+}
+
+function sameJson(left: unknown, right: unknown): boolean {
+  return JSON.stringify(left) === JSON.stringify(right);
+}
+
+function embeddedLock(lock: LockedStyle): ImageGenerationJob["styleLock"] {
+  const { styleLockSha256: _styleLockSha256, ...value } = lock;
+  return value;
+}
+
+function dependencyBinding(ai: AiImageSkillDependency): ImageGenerationJob["aiSkill"] {
+  return { root: ai.root, skillSha256: ai.skillSha256, gitRevision: ai.gitRevision };
+}
+
+async function readPublishedJobs(root: string): Promise<ImageGenerationJob[]> {
+  let entries;
+  try {
+    entries = await readdir(join(root, "generation", "jobs"), { withFileTypes: true });
+  } catch (error: unknown) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return [];
+    throw error;
+  }
+  const jobs: ImageGenerationJob[] = [];
+  for (const entry of entries) {
+    if (entry.isSymbolicLink() || (!entry.isDirectory() && !entry.name.startsWith("."))) {
+      throw new Error("generation jobs directory contains an unsafe entry");
+    }
+    if (entry.isDirectory() && !entry.name.startsWith(".")) jobs.push(await readImageGenerationJob(root, entry.name));
+  }
+  return jobs;
+}
+
+async function nextAttempt(root: string, slideId: string): Promise<number> {
+  const attempts = (await readPublishedJobs(root)).flatMap((job) =>
+    job.pages.filter((page) => page.slideId === slideId).map(({ attempt }) => attempt)
+  );
+  return (attempts.length === 0 ? 0 : Math.max(...attempts)) + 1;
+}
+
+function assertCommonAuthorization(options: {
+  plan: GenerationAuthorizationPlan;
+  manifest: Awaited<ReturnType<typeof readProject>>;
+  ai: AiImageSkillDependency;
+  lock: LockedStyle;
+}): void {
+  if (
+    options.plan.projectId !== options.manifest.projectId
+    || options.plan.projectRevisionId !== options.manifest.currentRevision.id
+    || !sameJson(options.plan.aiSkill, dependencyBinding(options.ai))
+    || options.plan.styleLockSha256 !== options.lock.styleLockSha256
+    || !sameJson(options.plan.outboundDisclosure, {
+      sendsText: true,
+      references: options.lock.referenceArtifacts,
+    })
+  ) throw new Error("generation authorization does not match current project, style, or dependency identity");
+}
+
+type PreparedPage = {
+  slideId: string;
+  order: number;
+  attempt: number;
+  finalPrompt: string;
+};
+
+async function preparePages(
+  root: string,
+  request: z.output<typeof PrepareImageGenerationJobRequestSchema>,
+  plan: GenerationAuthorizationPlan,
+  lock: LockedStyle,
+  authorizationDigest: string,
+): Promise<PreparedPage[]> {
+  const validated = await loadValidatedPlan(root);
+  if (request.kind === "style-sample") {
+    if (plan.kind !== "style-sample") throw new Error("style sample generation authorization has the wrong job kind");
+    const sample = await canonicalStyleSample(root);
+    const order = validated.outline.slides.find(({ id }) => id === sample.spec.slideId)?.order;
+    if (order === undefined) throw new Error("representative slide is not ordered in the current plan");
+    const pages = [{ slideId: sample.spec.slideId, order, attempt: 1, finalPrompt: sample.compiled.text }];
+    if (!sameJson(plan.pages, pages.map(({ slideId, order, finalPrompt }) => ({ slideId, order, promptSha256: sha256(finalPrompt) })))) {
+      throw new Error("style sample prompt does not match its generation authorization");
+    }
+    return pages;
+  }
+  if (request.kind === "deck") {
+    if (plan.kind !== "deck") throw new Error("deck generation requires a deck authorization plan");
+    const pages = validated.specs.map((spec) => ({
+      slideId: spec.slideId,
+      order: validated.outline.slides.find(({ id }) => id === spec.slideId)!.order,
+      attempt: 1,
+      finalPrompt: compileSlidePrompt({ spec, styleLock: lock }).text,
+    }));
+    if (request.callBudget !== undefined && request.callBudget !== plan.callBudget) {
+      if (request.callBudget < pages.length) throw new Error("job call budget cannot be smaller than the initial page count");
+      throw new Error("job call budget must equal its generation authorization");
+    }
+    if (!sameJson(plan.pages, pages.map(({ slideId, order, finalPrompt }) => ({ slideId, order, promptSha256: sha256(finalPrompt) })))) {
+      throw new Error("deck prompts or page order do not match generation authorization");
+    }
+    return pages;
+  }
+
+  const specIndex = validated.specs.findIndex(({ slideId }) => slideId === request.slideId);
+  if (specIndex < 0) throw new Error("page-regeneration slide is not in the current plan");
+  const promptSha256 = sha256(request.finalPrompt);
+  if (promptSha256 === request.previousPromptSha256) throw new Error("page-regeneration requires a new prompt hash");
+  if (plan.kind === "page-regeneration") {
+    await assertPreviousPromptPublished(
+      root,
+      request.slideId,
+      request.previousPromptSha256,
+      plan.previousAuthorizationDigest!,
+    );
+    if (
+      plan.previousPromptSha256 !== request.previousPromptSha256
+      || plan.pages.length !== 1
+      || plan.pages[0]!.slideId !== request.slideId
+      || plan.pages[0]!.promptSha256 !== promptSha256
+    ) throw new Error("page-regeneration prompt does not match incremental generation authorization");
+  } else if (plan.kind === "deck") {
+    await assertPreviousPromptPublished(root, request.slideId, request.previousPromptSha256, authorizationDigest);
+    const original = plan.pages.find(({ slideId }) => slideId === request.slideId);
+    if (!original || original.promptSha256 !== request.previousPromptSha256) {
+      throw new Error("page-regeneration previous prompt does not match deck authorization");
+    }
+    const budget = await authorizationCallBudget(root, authorizationDigest, plan.callBudget);
+    if (budget.remaining === 0) throw new Error("incremental generation authorization is required after call budget exhaustion");
+  } else {
+    throw new Error("page-regeneration has no applicable generation authorization");
+  }
+  return [{
+    slideId: request.slideId,
+    order: validated.outline.slides.find(({ id }) => id === request.slideId)!.order,
+    attempt: await nextAttempt(root, request.slideId),
+    finalPrompt: request.finalPrompt,
+  }];
+}
+
+function writePromptArtifacts(root: string, job: ImageGenerationJob): void {
+  const project = openGenerationDirectory(root);
+  let slides: GenerationDirectory | undefined;
+  try {
+    slides = project.child("slides", false);
+    for (const page of job.pages) {
+      const slide = slides.child(page.slideId, false);
+      const prompts = slide.child("prompts");
+      try {
+        prompts.writeExclusive(`${job.jobId}.txt`, page.finalPrompt);
+        if (prompts.fd >= 0) fsyncSync(prompts.fd);
+        if (slide.fd >= 0) fsyncSync(slide.fd);
+      } finally {
+        prompts.close();
+        slide.close();
+      }
+    }
+  } finally {
+    slides?.close();
+    project.close();
+  }
+}
+
+function publishJob(root: string, job: ImageGenerationJob): void {
+  const project = openGenerationDirectory(root);
+  const generation = project.child("generation");
+  if (project.fd >= 0) fsyncSync(project.fd);
+  const jobs = generation.child("jobs");
+  if (generation.fd >= 0) fsyncSync(generation.fd);
+  const stagingName = `.${job.jobId}.staging`;
+  const staging = jobs.child(stagingName);
+  let stagingClosed = false;
+  try {
+    const output = staging.child("ai-image-output");
+    output.close();
+    staging.writeExclusive("job.json", canonicalContractFile(job));
+    if (staging.fd >= 0) fsyncSync(staging.fd);
+    staging.close();
+    stagingClosed = true;
+    jobs.promoteChildExclusive(stagingName, job.jobId);
+  } catch (error: unknown) {
+    if (!stagingClosed) {
+      try { staging.remove("job.json"); } catch { /* absent */ }
+      try { staging.removeEmptyChild("ai-image-output"); } catch { /* absent or non-empty */ }
+      staging.close();
+    } else {
+      try {
+        const abandoned = jobs.child(stagingName, false);
+        try {
+          abandoned.remove("job.json");
+          abandoned.removeEmptyChild("ai-image-output");
+        } finally { abandoned.close(); }
+        jobs.removeEmptyChild(stagingName);
+      } catch { /* retain unexpected evidence for inspection */ }
+    }
+    throw error;
+  } finally {
+    jobs.close();
+    generation.close();
+    project.close();
+  }
+}
+
+export async function prepareImageGenerationJob(
+  root: string,
+  rawRequest: PrepareImageGenerationJobRequest,
+): Promise<ImageGenerationJob> {
+  let request: z.output<typeof PrepareImageGenerationJobRequestSchema>;
+  try {
+    request = PrepareImageGenerationJobRequestSchema.parse(rawRequest);
+  } catch (error: unknown) {
+    throw new Error("invalid image generation job request", { cause: error });
+  }
+  return withProjectLease(root, "generation", async (canonicalRoot) => {
+    const ai = await assertAiImageSkillDependencyCurrent(request.aiDependency);
+    const authorization = await authorizationForPreparation(canonicalRoot, request.kind);
+    const [manifest, lock] = await Promise.all([
+      readProject(canonicalRoot),
+      request.kind === "style-sample" ? readStyleLock(canonicalRoot) : readApprovedStyleLock(canonicalRoot),
+    ]);
+    if (request.kind === "style-sample" && lock.approvalState !== "provisional") {
+      throw new Error("style-sample image generation job requires a provisional style lock");
+    }
+    assertCommonAuthorization({ plan: authorization.plan, manifest, ai, lock });
+    const preparedPages = await preparePages(canonicalRoot, request, authorization.plan, lock, authorization.digest);
+    if (authorization.plan.callBudget < preparedPages.length) {
+      throw new Error("job call budget cannot be smaller than the initial page count");
+    }
+    const jobId = randomUUID();
+    const job = ImageGenerationJobSchema.parse({
+      contractVersion: 1,
+      jobId,
+      kind: request.kind,
+      projectId: manifest.projectId,
+      projectRevisionId: manifest.currentRevision.id,
+      authorizationDigest: authorization.digest,
+      routePolicy: "ai-image-to-ppt-default",
+      aiSkill: dependencyBinding(ai),
+      styleLockPath: "style/lock.json",
+      styleLockSha256: lock.styleLockSha256,
+      styleLock: embeddedLock(lock),
+      callBudget: authorization.plan.callBudget,
+      outboundDisclosure: { sendsText: true, references: lock.referenceArtifacts },
+      pages: preparedPages.map((page) => ({
+        ...page,
+        promptArtifact: `slides/${page.slideId}/prompts/${jobId}.txt`,
+        promptSha256: sha256(page.finalPrompt),
+        target: `generation/jobs/${jobId}/ai-image-output/${page.slideId}.png`,
+      })),
+      createdAt: new Date().toISOString(),
+    });
+    writePromptArtifacts(canonicalRoot, job);
+    publishJob(canonicalRoot, job);
+    await assertAuthorizedJobBinding(canonicalRoot, job);
+    return job;
+  });
+}
+
+export async function readImageGenerationJob(root: string, jobId: string): Promise<ImageGenerationJob> {
+  if (!z.string().uuid().safeParse(jobId).success) throw new Error("image generation job ID must be a UUID");
+  const bytes = await readOwnedRegularFile(root, `generation/jobs/${jobId}/job.json`).catch((error: unknown) => {
+    throw new Error("immutable image generation job is unavailable", { cause: error });
+  });
+  try {
+    const job = ImageGenerationJobSchema.parse(JSON.parse(bytes.toString("utf8")));
+    if (job.jobId !== jobId || bytes.toString("utf8") !== canonicalContractFile(job)) throw new Error("canonical job identity mismatch");
+    return job;
+  } catch (error: unknown) {
+    throw new Error("immutable image generation job is invalid", { cause: error });
+  }
+}
+
+export async function assertJobAuthorized(root: string, job: ImageGenerationJob): Promise<void> {
+  await withProjectLease(root, "generation", async (canonicalRoot) => {
+    await assertAuthorizedJobBinding(canonicalRoot, ImageGenerationJobSchema.parse(job));
+  });
+}
