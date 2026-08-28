@@ -6,7 +6,7 @@ import JSZip from "jszip";
 import sharp from "sharp";
 
 import type { LegacyResolvedDependencies } from "../dependencies/schemas.js";
-import { assembleProjectCandidate, replaceSlide, type FinalRender } from "../deck/assemble.js";
+import { applyEditableReplacement, assembleProjectCandidate, type FinalRender } from "../deck/assemble.js";
 import { prepareEditableSlide } from "../deck/editable-slide.js";
 import { buildMontage } from "../deck/montage.js";
 import { exportPdf } from "../deck/pdf.js";
@@ -308,10 +308,11 @@ export async function runOfflineAcceptance(options: OfflineAcceptanceOptions): P
 
   const ai = await stagedAiDependency(parent, provider, reviewer);
   const converterRoot = await stagedConverter(parent);
-  const aiDependency = (await resolveSkillDependencies({
+  const dependencies = await resolveSkillDependencies({
     aiSkillRoot: ai.root,
     editableSkillRoot: converterRoot,
-  })).ai;
+  });
+  const aiDependency = dependencies.ai;
   await writeFile(join(root, "style", "selection.json"), `${JSON.stringify({
     schemaVersion: 1,
     styleId: "cinematic-tech",
@@ -405,10 +406,26 @@ export async function runOfflineAcceptance(options: OfflineAcceptanceOptions): P
     throw new Error("offline acceptance deck review did not promote the confirmed candidate");
   }
   const before = await snapshot(root);
+  const editableCandidate = await assembleProjectCandidate(root, { buildOutputs: offlineBuildOutputs });
+  const editableReview = await publishDeckReview(root, editableCandidate.candidateId);
+  await applyDeckReviewAction(root, {
+    action: "edit-page",
+    slideId: EDITABLE_SLIDE_ID,
+    candidateId: editableCandidate.candidateId,
+    descriptorSha256: editableReview.descriptorSha256,
+  });
   const conversion = await convertProjectPage({
     root,
     slideId: EDITABLE_SLIDE_ID,
     converterRoot,
+    dependencies,
+    prepareExecute: async (_command, args) => {
+      const source = args[1];
+      const target = args[2];
+      if (!source || !target) throw new Error("offline preparation invocation is missing canonical paths");
+      await sharp(await readFile(source)).resize(1280, 720).png().toFile(target);
+      return { stdout: `  OK: ${target} (1280x720 PNG, editable-converter input)\n`, stderr: "" };
+    },
     execute: async (_command, args) => {
       const source = args[args.indexOf("--image") + 1];
       const outDir = args[args.indexOf("--out") + 1];
@@ -440,14 +457,22 @@ export async function runOfflineAcceptance(options: OfflineAcceptanceOptions): P
     expectedModifiedRevisionRecordSha256: recordSha256,
     preview: join(root, ...preview.preview.path.split("/")),
   });
-  await replaceSlide({
+  await applyEditableReplacement({
     root,
     slideId: EDITABLE_SLIDE_ID,
     modifiedRevisionId: edit.revisionId,
     expectedModifiedRevisionRecordSha256: recordSha256,
-    warnings: ["offline acceptance only; live provider and client acceptance remain pending"],
-    operations: { buildOutputs: offlineBuildOutputs },
   });
+  const replacementCandidate = await assembleProjectCandidate(root, { buildOutputs: offlineBuildOutputs });
+  const replacementReview = await publishDeckReview(root, replacementCandidate.candidateId);
+  const replacementAction = await applyDeckReviewAction(root, {
+    action: "confirm-delivery",
+    candidateId: replacementCandidate.candidateId,
+    descriptorSha256: replacementReview.descriptorSha256,
+  });
+  if (replacementAction.action !== "confirm-delivery" || !replacementAction.delivery) {
+    throw new Error("offline editable replacement was not confirmed for delivery");
+  }
   const after = await snapshot(root);
   const calls = await providerCalls(root, generation, counter);
   const logs = [
@@ -465,8 +490,8 @@ export async function runOfflineAcceptance(options: OfflineAcceptanceOptions): P
     providerCalls: calls,
     logs,
     deckReview: {
-      action: deckReviewAction.action,
-      promotedRevision: deckReviewAction.delivery.revisionNumber,
+      action: replacementAction.action,
+      promotedRevision: replacementAction.delivery.revisionNumber,
     },
   };
 }

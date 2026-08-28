@@ -35,9 +35,18 @@ test("publishes the approved Git-backed marketplace metadata", async () => {
 test("publishes one strict three-action deck-review boundary", () => {
   assert.equal(typeof applyDeckReviewAction, "function");
   const base = { candidateId: "00000000-0000-4000-8000-000000000099", descriptorSha256: "a".repeat(64) };
-  for (const action of ["edit-page", "return-upstream", "confirm-delivery"] as const) {
+  const slideId = "00000000-0000-4000-8000-000000000098";
+  assert.deepEqual(DeckReviewActionRequestSchema.parse({ ...base, action: "edit-page", slideId }), {
+    ...base,
+    action: "edit-page",
+    slideId,
+  });
+  for (const action of ["return-upstream", "confirm-delivery"] as const) {
     assert.equal(DeckReviewActionRequestSchema.parse({ ...base, action }).action, action);
+    assert.throws(() => DeckReviewActionRequestSchema.parse({ ...base, action, slideId }), /unrecognized/i);
   }
+  assert.throws(() => DeckReviewActionRequestSchema.parse({ ...base, action: "edit-page" }), /invalid/i);
+  assert.throws(() => DeckReviewActionRequestSchema.parse({ ...base, action: "edit-page", slideId, slideIds: [slideId] }), /unrecognized/i);
   assert.throws(() => DeckReviewActionRequestSchema.parse({ ...base, action: "approve" }), /invalid/i);
   assert.throws(() => DeckReviewActionRequestSchema.parse({ ...base, action: "confirm-delivery", gate: "deck-review" }), /unrecognized/i);
 });

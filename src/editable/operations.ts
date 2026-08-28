@@ -25,6 +25,7 @@ import {
   type ModifiedRevisionRecord,
   type PromoteEditableIntent,
 } from "./schemas.js";
+import { CONVERTER_OUTPUT_DIRECTORY } from "./adapter.js";
 
 export class UnsupportedEditableTargetError extends Error {
   constructor(message: string) {
@@ -379,7 +380,7 @@ async function validateModifiedRevisionAt(
   ) throw new Error("modified revision source identity mismatch");
   const authenticatedSource = await validateEditableConversionOutput({
     sourcePng: join(sourceRoot, "source-1280x720.png"),
-    outDir: sourceRoot,
+    outDir: join(sourceRoot, CONVERTER_OUTPUT_DIRECTORY),
   });
   if (JSON.stringify(authenticatedSource.artifactHashes) !== JSON.stringify(sourceRecord.value.artifacts)) {
     throw new Error("modified revision source artifacts are no longer authentic");
@@ -543,7 +544,7 @@ async function createProjectModifiedRevision(
     ) throw new Error("editable conversion record identity mismatch");
     const source = await validateEditableConversionOutput({
       sourcePng: join(sourceRoot, "source-1280x720.png"),
-      outDir: sourceRoot,
+      outDir: join(sourceRoot, CONVERTER_OUTPUT_DIRECTORY),
     });
     if (JSON.stringify(conversionRecord.value.artifacts) !== JSON.stringify(source.artifactHashes)) {
       throw new Error("editable conversion record no longer authenticates converter output");
@@ -628,15 +629,16 @@ async function createProjectModifiedRevision(
     await ownedStaging(staging);
     await mkdir(join(staging, "assets"), { mode: 0o700 });
     await assertEditableLayoutIdentity(layout);
+    const sourceArtifactRoot = currentEditable ? sourceRoot : join(sourceRoot, CONVERTER_OUTPUT_DIRECTORY);
     await copyExpectedFile(
-      join(sourceRoot, "clean-background.png"),
+      join(sourceArtifactRoot, "clean-background.png"),
       join(staging, "clean-background.png"),
       sourceBackgroundSha256,
     );
     for (const [assetPath, expected] of Object.entries(sourceAssetHashes)) {
       await assertEditableLayoutIdentity(layout);
       await copyExpectedFile(
-        join(sourceRoot, ...assetPath.split("/")),
+        join(sourceArtifactRoot, ...assetPath.split("/")),
         join(staging, ...assetPath.split("/")),
         expected,
       );

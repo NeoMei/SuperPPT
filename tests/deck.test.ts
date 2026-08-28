@@ -30,6 +30,7 @@ import { publishPlanViews } from "../src/planning/views.js";
 import { initializeProject } from "../src/project/initialize.js";
 import {
   applyDeckReviewAction,
+  authenticateCurrentDeckEditSelection,
   promoteApprovedCandidate,
   publishDeckReview,
 } from "../src/project/promotion.js";
@@ -508,11 +509,10 @@ test("deck review return and edit actions are real non-promotion transitions", a
     const candidate = await assembleProjectCandidate(fixture.root, { buildOutputs: fakeOutputs });
     const before = await readProject(fixture.root);
     const review = await publishDeckReview(fixture.root, candidate.candidateId);
-    const outcome = await applyDeckReviewAction(fixture.root, {
-      action,
-      candidateId: candidate.candidateId,
-      descriptorSha256: review.descriptorSha256,
-    });
+    const request = action === "edit-page"
+      ? { action, slideId: PROJECT_SLIDES[0], candidateId: candidate.candidateId, descriptorSha256: review.descriptorSha256 }
+      : { action, candidateId: candidate.candidateId, descriptorSha256: review.descriptorSha256 };
+    const outcome = await applyDeckReviewAction(fixture.root, request);
     const after = await readProject(fixture.root);
     assert.equal(outcome.action, action);
     assert.equal(outcome.delivery, null);
@@ -552,15 +552,36 @@ test("promotion fails closed for candidate tampering and stale project revisions
     action: "edit-page",
     candidateId: staleCandidate.candidateId,
     descriptorSha256: staleReview.descriptorSha256,
+    slideId: PROJECT_SLIDES[0],
   });
+  assert.equal((await authenticateCurrentDeckEditSelection(stale.root, PROJECT_SLIDES[0])).slideId, PROJECT_SLIDES[0]);
   const impact = await publishImpactPlan(stale.root, { kind: "brief", title: "Changed after review" });
   await approveImpact(stale.root, impact.sha256);
   await applyRevision(stale.root, impact, impact.change);
+  await assert.rejects(authenticateCurrentDeckEditSelection(stale.root, PROJECT_SLIDES[0]), /current reviewed deck|edit-page selection|stale/i);
   await assert.rejects(
     promoteApprovedCandidate(stale.root, staleCandidate.candidateId),
     /stale|revision|deck-review|candidate/i,
   );
   assert.equal((await readProject(stale.root)).exports.pptx, null);
+
+  const replacedCandidate = await readyProject(t);
+  await authorizeDeckGeneration(replacedCandidate.root);
+  const firstCandidate = await assembleProjectCandidate(replacedCandidate.root, { buildOutputs: fakeOutputs });
+  const firstReview = await publishDeckReview(replacedCandidate.root, firstCandidate.candidateId);
+  await applyDeckReviewAction(replacedCandidate.root, {
+    action: "edit-page",
+    slideId: PROJECT_SLIDES[0],
+    candidateId: firstCandidate.candidateId,
+    descriptorSha256: firstReview.descriptorSha256,
+  });
+  await authenticateCurrentDeckEditSelection(replacedCandidate.root, PROJECT_SLIDES[0]);
+  const newerCandidate = await assembleProjectCandidate(replacedCandidate.root, { buildOutputs: fakeOutputs });
+  await publishDeckReview(replacedCandidate.root, newerCandidate.candidateId);
+  await assert.rejects(
+    authenticateCurrentDeckEditSelection(replacedCandidate.root, PROJECT_SLIDES[0]),
+    /current reviewed deck|edit-page selection|stale/i,
+  );
 });
 
 test("promotion rejects the wrong candidate approval and serializes concurrent replay", async (t) => {

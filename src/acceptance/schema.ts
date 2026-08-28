@@ -19,17 +19,24 @@ export const DeckReviewActionSchema = z.enum([
   "confirm-delivery",
 ]);
 
-export const DeckReviewActionRequestSchema = z.object({
-  action: DeckReviewActionSchema,
+const DeckReviewActionRequestBaseSchema = z.object({
   candidateId: z.string().uuid(),
   descriptorSha256: Sha256Schema,
-}).strict();
+});
 
-export const DeckReviewActionEvidenceSchema = z.object({
+export const DeckReviewActionRequestSchema = z.discriminatedUnion("action", [
+  DeckReviewActionRequestBaseSchema.extend({
+    action: z.literal("edit-page"),
+    slideId: z.string().uuid(),
+  }).strict(),
+  DeckReviewActionRequestBaseSchema.extend({ action: z.literal("return-upstream") }).strict(),
+  DeckReviewActionRequestBaseSchema.extend({ action: z.literal("confirm-delivery") }).strict(),
+]);
+
+const DeckReviewActionEvidenceBaseSchema = z.object({
   schemaVersion: z.literal(1),
   kind: z.literal("deck-review-action"),
   actionId: z.string().uuid(),
-  action: DeckReviewActionSchema,
   candidateId: z.string().uuid(),
   projectId: z.string().uuid(),
   projectRevisionId: z.string().uuid(),
@@ -37,7 +44,16 @@ export const DeckReviewActionEvidenceSchema = z.object({
   presentedMontageSha256: Sha256Schema,
   actedAt: z.string().datetime(),
   actionEvidenceSha256: Sha256Schema,
-}).strict();
+});
+
+export const DeckReviewActionEvidenceSchema = z.discriminatedUnion("action", [
+  DeckReviewActionEvidenceBaseSchema.extend({
+    action: z.literal("edit-page"),
+    slideId: z.string().uuid(),
+  }).strict(),
+  DeckReviewActionEvidenceBaseSchema.extend({ action: z.literal("return-upstream") }).strict(),
+  DeckReviewActionEvidenceBaseSchema.extend({ action: z.literal("confirm-delivery") }).strict(),
+]);
 
 export const DeckReviewDescriptorSchema = z.object({
   schemaVersion: z.literal(1),

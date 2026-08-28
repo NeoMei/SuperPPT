@@ -17,16 +17,25 @@ import {
   writeFile,
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join, relative, resolve } from "node:path";
+import { dirname, join, relative, resolve } from "node:path";
 import sharp from "sharp";
+import JSZip from "jszip";
 import test, { type TestContext } from "node:test";
 import { promisify } from "node:util";
 
 import {
-  convertProjectPage,
+  convertProjectPage as strictConvertProjectPage,
   prepareConversionInput,
   runEditableConversion,
 } from "../src/editable/adapter.js";
+import { assembleProjectCandidate, type FinalRender } from "../src/deck/assemble.js";
+import { buildMontage } from "../src/deck/montage.js";
+import { exportPdf } from "../src/deck/pdf.js";
+import { configureGenerationAuthorizationTrustForTests } from "../src/generation/trusted-authorization.js";
+import { approveGate } from "../src/planning/confirm.js";
+import { publishPlanViews } from "../src/planning/views.js";
+import { applyDeckReviewAction, publishDeckReview } from "../src/project/promotion.js";
+import { finalizeDelegatedStyleSampleForTest } from "./helpers/delegated-style-sample.js";
 import { resolveSkillDependencies } from "../src/dependencies/resolve.js";
 import type { ResolvedDependencies } from "../src/dependencies/schemas.js";
 import {
@@ -104,6 +113,32 @@ async function resolvedDependencies(
     "import_host_image.py",
     "prepare_editable_input.py",
   ]) {
+    await writeFile(join(aiRoot, "scripts", script), `# fixture ${script}\n`);
+  }
+  return resolveSkillDependencies({ aiSkillRoot: aiRoot, editableSkillRoot: editableRoot });
+}
+
+type FixtureConversionOptions = Omit<Parameters<typeof strictConvertProjectPage>[0], "dependencies"> & {
+  dependencies?: ResolvedDependencies;
+};
+
+async function convertProjectPage(options: FixtureConversionOptions) {
+  const dependencies = options.dependencies ?? await resolvedDependenciesForPlugin(options.converterRoot);
+  return strictConvertProjectPage({
+    ...options,
+    dependencies,
+    prepareExecute: options.prepareExecute ?? (async (_command, args) => {
+      await sharp(await readFile(args[1]!)).resize(1280, 720).png().toFile(args[2]!);
+      return { stdout: `  OK: ${args[2]} (1280x720 PNG, editable-converter input)\n`, stderr: "" };
+    }),
+  });
+}
+
+async function resolvedDependenciesForPlugin(editableRoot: string): Promise<ResolvedDependencies> {
+  const aiRoot = join(dirname(editableRoot), "ai-image-to-ppt-fixture");
+  await mkdir(join(aiRoot, "scripts"), { recursive: true });
+  await writeFile(join(aiRoot, "SKILL.md"), "---\nname: ai-image-to-ppt\n---\n");
+  for (const script of ["generation_result.py", "host_routing_policy.py", "import_host_image.py", "prepare_editable_input.py"]) {
     await writeFile(join(aiRoot, "scripts", script), `# fixture ${script}\n`);
   }
   return resolveSkillDependencies({ aiSkillRoot: aiRoot, editableSkillRoot: editableRoot });
@@ -572,7 +607,7 @@ test("replacement preparation rejects sealed revisions and symlink-ancestor stag
   );
 });
 
-async function readyProject(t: TestContext): Promise<{ root: string; slideId: string }> {
+async function unreviewedProject(t: TestContext): Promise<{ root: string; slideId: string }> {
   const parent = await realpath(await temporary(t, "superppt-editable-project-"));
   const root = join(parent, "project");
   const slideId = "00000000-0000-4000-8000-000000000102";
@@ -608,11 +643,66 @@ async function readyProject(t: TestContext): Promise<{ root: string; slideId: st
   return { root, slideId };
 }
 
+async function fixtureCandidateOutputs(
+  renders: FinalRender[],
+  paths: { pptx: string; pdf: string; montage: string },
+): Promise<void> {
+  const zip = new JSZip();
+  zip.file("[Content_Types].xml", "<Types/>");
+  for (const [index, render] of renders.entries()) {
+    zip.file(`ppt/slides/slide${index + 1}.xml`, `<p:sld><p:pic><p:cNvPr name="page-${render.id}"/><a:blip r:embed="rIdImage"/></p:pic></p:sld>`);
+    zip.file(`ppt/slides/_rels/slide${index + 1}.xml.rels`, `<Relationships><Relationship Id="rIdImage" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image" Target="../media/image${index + 1}.png"/></Relationships>`);
+    zip.file(`ppt/media/image${index + 1}.png`, render.bytes);
+  }
+  await writeFile(paths.pptx, await zip.generateAsync({ type: "nodebuffer" }), { flag: "wx" });
+  await exportPdf(renders, paths.pdf);
+  await buildMontage(renders, paths.montage);
+}
+
+async function readyProject(t: TestContext): Promise<{ root: string; slideId: string }> {
+  const parent = await realpath(await temporary(t, "superppt-editable-reviewed-"));
+  const root = join(parent, "project");
+  const slideId = "00000000-0000-4000-8000-000000000102";
+  const ids = [slideId, "00000000-0000-4000-8000-000000000103", "00000000-0000-4000-8000-000000000104"] as const;
+  await initializeProject({ root, title: "Editable reviewed fixture", idFactory: () => "00000000-0000-4000-8000-000000000101" });
+  await writeFile(join(root, "brief.json"), `${JSON.stringify({ schemaVersion: 1, title: "Editable reviewed fixture", purpose: "Test", audience: "Testers", language: "zh-CN", targetSlides: 3, mustCover: ["Editable page", "Support page", "Summary page"], constraints: ["16:9"] })}\n`);
+  const outlineSlides = ids.map((id, order) => ({ id, order, title: order === 0 ? "Editable page" : order === 1 ? "Support page" : "Summary page", role: order === 0 ? "cover" : order === 2 ? "summary" : "content", purpose: "Test", sourceRefs: [`L${order + 1}`] }));
+  await writeFile(join(root, "outline.json"), `${JSON.stringify({ schemaVersion: 1, slides: outlineSlides })}\n`);
+  for (const slide of outlineSlides) {
+    await mkdir(join(root, "slides", slide.id));
+    await writeFile(join(root, "slides", slide.id, "spec.json"), `${JSON.stringify({ schemaVersion: 1, slideId: slide.id, title: slide.title, role: slide.role, coreMessage: "Test", requiredText: [slide.title], visualSubject: "subject", composition: "full", relationships: [], forbidden: ["watermark"], sourceRefs: slide.sourceRefs })}\n`);
+  }
+  await writeFile(join(root, "style", "selection.json"), `${JSON.stringify({ schemaVersion: 1, styleId: "cinematic-tech", representativeSlideId: slideId })}\n`);
+  await publishPlanViews(root);
+  await approveGate(root, "outline");
+  await approveGate(root, "slide-specs");
+  await configureGenerationAuthorizationTrustForTests(root, { root: join(parent, "authorization-trust"), deterministicKeySeed: `superppt-editable:${root}` });
+  await finalizeDelegatedStyleSampleForTest(root);
+  const manifest = await readProject(root);
+  const generated = await Promise.all(outlineSlides.map(async (slide) => {
+    const attempt = join(root, "images", slide.id, "attempt-1");
+    await mkdir(attempt, { recursive: true });
+    const render = await sharp({ create: { width: 1920, height: 1080, channels: 3, background: slide.order === 0 ? "#23384d" : "#3d4d23" } }).png().toBuffer();
+    await writeFile(join(attempt, "slide.png"), render);
+    const digest = projectSha256(render);
+    await writeFile(join(attempt, "ledger.json"), `${JSON.stringify({ ledgerVersion: 1, slideId: slide.id, revisionId: manifest.currentRevision.id, attempt: 1, providerId: "fixture", promptSha256: "a".repeat(64), promptPurged: true, output: `images/${slide.id}/attempt-1/slide.png`, outputSha256: digest, outputBytes: render.length, durationMs: 1, quality: { ok: true, issueCount: 0, issueHashes: [], issueCodes: [], requiredText: [{ textSha256: projectSha256(Buffer.from(slide.title)), present: true, exact: true }], styleConsistent: true, hierarchyClear: true, richDetail: true, noForbiddenContent: true }, outcome: "accepted", errorCode: null }, null, 2)}\n`);
+    return { render, digest };
+  }));
+  await updateProject(root, (current) => ({ ...current, stage: "generating", slides: outlineSlides.map((slide, order) => ({ id: slide.id, order, title: slide.title, role: slide.role as "cover" | "content" | "summary", specRevisionId: current.currentRevision.id, promptRevisionId: current.currentRevision.id, styleRevisionId: current.currentRevision.id, status: "ready" as const, image: { path: `images/${slide.id}/attempt-1/slide.png`, sha256: generated[order]!.digest, revisionId: current.currentRevision.id }, editable: null, finalRender: null, staleReasons: [] })) }));
+  await mkdir(join(root, "generation"), { recursive: true });
+  await writeFile(join(root, "generation", "authorization-plan.json"), `${JSON.stringify({ styleLockSha256: "a".repeat(64), pageIds: ids, callBudget: 3, outboundDisclosure: { sendsText: true, references: [] }, dependency: { kind: "ai-image-to-ppt", sha256: "b".repeat(64) }, revisionId: (await readProject(root)).currentRevision.id }, null, 2)}\n`);
+  await approveGate(root, "generation-authorization");
+  const candidate = await assembleProjectCandidate(root, { buildOutputs: fixtureCandidateOutputs });
+  const review = await publishDeckReview(root, candidate.candidateId);
+  await applyDeckReviewAction(root, { action: "edit-page", slideId, candidateId: candidate.candidateId, descriptorSha256: review.descriptorSha256 });
+  return { root, slideId };
+}
+
 test("selected page conversion rejects a ready page that was not selected from the current reviewed deck", async (t) => {
-  const project = await readyProject(t);
+  const project = await unreviewedProject(t);
   const plugin = await converterRoot(t);
   const dependencies = await resolvedDependencies(t, plugin);
-  await assert.rejects(convertProjectPage({
+  await assert.rejects(strictConvertProjectPage({
     ...project,
     converterRoot: plugin,
     dependencies,
@@ -622,7 +712,22 @@ test("selected page conversion rejects a ready page that was not selected from t
     execute: async () => {
       throw new Error("unreviewed conversion must not execute");
     },
-  } as Parameters<typeof convertProjectPage>[0]), /current reviewed deck|edit-page selection/);
+  }), /current reviewed deck|edit-page selection/);
+});
+
+test("project conversion has no dependency-optional production bypass", async (t) => {
+  const project = await unreviewedProject(t);
+  const plugin = await converterRoot(t);
+  let converterCalls = 0;
+  await assert.rejects(strictConvertProjectPage({
+    ...project,
+    converterRoot: plugin,
+    execute: async () => {
+      converterCalls += 1;
+      throw new Error("dependency-free converter must not execute");
+    },
+  } as unknown as Parameters<typeof strictConvertProjectPage>[0]), /resolved dependencies/i);
+  assert.equal(converterCalls, 0);
 });
 
 async function readyCurrentEditableProject(t: TestContext): Promise<{
@@ -653,9 +758,9 @@ async function readyCurrentEditableProject(t: TestContext): Promise<{
     expectedKind: "text",
   });
   const current = await readProject(project.root);
-  const slide = current.slides[0]!;
+  const conversionRecord = JSON.parse(await readFile(source.conversionRecord, "utf8")) as { finalRender: { path: string; sha256: string } };
   const previewPath = `previews/editable/${project.slideId}/${promoted.revisionId}.png`;
-  const previewBytes = await readFile(join(project.root, ...slide.finalRender!.path.split("/")));
+  const previewBytes = await readFile(join(project.root, ...conversionRecord.finalRender.path.split("/")));
   await mkdir(join(project.root, "previews", "editable", project.slideId), { recursive: true });
   await writeFile(join(project.root, ...previewPath.split("/")), previewBytes);
   const recordPath = `editable/${project.slideId}/${promoted.revisionId}/modified-revision-record.json`;
@@ -665,7 +770,7 @@ async function readyCurrentEditableProject(t: TestContext): Promise<{
   const record = JSON.parse(recordBytes.toString("utf8")) as { sourceRevisionId: string };
   await publishRevisionSnapshot(project.root, current);
   await updateProject(project.root, (manifest) => {
-    const sourceFinalRender = manifest.slides[0]!.finalRender!;
+    const sourceFinalRender = { ...conversionRecord.finalRender, revisionId: manifest.currentRevision.id };
     const preview = {
       path: previewPath,
       sha256: sha256(previewBytes),
@@ -736,7 +841,7 @@ test("creates fresh durable conversion revisions without changing the previous c
   assert.equal((await lstat(join(first.revisionRoot, ".superppt-editable-revision.json"))).isSymbolicLink(), false);
   const record = JSON.parse(await readFile(first.conversionRecord, "utf8"));
   assert.equal(record.projectRevisionId, (await readFile(join(project.root, "superppt.json"), "utf8").then(JSON.parse)).currentRevision.id);
-  assert.equal(record.finalRender.path, `images/${project.slideId}.png`);
+  assert.equal(record.finalRender.path, `images/${project.slideId}/attempt-1/slide.png`);
 });
 
 test("rechecks the project render after conversion before publishing SuperPPT ownership", async (t) => {
@@ -751,7 +856,7 @@ test("rechecks the project render after conversion before publishing SuperPPT ow
       const outDir = args[args.indexOf("--out") + 1]!;
       await mkdir(outDir);
       await writeFakeConverterOutput(outDir, sourcePng);
-      await writeFile(join(project.root, "images", `${project.slideId}.png`), await png(1920, 1080));
+      await writeFile(join(project.root, "images", project.slideId, "attempt-1", "slide.png"), await png(1920, 1080));
       return { stdout: "", stderr: "" };
     },
     idFactory: () => revisionId,
@@ -1231,7 +1336,7 @@ test("rejects source asset replacement between validation and copy and removes s
     sourceRevisionId: source.revisionId,
     rawPlan: { route: "editable", operations: [{ kind: "replace-text", elementId: "ocr-title", text: "changed" }] },
     operations: {
-      afterSourceValidation: async () => writeFile(join(source.revisionRoot, "assets", "icon.png"), "tampered"),
+      afterSourceValidation: async () => writeFile(join(source.outputRoot, "assets", "icon.png"), "tampered"),
     },
   }), /source editable artifact hash changed before copy/);
   assert.deepEqual((await readdir(slideRoot)).sort(), before);
@@ -1452,12 +1557,12 @@ test("rejects apply-edit after the bound source render becomes stale", async (t)
       return { stdout: "", stderr: "" };
     },
   });
-  await writeFile(join(project.root, "images", `${project.slideId}.png`), await png(1920, 1080));
+  await writeFile(join(project.root, "images", project.slideId, "attempt-1", "slide.png"), await png(1920, 1080));
   await assert.rejects(applyProjectEditPlan({
     ...project,
     sourceRevisionId: source.revisionId,
     rawPlan: { route: "editable", operations: [{ kind: "replace-text", elementId: "ocr-title", text: "stale" }] },
-  }), /source project revision or final render is stale/);
+  }), /source project revision or final render is stale|render hash does not match/);
 });
 
 test("fails closed on unowned slide paths and refuses regenerate plans in apply-edit", async (t) => {

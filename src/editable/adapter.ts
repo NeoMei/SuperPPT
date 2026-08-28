@@ -1,6 +1,6 @@
 import { execFile } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
-import { lstat, mkdir, readFile, realpath, unlink } from "node:fs/promises";
+import { lstat, mkdir, readFile, realpath, rm, unlink } from "node:fs/promises";
 import { basename, dirname, extname, isAbsolute, join, relative, resolve } from "node:path";
 import { promisify } from "node:util";
 import sharp from "sharp";
@@ -15,6 +15,7 @@ import { readProject, sha256 as projectSha256 } from "../project/store.js";
 import {
   ConversionRecordSchema,
   ConverterOwnershipMarkerSchema,
+  EditableConversionStagingMarkerSchema,
   EditableManifestSchema,
   EditableRevisionMarkerSchema,
   EditableSlideMarkerSchema,
@@ -28,6 +29,7 @@ const OUTPUT_MARKER = ".image-to-editable-pptx-output.json";
 const MAX_JSON = 16 * 1024 * 1024;
 const MAX_ASSET = 64 * 1024 * 1024;
 const MAX_OUTPUT = 512 * 1024 * 1024;
+export const CONVERTER_OUTPUT_DIRECTORY = "converter-output";
 
 export type EditableConverterExecutor = (
   command: string,
@@ -158,6 +160,29 @@ async function exactPng(path: string, width: number, height: number, label: stri
   if (metadata.format !== "png" || metadata.width !== width || metadata.height !== height) {
     throw new Error(`${label} must be an exact ${width}x${height} PNG`);
   }
+  return bytes;
+}
+
+async function exactOwnedPreparedPng(revisionRoot: string, path: string): Promise<Buffer> {
+  const expected = join(revisionRoot, "source-1280x720.png");
+  if (resolve(path) !== resolve(expected)) throw new Error("prepared editable input path is outside its owned revision");
+  if (await realpath(revisionRoot) !== resolve(revisionRoot)) throw new Error("prepared editable input revision path is unsafe");
+  const before = await lstat(path).catch((error: unknown) => {
+    throw new Error("prepared editable input must be a regular non-symlink file", { cause: error });
+  });
+  if (!before.isFile() || before.isSymbolicLink() || await realpath(path) !== resolve(path)) {
+    throw new Error("prepared editable input must be a regular non-symlink file");
+  }
+  const bytes = await exactPng(path, 1280, 720, "prepared editable input");
+  const after = await lstat(path);
+  if (
+    before.dev !== after.dev
+    || before.ino !== after.ino
+    || before.size !== after.size
+    || !after.isFile()
+    || after.isSymbolicLink()
+    || await realpath(path) !== resolve(path)
+  ) throw new Error("prepared editable input changed identity while validating");
   return bytes;
 }
 
@@ -466,7 +491,7 @@ export async function convertProjectPage(options: {
   root: string;
   slideId: string;
   converterRoot: string;
-  dependencies?: ResolvedDependencies;
+  dependencies: ResolvedDependencies;
   prepareExecute?: EditableInputPreparationExecutor;
   execute?: EditableConverterExecutor;
   nodeVersion?: string;
@@ -476,18 +501,15 @@ export async function convertProjectPage(options: {
   const root = await validateProjectRoot(options.root);
   const slide = manifest.slides.find((candidate) => candidate.id === options.slideId);
   if (!slide) throw new Error("editable conversion slide ID is not in the current project");
-  let selection: Awaited<ReturnType<typeof import("../project/promotion.js")["authenticateCurrentDeckEditSelection"]>> | null = null;
-  let sourceMaster = slide.finalRender;
-  if (options.dependencies) {
-    const report = await preflightDependencies(options.dependencies);
-    if (!report.ok) throw new Error("editable conversion dependency preflight failed");
-    await assertAiImageSkillDependencyCurrent(options.dependencies.ai);
-    if (await realpath(options.converterRoot) !== options.dependencies.editable.root) {
-      throw new Error("editable converter root does not match the preflight-resolved dependency");
-    }
-    selection = await (await import("../project/promotion.js")).authenticateCurrentDeckEditSelection(root, options.slideId);
-    sourceMaster = selection.sourceMaster;
+  if (!options.dependencies) throw new Error("editable conversion requires preflight-resolved dependencies");
+  const report = await preflightDependencies(options.dependencies);
+  if (!report.ok) throw new Error("editable conversion dependency preflight failed");
+  await assertAiImageSkillDependencyCurrent(options.dependencies.ai);
+  if (await realpath(options.converterRoot) !== options.dependencies.editable.root) {
+    throw new Error("editable converter root does not match the preflight-resolved dependency");
   }
+  const selection = await (await import("../project/promotion.js")).authenticateCurrentDeckEditSelection(root, options.slideId);
+  const sourceMaster = selection.sourceMaster;
   if (slide.status !== "ready" || !sourceMaster) throw new Error("editable conversion requires a ready current final render");
   if (sourceMaster.revisionId !== manifest.currentRevision.id) throw new Error("editable conversion final render is stale");
   const render = await readOwnedRegularFile(root, sourceMaster.path);
@@ -505,20 +527,27 @@ export async function convertProjectPage(options: {
   } catch (error: unknown) {
     if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
   }
-  const pendingSource = join(slideRoot, `.source-${revisionId}.png`);
-  let normalized: Buffer;
-  let preparation = {
-    scriptPath: "superppt://legacy/prepareConversionInput",
-    scriptSha256: sha256(Buffer.from("superppt legacy prepareConversionInput")),
-  };
-  if (options.dependencies) {
+  const stagingMarker = EditableConversionStagingMarkerSchema.parse({
+    stagingMarkerVersion: 1,
+    appId: "superppt",
+    artifactKind: "editable-conversion-staging",
+    projectId: manifest.projectId,
+    slideId: slide.id,
+    revisionId,
+  });
+  await mkdir(revisionRoot, { mode: 0o700 });
+  const stagingMarkerPath = join(revisionRoot, ".superppt-editable-conversion-staging.json");
+  await writeDurableExclusive(stagingMarkerPath, `${JSON.stringify(stagingMarker, null, 2)}\n`);
+  const sourcePng = join(revisionRoot, "source-1280x720.png");
+  const converterOutputRoot = join(revisionRoot, CONVERTER_OUTPUT_DIRECTORY);
+  try {
     const scriptPath = options.dependencies.ai.scripts.prepareEditableInput;
     const scriptSha256 = options.dependencies.ai.scriptSha256.prepareEditableInput;
     await assertAiImageSkillDependencyCurrent(options.dependencies.ai);
     const executePrepare = options.prepareExecute ?? (execFileAsync as unknown as EditableInputPreparationExecutor);
-    let result: Awaited<ReturnType<EditableInputPreparationExecutor>>;
+    let prepared: Awaited<ReturnType<EditableInputPreparationExecutor>>;
     try {
-      result = await executePrepare("python3", [scriptPath, join(root, ...sourceMaster.path.split("/")), pendingSource], {
+      prepared = await executePrepare("python3", [scriptPath, join(root, ...sourceMaster.path.split("/")), sourcePng], {
         cwd: options.dependencies.ai.root,
         env: { ...process.env },
         windowsHide: true,
@@ -527,104 +556,109 @@ export async function convertProjectPage(options: {
     } catch (error: unknown) {
       throw new Error("ai-image-to-ppt editable input preparation failed", { cause: error });
     }
-    const expectedStdout = `  OK: ${pendingSource} (1280x720 PNG, editable-converter input)\n`;
-    if ((result?.stdout ?? "") !== expectedStdout || (result?.stderr ?? "") !== "") {
+    const expectedStdout = `  OK: ${sourcePng} (1280x720 PNG, editable-converter input)\n`;
+    if ((prepared?.stdout ?? "") !== expectedStdout || (prepared?.stderr ?? "") !== "") {
       throw new Error("ai-image-to-ppt editable input preparation returned malformed or extra output");
     }
-    normalized = await exactPng(pendingSource, 1280, 720, "prepared editable input");
-    preparation = { scriptPath, scriptSha256 };
-  } else {
-    normalized = await sharp(render).resize(1280, 720, { fit: "cover", position: "centre" }).png().toBuffer();
-    await writeDurableExclusive(pendingSource, normalized);
-  }
-  await syncDirectory(slideRoot);
-  if (options.dependencies) {
-    const report = await preflightDependencies(options.dependencies);
-    if (!report.ok) throw new Error("editable conversion dependency changed after input preparation");
-  }
-  let converted: EditableConversionResult;
-  try {
-    converted = await runEditableConversion({
+    const normalized = await exactOwnedPreparedPng(revisionRoot, sourcePng);
+    const preparedIdentity = await lstat(sourcePng);
+    await syncDirectory(revisionRoot);
+    const currentDependencies = await preflightDependencies(options.dependencies);
+    if (!currentDependencies.ok) throw new Error("editable conversion dependency changed after input preparation");
+    const converted = await runEditableConversion({
       converterRoot: options.converterRoot,
-      sourcePng: pendingSource,
-      outDir: revisionRoot,
+      sourcePng,
+      outDir: converterOutputRoot,
       execute: options.execute,
       nodeVersion: options.nodeVersion,
     });
-  } catch (error: unknown) {
-    throw error;
-  }
-  try {
-    const current = await readProject(root);
-    const currentSlide = current.slides.find((candidate) => candidate.id === slide.id);
+    const preparedAfterConversion = await lstat(sourcePng);
     if (
-      current.currentRevision.id !== manifest.currentRevision.id
-      || !currentSlide
-      || currentSlide.status !== "ready"
-      || (selection === null && (
-        !currentSlide.finalRender
-        || currentSlide.finalRender.path !== sourceMaster.path
-        || currentSlide.finalRender.sha256 !== sourceMaster.sha256
-        || currentSlide.finalRender.revisionId !== sourceMaster.revisionId
-      ))
-    ) throw new Error("stale identity");
-    if (selection) {
+      preparedAfterConversion.dev !== preparedIdentity.dev
+      || preparedAfterConversion.ino !== preparedIdentity.ino
+      || preparedAfterConversion.size !== preparedIdentity.size
+      || preparedAfterConversion.isSymbolicLink()
+      || !preparedAfterConversion.isFile()
+      || await realpath(sourcePng) !== resolve(sourcePng)
+      || projectSha256(await readRegularFileNoFollow(sourcePng)) !== projectSha256(normalized)
+    ) throw new Error("prepared editable input changed identity during conversion");
+    try {
+      const current = await readProject(root);
+      const currentSlide = current.slides.find((candidate) => candidate.id === slide.id);
+      if (
+        current.currentRevision.id !== manifest.currentRevision.id
+        || !currentSlide
+        || currentSlide.status !== "ready"
+      ) throw new Error("stale identity");
       const currentSelection = await (await import("../project/promotion.js")).authenticateCurrentDeckEditSelection(root, slide.id);
       if (JSON.stringify(currentSelection) !== JSON.stringify(selection)) throw new Error("stale reviewed selection");
+      const currentRender = await readOwnedRegularFile(root, sourceMaster.path);
+      if (projectSha256(currentRender) !== sourceMaster.sha256) throw new Error("stale bytes");
+    } catch (error: unknown) {
+      throw new Error("project revision or final render changed during editable conversion", { cause: error });
     }
-    const currentRender = await readOwnedRegularFile(root, sourceMaster.path);
-    if (projectSha256(currentRender) !== sourceMaster.sha256) throw new Error("stale bytes");
-  } catch (error: unknown) {
-    throw new Error("project revision or final render changed during editable conversion", { cause: error });
-  }
-  const sourcePng = join(revisionRoot, "source-1280x720.png");
-  await writeDurableExclusive(sourcePng, normalized);
-  await unlink(pendingSource);
-  const version = await converterVersion(converted.converterRoot);
-  const conversionRecord = join(revisionRoot, "conversion-record.json");
-  await writeDurableExclusive(conversionRecord, `${JSON.stringify(ConversionRecordSchema.parse({
-    conversionRecordVersion: 1,
-    projectId: manifest.projectId,
-    slideId: slide.id,
-    revisionId,
-    projectRevisionId: manifest.currentRevision.id,
-    finalRender: {
-      path: sourceMaster.path,
-      sha256: sourceMaster.sha256,
-    },
-    prepareEditableInput: {
-      ...preparation,
-      sourceMaster,
-      output1280x720: {
-        path: `editable/${slide.id}/${revisionId}/source-1280x720.png`,
-        sha256: projectSha256(normalized),
-        revisionId: manifest.currentRevision.id,
+    const version = await converterVersion(converted.converterRoot);
+    const conversionRecord = join(revisionRoot, "conversion-record.json");
+    await writeDurableExclusive(conversionRecord, `${JSON.stringify(ConversionRecordSchema.parse({
+      conversionRecordVersion: 1,
+      projectId: manifest.projectId,
+      slideId: slide.id,
+      revisionId,
+      projectRevisionId: manifest.currentRevision.id,
+      finalRender: {
+        path: sourceMaster.path,
+        sha256: sourceMaster.sha256,
       },
-    },
-    deckReviewSelection: selection ? {
-      candidateId: selection.candidateId,
-      reviewDescriptorSha256: selection.reviewDescriptorSha256,
-      actionEvidenceSha256: selection.actionEvidenceSha256,
-    } : null,
-    converterVersion: version,
-    artifacts: converted.artifactHashes,
-  }), null, 2)}\n`);
-  await writeDurableExclusive(join(revisionRoot, ".superppt-editable-revision.json"), `${JSON.stringify(EditableRevisionMarkerSchema.parse({
-    markerVersion: 1,
-    appId: "superppt",
-    artifactKind: "editable-slide-revision",
-    projectId: manifest.projectId,
-    slideId: slide.id,
-    revisionId,
-    revisionKind: "conversion",
-  }), null, 2)}\n`);
-  await syncDirectory(revisionRoot);
-  await syncDirectory(slideRoot);
-  return {
-    ...converted,
-    revisionId,
-    revisionRoot,
-    sourcePng,
-    conversionRecord,
-  };
+      prepareEditableInput: {
+        scriptPath,
+        scriptSha256,
+        sourceMaster,
+        output1280x720: {
+          path: `editable/${slide.id}/${revisionId}/source-1280x720.png`,
+          sha256: projectSha256(normalized),
+          revisionId: manifest.currentRevision.id,
+        },
+      },
+      deckReviewSelection: {
+        candidateId: selection.candidateId,
+        reviewDescriptorSha256: selection.reviewDescriptorSha256,
+        actionEvidenceSha256: selection.actionEvidenceSha256,
+      },
+      converterVersion: version,
+      artifacts: converted.artifactHashes,
+    }), null, 2)}\n`);
+    await writeDurableExclusive(join(revisionRoot, ".superppt-editable-revision.json"), `${JSON.stringify(EditableRevisionMarkerSchema.parse({
+      markerVersion: 1,
+      appId: "superppt",
+      artifactKind: "editable-slide-revision",
+      projectId: manifest.projectId,
+      slideId: slide.id,
+      revisionId,
+      revisionKind: "conversion",
+    }), null, 2)}\n`);
+    await syncDirectory(converterOutputRoot);
+    await syncDirectory(revisionRoot);
+    await unlink(stagingMarkerPath);
+    await syncDirectory(revisionRoot);
+    await syncDirectory(slideRoot);
+    return { ...converted, revisionId, revisionRoot, sourcePng, conversionRecord };
+  } catch (error: unknown) {
+    try {
+      const marker = EditableConversionStagingMarkerSchema.parse(JSON.parse(await readFile(stagingMarkerPath, "utf8")));
+      const info = await lstat(revisionRoot);
+      if (
+        JSON.stringify(marker) !== JSON.stringify(stagingMarker)
+        || info.isSymbolicLink()
+        || !info.isDirectory()
+        || await realpath(revisionRoot) !== resolve(revisionRoot)
+        || dirname(revisionRoot) !== slideRoot
+        || basename(revisionRoot) !== revisionId
+      ) throw new Error("conversion staging ownership changed");
+      await rm(revisionRoot, { recursive: true, force: false });
+      await syncDirectory(slideRoot);
+    } catch (cleanupError: unknown) {
+      throw new Error("editable conversion failed and owned staging cleanup could not be proven", { cause: cleanupError });
+    }
+    throw error;
+  }
 }

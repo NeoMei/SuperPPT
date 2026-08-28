@@ -36,6 +36,7 @@ export type DeckReviewActionOutcome =
 
 export type CurrentDeckEditSelection = {
   candidateId: string;
+  slideId: string;
   sourceMaster: Artifact;
   reviewDescriptorSha256: string;
   actionEvidenceSha256: string;
@@ -140,6 +141,7 @@ export async function authenticateCurrentDeckEditSelection(
   const action = verifiedDeckReviewAction(actionBytes);
   if (
     action.action !== "edit-page"
+    || action.slideId !== slideId
     || action.candidateId !== review.candidateId
     || action.projectId !== manifest.projectId
     || action.projectRevisionId !== manifest.currentRevision.id
@@ -164,6 +166,7 @@ export async function authenticateCurrentDeckEditSelection(
   if (sha256Evidence(sourceBytes) !== selected.sha256) throw new Error("selected reviewed page master changed");
   return {
     candidateId: review.candidateId,
+    slideId,
     sourceMaster: {
       path: selected.path,
       sha256: selected.sha256,
@@ -267,11 +270,15 @@ async function recordDeckReviewAction(root: string, request: DeckReviewActionReq
     }
     const candidate = await readDeckCandidate(canonicalRoot, request.candidateId, manifest);
     assertReviewCandidateBinding(review, request.candidateId, manifest, candidate);
+    if (request.action === "edit-page" && !candidate.marker.slides.some((slide) => slide.id === request.slideId && slide.mode === "image")) {
+      throw new Error("edit-page action must select exactly one current image page");
+    }
     const actionBase = {
       schemaVersion: 1 as const,
       kind: "deck-review-action" as const,
       actionId: randomUUID(),
       action: request.action,
+      ...(request.action === "edit-page" ? { slideId: request.slideId } : {}),
       candidateId: request.candidateId,
       projectId: manifest.projectId,
       projectRevisionId: manifest.currentRevision.id,
@@ -279,9 +286,14 @@ async function recordDeckReviewAction(root: string, request: DeckReviewActionReq
       presentedMontageSha256: review.artifacts.montage.sha256,
       actedAt: new Date().toISOString(),
     };
-    const action = DeckReviewActionEvidenceSchema.parse({
+    const provisionalAction = DeckReviewActionEvidenceSchema.parse({
       ...actionBase,
-      actionEvidenceSha256: sha256Evidence(JSON.stringify(actionBase)),
+      actionEvidenceSha256: "0".repeat(64),
+    });
+    const { actionEvidenceSha256: _placeholder, ...canonicalActionBase } = provisionalAction;
+    const action = DeckReviewActionEvidenceSchema.parse({
+      ...canonicalActionBase,
+      actionEvidenceSha256: sha256Evidence(JSON.stringify(canonicalActionBase)),
     });
     await writeReplacementBytes(
       join(canonicalRoot, "output/candidates/current/action.json"),

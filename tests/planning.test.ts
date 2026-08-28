@@ -276,9 +276,14 @@ async function approveDownstreamGates(root: string): Promise<{
     presentedMontageSha256: sha256Evidence(montage),
     actedAt: new Date().toISOString(),
   };
-  const action = Buffer.from(`${JSON.stringify(DeckReviewActionEvidenceSchema.parse({
+  const provisionalAction = DeckReviewActionEvidenceSchema.parse({
     ...actionBase,
-    actionEvidenceSha256: sha256Evidence(JSON.stringify(actionBase)),
+    actionEvidenceSha256: "0".repeat(64),
+  });
+  const { actionEvidenceSha256: _placeholder, ...canonicalActionBase } = provisionalAction;
+  const action = Buffer.from(`${JSON.stringify(DeckReviewActionEvidenceSchema.parse({
+    ...canonicalActionBase,
+    actionEvidenceSha256: sha256Evidence(JSON.stringify(canonicalActionBase)),
   }), null, 2)}\n`);
   await mkdir(join(root, "output", "candidates", "current"), { recursive: true });
   await writeFile(join(root, "output", "candidates", "current", "review.json"), review);

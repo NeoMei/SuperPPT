@@ -26,7 +26,7 @@ test("runs intake through mixed-slide replacement without changing untouched ren
   assert.equal(result.before.slideCount, 3);
   assert.deepEqual(result.deckReview, {
     action: "confirm-delivery",
-    promotedRevision: 1,
+    promotedRevision: 2,
   });
   const initialAcceptance = JSON.parse(await readFile(result.before.acceptance, "utf8"));
   assert.equal(initialAcceptance.deckReviewConfirmation.action, "confirm-delivery");

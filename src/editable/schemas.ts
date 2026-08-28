@@ -198,6 +198,15 @@ export const EditableStagingMarkerSchema = z.object({
   }
 });
 
+export const EditableConversionStagingMarkerSchema = z.object({
+  stagingMarkerVersion: z.literal(1),
+  appId: z.literal("superppt"),
+  artifactKind: z.literal("editable-conversion-staging"),
+  projectId: z.string().uuid(),
+  slideId: z.string().uuid(),
+  revisionId: z.string().uuid(),
+}).strict();
+
 export const EditableSlideMarkerSchema = z.object({
   markerVersion: z.literal(1),
   appId: z.literal("superppt"),
@@ -234,7 +243,7 @@ export const ConversionRecordSchema = z.object({
     candidateId: z.string().uuid(),
     reviewDescriptorSha256: Sha256Schema,
     actionEvidenceSha256: Sha256Schema,
-  }).strict().nullable(),
+  }).strict(),
   converterVersion: z.string().min(1),
   artifacts: z.object({
     sourceImage: Sha256Schema,
@@ -321,6 +330,7 @@ export type RunLedgerV2 = z.infer<typeof RunLedgerV2Schema>;
 export type EditPlan = z.infer<typeof EditPlanSchema>;
 export type EditableRevisionMarker = z.infer<typeof EditableRevisionMarkerSchema>;
 export type EditableStagingMarker = z.infer<typeof EditableStagingMarkerSchema>;
+export type EditableConversionStagingMarker = z.infer<typeof EditableConversionStagingMarkerSchema>;
 export type ModifiedManifest = z.infer<typeof ModifiedManifestSchema>;
 export type ModifiedRevisionRecord = z.infer<typeof ModifiedRevisionRecordSchema>;
 export type PromoteEditableIntent = z.infer<typeof PromoteEditableIntentSchema>;
