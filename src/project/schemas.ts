@@ -119,6 +119,9 @@ export const GateSchema = z.object({
     "outline",
     "slide-specs",
     "style-sample",
+    "style-sample-generation",
+    "generation-authorization",
+    "deck-review",
     "revision-impact",
     "slide-preview",
   ]),
@@ -128,8 +131,12 @@ export const GateSchema = z.object({
   snapshotPath: z.string().min(1).optional(),
   snapshotManifestSha256: Sha256Schema.optional(),
   presentation: z.object({
-    kind: z.enum(["planning-views", "style-sample"]),
-    publicationPath: z.string().startsWith("revisions/"),
+    kind: z.enum(["planning-views", "style-sample", "generation-plan", "deck-review"]),
+    publicationPath: z.union([
+      z.string().startsWith("revisions/"),
+      z.literal("generation/authorization-plan.json"),
+      z.literal("output/candidates/current/review.json"),
+    ]),
     descriptorSha256: Sha256Schema,
   }).strict().optional(),
   slidePreview: EditableRevisionBindingSchema.optional(),
@@ -156,6 +163,16 @@ export const GateSchema = z.object({
   }
   if (gate.slidePreview) {
     context.addIssue({ code: "custom", path: ["slidePreview"], message: "only slide-preview gates accept editable revision bindings" });
+  }
+  if (gate.gate === "style-sample-generation") {
+    if (
+      JSON.stringify(Object.keys(gate.artifactHashes).sort()) !== JSON.stringify(["style/sample/generation-plan.json"])
+      || gate.approvalId
+      || gate.snapshotPath
+      || gate.snapshotManifestSha256
+      || gate.presentation
+    ) context.addIssue({ code: "custom", message: "style-sample-generation accepts only direct execution authorization evidence" });
+    return;
   }
   if (gate.gate !== "revision-impact") return;
   const keys = Object.keys(gate.artifactHashes);
@@ -192,6 +209,9 @@ export const ProjectManifestSchema = z.object({
     "outline",
     "slide-specs",
     "style",
+    "style-sample",
+    "generation-authorization",
+    "deck-review",
     "generating",
     "assembling",
     "revising",

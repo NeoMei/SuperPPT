@@ -10,11 +10,21 @@ const HashSchema = z.string().regex(/^[a-f0-9]{64}$/);
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const HashesSchema = z.record(z.string(), HashSchema);
 const SizesSchema = z.record(z.string(), z.number().int().nonnegative());
-const OrdinaryGateSchema = z.enum(["outline", "slide-specs", "style-sample"]);
+const OrdinaryGateSchema = z.enum([
+  "outline",
+  "slide-specs",
+  "style-sample",
+  "generation-authorization",
+  "deck-review",
+]);
 
 export const PresentationBindingSchema = z.object({
-  kind: z.enum(["planning-views", "style-sample"]),
-  publicationPath: z.string().startsWith("revisions/"),
+  kind: z.enum(["planning-views", "style-sample", "generation-plan", "deck-review"]),
+  publicationPath: z.union([
+    z.string().startsWith("revisions/"),
+    z.literal("generation/authorization-plan.json"),
+    z.literal("output/candidates/current/review.json"),
+  ]),
   descriptorSha256: HashSchema,
 }).strict();
 
@@ -232,6 +242,19 @@ export async function validateCurrentPresentationBinding(
   root: string,
   binding: PresentationBinding,
 ): Promise<void> {
+  if (binding.kind === "generation-plan" || binding.kind === "deck-review") {
+    const pointerPath = binding.kind === "generation-plan"
+      ? "generation/authorization-plan.json"
+      : "output/candidates/current/review.json";
+    if (binding.publicationPath !== pointerPath) {
+      throw new Error("current presentation pointer does not match gate evidence");
+    }
+    const pointer = await readOwnedRegularFile(root, pointerPath);
+    if (sha256Evidence(pointer) !== binding.descriptorSha256) {
+      throw new Error("current presentation pointer does not match gate evidence");
+    }
+    return;
+  }
   const pointerPaths = binding.kind === "planning-views"
     ? ["outline-views.json", "planning-views.json"]
     : ["style-sample.json"];
@@ -279,6 +302,18 @@ function assertExactGateKeys(
       "style/selection.json",
     ];
     if (!sameJson(keys, expected)) throw new Error("ordinary gate evidence has invalid style keys");
+    return;
+  }
+  if (gate === "generation-authorization") {
+    if (!sameJson(keys, ["generation/authorization-plan.json"])) {
+      throw new Error("ordinary gate evidence has invalid generation authorization keys");
+    }
+    return;
+  }
+  if (gate === "deck-review") {
+    if (!sameJson(keys, ["output/candidates/current/montage.jpg", "output/candidates/current/review.json"])) {
+      throw new Error("ordinary gate evidence has invalid deck review keys");
+    }
     return;
   }
   if (!artifacts?.["outline.json"]) {
@@ -361,21 +396,34 @@ export async function validateOrdinaryGateEvidence(
   const treeRoot = join(await realpath(root), localProjectPath(gateRecord.snapshotPath));
   if (!sameJson(await listTree(treeRoot), expectedTree)) throw new Error("snapshot tree coverage is invalid");
 
-  const publication = descriptor.presentation.kind === "planning-views"
-    ? await validatePlanPublicationEvidence(root, descriptor.presentation.publicationPath)
-    : await validateStylePublicationEvidence(root, descriptor.presentation.publicationPath);
-  if (publication.descriptorSha256 !== descriptor.presentation.descriptorSha256) {
-    throw new Error("snapshot presentation identity mismatch");
-  }
-  if (publication.projectId !== descriptor.projectId || publication.revisionId !== descriptor.revisionId) {
-    throw new Error("snapshot presentation project or revision mismatch");
-  }
-  if ((gate.data === "style-sample") !== (publication.kind === "style-sample")) {
-    throw new Error("snapshot presentation kind mismatch");
-  }
-  const presented = publication.sourceHashes;
-  for (const [path, expected] of Object.entries(gateRecord.artifactHashes)) {
-    if (presented[path] !== expected) throw new Error("snapshot presentation artifact mismatch");
+  if (descriptor.presentation.kind === "generation-plan" || descriptor.presentation.kind === "deck-review") {
+    const expectedKind = gate.data === "generation-authorization" ? "generation-plan" : "deck-review";
+    if (descriptor.presentation.kind !== expectedKind) {
+      throw new Error("snapshot presentation kind mismatch");
+    }
+    const presentationArtifact = descriptor.presentation.kind === "generation-plan"
+      ? "generation/authorization-plan.json"
+      : "output/candidates/current/review.json";
+    if (descriptor.presentation.descriptorSha256 !== gateRecord.artifactHashes[presentationArtifact]) {
+      throw new Error("snapshot presentation artifact mismatch");
+    }
+  } else {
+    const publication = descriptor.presentation.kind === "planning-views"
+      ? await validatePlanPublicationEvidence(root, descriptor.presentation.publicationPath)
+      : await validateStylePublicationEvidence(root, descriptor.presentation.publicationPath);
+    if (publication.descriptorSha256 !== descriptor.presentation.descriptorSha256) {
+      throw new Error("snapshot presentation identity mismatch");
+    }
+    if (publication.projectId !== descriptor.projectId || publication.revisionId !== descriptor.revisionId) {
+      throw new Error("snapshot presentation project or revision mismatch");
+    }
+    if ((gate.data === "style-sample") !== (publication.kind === "style-sample")) {
+      throw new Error("snapshot presentation kind mismatch");
+    }
+    const presented = publication.sourceHashes;
+    for (const [path, expected] of Object.entries(gateRecord.artifactHashes)) {
+      if (presented[path] !== expected) throw new Error("snapshot presentation artifact mismatch");
+    }
   }
   return { descriptor, manifest: snapshotManifest, artifacts };
 }

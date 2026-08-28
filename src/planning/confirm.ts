@@ -17,14 +17,29 @@ import { localProjectPath, readOwnedRegularFile, type SafeReadOperations } from 
 import type { ProjectManifest } from "../project/schemas.js";
 import { readProject, updateProject } from "../project/store.js";
 import { loadValidatedOutline, loadValidatedPlan } from "./load.js";
-import { requireCurrentOutlinePresentation, requireCurrentPlanPresentation, requireCurrentStylePresentation } from "./views.js";
+import {
+  requireCurrentDeckReviewPresentation,
+  requireCurrentGenerationPlanPresentation,
+  requireCurrentOutlinePresentation,
+  requireCurrentPlanPresentation,
+  requireCurrentStylePresentation,
+} from "./views.js";
 import {
   STYLE_SAMPLE_ARTIFACTS,
   validateCanonicalStyleSample,
   type StyleSampleArtifacts,
 } from "../styles/sample-contract.js";
 
-export type PlanningGate = "outline" | "slide-specs" | "style-sample";
+export type OrdinaryGate =
+  | "outline"
+  | "slide-specs"
+  | "style-sample"
+  | "generation-authorization"
+  | "deck-review";
+export type ExecutionGate = "style-sample-generation";
+export type ConditionalGate = "revision-impact" | "slide-preview";
+export type ProjectGate = OrdinaryGate | ExecutionGate | ConditionalGate;
+export type PlanningGate = OrdinaryGate;
 export type ApprovalCheckpoint = "snapshot-published" | "manifest-published";
 export type ApprovalOptions = {
   operations?: {
@@ -39,10 +54,12 @@ export type GateSnapshot = {
   snapshotPath: string;
 };
 
-const previous: Record<PlanningGate, PlanningGate | null> = {
+export const previousOrdinaryGate: Record<OrdinaryGate, OrdinaryGate | null> = {
   outline: null,
   "slide-specs": "outline",
   "style-sample": "slide-specs",
+  "generation-authorization": "style-sample",
+  "deck-review": "generation-authorization",
 };
 export { STYLE_SAMPLE_ARTIFACTS } from "../styles/sample-contract.js";
 
@@ -54,8 +71,8 @@ function sameJson(left: unknown, right: unknown): boolean {
   return JSON.stringify(left) === JSON.stringify(right);
 }
 
-function assertPlanningGate(gate: string): asserts gate is PlanningGate {
-  if (!(gate in previous)) throw new Error(`invalid planning gate: ${gate}`);
+function assertOrdinaryGate(gate: string): asserts gate is OrdinaryGate {
+  if (!(gate in previousOrdinaryGate)) throw new Error(`invalid planning gate: ${gate}`);
 }
 
 function approvalOptions(value: ApprovalOptions | undefined): ApprovalOptions {
@@ -101,7 +118,7 @@ function hashArtifacts(artifacts: Record<string, Buffer>): Record<string, string
 
 async function gateArtifacts(
   root: string,
-  gate: PlanningGate,
+  gate: OrdinaryGate,
   operations: SafeReadOperations,
 ): Promise<Record<string, Buffer>> {
   if (gate === "outline") return (await loadValidatedOutline(root, operations)).artifacts;
@@ -109,6 +126,13 @@ async function gateArtifacts(
     const all = (await loadValidatedPlan(root, operations)).artifacts;
     return Object.fromEntries(Object.entries(all).filter(([path]) => path !== "brief.json"));
   }
+  if (gate === "generation-authorization") return {
+    "generation/authorization-plan.json": await readOwnedRegularFile(root, "generation/authorization-plan.json", operations),
+  };
+  if (gate === "deck-review") return Object.fromEntries(await Promise.all([
+    "output/candidates/current/review.json",
+    "output/candidates/current/montage.jpg",
+  ].map(async (path) => [path, await readOwnedRegularFile(root, path, operations)])));
   const values = Object.fromEntries(await Promise.all(STYLE_SAMPLE_ARTIFACTS.map(async (path) => [
     path,
     await readOwnedRegularFile(root, path, operations),
@@ -119,10 +143,12 @@ async function gateArtifacts(
 
 async function currentPresentation(
   root: string,
-  gate: PlanningGate,
+  gate: OrdinaryGate,
   hashes: Record<string, string>,
 ): Promise<PresentationBinding> {
   if (gate === "style-sample") return requireCurrentStylePresentation(root, hashes);
+  if (gate === "generation-authorization") return requireCurrentGenerationPlanPresentation(root, hashes);
+  if (gate === "deck-review") return requireCurrentDeckReviewPresentation(root, hashes);
   if (gate === "slide-specs") return requireCurrentPlanPresentation(root, hashes);
   try {
     return await requireCurrentOutlinePresentation(root, hashes);
@@ -133,10 +159,10 @@ async function currentPresentation(
 
 async function gateCurrentWithManifest(
   root: string,
-  gate: PlanningGate,
+  gate: OrdinaryGate,
   manifest: ProjectManifest,
 ): Promise<boolean> {
-  const required = previous[gate];
+  const required = previousOrdinaryGate[gate];
   if (required && !await gateCurrentWithManifest(root, required, manifest)) return false;
   const approved = [...manifest.gates].reverse().find((item) => item.gate === gate);
   if (!approved || Object.keys(approved.artifactHashes).length === 0) return false;
@@ -156,7 +182,7 @@ async function gateCurrentWithManifest(
 
 async function publishSnapshot(
   root: string,
-  gate: PlanningGate,
+  gate: OrdinaryGate,
   approvalId: string,
   snapshotPath: string,
   manifest: ProjectManifest,
@@ -203,7 +229,7 @@ async function publishSnapshot(
 }
 
 export async function assertGateCurrent(root: string, gate: PlanningGate): Promise<boolean> {
-  assertPlanningGate(gate);
+  assertOrdinaryGate(gate);
   return gateCurrentWithManifest(root, gate, await readProject(root));
 }
 
@@ -212,11 +238,11 @@ export async function approveGate(
   gate: PlanningGate,
   rawOptions?: ApprovalOptions,
 ): Promise<void> {
-  assertPlanningGate(gate);
+  assertOrdinaryGate(gate);
   const options = approvalOptions(rawOptions);
   await withPlanningLock(root, async (canonicalRoot) => {
     await updateProject(canonicalRoot, async (manifest) => {
-      const required = previous[gate];
+      const required = previousOrdinaryGate[gate];
       if (required && !await gateCurrentWithManifest(canonicalRoot, required, manifest)) {
         throw new Error(`${required} gate must be current`);
       }
@@ -273,7 +299,7 @@ export async function approveGate(
 }
 
 export async function readGateSnapshot(root: string, gate: PlanningGate): Promise<GateSnapshot> {
-  assertPlanningGate(gate);
+  assertOrdinaryGate(gate);
   const manifest = await readProject(root);
   const approved = [...manifest.gates].reverse().find((item) => item.gate === gate);
   if (!approved) throw new Error(`${gate} gate has no revision snapshot`);
@@ -283,4 +309,28 @@ export async function readGateSnapshot(root: string, gate: PlanningGate): Promis
   } catch (error: unknown) {
     throw new Error("snapshot descriptor or tree is invalid", { cause: error });
   }
+}
+
+export async function approveExecutionGate(
+  root: string,
+  gate: ExecutionGate,
+  evidencePath: string,
+): Promise<void> {
+  if (gate !== "style-sample-generation" || evidencePath !== "style/sample/generation-plan.json") {
+    throw new Error("invalid execution authorization");
+  }
+  await withPlanningLock(root, async (canonicalRoot) => {
+    await updateProject(canonicalRoot, async (manifest) => {
+      const evidence = await readOwnedRegularFile(canonicalRoot, evidencePath);
+      return {
+        ...manifest,
+        gates: [...manifest.gates, {
+          gate,
+          revisionId: manifest.currentRevision.id,
+          artifactHashes: { [evidencePath]: sha256Evidence(evidence) },
+          confirmedAt: new Date().toISOString(),
+        }],
+      };
+    });
+  });
 }

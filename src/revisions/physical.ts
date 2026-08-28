@@ -6,7 +6,13 @@ import {
 import { readOwnedRegularFile } from "../project/safe-file.js";
 import type { Artifact, ProjectManifest } from "../project/schemas.js";
 
-const ORDINARY_GATES = ["outline", "slide-specs", "style-sample"] as const;
+const ORDINARY_GATES = [
+  "outline",
+  "slide-specs",
+  "style-sample",
+  "generation-authorization",
+  "deck-review",
+] as const;
 
 function artifactReferences(manifest: ProjectManifest): Artifact[] {
   return [

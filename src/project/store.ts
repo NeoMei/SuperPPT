@@ -380,7 +380,13 @@ async function persistProject(
   }
 
   for (const gate of valid.gates.slice(owned.manifest.gates.length)) {
-    if (gate.gate === "outline" || gate.gate === "slide-specs" || gate.gate === "style-sample") {
+    if (
+      gate.gate === "outline"
+      || gate.gate === "slide-specs"
+      || gate.gate === "style-sample"
+      || gate.gate === "generation-authorization"
+      || gate.gate === "deck-review"
+    ) {
       try {
         if (gate.revisionId !== valid.currentRevision.id) {
           throw new Error("ordinary gate revision must be current");
@@ -398,6 +404,22 @@ async function persistProject(
       } catch (error: unknown) {
         throw new Error("ordinary gate evidence is invalid", { cause: error });
       }
+    } else if (gate.gate === "style-sample-generation") {
+      try {
+        const path = "style/sample/generation-plan.json";
+        if (
+          gate.revisionId !== valid.currentRevision.id
+          || Object.keys(gate.artifactHashes).length !== 1
+          || !gate.artifactHashes[path]
+          || gate.approvalId
+          || gate.snapshotPath
+          || gate.snapshotManifestSha256
+          || gate.presentation
+          || sha256Evidence(await readOwnedRegularFile(owned.root, path)) !== gate.artifactHashes[path]
+        ) throw new Error("execution authorization must bind its current generation plan only");
+      } catch (error: unknown) {
+        throw new Error("execution authorization evidence is invalid", { cause: error });
+      }
     } else if (gate.gate === "revision-impact") {
       try {
         await validateImpactGateEvidence(owned.root, owned.manifest, gate);
@@ -413,7 +435,13 @@ async function persistProject(
     }
   }
   const ordinarySnapshotPaths = valid.gates
-    .filter((gate) => gate.gate === "outline" || gate.gate === "slide-specs" || gate.gate === "style-sample")
+    .filter((gate) => (
+      gate.gate === "outline"
+      || gate.gate === "slide-specs"
+      || gate.gate === "style-sample"
+      || gate.gate === "generation-authorization"
+      || gate.gate === "deck-review"
+    ))
     .map((gate) => gate.snapshotPath)
     .filter((path): path is string => path !== undefined);
   if (new Set(ordinarySnapshotPaths).size !== ordinarySnapshotPaths.length) {

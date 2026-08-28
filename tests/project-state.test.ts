@@ -21,6 +21,7 @@ import test, { type TestContext } from "node:test";
 import { promisify } from "node:util";
 
 import { initializeProject } from "../src/project/initialize.js";
+import { ProjectManifestSchema } from "../src/project/schemas.js";
 import {
   beginProjectRollbackTransaction,
   commitApprovedImpactRevision,
@@ -80,6 +81,43 @@ test("initializes the complete owned workspace and reopens it", async (t) => {
   );
   await Promise.all(DIRECTORIES.map((directory) => access(join(root, directory))));
   assert.equal((await lstat(join(root, "superppt.json"))).mode & 0o777, 0o600);
+});
+
+test("generation authorization and deck review stages accept authenticated presentation kinds", async (t) => {
+  const parent = await temporaryParent(t, "superppt-guided-stage-model-");
+  const root = join(parent, "demo");
+  const manifest = await initializeProject({
+    root,
+    title: "Guided stages",
+    idFactory: () => PROJECT_ID,
+  });
+
+  for (const stage of ["style-sample", "generation-authorization", "deck-review"] as const) {
+    assert.equal(ProjectManifestSchema.parse({ ...manifest, stage }).stage, stage);
+  }
+  for (const [gate, kind, publicationPath, artifactHashes] of [
+    ["generation-authorization", "generation-plan", "generation/authorization-plan.json", { "generation/authorization-plan.json": "a".repeat(64) }],
+    ["deck-review", "deck-review", "output/candidates/current/review.json", {
+      "output/candidates/current/review.json": "a".repeat(64),
+      "output/candidates/current/montage.jpg": "b".repeat(64),
+    }],
+  ] as const) {
+    const parsed = ProjectManifestSchema.parse({
+      ...manifest,
+      gates: [{
+        gate,
+        revisionId: manifest.currentRevision.id,
+        artifactHashes,
+        presentation: {
+          kind,
+          publicationPath,
+          descriptorSha256: "a".repeat(64),
+        },
+        confirmedAt: new Date().toISOString(),
+      }],
+    });
+    assert.equal(parsed.gates[0]!.presentation?.kind, kind);
+  }
 });
 
 test("refuses roots, source files, unowned targets, and symlink aliases", async (t) => {

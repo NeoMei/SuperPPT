@@ -397,6 +397,50 @@ export async function requireCurrentStylePresentation(
   return { kind: "style-sample", publicationPath: pointer.publicationPath, descriptorSha256: pointer.descriptorSha256 };
 }
 
+async function requireCurrentArtifactPresentation(
+  root: string,
+  kind: "generation-plan" | "deck-review",
+  publicationPath: "generation/authorization-plan.json" | "output/candidates/current/review.json",
+  artifactHashes: Record<string, string>,
+): Promise<PresentationBinding> {
+  const expected = kind === "generation-plan"
+    ? ["generation/authorization-plan.json"]
+    : ["output/candidates/current/montage.jpg", "output/candidates/current/review.json"];
+  if (!sameJson(Object.keys(artifactHashes).sort(), expected)) {
+    throw new Error("gate artifacts do not match authoritative publication");
+  }
+  const bytes = await readOwnedRegularFile(root, publicationPath);
+  const descriptorSha256 = sha256Evidence(bytes);
+  if (artifactHashes[publicationPath] !== descriptorSha256) {
+    throw new Error("gate artifacts do not match authoritative publication");
+  }
+  return { kind, publicationPath, descriptorSha256 };
+}
+
+export async function requireCurrentGenerationPlanPresentation(
+  root: string,
+  artifactHashes: Record<string, string>,
+): Promise<PresentationBinding> {
+  return requireCurrentArtifactPresentation(
+    root,
+    "generation-plan",
+    "generation/authorization-plan.json",
+    artifactHashes,
+  );
+}
+
+export async function requireCurrentDeckReviewPresentation(
+  root: string,
+  artifactHashes: Record<string, string>,
+): Promise<PresentationBinding> {
+  return requireCurrentArtifactPresentation(
+    root,
+    "deck-review",
+    "output/candidates/current/review.json",
+    artifactHashes,
+  );
+}
+
 export async function recoverPlanViews(root: string, lock: ProjectLockOptions = {}): Promise<void> {
   await withPlanningLock(root, (canonicalRoot) =>
     withProjectLease(canonicalRoot, "state", () => recoverUnlocked(canonicalRoot), lock), lock);

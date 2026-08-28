@@ -7,7 +7,14 @@ import test, { type TestContext } from "node:test";
 import { promisify } from "node:util";
 import sharp from "sharp";
 
-import { approveGate, assertGateCurrent, readGateSnapshot, toPortableProjectPath } from "../src/planning/confirm.js";
+import {
+  approveExecutionGate,
+  approveGate,
+  assertGateCurrent,
+  previousOrdinaryGate,
+  readGateSnapshot,
+  toPortableProjectPath,
+} from "../src/planning/confirm.js";
 import { normalizeInput } from "../src/planning/intake.js";
 import { renderBrief, renderOutline, renderSlideSpec } from "../src/planning/render.js";
 import { BriefSchema, OutlineSchema, SlideSpecSchema } from "../src/planning/schemas.js";
@@ -16,6 +23,7 @@ import { initializeProject } from "../src/project/initialize.js";
 import { addDescriptorIntegrity, sha256Evidence } from "../src/project/evidence.js";
 import { withProjectLease } from "../src/project/lock.js";
 import { readProject, updateProject, writeProject } from "../src/project/store.js";
+import { applyRevision, approveImpact, publishImpactPlan } from "../src/revisions/apply.js";
 import { writeCanonicalStyleSample } from "./helpers/style-sample.js";
 
 const execFileAsync = promisify(execFile);
@@ -315,6 +323,102 @@ test("ordinary gates derive and validate fixed artifact sets in exact order", as
   assert.equal(await assertGateCurrent(root, "style-sample"), true);
   await assert.rejects(approveGate(root, "revision-impact" as never), /invalid planning gate/);
   await assert.rejects(approveGate(root, "outline", { artifacts: [join(root, "superppt.json")] } as never), /invalid approval options/);
+});
+
+test("generation authorization and deck review extend the ordinary gate chain", async (t) => {
+  const root = await project(t, "superppt-extended-gates-");
+  const ordinary = [
+    "outline",
+    "slide-specs",
+    "style-sample",
+    "generation-authorization",
+    "deck-review",
+  ] as const;
+
+  assert.deepEqual(ordinary.map((gate) => previousOrdinaryGate[gate]), [
+    null,
+    "outline",
+    "slide-specs",
+    "style-sample",
+    "generation-authorization",
+  ]);
+  assert.equal(await assertGateCurrent(root, "generation-authorization"), false);
+  assert.equal(await assertGateCurrent(root, "deck-review"), false);
+});
+
+test("generation authorization and deck review snapshots bind their published artifacts", async (t) => {
+  const root = await project(t, "superppt-generation-review-artifacts-");
+  await writeValidPlan(root);
+  await writeValidStyleSample(root);
+  await approveAll(root);
+
+  const authorization = Buffer.from(JSON.stringify({
+    styleLockSha256: "a".repeat(64),
+    pageIds: SLIDE_IDS,
+    callBudget: 3,
+    outboundDisclosure: { sendsText: true, references: [] },
+    dependency: { kind: "ai-image-to-ppt", sha256: "b".repeat(64) },
+    revisionId: (await readProject(root)).currentRevision.id,
+  }, null, 2) + "\n");
+  await mkdir(join(root, "generation"), { recursive: true });
+  await writeFile(join(root, "generation", "authorization-plan.json"), authorization);
+  await approveGate(root, "generation-authorization");
+  assert.equal(await assertGateCurrent(root, "generation-authorization"), true);
+
+  const montage = Buffer.from("candidate montage\n");
+  const review = Buffer.from(JSON.stringify({
+    candidateId: "00000000-0000-4000-8000-000000000099",
+    pptxSha256: "c".repeat(64),
+    pdfSha256: "d".repeat(64),
+    montageSha256: sha256Evidence(montage),
+  }, null, 2) + "\n");
+  await mkdir(join(root, "output", "candidates", "current"), { recursive: true });
+  await writeFile(join(root, "output", "candidates", "current", "review.json"), review);
+  await writeFile(join(root, "output", "candidates", "current", "montage.jpg"), montage);
+  await approveGate(root, "deck-review");
+  assert.equal(await assertGateCurrent(root, "deck-review"), true);
+
+  const generationSnapshot = await readGateSnapshot(root, "generation-authorization");
+  const reviewSnapshot = await readGateSnapshot(root, "deck-review");
+  assert.deepEqual(generationSnapshot.artifacts, { "generation/authorization-plan.json": authorization });
+  assert.deepEqual(reviewSnapshot.artifacts, {
+    "output/candidates/current/review.json": review,
+    "output/candidates/current/montage.jpg": montage,
+  });
+});
+
+test("sample execution authorization records its evidence without becoming a content approval", async (t) => {
+  const root = await project(t, "superppt-sample-execution-authorization-");
+  const evidencePath = "style/sample/generation-plan.json";
+  await writeFile(join(root, evidencePath), "{\"schemaVersion\":1}\n");
+
+  await approveExecutionGate(root, "style-sample-generation", evidencePath);
+
+  const manifest = await readProject(root);
+  assert.deepEqual(manifest.gates.map(({ gate }) => gate), ["style-sample-generation"]);
+  assert.equal(manifest.gates[0]!.presentation, undefined);
+  assert.equal(manifest.gates[0]!.snapshotPath, undefined);
+  assert.equal(await assertGateCurrent(root, "style-sample"), false);
+});
+
+test("revision changes invalidate downstream gates while preserving upstream history", async (t) => {
+  const root = await project(t, "superppt-downstream-gates-");
+  await writeValidPlan(root);
+  await writeValidStyleSample(root);
+  await approveAll(root);
+  const priorGates = (await readProject(root)).gates.map(({ gate }) => gate);
+
+  const plan = await publishImpactPlan(root, { kind: "brief", title: "Revised demo" });
+  await approveImpact(root, plan.sha256);
+  await applyRevision(root, plan, plan.change);
+
+  const revised = await readProject(root);
+  assert.deepEqual(revised.gates.slice(0, priorGates.length).map(({ gate }) => gate), priorGates);
+  assert.equal(revised.currentRevision.number, 2);
+  assert.equal(await assertGateCurrent(root, "outline"), false);
+  assert.equal(await assertGateCurrent(root, "style-sample"), false);
+  assert.equal(await assertGateCurrent(root, "generation-authorization"), false);
+  assert.equal(await assertGateCurrent(root, "deck-review"), false);
 });
 
 test("rejects invalid empty, target-count, must-cover, spec, and style contracts before approval", async (t) => {
