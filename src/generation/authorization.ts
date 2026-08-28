@@ -434,15 +434,13 @@ export async function assertAuthorizedJobBinding(root: string, job: ImageGenerat
   if (!sameJson(current, job)) throw new Error("immutable image generation job changed after publication");
   await assertAiSkillBindingCurrent(job.aiSkill);
   await assertSealedJobInputs(root, job);
-  let currentLock: LockedStyle;
-  try {
-    currentLock = job.kind === "style-sample" ? await readStyleLock(root) : await readApprovedStyleLock(root);
-  } catch (error: unknown) {
-    throw new Error("image generation job style lock is stale or invalid", { cause: error });
-  }
-  const { styleLockSha256, ...embeddedStyleLock } = currentLock;
-  if (styleLockSha256 !== job.styleLockSha256 || !sameJson(embeddedStyleLock, job.styleLock)) {
-    throw new Error("image generation job style lock changed after publication");
+  const manifest = await readProject(root);
+  if (manifest.currentRevision.id === job.projectRevisionId) {
+    const currentLock = job.kind === "style-sample" ? await readStyleLock(root) : await readApprovedStyleLock(root);
+    const { styleLockSha256, ...embeddedStyleLock } = currentLock;
+    if (styleLockSha256 !== job.styleLockSha256 || !sameJson(embeddedStyleLock, job.styleLock)) {
+      throw new Error("image generation job style lock changed after publication");
+    }
   }
   for (const page of job.pages) {
     const prompt = await readOwnedRegularFile(root, page.promptArtifact).catch((error: unknown) => {
@@ -452,8 +450,9 @@ export async function assertAuthorizedJobBinding(root: string, job: ImageGenerat
       throw new Error("job prompt artifact hash changed after publication");
     }
   }
-  const { plan, digest } = await readCurrentAuthorizedPlan(root, job.kind);
-  if (job.authorizationDigest !== digest) throw new Error("image generation job authorization digest is stale");
+  const plan = GenerationAuthorizationPlanSchema.parse(job.authorizationPlan);
+  const digest = sha256(canonicalContractFile(plan));
+  if (job.authorizationDigest !== digest) throw new Error("image generation job authorization snapshot is invalid");
   if (
     job.projectId !== plan.projectId
     || job.projectRevisionId !== plan.projectRevisionId
@@ -585,6 +584,51 @@ function callStates(ledger: CallLedgerEntry[]): Map<string, CallState> {
   return states;
 }
 
+async function assertSerialDeckAdmission(
+  root: string,
+  request: GenerationCallTuple,
+  job: ImageGenerationJob,
+  ledger: CallLedgerEntry[],
+): Promise<void> {
+  if (job.kind !== "deck") return;
+  const { readAndReauthenticateDelegatedResult } = await import("./delegation-result.js");
+  let result: Awaited<ReturnType<typeof readAndReauthenticateDelegatedResult>>["result"] | null = null;
+  try {
+    result = (await readAndReauthenticateDelegatedResult(root, job.jobId)).result;
+  } catch (error: unknown) {
+    if (!(error instanceof Error) || !error.message.startsWith("delegated aggregate result is unavailable")) throw error;
+  }
+  const accepted = new Set(result?.pages
+    .filter((page) => (page.status === "success" || page.status === "cached") && page.styleConsistency === "accepted")
+    .map(({ slideId }) => slideId));
+  const next = job.pages.find(({ slideId }) => !accepted.has(slideId));
+  if (!next) throw new Error("serial delegated deck has no unresolved page to admit");
+  const expectedOrdinal = next.order + 1;
+  if (request.requestOrdinal !== 1 && request.requestOrdinal !== expectedOrdinal) {
+    throw new Error("serial delegated deck call ordinal is non-monotonic");
+  }
+  const states = callStates(ledger);
+  const priorInFlight = job.pages
+    .slice(0, job.pages.findIndex(({ slideId }) => slideId === next.slideId))
+    .some((page) => [...states.values()].some((state) =>
+      state.admission.jobId === job.jobId
+      && state.admission.slideId === page.slideId
+      && state.admission.attempt === page.attempt
+      && !state.terminal
+    ));
+  if (priorInFlight) throw new Error("serial delegated deck has a prior in-flight page");
+  const nextInFlight = [...states.values()].some((state) =>
+    state.admission.jobId === job.jobId
+    && state.admission.slideId === next.slideId
+    && state.admission.attempt === next.attempt
+    && !state.terminal
+  );
+  if (nextInFlight) throw new Error("serial delegated deck next page is in-flight");
+  if (request.slideId !== next.slideId || request.attempt !== next.attempt) {
+    throw new Error("serial delegated deck admission must use the next unresolved ordered page");
+  }
+}
+
 async function validateCallTuple(
   root: string,
   raw: GenerationCallTuple,
@@ -593,8 +637,9 @@ async function validateCallTuple(
   const request = GenerationCallTupleSchema.parse(raw);
   const job = await readJob(root, request.jobId);
   const manifest = await readProject(root);
-  if (!options.allowStaleRevision || manifest.currentRevision.id === job.projectRevisionId) {
-    await assertAuthorizedJobBinding(root, job);
+  await assertAuthorizedJobBinding(root, job);
+  if (!options.allowStaleRevision && manifest.currentRevision.id !== job.projectRevisionId) {
+    throw new Error("generation call job does not bind the current project revision");
   }
   const page = job.pages.find(({ slideId }) => slideId === request.slideId);
   if (!page || page.attempt !== request.attempt) {
@@ -603,18 +648,27 @@ async function validateCallTuple(
   return { request, job };
 }
 
+async function assertCurrentAdmissionAuthorization(root: string, job: ImageGenerationJob): Promise<void> {
+  const { plan, digest } = await readCurrentAuthorizedPlan(root, job.kind);
+  if (digest !== job.authorizationDigest || plan.projectRevisionId !== job.projectRevisionId) {
+    throw new Error("generation call requires the current matching authorization");
+  }
+}
+
 export async function admitDelegatedGenerationCall(
   root: string,
   raw: GenerationCallTuple,
 ): Promise<DelegatedGenerationAdmission> {
   return withProjectLease(root, "generation", async (canonicalRoot) => {
     const { request, job } = await validateCallTuple(canonicalRoot, raw);
+    await assertCurrentAdmissionAuthorization(canonicalRoot, job);
     const ledger = await readCallLedger(canonicalRoot);
     if (callStates(ledger).has(tupleKey(request))) {
       throw new Error("delegated generation call tuple already has a durable admission");
     }
     const before = await callBudgetForDigest(canonicalRoot, job.authorizationDigest, job.callBudget);
     if (before.remaining === 0) throw new Error("generation call budget is exhausted");
+    await assertSerialDeckAdmission(canonicalRoot, request, job, ledger);
     const admissionToken = randomBytes(32).toString("hex");
     const admission = CallLedgerEntrySchema.parse({
       ...request,

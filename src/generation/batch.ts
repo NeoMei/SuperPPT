@@ -21,7 +21,7 @@ import { compileSlidePrompt } from "../styles/prompt-compiler.js";
 import { hasStyleLockEvidence, readApprovedStyleLock } from "../styles/style-lock.js";
 import { GenerationDirectory, openGenerationDirectory } from "./anchored-dir.js";
 import { cleanupAbandonedProjectStaging, ownedTemporaryName } from "./abandoned.js";
-import { generationCallBudget } from "./authorization.js";
+import { generationCallBudget, readCallLedger } from "./authorization.js";
 import { readAndReauthenticateDelegatedResult } from "./delegation-result.js";
 import { type ImageGenerationJob } from "./job-schemas.js";
 import { assertJobAuthorized, prepareImageGenerationJob, readImageGenerationJob } from "./jobs.js";
@@ -53,7 +53,7 @@ export type GenerationProgress = {
     slideId: string;
     order: number;
     promptSha256: string;
-    status: "pending" | "accepted" | "rejected" | "failed" | "paused";
+    status: "pending" | "not-reviewed" | "in-flight" | "accepted" | "rejected" | "failed" | "paused";
     artifacts: {
       master: { path: string; sha256: string } | null;
       normalized: { path: string; sha256: string } | null;
@@ -125,7 +125,9 @@ async function authenticatedResultOrNull(root: string, job: ImageGenerationJob) 
 function progressStatus(page: ImagePageResult): GenerationProgress["pages"][number]["status"] {
   if (page.status === "paused") return "paused";
   if (page.status === "failed") return "failed";
-  return page.styleConsistency === "accepted" ? "accepted" : "rejected";
+  if (page.styleConsistency === "accepted") return "accepted";
+  if (page.styleConsistency === "rejected") return "rejected";
+  return "not-reviewed";
 }
 
 /**
@@ -164,6 +166,7 @@ export async function describeProjectGeneration(root: string): Promise<Generatio
     };
   }
   const pageState = new Map<string, GenerationProgress["pages"][number]>();
+  const ledger = await readCallLedger(root);
   const pausedCapabilityDecisions: GenerationProgress["pausedCapabilityDecisions"] = [];
   for (const job of jobs) {
     for (const page of job.pages) {
@@ -185,10 +188,24 @@ export async function describeProjectGeneration(root: string): Promise<Generatio
         master: { path: page.artifacts.master.path, sha256: page.artifacts.master.sha256 },
         normalized: { path: page.artifacts.normalized.path, sha256: page.artifacts.normalized.sha256 },
       } : { master: null, normalized: null };
+      for (let index = pausedCapabilityDecisions.length - 1; index >= 0; index -= 1) {
+        if (pausedCapabilityDecisions[index]!.slideId === page.slideId) pausedCapabilityDecisions.splice(index, 1);
+      }
       const unsupported = page.referenceUsage
         .filter(({ usage }) => usage === "unsupported")
         .map(({ path, sha256 }) => ({ path, sha256 }));
-      if (unsupported.length > 0) pausedCapabilityDecisions.push({ slideId: page.slideId, references: unsupported });
+      if (target.status === "paused" && unsupported.length > 0) pausedCapabilityDecisions.push({ slideId: page.slideId, references: unsupported });
+    }
+    for (const page of job.pages) {
+      const target = pageState.get(page.slideId)!;
+      if (target.status !== "pending") continue;
+      const admissions = ledger.filter((entry) => entry.entryKind === "admission"
+        && entry.jobId === job.jobId && entry.slideId === page.slideId && entry.attempt === page.attempt);
+      if (admissions.some((admission) => !ledger.some((entry) => entry.entryKind === "terminal"
+        && entry.jobId === admission.jobId && entry.slideId === admission.slideId
+        && entry.attempt === admission.attempt && entry.requestOrdinal === admission.requestOrdinal))) {
+        target.status = "in-flight";
+      } else if (admissions.length > 0) target.status = "failed";
     }
   }
   const current = jobs.at(-1)!;
@@ -270,6 +287,7 @@ const BatchPageSchema = z.object({
 export type BatchPage = z.infer<typeof BatchPageSchema>;
 type GenerationResult = { ok: boolean; output: string };
 
+/** @deprecated Legacy direct-provider batch bridge; removed in Task 10. */
 export async function runBatch(options: {
   pages: BatchPage[];
   concurrency: number;
@@ -824,6 +842,7 @@ export async function describeLegacyProjectGeneration(options: {
   };
 }
 
+/** @deprecated Legacy direct-provider generation; removed in Task 10. */
 export async function generateProject(options: {
   root: string;
   ai: LegacyResolvedDependencies["ai"];
@@ -834,6 +853,7 @@ export async function generateProject(options: {
   return generateSelected(options);
 }
 
+/** @deprecated Legacy direct-provider retry; removed in Task 10. */
 export async function retryProjectPage(options: {
   root: string;
   slideId: string;
@@ -843,6 +863,7 @@ export async function retryProjectPage(options: {
   return generateSelected({ ...options, concurrency: 1, selectedIds: new Set([options.slideId]) });
 }
 
+/** @deprecated Legacy direct-provider manual QA; removed in Task 10. */
 export async function recordManualQa(options: {
   root: string;
   slideId: string;

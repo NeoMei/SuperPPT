@@ -304,6 +304,8 @@ test("serial delegated deck copies the approved lock and exact ordered prompts i
 
   assert.equal(job.kind, "deck");
   assert.equal(job.styleLockSha256, lock.styleLockSha256);
+  assert.equal(job.authorizationPlan.kind, "deck");
+  assert.equal(sha256(`${JSON.stringify(job.authorizationPlan, null, 2)}\n`), job.authorizationDigest);
   assert.equal("concurrency" in job, false);
   assert.deepEqual(job.pages.map(({ slideId, order, finalPrompt, promptSha256 }) => ({
     slideId,
@@ -421,12 +423,12 @@ test("authorized budget rejects a fourth delegated result admission", async (t) 
   const fixture = await authorizedDeckProject(t, "superppt-authorized-budget-");
   const job = await prepareDeckJob(fixture.root, fixture.aiDependency);
   for (const page of job.pages) {
-    await admitDelegatedGenerationCall(fixture.root, {
+    await executeAuthorizedGenerationCall(fixture.root, {
       jobId: job.jobId,
       slideId: page.slideId,
       attempt: page.attempt,
       requestOrdinal: 1,
-    });
+    }, () => undefined);
   }
   await assert.rejects(admitDelegatedGenerationCall(fixture.root, {
     jobId: job.jobId,
@@ -435,6 +437,29 @@ test("authorized budget rejects a fourth delegated result admission", async (t) 
     requestOrdinal: 2,
   }), /budget is exhausted/i);
   assert.deepEqual((await describeProjectGeneration(fixture.root)).calls, { authorized: 3, consumed: 3, remaining: 0 });
+});
+
+test("serial delegated deck admission rejects out-of-order and concurrent page calls", async (t) => {
+  const fixture = await authorizedDeckProject(t, "superppt-serial-admission-");
+  const job = await prepareDeckJob(fixture.root, fixture.aiDependency);
+  await assert.rejects(admitDelegatedGenerationCall(fixture.root, {
+    jobId: job.jobId,
+    slideId: job.pages[1]!.slideId,
+    attempt: job.pages[1]!.attempt,
+    requestOrdinal: 1,
+  }), /serial.*next|out.of.order/i);
+  await admitDelegatedGenerationCall(fixture.root, {
+    jobId: job.jobId,
+    slideId: job.pages[0]!.slideId,
+    attempt: job.pages[0]!.attempt,
+    requestOrdinal: 1,
+  });
+  await assert.rejects(admitDelegatedGenerationCall(fixture.root, {
+    jobId: job.jobId,
+    slideId: job.pages[1]!.slideId,
+    attempt: job.pages[1]!.attempt,
+    requestOrdinal: 1,
+  }), /serial.*in.flight|in.flight.*serial/i);
 });
 
 test("image generation job publishes an immutable approved deck binding", async (t) => {

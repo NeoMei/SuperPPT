@@ -106,6 +106,7 @@ export const ImageGenerationJobSchema = z.object({
   projectId: z.string().uuid(),
   projectRevisionId: z.string().uuid(),
   authorizationDigest: Sha256Schema,
+  authorizationPlan: GenerationAuthorizationPlanSchema,
   routePolicy: z.literal("ai-image-to-ppt-default"),
   aiSkill: AiSkillBindingSchema,
   styleLockPath: z.literal("style/lock.json"),
@@ -121,6 +122,12 @@ export const ImageGenerationJobSchema = z.object({
   if (job.styleLock.projectId !== job.projectId || job.styleLock.revisionId !== job.projectRevisionId) {
     context.addIssue({ code: "custom", path: ["styleLock"], message: "style lock must bind the job project revision" });
   }
+  if (
+    job.authorizationDigest !== sha256(canonicalContractFile(job.authorizationPlan))
+    || job.authorizationPlan.projectId !== job.projectId
+    || job.authorizationPlan.projectRevisionId !== job.projectRevisionId
+    || (job.authorizationPlan.kind !== job.kind && !(job.kind === "page-regeneration" && job.authorizationPlan.kind === "deck"))
+  ) context.addIssue({ code: "custom", path: ["authorizationPlan"], message: "immutable job authorization snapshot does not bind the job" });
   if (job.styleLockSha256 !== sha256(`${canonicalJson(job.styleLock)}\n`)) {
     context.addIssue({ code: "custom", path: ["styleLockSha256"], message: "style lock hash must bind the embedded style lock" });
   }
