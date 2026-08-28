@@ -1,6 +1,45 @@
+import { isAbsolute } from "node:path";
+
 import { z } from "zod";
 
+import { RoleSchema } from "../planning/schemas.js";
 import { ArtifactSchema, Sha256Schema } from "../project/schemas.js";
+
+export const QualityDecisionSchema = z.object({
+  ok: z.boolean(),
+  issues: z.array(z.string().min(1)),
+  requiredText: z.array(z.object({
+    text: z.string().min(1),
+    present: z.boolean(),
+    exact: z.boolean(),
+  }).strict()),
+  styleConsistent: z.boolean(),
+  hierarchyClear: z.boolean(),
+  richDetail: z.boolean(),
+  noForbiddenContent: z.boolean(),
+}).strict().superRefine((value, context) => {
+  const shouldPass = value.issues.length === 0
+    && value.requiredText.every((item) => item.present && item.exact)
+    && value.styleConsistent
+    && value.hierarchyClear
+    && value.richDetail
+    && value.noForbiddenContent;
+  if (value.ok !== shouldPass) {
+    context.addIssue({
+      code: "custom",
+      message: "ok must equal the quality checks",
+      path: ["ok"],
+    });
+  }
+});
+
+export const DelegatedPresentationQaSchema = z.object({
+  approvedSampleSha256: Sha256Schema,
+  normalizedImageSha256: Sha256Schema,
+  slideSpecSha256: Sha256Schema,
+  pageRole: RoleSchema,
+  decision: QualityDecisionSchema,
+}).strict();
 
 export const DependencyGenerationResultSchema = z.object({
   status: z.enum([
@@ -13,15 +52,15 @@ export const DependencyGenerationResultSchema = z.object({
     "invalid_output",
     "local_failure",
   ]),
-  provider: z.string().min(1).nullable(),
-  channel: z.string().min(1).nullable(),
+  provider: z.enum(["openai", "gemini", "doubao"]),
+  channel: z.enum(["host", "api"]),
   output_path: z.string().min(1).nullable(),
-  safe_message: z.string().min(1),
+  safe_message: z.string().refine((value) => Array.from(value).length <= 300, "safe_message exceeds 300 characters"),
 }).strict().superRefine((result, context) => {
   if (result.status === "success") {
-    if (!result.provider) context.addIssue({ code: "custom", path: ["provider"], message: "success requires a provider" });
-    if (!result.channel) context.addIssue({ code: "custom", path: ["channel"], message: "success requires a channel" });
-    if (!result.output_path) context.addIssue({ code: "custom", path: ["output_path"], message: "success requires an output path" });
+    if (!result.output_path || !isAbsolute(result.output_path)) {
+      context.addIssue({ code: "custom", path: ["output_path"], message: "success requires an absolute output path" });
+    }
   } else if (result.output_path !== null) {
     context.addIssue({ code: "custom", path: ["output_path"], message: "only success may carry an output path" });
   }
@@ -121,6 +160,7 @@ export const ImagePageResultSchema = z.object({
   projectRevisionId: z.string().uuid(),
   slideId: z.string().uuid(),
   attempt: z.number().int().positive(),
+  requestOrdinal: z.number().int().nonnegative(),
   requestCount: z.number().int().min(0),
   status: z.enum(["success", "cached", "failed", "paused"]),
   dependency: DependencyGenerationResultSchema,
@@ -134,6 +174,7 @@ export const ImagePageResultSchema = z.object({
     normalized: ArtifactSchema,
   }).strict().nullable(),
   styleConsistency: z.enum(["accepted", "rejected", "not-reviewed"]),
+  presentationQa: DelegatedPresentationQaSchema.nullable(),
   recordedAt: z.string().datetime(),
 }).strict().superRefine((page, context) => {
   if ((page.status === "success" || page.status === "cached") !== (page.artifacts !== null)) {
@@ -141,6 +182,12 @@ export const ImagePageResultSchema = z.object({
   }
   if ((page.status === "failed" || page.status === "paused") && page.styleConsistency !== "not-reviewed") {
     context.addIssue({ code: "custom", path: ["styleConsistency"], message: "non-success pages cannot carry presentation acceptance" });
+  }
+  if (page.status !== "success" && page.status !== "cached" && page.presentationQa !== null) {
+    context.addIssue({ code: "custom", path: ["presentationQa"], message: "only successful or cached pages may carry presentation QA" });
+  }
+  if ((page.styleConsistency === "accepted" || page.styleConsistency === "rejected") !== (page.presentationQa !== null)) {
+    context.addIssue({ code: "custom", path: ["presentationQa"], message: "reviewed style consistency requires bound presentation QA" });
   }
   if (page.status === "success" && page.dependency.status !== "success") {
     context.addIssue({ code: "custom", path: ["dependency", "status"], message: "successful pages require dependency success" });
@@ -190,34 +237,6 @@ export const ImageGenerationResultSchema = z.object({
   }
   if (result.outcome === "exhausted" && result.batchReport.pages.at(-1)?.outcome !== "exhausted") {
     context.addIssue({ code: "custom", path: ["outcome"], message: "exhausted aggregate requires an exhausted routing report" });
-  }
-});
-
-export const QualityDecisionSchema = z.object({
-  ok: z.boolean(),
-  issues: z.array(z.string().min(1)),
-  requiredText: z.array(z.object({
-    text: z.string().min(1),
-    present: z.boolean(),
-    exact: z.boolean(),
-  }).strict()),
-  styleConsistent: z.boolean(),
-  hierarchyClear: z.boolean(),
-  richDetail: z.boolean(),
-  noForbiddenContent: z.boolean(),
-}).strict().superRefine((value, context) => {
-  const shouldPass = value.issues.length === 0
-    && value.requiredText.every((item) => item.present && item.exact)
-    && value.styleConsistent
-    && value.hierarchyClear
-    && value.richDetail
-    && value.noForbiddenContent;
-  if (value.ok !== shouldPass) {
-    context.addIssue({
-      code: "custom",
-      message: "ok must equal the quality checks",
-      path: ["ok"],
-    });
   }
 });
 
@@ -288,6 +307,7 @@ export const AttemptLedgerSchema = z.object({
 });
 
 export type QualityDecision = z.infer<typeof QualityDecisionSchema>;
+export type DelegatedPresentationQa = z.infer<typeof DelegatedPresentationQaSchema>;
 export type QualityEvidence = z.infer<typeof QualityEvidenceSchema>;
 export type AttemptLedger = z.infer<typeof AttemptLedgerSchema>;
 export type DependencyGenerationResult = z.infer<typeof DependencyGenerationResultSchema>;

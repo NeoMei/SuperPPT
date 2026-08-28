@@ -5,7 +5,7 @@ import { isAbsolute, join } from "node:path";
 import sharp from "sharp";
 import { z } from "zod";
 
-import { assertAiImageSkillDependencyCurrent, readCallLedger, settleDelegatedGenerationCall } from "./authorization.js";
+import { assertAiImageSkillDependencyCurrent, assertSealedJobInputs, readCallLedger, settleDelegatedGenerationCall } from "./authorization.js";
 import { openGenerationDirectory } from "./anchored-dir.js";
 import { canonicalContractFile, type ImageGenerationJob } from "./job-schemas.js";
 import { readImageGenerationJob } from "./jobs.js";
@@ -19,12 +19,10 @@ import {
   type SerialStickyReport,
 } from "./schemas.js";
 import { DelegatedPresentationQaSchema, delegatedStyleConsistency } from "./quality.js";
-import { SlideSpecSchema } from "../planning/schemas.js";
 import { withProjectLease } from "../project/lock.js";
 import { readOwnedRegularFile } from "../project/safe-file.js";
 import { readProject, updateProject } from "../project/store.js";
 import { Sha256Schema, type Artifact, type ProjectManifest } from "../project/schemas.js";
-import { StyleLockSchema } from "../styles/schemas.js";
 
 const MAX_IMAGE_BYTES = 100 * 1024 * 1024;
 const MAX_IMAGE_PIXELS = 100_000_000;
@@ -102,28 +100,37 @@ function dependencyBinding(job: ImageGenerationJob) {
   };
 }
 
-function validateRoutingReport(job: ImageGenerationJob, intake: z.output<typeof DelegatedResultIntakeSchema>): void {
-  const report = intake.batchReport;
+function validateRoutingPage(
+  job: ImageGenerationJob,
+  slideId: string,
+  dependency: z.output<typeof DependencyGenerationResultSchema>,
+  report: SerialStickyReport,
+): void {
   report.pages.forEach((entry, index) => {
     if (entry.page !== index + 1 || !job.pages[index]) {
       throw new Error("routing report includes a page outside the immutable serial job prefix");
     }
   });
-  const pageNumber = job.pages.findIndex(({ slideId }) => slideId === intake.slideId) + 1;
+  const pageNumber = job.pages.findIndex((page) => page.slideId === slideId) + 1;
   const evidence = report.pages.find(({ page }) => page === pageNumber);
   if (!evidence) throw new Error("routing report does not contain the delegated result page");
-  const expectedCandidate = intake.dependency.channel && intake.dependency.provider
-    ? `${intake.dependency.channel}-${intake.dependency.provider}`
-    : null;
-  if (evidence.candidate !== null && evidence.candidate !== expectedCandidate) {
-    throw new Error("routing report provider/channel does not match the delegated result");
+  const expectedCandidate = `${dependency.channel}-${dependency.provider}`;
+  const fallback = new Set(["unavailable", "auth_unavailable", "retryable_exhausted"]);
+  if (dependency.status === "success") {
+    if (evidence.outcome !== "success" || evidence.candidate !== expectedCandidate) {
+      throw new Error("routing report provider/channel candidate does not match dependency success");
+    }
+  } else if (fallback.has(dependency.status)) {
+    if (evidence.outcome !== "exhausted" || evidence.candidate !== null || expectedCandidate !== "api-doubao") {
+      throw new Error("routing report exhausted outcome does not bind the live final api-doubao candidate");
+    }
+  } else if (evidence.outcome !== "fatal" || evidence.candidate !== expectedCandidate) {
+    throw new Error("routing report fatal provider/channel candidate does not match the dependency result");
   }
-  if (intake.dependency.status === "success" && evidence.outcome !== "success") {
-    throw new Error("routing report outcome does not match dependency success");
-  }
-  if (intake.dependency.status !== "success" && evidence.outcome === "success") {
-    throw new Error("routing report outcome does not match dependency failure");
-  }
+}
+
+function validateRoutingReport(job: ImageGenerationJob, intake: z.output<typeof DelegatedResultIntakeSchema>): void {
+  validateRoutingPage(job, intake.slideId, intake.dependency, intake.batchReport);
 }
 
 async function readImageArtifact(root: string, path: string, label: string): Promise<Buffer> {
@@ -147,12 +154,12 @@ async function authenticatedArtifacts(
   root: string,
   job: ImageGenerationJob,
   page: ImageGenerationJob["pages"][number],
-  intake: z.output<typeof DelegatedResultIntakeSchema>,
+  dependency: z.output<typeof DependencyGenerationResultSchema>,
   publishNormalized: boolean,
 ): Promise<ImagePageResult["artifacts"]> {
-  if (intake.dependency.status !== "success") return null;
+  if (dependency.status !== "success") return null;
   const expectedMaster = projectPath(root, page.target);
-  if (!isAbsolute(intake.dependency.output_path!) || intake.dependency.output_path !== expectedMaster) {
+  if (!isAbsolute(dependency.output_path!) || dependency.output_path !== expectedMaster) {
     throw new Error("dependency output path does not bind the immutable job target");
   }
   const masterBytes = await readImageArtifact(root, page.target, "master");
@@ -171,8 +178,8 @@ async function authenticatedArtifacts(
     const rawBytes = await readImageArtifact(root, rawPath, "raw");
     raw = { path: rawPath, sha256: sha256(rawBytes), revisionId: job.projectRevisionId };
   } catch (error: unknown) {
-    if (intake.dependency.channel === "host" || !isMissing(error)) {
-      if (intake.dependency.channel === "host") throw new Error("host success requires an authenticated raw artifact", { cause: error });
+    if (dependency.channel === "host" || !isMissing(error)) {
+      if (dependency.channel === "host") throw new Error("host success requires an authenticated raw artifact", { cause: error });
       throw error;
     }
   }
@@ -251,29 +258,11 @@ async function authenticateIntake(
   const page = job.pages.find(({ slideId }) => slideId === intake.slideId);
   if (!page || page.attempt !== intake.attempt) throw new Error("delegated result page is not declared by the immutable job");
   await assertAiImageSkillDependencyCurrent(dependencyBinding(job));
-
-  const lockBytes = await readOwnedRegularFile(root, job.styleLockPath);
-  let lock;
-  try { lock = StyleLockSchema.parse(JSON.parse(lockBytes.toString("utf8"))); } catch (error: unknown) {
-    throw new Error("delegated result Style Lock is invalid", { cause: error });
-  }
+  await assertSealedJobInputs(root, job);
   if (
-    sha256(lockBytes) !== job.styleLockSha256
-    || !sameJson(lock, job.styleLock)
-    || intake.styleLockSha256 !== job.styleLockSha256
+    intake.styleLockSha256 !== job.styleLockSha256
     || intake.styleRecipeSha256 !== job.styleLock.styleRecipeSha256
   ) throw new Error("delegated result Style Lock hashes do not match the immutable job");
-  const recipe = await readOwnedRegularFile(root, "style/recipe.json");
-  if (sha256(recipe) !== job.styleLock.styleRecipeSha256) throw new Error("delegated result style recipe hash changed");
-  if (job.styleLock.approvedSample) {
-    const sample = await readOwnedRegularFile(root, job.styleLock.approvedSample.path);
-    if (sha256(sample) !== job.styleLock.approvedSample.sha256) throw new Error("delegated result approved sample hash changed");
-  }
-  for (const reference of job.styleLock.referenceArtifacts) {
-    if (sha256(await readOwnedRegularFile(root, reference.path)) !== reference.sha256) {
-      throw new Error("delegated result reference artifact hash changed");
-    }
-  }
   const expectedUsage = job.styleLock.referenceArtifacts.map(({ path, sha256 }) => ({ path, sha256 }));
   if (
     intake.referenceUsage.length !== expectedUsage.length
@@ -293,23 +282,25 @@ async function authenticateIntake(
   ) throw new Error("delegated result prompt hash does not match the immutable job");
   validateRoutingReport(job, intake);
 
-  const spec = SlideSpecSchema.parse(JSON.parse((await readOwnedRegularFile(root, `slides/${page.slideId}/spec.json`)).toString("utf8")));
-  if (spec.slideId !== page.slideId) throw new Error("delegated result page role is not bound to the slide spec");
   const unsupportedArtDirection = intake.referenceUsage.some(({ usage }) => usage === "unsupported");
   const status: ImagePageResult["status"] = unsupportedArtDirection
     ? "paused"
     : intake.dependency.status === "success" ? "success" : "failed";
   let styleConsistency: ImagePageResult["styleConsistency"] = "not-reviewed";
+  const authenticated = await authenticatedArtifacts(root, job, page, intake.dependency, publishNormalized && status === "success");
   if (status === "success" && intake.presentationQa) {
     if (!job.styleLock.approvedSample) throw new Error("provisional style samples cannot claim approved-sample consistency");
+    if (!authenticated) throw new Error("successful delegated result is missing authenticated artifacts");
     styleConsistency = delegatedStyleConsistency(intake.presentationQa, {
       approvedSampleSha256: job.styleLock.approvedSample.sha256,
-      pageRole: spec.role,
+      normalizedImageSha256: authenticated.normalized.sha256,
+      slideSpecSha256: page.specSnapshot.sha256,
+      pageRole: page.spec.role,
+      requiredText: page.spec.requiredText,
     });
   } else if (intake.presentationQa) {
     throw new Error("presentation QA is accepted only for a successful delegated page");
   }
-  const authenticated = await authenticatedArtifacts(root, job, page, intake, publishNormalized && status === "success");
   const artifacts = status === "success" ? authenticated : null;
   return { intake, job, page, status, styleConsistency, artifacts };
 }
@@ -345,7 +336,11 @@ async function readAggregate(root: string, jobId: string): Promise<ImageGenerati
 
 async function pageResults(root: string, job: ImageGenerationJob): Promise<ImagePageResult[]> {
   const directory = join(root, "generation", "jobs", job.jobId, "results");
-  const entries = await readdir(directory, { withFileTypes: true });
+  let entries;
+  try { entries = await readdir(directory, { withFileTypes: true }); } catch (error: unknown) {
+    if (isMissing(error)) return [];
+    throw error;
+  }
   const pages: ImagePageResult[] = [];
   for (const entry of entries) {
     if (entry.isSymbolicLink() || !entry.isFile()) throw new Error("delegated result directory contains an unsafe entry");
@@ -363,15 +358,90 @@ async function pageResults(root: string, job: ImageGenerationJob): Promise<Image
   );
 }
 
-function validateAggregateReport(
+async function reauthenticateStoredPage(
+  root: string,
+  job: ImageGenerationJob,
+  page: ImagePageResult,
+  report: SerialStickyReport,
+  ledger: Awaited<ReturnType<typeof readCallLedger>>,
+): Promise<void> {
+  const jobPage = job.pages.find((candidate) => candidate.slideId === page.slideId && candidate.attempt === page.attempt);
+  if (
+    !jobPage
+    || page.jobId !== job.jobId
+    || page.projectRevisionId !== job.projectRevisionId
+    || page.actualPromptSha256 !== jobPage.promptSha256
+    || page.styleLockSha256 !== job.styleLockSha256
+    || page.styleRecipeSha256 !== job.styleLock.styleRecipeSha256
+  ) throw new Error("aggregate page does not bind the immutable job identity");
+  const expectedUsage = job.styleLock.referenceArtifacts.map(({ path, sha256 }) => ({ path, sha256 }));
+  if (
+    page.referenceUsage.length !== expectedUsage.length
+    || page.referenceUsage.some((usage, index) => usage.path !== expectedUsage[index]?.path || usage.sha256 !== expectedUsage[index]?.sha256)
+  ) throw new Error("aggregate page reference usage does not bind the immutable job");
+  page.referenceUsage.forEach((usage, index) => {
+    if (usage.usage === "unsupported" && job.styleLock.referenceArtifacts[index]?.role !== "art-direction") {
+      throw new Error("aggregate page reports unsupported use for a non-art-direction reference");
+    }
+  });
+  if (page.status !== "cached") {
+    const expectedStatus: ImagePageResult["status"] = page.referenceUsage.some(({ usage }) => usage === "unsupported")
+      ? "paused"
+      : page.dependency.status === "success" ? "success" : "failed";
+    if (page.status !== expectedStatus) throw new Error("aggregate page status conflicts with authenticated dependency and reference evidence");
+  }
+  const prompt = await readOwnedRegularFile(root, jobPage.promptArtifact);
+  if (prompt.toString("utf8") !== jobPage.finalPrompt || sha256(prompt) !== jobPage.promptSha256) {
+    throw new Error("aggregate page prompt artifact changed");
+  }
+  if (page.status !== "cached") {
+    const admissions = ledger.filter((entry) => entry.entryKind === "admission"
+      && entry.jobId === job.jobId
+      && entry.slideId === page.slideId
+      && entry.attempt === page.attempt);
+    const terminals = ledger.filter((entry) => entry.entryKind === "terminal"
+      && entry.jobId === job.jobId
+      && entry.slideId === page.slideId
+      && entry.attempt === page.attempt);
+    if (
+      admissions.length !== page.requestCount
+      || terminals.length !== admissions.length
+      || !admissions.some(({ requestOrdinal }) => requestOrdinal === page.requestOrdinal)
+    ) throw new Error("aggregate page admission and terminal state is incomplete or conflicting");
+    const terminal = terminals.find(({ requestOrdinal }) => requestOrdinal === page.requestOrdinal);
+    const expectedTerminal = page.dependency.status === "success" ? "success" : "failed";
+    if (!terminal || terminal.outcome !== expectedTerminal) {
+      throw new Error("aggregate page terminal state does not bind the dependency result");
+    }
+  }
+  if (page.status !== "cached") validateRoutingPage(job, page.slideId, page.dependency, report);
+  const physical = await authenticatedArtifacts(root, job, jobPage, page.dependency, false);
+  if (!sameJson(physical, page.artifacts)) throw new Error("aggregate page physical artifact hashes changed");
+  let expectedConsistency: ImagePageResult["styleConsistency"] = "not-reviewed";
+  if (page.presentationQa) {
+    if (!job.styleLock.approvedSample || !physical) throw new Error("aggregate page QA lacks approved physical evidence");
+    expectedConsistency = delegatedStyleConsistency(page.presentationQa, {
+      approvedSampleSha256: job.styleLock.approvedSample.sha256,
+      normalizedImageSha256: physical.normalized.sha256,
+      slideSpecSha256: jobPage.specSnapshot.sha256,
+      pageRole: jobPage.spec.role,
+      requiredText: jobPage.spec.requiredText,
+    });
+  }
+  if (expectedConsistency !== page.styleConsistency) throw new Error("aggregate page presentation QA decision changed");
+}
+
+async function reauthenticateAggregatePages(
+  root: string,
   job: ImageGenerationJob,
   report: SerialStickyReport,
   pages: ImagePageResult[],
-): void {
+  ledger: Awaited<ReturnType<typeof readCallLedger>>,
+): Promise<void> {
   if (report.pages.length !== pages.length) {
     throw new Error("routing report pages do not match the authenticated page intake records");
   }
-  pages.forEach((page, index) => {
+  for (const [index, page] of pages.entries()) {
     const jobIndex = job.pages.findIndex(({ slideId }) => slideId === page.slideId);
     const evidence = report.pages[index];
     if (!evidence || evidence.page !== jobIndex + 1) {
@@ -379,18 +449,27 @@ function validateAggregateReport(
     }
     if (page.status === "cached") {
       if (evidence.outcome !== "cached") throw new Error("routing report does not bind the cached page result");
-      return;
     }
-    const expectedCandidate = page.dependency.channel && page.dependency.provider
-      ? `${page.dependency.channel}-${page.dependency.provider}`
-      : null;
-    if (evidence.candidate !== null && evidence.candidate !== expectedCandidate) {
-      throw new Error("routing report provider/channel conflicts with an authenticated page result");
-    }
-    if ((page.dependency.status === "success") !== (evidence.outcome === "success")) {
-      throw new Error("routing report outcome conflicts with an authenticated page result");
-    }
-  });
+    await reauthenticateStoredPage(root, job, page, report, ledger);
+  }
+}
+
+async function reauthenticateAggregate(
+  root: string,
+  job: ImageGenerationJob,
+  aggregate: ImageGenerationResult,
+  ledger: Awaited<ReturnType<typeof readCallLedger>>,
+): Promise<void> {
+  if (
+    aggregate.jobId !== job.jobId
+    || aggregate.projectRevisionId !== job.projectRevisionId
+    || aggregate.styleRecipeSha256 !== job.styleLock.styleRecipeSha256
+    || aggregate.approvedSampleSha256 !== (job.styleLock.approvedSample?.sha256 ?? null)
+  ) throw new Error("delegated aggregate identity does not bind the immutable job");
+  await reauthenticateAggregatePages(root, job, aggregate.batchReport, aggregate.pages, ledger);
+  if (aggregate.outcome !== aggregateOutcome(job, aggregate.pages, aggregate.batchReport)) {
+    throw new Error("delegated aggregate outcome conflicts with authenticated page evidence");
+  }
 }
 
 function aggregateOutcome(job: ImageGenerationJob, pages: ImagePageResult[], report: SerialStickyReport): ImageGenerationResult["outcome"] {
@@ -406,7 +485,7 @@ function aggregateOutcome(job: ImageGenerationJob, pages: ImagePageResult[], rep
   return "partial";
 }
 
-function attachAcceptedPage(manifest: ProjectManifest, page: ImagePageResult): ProjectManifest {
+function attachAcceptedPage(manifest: ProjectManifest, page: ImagePageResult, job: ImageGenerationJob): ProjectManifest {
   if (
     manifest.currentRevision.id !== page.projectRevisionId
     || page.status !== "success"
@@ -414,7 +493,25 @@ function attachAcceptedPage(manifest: ProjectManifest, page: ImagePageResult): P
     || !page.artifacts
   ) return manifest;
   const index = manifest.slides.findIndex(({ id }) => id === page.slideId);
-  if (index < 0) return manifest;
+  if (index < 0) {
+    const jobPage = job.pages.find(({ slideId }) => slideId === page.slideId);
+    if (!jobPage) return manifest;
+    const slides = [...manifest.slides, {
+      id: page.slideId,
+      order: jobPage.order,
+      title: jobPage.spec.title,
+      role: jobPage.spec.role,
+      specRevisionId: page.projectRevisionId,
+      promptRevisionId: page.projectRevisionId,
+      styleRevisionId: page.projectRevisionId,
+      status: "ready" as const,
+      image: page.artifacts.normalized,
+      editable: null,
+      finalRender: page.artifacts.normalized,
+      staleReasons: [],
+    }].sort((left, right) => left.order - right.order);
+    return { ...manifest, stage: "generating", slides };
+  }
   const slides = [...manifest.slides];
   slides[index] = {
     ...slides[index]!,
@@ -427,9 +524,18 @@ function attachAcceptedPage(manifest: ProjectManifest, page: ImagePageResult): P
   return { ...manifest, stage: "generating", slides };
 }
 
+function attachAcceptedPages(manifest: ProjectManifest, pages: ImagePageResult[], job: ImageGenerationJob): ProjectManifest {
+  let attached = manifest;
+  for (const page of pages) attached = attachAcceptedPage(attached, page, job);
+  return attached;
+}
+
 export async function recordDelegatedResult(
   root: string,
   raw: DelegatedResultIntake,
+  operations: {
+    checkpoint?: (step: "after-page-promotion" | "after-aggregate-promotion" | "before-manifest-attach" | "after-manifest-attach") => Promise<void> | void;
+  } = {},
 ): Promise<ImageGenerationResult> {
   const preflight = await authenticateIntake(root, raw, false);
   await settleDelegatedGenerationCall(root, {
@@ -442,7 +548,7 @@ export async function recordDelegatedResult(
   });
 
   const publication = await withProjectLease(root, "generation", async (canonicalRoot) => {
-    const authenticated = await authenticateIntake(canonicalRoot, raw, true);
+    const authenticated = await authenticateIntake(canonicalRoot, raw, false);
     const ledger = await readCallLedger(canonicalRoot);
     const requestCount = ledger.filter((entry) =>
       entry.entryKind === "admission"
@@ -459,6 +565,7 @@ export async function recordDelegatedResult(
       projectRevisionId: authenticated.job.projectRevisionId,
       slideId: authenticated.page.slideId,
       attempt: authenticated.page.attempt,
+      requestOrdinal: authenticated.intake.requestOrdinal,
       requestCount,
       status: authenticated.status,
       dependency: authenticated.intake.dependency,
@@ -468,6 +575,7 @@ export async function recordDelegatedResult(
       referenceUsage: authenticated.intake.referenceUsage,
       artifacts: authenticated.artifacts,
       styleConsistency: authenticated.styleConsistency,
+      presentationQa: authenticated.intake.presentationQa,
       recordedAt: new Date().toISOString(),
     });
     const existing = await readExistingPage(
@@ -479,24 +587,48 @@ export async function recordDelegatedResult(
     if (existing && !sameJson(pageWithoutTimestamp(existing), pageWithoutTimestamp(candidate))) {
       throw new Error("conflicting delegated result replay");
     }
-
-    const project = openGenerationDirectory(canonicalRoot);
-    const generation = project.child("generation", false);
-    const jobs = generation.child("jobs", false);
-    const jobDir = jobs.child(authenticated.job.jobId, false);
-    const results = jobDir.child("results");
-    try {
-      if (!existing) results.writeExclusive(`${candidate.slideId}-${candidate.attempt}.json`, canonicalContractFile(candidate));
-    } finally {
-      results.close();
-      jobDir.close();
-      jobs.close();
-      generation.close();
-      project.close();
+    const priorPages = await pageResults(canonicalRoot, authenticated.job);
+    const mergedPages = [...priorPages.filter(({ slideId }) => slideId !== candidate.slideId), existing ?? candidate].sort((left, right) =>
+      authenticated.job.pages.findIndex(({ slideId }) => slideId === left.slideId)
+      - authenticated.job.pages.findIndex(({ slideId }) => slideId === right.slideId)
+    );
+    await reauthenticateAggregatePages(canonicalRoot, authenticated.job, authenticated.intake.batchReport, mergedPages, ledger);
+    const priorAggregate = await readAggregate(canonicalRoot, authenticated.job.jobId);
+    if (priorAggregate) {
+      await reauthenticateAggregate(canonicalRoot, authenticated.job, priorAggregate, ledger);
+      if (priorAggregate.pages.length > mergedPages.length) {
+        throw new Error("delegated aggregate contains pages absent from immutable intake records");
+      }
+      if (!priorAggregate.pages.every((page, index) => sameJson(page, mergedPages[index]))) {
+        throw new Error("delegated aggregate conflicts with immutable page results");
+      }
+      if (
+        !sameJson(priorAggregate.batchReport.pages, authenticated.intake.batchReport.pages.slice(0, priorAggregate.batchReport.pages.length))
+        || !sameJson(priorAggregate.batchReport.switches, authenticated.intake.batchReport.switches.slice(0, priorAggregate.batchReport.switches.length))
+      ) throw new Error("delegated aggregate routing evidence is not an immutable prefix");
     }
 
+    const publishedAuthentication = await authenticateIntake(canonicalRoot, raw, true);
+    const publishedCandidate = existing ?? ImagePageResultSchema.parse({
+      ...candidate,
+      artifacts: publishedAuthentication.artifacts,
+    });
+    if (existing) await reauthenticateStoredPage(canonicalRoot, authenticated.job, existing, authenticated.intake.batchReport, ledger);
+    if (!existing) {
+      const project = openGenerationDirectory(canonicalRoot);
+      const generation = project.child("generation", false);
+      const jobs = generation.child("jobs", false);
+      const jobDir = jobs.child(authenticated.job.jobId, false);
+      const results = jobDir.child("results");
+      try { results.writeExclusive(`${publishedCandidate.slideId}-${publishedCandidate.attempt}.json`, canonicalContractFile(publishedCandidate)); }
+      finally {
+        results.close(); jobDir.close(); jobs.close(); generation.close(); project.close();
+      }
+    }
+    await operations.checkpoint?.("after-page-promotion");
+
     const pages = await pageResults(canonicalRoot, authenticated.job);
-    validateAggregateReport(authenticated.job, authenticated.intake.batchReport, pages);
+    await reauthenticateAggregatePages(canonicalRoot, authenticated.job, authenticated.intake.batchReport, pages, ledger);
     const aggregate = ImageGenerationResultSchema.parse({
       contractVersion: 1,
       jobId: authenticated.job.jobId,
@@ -509,31 +641,37 @@ export async function recordDelegatedResult(
       pages,
       updatedAt: new Date().toISOString(),
     });
-    const priorAggregate = await readAggregate(canonicalRoot, authenticated.job.jobId);
-    if (existing && priorAggregate && sameJson(priorAggregate.batchReport, aggregate.batchReport)) {
-      return { result: priorAggregate, replayed: true };
+    let result = aggregate;
+    let aggregateCurrent = false;
+    if (priorAggregate) {
+      if (priorAggregate.pages.length === aggregate.pages.length) {
+        const { updatedAt: _priorUpdatedAt, ...priorContent } = priorAggregate;
+        const { updatedAt: _aggregateUpdatedAt, ...aggregateContent } = aggregate;
+        if (!sameJson(priorContent, aggregateContent)) throw new Error("conflicting delegated aggregate replay");
+        result = priorAggregate;
+        aggregateCurrent = true;
+      }
     }
-    const projectForAggregate = openGenerationDirectory(canonicalRoot);
-    const generationForAggregate = projectForAggregate.child("generation", false);
-    const jobsForAggregate = generationForAggregate.child("jobs", false);
-    const jobForAggregate = jobsForAggregate.child(authenticated.job.jobId, false);
-    try {
-      jobForAggregate.replace("result.json", canonicalContractFile(aggregate), `.result-${randomUUID()}.json`);
-    } finally {
-      jobForAggregate.close();
-      jobsForAggregate.close();
-      generationForAggregate.close();
-      projectForAggregate.close();
+    if (!aggregateCurrent) {
+      const projectForAggregate = openGenerationDirectory(canonicalRoot);
+      const generationForAggregate = projectForAggregate.child("generation", false);
+      const jobsForAggregate = generationForAggregate.child("jobs", false);
+      const jobForAggregate = jobsForAggregate.child(authenticated.job.jobId, false);
+      try { jobForAggregate.replace("result.json", canonicalContractFile(aggregate), `.result-${randomUUID()}.json`); }
+      finally { jobForAggregate.close(); jobsForAggregate.close(); generationForAggregate.close(); projectForAggregate.close(); }
     }
-    return { result: aggregate, replayed: false };
+    await operations.checkpoint?.("after-aggregate-promotion");
+    return result;
   });
 
-  if (!publication.replayed && publication.result.pages.some((page) => page.styleConsistency === "accepted")) {
+  await operations.checkpoint?.("before-manifest-attach");
+  if (publication.pages.some((page) => page.styleConsistency === "accepted")) {
     const manifest = await readProject(root);
-    if (
-      manifest.currentRevision.id === publication.result.projectRevisionId
-      && publication.result.pages.some((page) => manifest.slides.some(({ id }) => id === page.slideId))
-    ) await updateProject(root, (current) => publication.result.pages.reduce(attachAcceptedPage, current));
+    const attached = attachAcceptedPages(manifest, publication.pages, preflight.job);
+    if (!sameJson(attached, manifest)) {
+      await updateProject(root, (current) => attachAcceptedPages(current, publication.pages, preflight.job));
+    }
   }
-  return publication.result;
+  await operations.checkpoint?.("after-manifest-attach");
+  return publication;
 }

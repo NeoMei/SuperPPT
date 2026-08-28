@@ -3,6 +3,7 @@ import { createHash } from "node:crypto";
 import { z } from "zod";
 
 import { Sha256Schema } from "../project/schemas.js";
+import { SlideSpecSchema } from "../planning/schemas.js";
 import { StyleLockSchema, StyleReferenceSchema } from "../styles/schemas.js";
 
 export const ImageJobKindSchema = z.enum([
@@ -75,6 +76,27 @@ const ImageGenerationPageSchema = z.object({
   finalPrompt: z.string().min(1),
   promptSha256: Sha256Schema,
   target: z.string().startsWith("generation/jobs/"),
+  spec: SlideSpecSchema,
+  specSnapshot: z.object({
+    path: z.string().startsWith("generation/jobs/"),
+    sha256: Sha256Schema,
+  }).strict(),
+}).strict();
+
+const SealedInputArtifactSchema = z.object({
+  path: z.string().startsWith("generation/jobs/"),
+  sha256: Sha256Schema,
+}).strict();
+
+const SealedJobInputsSchema = z.object({
+  styleLock: SealedInputArtifactSchema,
+  styleRecipe: SealedInputArtifactSchema,
+  approvedSample: SealedInputArtifactSchema.nullable(),
+  references: z.array(z.object({
+    sourcePath: z.string().startsWith("style/references/"),
+    role: z.enum(["art-direction", "content-reference"]),
+    snapshot: SealedInputArtifactSchema,
+  }).strict()),
 }).strict();
 
 export const ImageGenerationJobSchema = z.object({
@@ -89,6 +111,7 @@ export const ImageGenerationJobSchema = z.object({
   styleLockPath: z.literal("style/lock.json"),
   styleLockSha256: Sha256Schema,
   styleLock: StyleLockSchema,
+  sealedInputs: SealedJobInputsSchema,
   callBudget: z.number().int().positive(),
   outboundDisclosure: OutboundDisclosureSchema,
   pages: z.array(ImageGenerationPageSchema).min(1),
@@ -104,6 +127,29 @@ export const ImageGenerationJobSchema = z.object({
   if (canonicalJson(job.outboundDisclosure.references) !== canonicalJson(job.styleLock.referenceArtifacts)) {
     context.addIssue({ code: "custom", path: ["outboundDisclosure", "references"], message: "outbound references must match the style lock" });
   }
+  const inputBase = `generation/jobs/${job.jobId}/inputs`;
+  if (
+    job.sealedInputs.styleLock.path !== `${inputBase}/style-lock.json`
+    || job.sealedInputs.styleLock.sha256 !== job.styleLockSha256
+    || job.sealedInputs.styleRecipe.path !== `${inputBase}/style-recipe.json`
+    || job.sealedInputs.styleRecipe.sha256 !== job.styleLock.styleRecipeSha256
+  ) context.addIssue({ code: "custom", path: ["sealedInputs"], message: "sealed style inputs must bind the immutable job Style Lock" });
+  const approvedSample = job.styleLock.approvedSample;
+  if (approvedSample === null ? job.sealedInputs.approvedSample !== null : (
+    job.sealedInputs.approvedSample?.path !== `${inputBase}/approved-sample.bin`
+    || job.sealedInputs.approvedSample.sha256 !== approvedSample.sha256
+  )) context.addIssue({ code: "custom", path: ["sealedInputs", "approvedSample"], message: "sealed approved sample must bind the Style Lock" });
+  if (
+    job.sealedInputs.references.length !== job.styleLock.referenceArtifacts.length
+    || job.sealedInputs.references.some((reference, index) => {
+      const expected = job.styleLock.referenceArtifacts[index];
+      return !expected
+        || reference.sourcePath !== expected.path
+        || reference.role !== expected.role
+        || reference.snapshot.path !== `${inputBase}/references/${index}.bin`
+        || reference.snapshot.sha256 !== expected.sha256;
+    })
+  ) context.addIssue({ code: "custom", path: ["sealedInputs", "references"], message: "sealed references must bind the Style Lock in order" });
   if (job.callBudget < job.pages.length) {
     context.addIssue({ code: "custom", path: ["callBudget"], message: "call budget must cover the initial page count" });
   }
@@ -131,6 +177,12 @@ export const ImageGenerationJobSchema = z.object({
     const expectedTarget = `generation/jobs/${job.jobId}/ai-image-output/${page.slideId}.png`;
     if (page.target !== expectedTarget) {
       context.addIssue({ code: "custom", path: ["pages", index, "target"], message: "output target must bind the job and slide" });
+    }
+    if (page.spec.slideId !== page.slideId) {
+      context.addIssue({ code: "custom", path: ["pages", index, "spec"], message: "sealed slide spec must bind the job page" });
+    }
+    if (page.specSnapshot.path !== `${inputBase}/specs/${page.slideId}.json`) {
+      context.addIssue({ code: "custom", path: ["pages", index, "specSnapshot", "path"], message: "sealed slide spec path must bind the job page" });
     }
   }
 });

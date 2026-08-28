@@ -5,31 +5,44 @@ import { basename, dirname } from "node:path";
 import { z } from "zod";
 
 import { RoleSchema } from "../planning/schemas.js";
-import { Sha256Schema } from "../project/schemas.js";
 import { openGenerationDirectory } from "./anchored-dir.js";
 import { runBridge } from "./bridge-process.js";
 import { withPrivateInput } from "./private-input.js";
-import { QualityDecisionSchema, QualityEvidenceSchema, type QualityDecision, type QualityEvidence } from "./schemas.js";
+import {
+  DelegatedPresentationQaSchema,
+  QualityDecisionSchema,
+  QualityEvidenceSchema,
+  type DelegatedPresentationQa,
+  type QualityDecision,
+  type QualityEvidence,
+} from "./schemas.js";
 
 const hash = (value: string): string => createHash("sha256").update(value).digest("hex");
 
-export const DelegatedPresentationQaSchema = z.object({
-  approvedSampleSha256: Sha256Schema,
-  pageRole: RoleSchema,
-  decision: QualityDecisionSchema,
-}).strict();
-
-export type DelegatedPresentationQa = z.infer<typeof DelegatedPresentationQaSchema>;
+export { DelegatedPresentationQaSchema };
+export type { DelegatedPresentationQa };
 
 export function delegatedStyleConsistency(
   raw: DelegatedPresentationQa,
-  expected: { approvedSampleSha256: string; pageRole: z.infer<typeof RoleSchema> },
+  expected: {
+    approvedSampleSha256: string;
+    normalizedImageSha256: string;
+    slideSpecSha256: string;
+    pageRole: z.infer<typeof RoleSchema>;
+    requiredText: string[];
+  },
 ): "accepted" | "rejected" {
   const evidence = DelegatedPresentationQaSchema.parse(raw);
   if (
     evidence.approvedSampleSha256 !== expected.approvedSampleSha256
+    || evidence.normalizedImageSha256 !== expected.normalizedImageSha256
+    || evidence.slideSpecSha256 !== expected.slideSpecSha256
     || evidence.pageRole !== expected.pageRole
-  ) throw new Error("presentation QA does not bind the approved sample and page-role rules");
+  ) throw new Error("presentation QA does not bind the approved sample, normalized image, and sealed page-role rules");
+  if (
+    evidence.decision.requiredText.length !== expected.requiredText.length
+    || evidence.decision.requiredText.some((item, index) => item.text !== expected.requiredText[index])
+  ) throw new Error("presentation QA required text does not bind the exact expected copy from the sealed slide spec");
   return evidence.decision.ok && evidence.decision.styleConsistent ? "accepted" : "rejected";
 }
 

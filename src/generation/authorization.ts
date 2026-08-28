@@ -9,6 +9,7 @@ import type { AiImageSkillDependency } from "../dependencies/schemas.js";
 import { AiImageSkillDependencySchema } from "../dependencies/schemas.js";
 import { assertGateCurrent } from "../planning/confirm.js";
 import { loadValidatedPlan } from "../planning/load.js";
+import { SlideSpecSchema } from "../planning/schemas.js";
 import { validateExecutionGateEvidence } from "../project/evidence.js";
 import { withProjectLease } from "../project/lock.js";
 import { readOwnedRegularFile, readRegularFileNoFollow } from "../project/safe-file.js";
@@ -16,6 +17,7 @@ import { readProject } from "../project/store.js";
 import { canonicalStyleSample } from "../styles/sample-contract.js";
 import { compileSlidePrompt } from "../styles/prompt-compiler.js";
 import { readApprovedStyleLock, readStyleLock, type LockedStyle } from "../styles/style-lock.js";
+import { StyleLockSchema, StyleRecipeSchema } from "../styles/schemas.js";
 import { openGenerationDirectory } from "./anchored-dir.js";
 import {
   CallLedgerEntrySchema,
@@ -431,6 +433,7 @@ export async function assertAuthorizedJobBinding(root: string, job: ImageGenerat
   const current = await readJob(root, job.jobId);
   if (!sameJson(current, job)) throw new Error("immutable image generation job changed after publication");
   await assertAiSkillBindingCurrent(job.aiSkill);
+  await assertSealedJobInputs(root, job);
   let currentLock: LockedStyle;
   try {
     currentLock = job.kind === "style-sample" ? await readStyleLock(root) : await readApprovedStyleLock(root);
@@ -480,6 +483,44 @@ export async function assertAuthorizedJobBinding(root: string, job: ImageGenerat
       }
       await assertPreviousPromptPublished(root, page.slideId, original.promptSha256, digest);
     }
+  }
+}
+
+export async function assertSealedJobInputs(root: string, job: ImageGenerationJob): Promise<void> {
+  const readSealed = async (path: string, expectedSha256: string, label: string): Promise<Buffer> => {
+    let bytes: Buffer;
+    try { bytes = await readOwnedRegularFile(root, path); } catch (error: unknown) {
+      throw new Error(`sealed image generation ${label} is unavailable`, { cause: error });
+    }
+    if (sha256(bytes) !== expectedSha256) throw new Error(`sealed image generation ${label} hash changed`);
+    return bytes;
+  };
+  const lockBytes = await readSealed(job.sealedInputs.styleLock.path, job.sealedInputs.styleLock.sha256, "Style Lock");
+  const recipeBytes = await readSealed(job.sealedInputs.styleRecipe.path, job.sealedInputs.styleRecipe.sha256, "style recipe");
+  let sealedLock;
+  let sealedRecipe;
+  try {
+    sealedLock = StyleLockSchema.parse(JSON.parse(lockBytes.toString("utf8")));
+    sealedRecipe = StyleRecipeSchema.parse(JSON.parse(recipeBytes.toString("utf8")));
+  } catch (error: unknown) {
+    throw new Error("sealed image generation style inputs are invalid", { cause: error });
+  }
+  if (!sameJson(sealedLock, job.styleLock) || !sameJson(sealedRecipe, job.styleLock.recipe)) {
+    throw new Error("sealed image generation style inputs conflict with the immutable job");
+  }
+  if (job.sealedInputs.approvedSample) {
+    await readSealed(job.sealedInputs.approvedSample.path, job.sealedInputs.approvedSample.sha256, "approved sample");
+  }
+  for (const [index, reference] of job.sealedInputs.references.entries()) {
+    await readSealed(reference.snapshot.path, reference.snapshot.sha256, `reference ${index + 1}`);
+  }
+  for (const page of job.pages) {
+    const specBytes = await readSealed(page.specSnapshot.path, page.specSnapshot.sha256, `slide spec ${page.slideId}`);
+    let spec;
+    try { spec = SlideSpecSchema.parse(JSON.parse(specBytes.toString("utf8"))); } catch (error: unknown) {
+      throw new Error("sealed image generation slide spec is invalid", { cause: error });
+    }
+    if (!sameJson(spec, page.spec)) throw new Error("sealed image generation slide spec conflicts with the immutable job");
   }
 }
 

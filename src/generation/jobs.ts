@@ -7,6 +7,7 @@ import { z } from "zod";
 
 import { AiImageSkillDependencySchema, type AiImageSkillDependency } from "../dependencies/schemas.js";
 import { loadValidatedPlan } from "../planning/load.js";
+import type { SlideSpec } from "../planning/schemas.js";
 import { withProjectLease } from "../project/lock.js";
 import { readOwnedRegularFile } from "../project/safe-file.js";
 import { readProject } from "../project/store.js";
@@ -130,6 +131,7 @@ type PreparedPage = {
   order: number;
   attempt: number;
   finalPrompt: string;
+  spec: SlideSpec;
 };
 
 async function preparePages(
@@ -145,7 +147,7 @@ async function preparePages(
     const sample = await canonicalStyleSample(root);
     const order = validated.outline.slides.find(({ id }) => id === sample.spec.slideId)?.order;
     if (order === undefined) throw new Error("representative slide is not ordered in the current plan");
-    const pages = [{ slideId: sample.spec.slideId, order, attempt: 1, finalPrompt: sample.compiled.text }];
+    const pages = [{ slideId: sample.spec.slideId, order, attempt: 1, finalPrompt: sample.compiled.text, spec: sample.spec }];
     if (!sameJson(plan.pages, pages.map(({ slideId, order, finalPrompt }) => ({ slideId, order, promptSha256: sha256(finalPrompt) })))) {
       throw new Error("style sample prompt does not match its generation authorization");
     }
@@ -158,6 +160,7 @@ async function preparePages(
       order: validated.outline.slides.find(({ id }) => id === spec.slideId)!.order,
       attempt: 1,
       finalPrompt: compileSlidePrompt({ spec, styleLock: lock }).text,
+      spec,
     }));
     if (request.callBudget !== undefined && request.callBudget !== plan.callBudget) {
       if (request.callBudget < pages.length) throw new Error("job call budget cannot be smaller than the initial page count");
@@ -202,7 +205,54 @@ async function preparePages(
     order: validated.outline.slides.find(({ id }) => id === request.slideId)!.order,
     attempt: await nextAttempt(root, request.slideId),
     finalPrompt: request.finalPrompt,
+    spec: validated.specs[specIndex]!,
   }];
+}
+
+type SealedJobBytes = {
+  styleLock: Buffer;
+  styleRecipe: Buffer;
+  approvedSample: Buffer | null;
+  references: Buffer[];
+  specs: Buffer[];
+};
+
+async function prepareSealedInputs(
+  root: string,
+  jobId: string,
+  lock: LockedStyle,
+  pages: PreparedPage[],
+): Promise<{ sealedInputs: ImageGenerationJob["sealedInputs"]; bytes: SealedJobBytes }> {
+  const styleLock = await readOwnedRegularFile(root, "style/lock.json");
+  const styleRecipe = await readOwnedRegularFile(root, "style/recipe.json");
+  const approvedSample = lock.approvedSample ? await readOwnedRegularFile(root, lock.approvedSample.path) : null;
+  const references = await Promise.all(lock.referenceArtifacts.map(({ path }) => readOwnedRegularFile(root, path)));
+  const specs = await Promise.all(pages.map(async (page) => {
+    const bytes = await readOwnedRegularFile(root, `slides/${page.slideId}/spec.json`);
+    const parsed = JSON.parse(bytes.toString("utf8"));
+    if (!sameJson(parsed, page.spec)) throw new Error("slide spec changed while sealing image generation inputs");
+    return bytes;
+  }));
+  if (sha256(styleLock) !== lock.styleLockSha256 || sha256(styleRecipe) !== lock.styleRecipeSha256) {
+    throw new Error("style inputs changed while sealing image generation inputs");
+  }
+  const inputBase = `generation/jobs/${jobId}/inputs`;
+  return {
+    sealedInputs: {
+      styleLock: { path: `${inputBase}/style-lock.json`, sha256: sha256(styleLock) },
+      styleRecipe: { path: `${inputBase}/style-recipe.json`, sha256: sha256(styleRecipe) },
+      approvedSample: approvedSample === null ? null : {
+        path: `${inputBase}/approved-sample.bin`,
+        sha256: sha256(approvedSample),
+      },
+      references: lock.referenceArtifacts.map((reference, index) => ({
+        sourcePath: reference.path,
+        role: reference.role,
+        snapshot: { path: `${inputBase}/references/${index}.bin`, sha256: sha256(references[index]!) },
+      })),
+    },
+    bytes: { styleLock, styleRecipe, approvedSample, references, specs },
+  };
 }
 
 function writePromptArtifacts(root: string, job: ImageGenerationJob): void {
@@ -228,7 +278,7 @@ function writePromptArtifacts(root: string, job: ImageGenerationJob): void {
   }
 }
 
-function publishJob(root: string, job: ImageGenerationJob): void {
+function publishJob(root: string, job: ImageGenerationJob, sealed: SealedJobBytes): void {
   const project = openGenerationDirectory(root);
   const generation = project.child("generation");
   if (project.fd >= 0) fsyncSync(project.fd);
@@ -240,6 +290,23 @@ function publishJob(root: string, job: ImageGenerationJob): void {
   try {
     const output = staging.child("ai-image-output");
     output.close();
+    const inputs = staging.child("inputs");
+    try {
+      inputs.writeExclusive("style-lock.json", sealed.styleLock);
+      inputs.writeExclusive("style-recipe.json", sealed.styleRecipe);
+      if (sealed.approvedSample) inputs.writeExclusive("approved-sample.bin", sealed.approvedSample);
+      const references = inputs.child("references");
+      try {
+        sealed.references.forEach((bytes, index) => references.writeExclusive(`${index}.bin`, bytes));
+        if (references.fd >= 0) fsyncSync(references.fd);
+      } finally { references.close(); }
+      const specs = inputs.child("specs");
+      try {
+        job.pages.forEach((page, index) => specs.writeExclusive(`${page.slideId}.json`, sealed.specs[index]!));
+        if (specs.fd >= 0) fsyncSync(specs.fd);
+      } finally { specs.close(); }
+      if (inputs.fd >= 0) fsyncSync(inputs.fd);
+    } finally { inputs.close(); }
     staging.writeExclusive("job.json", canonicalContractFile(job));
     if (staging.fd >= 0) fsyncSync(staging.fd);
     staging.close();
@@ -294,6 +361,7 @@ export async function prepareImageGenerationJob(
       throw new Error("job call budget cannot be smaller than the initial page count");
     }
     const jobId = randomUUID();
+    const sealed = await prepareSealedInputs(canonicalRoot, jobId, lock, preparedPages);
     const job = ImageGenerationJobSchema.parse({
       contractVersion: 1,
       jobId,
@@ -306,18 +374,24 @@ export async function prepareImageGenerationJob(
       styleLockPath: "style/lock.json",
       styleLockSha256: lock.styleLockSha256,
       styleLock: embeddedLock(lock),
+      sealedInputs: sealed.sealedInputs,
       callBudget: authorization.plan.callBudget,
       outboundDisclosure: { sendsText: true, references: lock.referenceArtifacts },
-      pages: preparedPages.map((page) => ({
+      pages: preparedPages.map((page, index) => ({
         ...page,
         promptArtifact: `slides/${page.slideId}/prompts/${jobId}.txt`,
         promptSha256: sha256(page.finalPrompt),
         target: `generation/jobs/${jobId}/ai-image-output/${page.slideId}.png`,
+        spec: page.spec,
+        specSnapshot: {
+          path: `generation/jobs/${jobId}/inputs/specs/${page.slideId}.json`,
+          sha256: sha256(sealed.bytes.specs[index]!),
+        },
       })),
       createdAt: new Date().toISOString(),
     });
     writePromptArtifacts(canonicalRoot, job);
-    publishJob(canonicalRoot, job);
+    publishJob(canonicalRoot, job, sealed.bytes);
     await assertAuthorizedJobBinding(canonicalRoot, job);
     return job;
   });

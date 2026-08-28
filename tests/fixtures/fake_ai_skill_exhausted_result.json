@@ -1,0 +1,24 @@
+{
+  "dependency": {
+    "status": "retryable_exhausted",
+    "provider": "doubao",
+    "channel": "api",
+    "output_path": null,
+    "safe_message": ""
+  },
+  "batchReport": {
+    "batch_mode": "serial-sticky-monotonic",
+    "stopped": true,
+    "search_candidate": "host-openai",
+    "sticky_candidate": null,
+    "pages": [
+      {
+        "page": 1,
+        "outcome": "exhausted",
+        "candidate": null,
+        "summary": "api-doubao: retryable_exhausted: no safe reason provided"
+      }
+    ],
+    "switches": []
+  }
+}
