@@ -1,226 +1,180 @@
 import assert from "node:assert/strict";
-import { execFile } from "node:child_process";
 import {
-  chmod,
   mkdir,
   mkdtemp,
   realpath,
   rm,
+  symlink,
   unlink,
   writeFile,
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test, { type TestContext } from "node:test";
-import { promisify } from "node:util";
 
 import { preflightDependencies } from "../src/dependencies/preflight.js";
-import {
-  resolveDependencies,
-  resolveFromSkillEntries,
-} from "../src/dependencies/resolve.js";
+import { resolveSkillDependencies } from "../src/dependencies/resolve.js";
+import { AiImageSkillDependencySchema } from "../src/dependencies/schemas.js";
 
-const execFileAsync = promisify(execFile);
+const requiredScripts = {
+  generationResult: "generation_result.py",
+  hostRoutingPolicy: "host_routing_policy.py",
+  importHostImage: "import_host_image.py",
+  prepareEditableInput: "prepare_editable_input.py",
+} as const;
 
 type Fixture = { root: string; ai: string; editable: string };
 
 async function fixture(t: TestContext, version = "0.1.0"): Promise<Fixture> {
-  const root = await mkdtemp(join(tmpdir(), "superppt-deps-"));
+  const root = await mkdtemp(join(tmpdir(), "superppt-skill-deps-"));
   t.after(async () => rm(root, { recursive: true, force: true }));
-  const ai = join(root, "ai-image-to-ppt");
-  const editable = join(root, "editable-plugin");
+  const ai = join(root, "provided-ai-skill");
+  const editable = join(root, "provided-editable-skill");
   await mkdir(join(ai, "scripts"), { recursive: true });
-  await mkdir(join(ai, "references"), { recursive: true });
   await mkdir(join(editable, "skills", "image-to-editable-pptx"), { recursive: true });
   await writeFile(join(ai, "SKILL.md"), "---\nname: ai-image-to-ppt\n---\n");
-  await writeFile(join(ai, "scripts", "gen_slide_gemini.py"), "def gen(prompt, out_path, retries=0): return True\n");
-  await writeFile(join(editable, "package.json"), JSON.stringify({ name: "image-to-editable-pptx", version, engines: { node: ">=22.6" } }));
-  await writeFile(join(editable, "package-lock.json"), JSON.stringify({ name: "image-to-editable-pptx", version, lockfileVersion: 3, packages: {} }));
-  await writeFile(join(editable, "skills", "image-to-editable-pptx", "SKILL.md"), "---\nname: image-to-editable-pptx\n---\n");
+  await Promise.all(Object.values(requiredScripts).map((script) => writeFile(
+    join(ai, "scripts", script),
+    "raise SystemExit('this script must never be executed by dependency resolution')\n",
+  )));
+  await writeFile(join(editable, "package.json"), JSON.stringify({
+    name: "image-to-editable-pptx",
+    version,
+  }));
+  await writeFile(
+    join(editable, "skills", "image-to-editable-pptx", "SKILL.md"),
+    "---\nname: image-to-editable-pptx\n---\n",
+  );
   return { root, ai, editable };
 }
 
-async function expectIncompatibleVersion(t: TestContext, version: string): Promise<void> {
-  const { ai, editable } = await fixture(t, version);
-  await assert.rejects(
-    resolveDependencies({ aiRoot: ai, editableRoot: editable }),
-    /compatible image-to-editable-pptx >=0\.1\.0 <0\.2\.0/,
-  );
+function request(fixture: Fixture) {
+  return {
+    aiSkillRoot: fixture.ai,
+    editableSkillRoot: fixture.editable,
+  };
 }
 
-test("resolves legacy ai-image and editable plugin roots", async (t) => {
-  const { ai, editable } = await fixture(t);
-  const resolved = await resolveDependencies({ aiRoot: ai, editableRoot: editable });
-  assert.equal(resolved.ai.providers[0]?.id, "gemini-legacy");
-  assert.equal(resolved.editable.version, "0.1.0");
-  assert.match(resolved.editable.cli.cwd, /editable-plugin$/);
-});
+test("resolves exactly the supplied Skill roots without provider discovery", async (t) => {
+  const current = await fixture(t);
+  const sibling = join(current.root, "ai-image-to-ppt");
+  await mkdir(join(sibling, "scripts"), { recursive: true });
+  await writeFile(join(sibling, "SKILL.md"), "wrong sibling Skill\n");
 
-test("preserves Doubao and reviewer legacy capabilities", async (t) => {
-  const { ai, editable } = await fixture(t);
-  await writeFile(join(ai, "scripts", "gen_slide_doubao.py"), "def gen(prompt, out_path, retries=0): return True\n");
-  await writeFile(join(ai, "scripts", "vision_check_gemini.py"), "def check(path): return True\n");
+  const resolved = await resolveSkillDependencies(request(current));
+  const ai = AiImageSkillDependencySchema.parse(resolved.ai);
+  const aiRoot = await realpath(current.ai);
+  const editableRoot = await realpath(current.editable);
 
-  const resolved = await resolveDependencies({ aiRoot: ai, editableRoot: editable });
-  assert.deepEqual(resolved.ai.providers.map(({ id }) => id), ["gemini-legacy", "doubao-legacy"]);
-  assert.deepEqual(resolved.ai.reviewer, {
-    module: "scripts/vision_check_gemini.py",
-    callable: "check",
+  assert.equal(ai.kind, "ai-image-to-ppt");
+  assert.equal(ai.root, aiRoot);
+  assert.equal(ai.skillFile, join(aiRoot, "SKILL.md"));
+  assert.deepEqual(ai.scripts, {
+    generationResult: join(aiRoot, "scripts", "generation_result.py"),
+    hostRoutingPolicy: join(aiRoot, "scripts", "host_routing_policy.py"),
+    importHostImage: join(aiRoot, "scripts", "import_host_image.py"),
+    prepareEditableInput: join(aiRoot, "scripts", "prepare_editable_input.py"),
   });
+  assert.equal(resolved.editable.root, editableRoot);
+  assert.equal(resolved.editable.version, "0.1.0");
 });
 
-test("prefers a strict capability manifest and exposes gpt-image-2 without model branching", async (t) => {
-  const { ai, editable } = await fixture(t);
-  await writeFile(join(ai, "references", "capabilities.json"), JSON.stringify({
-    contractVersion: 1,
-    defaultProvider: "openai-gpt-image-2",
-    providers: [{
-      id: "openai-gpt-image-2",
-      module: "scripts/gen_slide_gpt_image.py",
-      callable: "gen",
-      outputFormats: ["png"],
-      supportsReferenceImages: true,
-    }],
-    reviewer: null,
-  }));
-  await writeFile(join(ai, "scripts", "gen_slide_gpt_image.py"), "def gen(prompt, out_path, retries=0): return True\n");
-
-  const resolved = await resolveDependencies({ aiRoot: ai, editableRoot: editable });
-  assert.equal(resolved.ai.defaultProvider, "openai-gpt-image-2");
-  assert.equal(resolved.ai.providers[0]?.supportsReferenceImages, true);
-  assert.equal((await preflightDependencies(resolved)).ok, true);
-});
-
-test("fails on an invalid present manifest instead of activating legacy fallback", async (t) => {
-  const { ai, editable } = await fixture(t);
-  await writeFile(join(ai, "references", "capabilities.json"), "not-json");
+test("rejects a symlinked Skill root", async (t) => {
+  const current = await fixture(t);
+  const linkedRoot = join(current.root, "linked-ai-skill");
+  await symlink(current.ai, linkedRoot);
 
   await assert.rejects(
-    resolveDependencies({ aiRoot: ai, editableRoot: editable }),
-    /capability manifest is invalid/,
+    resolveSkillDependencies({ ...request(current), aiSkillRoot: linkedRoot }),
+    /ai-image-to-ppt Skill root must not be a symbolic link/,
   );
 });
 
-test("fails on an unreadable present manifest instead of activating legacy fallback", async (t) => {
-  const { ai, editable } = await fixture(t);
-  const manifest = join(ai, "references", "capabilities.json");
-  await writeFile(manifest, "{}");
-  await chmod(manifest, 0o000);
+test("rejects required scripts reached through a symbolic link", async (t) => {
+  const current = await fixture(t);
+  const externalScripts = join(current.root, "external-scripts");
+  await mkdir(externalScripts);
+  await Promise.all(Object.values(requiredScripts).map((script) => writeFile(
+    join(externalScripts, script),
+    "wrong linked script\n",
+  )));
+  await rm(join(current.ai, "scripts"), { recursive: true, force: true });
+  await symlink(externalScripts, join(current.ai, "scripts"));
 
   await assert.rejects(
-    resolveDependencies({ aiRoot: ai, editableRoot: editable }),
-    /capability manifest is unreadable/,
+    resolveSkillDependencies(request(current)),
+    /ai-image-to-ppt required script is unsafe: generation_result\.py/,
   );
 });
 
-test("requires the ai-image-to-ppt root Skill entry", async (t) => {
-  const { ai, editable } = await fixture(t);
-  await unlink(join(ai, "SKILL.md"));
+test("rejects a missing ai-image-to-ppt SKILL.md", async (t) => {
+  const current = await fixture(t);
+  await unlink(join(current.ai, "SKILL.md"));
 
   await assert.rejects(
-    resolveDependencies({ aiRoot: ai, editableRoot: editable }),
+    resolveSkillDependencies(request(current)),
     /ai-image-to-ppt Skill entry is missing/,
   );
 });
 
-test("resolves exact physical Skill entries", async (t) => {
-  const { ai, editable } = await fixture(t);
-  const resolved = await resolveFromSkillEntries({
-    aiSkill: join(ai, "SKILL.md"),
-    editableSkill: join(editable, "skills", "image-to-editable-pptx", "SKILL.md"),
-  });
-
-  assert.equal(resolved.ai.root, await realpath(ai));
-  assert.equal(resolved.editable.root, await realpath(editable));
-});
-
-test("rejects existing files that are not the exact physical Skill entries", async (t) => {
-  const { ai, editable } = await fixture(t);
-  const wrongEditable = join(editable, "skills", "wrong", "SKILL.md");
-  await mkdir(join(editable, "skills", "wrong"), { recursive: true });
-  await writeFile(wrongEditable, "---\nname: wrong\n---\n");
-
-  await assert.rejects(resolveFromSkillEntries({
-    aiSkill: join(ai, "scripts", "gen_slide_gemini.py"),
-    editableSkill: join(editable, "skills", "image-to-editable-pptx", "SKILL.md"),
-  }), /aiSkill must be the root SKILL\.md/);
-  await assert.rejects(resolveFromSkillEntries({
-    aiSkill: join(ai, "SKILL.md"),
-    editableSkill: wrongEditable,
-  }), /editableSkill must be skills\/image-to-editable-pptx\/SKILL\.md/);
-});
-
-test("accepts the semantic version lower boundary and build metadata", async (t) => {
-  const first = await fixture(t, "0.1.0");
-  const second = await fixture(t, "0.1.99+build.7.sha");
-  assert.equal((await resolveDependencies({ aiRoot: first.ai, editableRoot: first.editable })).editable.version, "0.1.0");
-  assert.equal((await resolveDependencies({ aiRoot: second.ai, editableRoot: second.editable })).editable.version, "0.1.99+build.7.sha");
-});
-
-test("rejects semantic versions outside the compatible boundaries", async (t) => {
-  await expectIncompatibleVersion(t, "0.0.999");
-  await expectIncompatibleVersion(t, "0.2.0");
-});
-
-test("rejects malformed semantic versions", async (t) => {
-  await expectIncompatibleVersion(t, "0.1.0junk");
-  await expectIncompatibleVersion(t, "0.1.01");
-  await expectIncompatibleVersion(t, "v0.1.0");
-});
-
-test("preflight reports removed provider, reviewer, and lockfile as unavailable", async (t) => {
-  const { ai, editable } = await fixture(t);
-  await writeFile(join(ai, "scripts", "vision_check_gemini.py"), "def check(path): return True\n");
-  const resolved = await resolveDependencies({ aiRoot: ai, editableRoot: editable });
-  await Promise.all([
-    unlink(join(ai, "scripts", "gen_slide_gemini.py")),
-    unlink(join(ai, "scripts", "vision_check_gemini.py")),
-    unlink(join(editable, "package-lock.json")),
-  ]);
-
-  const report = await preflightDependencies(resolved);
-  assert.equal(report.ok, false);
-  assert.equal(report.reviewerAvailable, false);
-  assert.deepEqual(report.problems, [
-    "provider module is unreadable: scripts/gen_slide_gemini.py",
-    "reviewer module is unreadable: scripts/vision_check_gemini.py",
-    "image-to-editable-pptx package-lock.json is missing",
-  ]);
-});
-
-test("CLI emits a successful JSON preflight report", async (t) => {
-  const { ai, editable } = await fixture(t);
-  const { stdout, stderr } = await execFileAsync(process.execPath, ["--import", "tsx", "src/cli.ts", "preflight", "ignored", "trailing"], {
-    cwd: process.cwd(),
-    env: {
-      ...process.env,
-      SUPERPPT_AI_IMAGE_TO_PPT_SOURCE: ai,
-      SUPERPPT_IMAGE_TO_EDITABLE_PPTX_SOURCE: editable,
-    },
-  });
-  assert.equal(stderr, "");
-  assert.equal((JSON.parse(stdout) as { ok: boolean }).ok, true);
-});
-
-test("CLI emits failed JSON and exits nonzero when preflight fails", async (t) => {
-  const { ai, editable } = await fixture(t);
-  await unlink(join(editable, "package-lock.json"));
+test("rejects a missing required AI Skill script without using a sibling fallback", async (t) => {
+  const current = await fixture(t);
+  await unlink(join(current.ai, "scripts", requiredScripts.importHostImage));
+  const sibling = join(current.root, "ai-image-to-ppt");
+  await mkdir(join(sibling, "scripts"), { recursive: true });
+  await writeFile(join(sibling, "SKILL.md"), "sibling fallback\n");
+  await writeFile(join(sibling, "scripts", requiredScripts.importHostImage), "wrong fallback\n");
 
   await assert.rejects(
-    execFileAsync(process.execPath, ["--import", "tsx", "src/cli.ts", "preflight"], {
-      cwd: process.cwd(),
-      env: {
-        ...process.env,
-        SUPERPPT_AI_IMAGE_TO_PPT_SOURCE: ai,
-        SUPERPPT_IMAGE_TO_EDITABLE_PPTX_SOURCE: editable,
-      },
-    }),
-    (error: unknown) => {
-      const result = error as { code?: number; stdout?: string; stderr?: string };
-      assert.equal(result.code, 1);
-      assert.equal(result.stderr, "");
-      assert.equal((JSON.parse(result.stdout ?? "") as { ok: boolean }).ok, false);
-      return true;
-    },
+    resolveSkillDependencies(request(current)),
+    /ai-image-to-ppt required script is missing: import_host_image\.py/,
   );
+});
+
+test("preflight reports a changed required script after resolution", async (t) => {
+  const current = await fixture(t);
+  const resolved = await resolveSkillDependencies(request(current));
+  await writeFile(join(current.ai, "scripts", requiredScripts.hostRoutingPolicy), "changed after resolution\n");
+
+  const report = await preflightDependencies(resolved);
+
+  assert.equal(report.ok, false);
+  assert.deepEqual(report.errors, [{
+    dependency: "ai-image-to-ppt",
+    code: "identity_changed",
+    safeMessage: "required Skill files changed after resolution",
+  }]);
+  assert.match(report.aiImageToPpt.requiredScripts.hostRoutingPolicy.sha256, /^[a-f0-9]{64}$/);
+});
+
+test("preflight reports a removed required script after resolution", async (t) => {
+  const current = await fixture(t);
+  const resolved = await resolveSkillDependencies(request(current));
+  await unlink(join(current.ai, "scripts", requiredScripts.prepareEditableInput));
+
+  const report = await preflightDependencies(resolved);
+
+  assert.equal(report.ok, false);
+  assert.deepEqual(report.errors, [{
+    dependency: "ai-image-to-ppt",
+    code: "identity_changed",
+    safeMessage: "required Skill files changed after resolution",
+  }]);
+});
+
+test("preflight reports the resolved dependency identities without executing Skill files", async (t) => {
+  const current = await fixture(t);
+  const resolved = await resolveSkillDependencies(request(current));
+  const aiRoot = await realpath(current.ai);
+  const editableRoot = await realpath(current.editable);
+
+  const report = await preflightDependencies(resolved);
+
+  assert.equal(report.ok, true);
+  assert.equal(report.aiImageToPpt.root, aiRoot);
+  assert.equal(report.aiImageToPpt.skillSha256, resolved.ai.skillSha256);
+  assert.equal(report.imageToEditablePptx.root, editableRoot);
+  assert.equal(report.imageToEditablePptx.version, "0.1.0");
+  assert.deepEqual(Object.keys(report.aiImageToPpt.requiredScripts).sort(), Object.keys(requiredScripts).sort());
+  assert.deepEqual(report.errors, []);
 });

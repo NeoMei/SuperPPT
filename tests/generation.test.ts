@@ -15,7 +15,7 @@ import { reviewSlide } from "../src/generation/quality.js";
 import { privateSecurityPolicy } from "../src/generation/private-input.js";
 import { bridgeContainmentPolicy } from "../src/generation/bridge-process.js";
 import { AttemptLedgerSchema, QualityDecisionSchema } from "../src/generation/schemas.js";
-import type { ResolvedDependencies } from "../src/dependencies/schemas.js";
+import type { LegacyResolvedDependencies } from "../src/dependencies/schemas.js";
 import { approveGate, assertGateCurrent } from "../src/planning/confirm.js";
 import { publishPlanViews, publishStyleSample } from "../src/planning/views.js";
 import { initializeProject } from "../src/project/initialize.js";
@@ -57,7 +57,7 @@ function processExists(pid: number): boolean {
   try { process.kill(pid, 0); return true; } catch { return false; }
 }
 
-async function approvedProject(t: TestContext, prefix: string): Promise<{ root: string; ai: ResolvedDependencies["ai"]; editableRoot: string }> {
+async function approvedProject(t: TestContext, prefix: string): Promise<{ root: string; ai: LegacyResolvedDependencies["ai"]; editableRoot: string }> {
   const parent = await directory(t, prefix);
   const root = join(parent, "project");
   await initializeProject({ root, title: "Generation Demo" });
@@ -134,7 +134,7 @@ async function approvedProject(t: TestContext, prefix: string): Promise<{ root: 
     root,
     editableRoot,
     ai: {
-      ...capabilities as ResolvedDependencies["ai"],
+      ...capabilities as LegacyResolvedDependencies["ai"],
       root: aiRoot,
       source: "manifest",
     },

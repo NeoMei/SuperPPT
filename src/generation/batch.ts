@@ -4,7 +4,7 @@ import { join, relative, sep } from "node:path";
 import { z } from "zod";
 import sharp from "sharp";
 
-import type { ResolvedDependencies } from "../dependencies/schemas.js";
+import type { LegacyResolvedDependencies } from "../dependencies/schemas.js";
 import { assertGateCurrent } from "../planning/confirm.js";
 import { loadValidatedPlan } from "../planning/load.js";
 import { StyleSelectionSchema } from "../planning/schemas.js";
@@ -312,8 +312,8 @@ async function performAttempt(options: {
   page: ProjectPage;
   attempt: number;
   prompt: string;
-  provider: ResolvedDependencies["ai"]["providers"][number];
-  ai: ResolvedDependencies["ai"];
+  provider: LegacyResolvedDependencies["ai"]["providers"][number];
+  ai: LegacyResolvedDependencies["ai"];
   runner: string;
   styleName: string;
 }): Promise<{ ledger: AttemptLedger; quality: QualityDecision | null; artifact: Artifact | null }> {
@@ -430,7 +430,7 @@ async function performAttempt(options: {
 
 async function generateSelected(options: {
   root: string;
-  ai: ResolvedDependencies["ai"];
+  ai: LegacyResolvedDependencies["ai"];
   runner: string;
   concurrency: number;
   selectedIds?: Set<string>;
@@ -551,7 +551,7 @@ async function generateSelected(options: {
 
 export async function describeProjectGeneration(options: {
   root: string;
-  ai: ResolvedDependencies["ai"];
+  ai: LegacyResolvedDependencies["ai"];
   selectedIds?: Set<string>;
 }): Promise<GenerationPlan> {
   const provider = options.ai.providers.find(({ id }) => id === options.ai.defaultProvider);
@@ -578,7 +578,7 @@ export async function describeProjectGeneration(options: {
 
 export async function generateProject(options: {
   root: string;
-  ai: ResolvedDependencies["ai"];
+  ai: LegacyResolvedDependencies["ai"];
   runner: string;
   concurrency: number;
   operations?: { afterAttemptPromoted?: (pageId: string, attempt: number, ledger: AttemptLedger) => Promise<void> };
@@ -589,7 +589,7 @@ export async function generateProject(options: {
 export async function retryProjectPage(options: {
   root: string;
   slideId: string;
-  ai: ResolvedDependencies["ai"];
+  ai: LegacyResolvedDependencies["ai"];
   runner: string;
 }): Promise<ProjectGenerationResult> {
   return generateSelected({ ...options, concurrency: 1, selectedIds: new Set([options.slideId]) });
@@ -599,7 +599,7 @@ export async function recordManualQa(options: {
   root: string;
   slideId: string;
   input: string;
-  ai?: ResolvedDependencies["ai"];
+  ai?: LegacyResolvedDependencies["ai"];
   afterLedgerWritten?: () => Promise<void>;
 }): Promise<{ slideId: string; status: "ready" | "failed"; ok: boolean; passedChecks: number; totalChecks: number }> {
   if (options.ai?.reviewer) throw new Error("manual QA is available only when no dependency reviewer exists");

@@ -5,7 +5,7 @@ import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "nod
 import JSZip from "jszip";
 import sharp from "sharp";
 
-import type { ResolvedDependencies } from "../dependencies/schemas.js";
+import type { LegacyResolvedDependencies } from "../dependencies/schemas.js";
 import { assembleProject, replaceSlide, type FinalRender } from "../deck/assemble.js";
 import { prepareEditableSlide } from "../deck/editable-slide.js";
 import { buildMontage } from "../deck/montage.js";
@@ -147,7 +147,7 @@ async function copyPlanningFixtures(projectRoot: string, fixtures: string): Prom
   await approveGate(projectRoot, "slide-specs");
 }
 
-async function stagedAiDependency(parent: string, provider: string, reviewer: string): Promise<ResolvedDependencies["ai"]> {
+async function stagedAiDependency(parent: string, provider: string, reviewer: string): Promise<LegacyResolvedDependencies["ai"]> {
   const root = join(parent, "offline-ai-image-to-ppt");
   await mkdir(join(root, "scripts"), { recursive: true, mode: 0o700 });
   await mkdir(join(root, "references"), { mode: 0o700 });

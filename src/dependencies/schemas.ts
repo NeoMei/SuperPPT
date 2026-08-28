@@ -1,5 +1,61 @@
 import { z } from "zod";
 
+export const Sha256Schema = z.string().regex(/^[a-f0-9]{64}$/);
+
+const AiImageSkillScriptsSchema = z.object({
+  generationResult: z.string().min(1),
+  hostRoutingPolicy: z.string().min(1),
+  importHostImage: z.string().min(1),
+  prepareEditableInput: z.string().min(1),
+}).strict();
+
+export const AiImageSkillDependencySchema = z.object({
+  kind: z.literal("ai-image-to-ppt"),
+  root: z.string().min(1),
+  skillFile: z.string().min(1),
+  skillSha256: Sha256Schema,
+  gitRevision: z.string().min(1).nullable(),
+  scripts: AiImageSkillScriptsSchema,
+}).strict();
+
+export const ImageToEditablePptxSkillDependencySchema = z.object({
+  kind: z.literal("image-to-editable-pptx"),
+  root: z.string().min(1),
+  skillFile: z.string().min(1),
+  skillSha256: Sha256Schema,
+  version: z.string().min(1).nullable(),
+}).strict();
+
+export type AiImageSkillDependency = z.infer<typeof AiImageSkillDependencySchema>;
+export type ImageToEditablePptxSkillDependency = z.infer<typeof ImageToEditablePptxSkillDependencySchema>;
+
+export type ResolvedDependencies = {
+  ai: AiImageSkillDependency;
+  editable: ImageToEditablePptxSkillDependency;
+  integrity: {
+    aiSkillSha256: string;
+    aiScripts: Record<keyof AiImageSkillDependency["scripts"], string>;
+    editableSkillSha256: string;
+  };
+};
+
+export type DependencyPreflight = {
+  ok: boolean;
+  aiImageToPpt: {
+    root: string;
+    skillSha256: string;
+    gitRevision: string | null;
+    requiredScripts: Record<string, { path: string; sha256: string }>;
+  };
+  imageToEditablePptx: {
+    root: string;
+    skillSha256: string;
+    version: string | null;
+  };
+  errors: Array<{ dependency: string; code: string; safeMessage: string }>;
+};
+
+/** @deprecated Kept only while generation callers migrate away from provider discovery. */
 export const ProviderSchema = z.object({
   id: z.string().min(1),
   module: z.string().regex(/^scripts\/[a-z0-9_-]+\.py$/),
@@ -8,6 +64,7 @@ export const ProviderSchema = z.object({
   supportsReferenceImages: z.boolean(),
 }).strict();
 
+/** @deprecated Kept only while generation callers migrate away from provider discovery. */
 export const AiCapabilitiesSchema = z.object({
   contractVersion: z.literal(1),
   defaultProvider: z.string().min(1),
@@ -26,10 +83,12 @@ export const AiCapabilitiesSchema = z.object({
   }
 });
 
+/** @deprecated Kept only while generation callers migrate away from provider discovery. */
 export type ProviderCapability = z.infer<typeof ProviderSchema>;
+/** @deprecated Kept only while generation callers migrate away from provider discovery. */
 export type AiCapabilities = z.infer<typeof AiCapabilitiesSchema>;
-
-export type ResolvedDependencies = {
+/** @deprecated Kept only while generation callers migrate away from provider discovery. */
+export type LegacyResolvedDependencies = {
   ai: AiCapabilities & { root: string; source: "manifest" | "legacy" };
   editable: {
     root: string;
@@ -38,7 +97,8 @@ export type ResolvedDependencies = {
   };
 };
 
-export type PreflightReport = {
+/** @deprecated Kept only while generation callers migrate away from provider discovery. */
+export type LegacyPreflightReport = {
   ok: boolean;
   aiRoot: string;
   editableRoot: string;

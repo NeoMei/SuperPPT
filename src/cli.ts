@@ -1,7 +1,7 @@
 import { access, lstat } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 
-import { preflightDependencies } from "./dependencies/preflight.js";
+import { preflightLegacyDependencies } from "./dependencies/preflight.js";
 import { resolveDependencies } from "./dependencies/resolve.js";
 import {
   assembleProject,
@@ -161,7 +161,7 @@ function concurrency(value: string): number {
 async function main(argv: string[]): Promise<void> {
   const command = argv[0];
   if (command === "preflight") {
-    const report = await preflightDependencies(
+    const report = await preflightLegacyDependencies(
       await configuredDependencies(),
     );
     outputJson(report);

@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { join } from "node:path";
 
-import type { ResolvedDependencies } from "../dependencies/schemas.js";
+import type { LegacyResolvedDependencies } from "../dependencies/schemas.js";
 import { assertGateCurrent } from "../planning/confirm.js";
 import { withProjectLease } from "../project/lock.js";
 import { readOwnedRegularFile } from "../project/safe-file.js";
@@ -37,7 +37,7 @@ async function requirePlanningGates(root: string): Promise<void> {
 
 export async function generateProjectStyleSample(options: {
   root: string;
-  ai: ResolvedDependencies["ai"];
+  ai: LegacyResolvedDependencies["ai"];
   runner: string;
 }): Promise<{
   providerId: string;
