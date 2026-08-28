@@ -1283,7 +1283,13 @@ test("CLI publishes authoritative style evidence before the existing approval ga
   await writeValidPlan(root);
   await writeValidStyleSample(root);
   const invocation = ["--import", "tsx", "src/cli.ts"];
-  const run = (args: string[]) => execFileAsync(process.execPath, [...invocation, ...args], { cwd: process.cwd() });
+  const run = (args: string[]) => execFileAsync(process.execPath, [...invocation, ...args], {
+    cwd: process.cwd(),
+    env: {
+      ...process.env,
+      SUPERPPT_AUTHORIZATION_TRUST_ROOT: join(root, "..", "authorization-trust"),
+    },
+  });
 
   await run(["validate-plan", "--project", root]);
   await run(["approve", "--project", root, "--gate", "outline"]);

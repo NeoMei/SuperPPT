@@ -8,6 +8,7 @@ import { loadBuiltInStyleCatalog, loadStyleCatalog, selectRepresentativeSlide } 
 import { compilePrompt, compileSlidePrompt } from "../src/styles/prompt-compiler.js";
 import { StyleCatalogSchema } from "../src/styles/schemas.js";
 import { approveGate } from "../src/planning/confirm.js";
+import { configureGenerationAuthorizationTrustForTests } from "../src/generation/trusted-authorization.js";
 import { initializeProject } from "../src/project/initialize.js";
 import { publishPlanViews, publishStyleSample } from "../src/planning/views.js";
 import { approveStyleLock, createProvisionalStyleLock, readApprovedStyleLock, readStyleLock } from "../src/styles/style-lock.js";
@@ -206,6 +207,10 @@ async function lockProject(t: test.TestContext, prefix: string): Promise<string>
   const root = join(await realpath(await mkdtemp(join(tmpdir(), prefix))), "project");
   t.after(async () => rm(dirname(root), { recursive: true, force: true }));
   await initializeProject({ root, title: "Style Lock", idFactory: () => LOCK_PROJECT_ID });
+  await configureGenerationAuthorizationTrustForTests(root, {
+    root: join(dirname(root), "authorization-trust"),
+    deterministicKeySeed: `superppt-style-lock:${prefix}`,
+  });
   const outline = {
     schemaVersion: 1,
     slides: LOCK_REVISION_SLIDE_IDS.map((id, order) => ({

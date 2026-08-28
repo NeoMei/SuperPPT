@@ -31,15 +31,18 @@ import {
   type ImageGenerationJob,
   type ImageJobKind,
 } from "./job-schemas.js";
-import { appendPrivateInputLine } from "./private-input.js";
 import {
+  appendTrustedGenerationCallLedgerEntry,
+  assertTrustedCallEventJobBinding,
+  assertTrustedGenerationAuthorizationCurrent,
   assertTrustedGenerationAuthorizationRecord,
+  readTrustedGenerationCallLedger,
   trustedGenerationAuthorizationForGate,
+  type TrustedGenerationCallEvent,
 } from "./trusted-authorization.js";
 
 const DECK_PLAN_PATH = "generation/authorization-plan.json";
 const SAMPLE_PLAN_PATH = "style/sample/generation-plan.json";
-const CALL_LEDGER_PATH = "generation/call-ledger.jsonl";
 const execFileAsync = promisify(execFile);
 
 const REQUIRED_AI_SCRIPTS = {
@@ -569,36 +572,17 @@ export async function assertSealedJobInputs(root: string, job: ImageGenerationJo
   }
 }
 
-function isMissing(error: unknown): boolean {
-  let current: unknown = error;
-  while (current instanceof Error) {
-    if ((current as NodeJS.ErrnoException).code === "ENOENT") return true;
-    current = current.cause;
-  }
-  return false;
+async function authenticatedCallLedger(root: string): Promise<{
+  entries: CallLedgerEntry[];
+  events: TrustedGenerationCallEvent[];
+}> {
+  const trusted = await readTrustedGenerationCallLedger(root);
+  callStates(trusted.entries);
+  return trusted;
 }
 
 export async function readCallLedger(root: string): Promise<CallLedgerEntry[]> {
-  let bytes: Buffer;
-  try {
-    bytes = await readOwnedRegularFile(root, CALL_LEDGER_PATH);
-  } catch (error: unknown) {
-    if (isMissing(error)) return [];
-    throw new Error("generation call ledger is unsafe or unreadable", { cause: error });
-  }
-  const text = bytes.toString("utf8");
-  if (!text.endsWith("\n")) throw new Error("generation call ledger is not complete JSONL");
-  const ledger = text.slice(0, -1).split("\n").map((line, index) => {
-    try {
-      const entry = CallLedgerEntrySchema.parse(JSON.parse(line));
-      if (line !== JSON.stringify(entry)) throw new Error("non-canonical ledger line");
-      return entry;
-    } catch (error: unknown) {
-      throw new Error(`generation call ledger entry ${index + 1} is invalid`, { cause: error });
-    }
-  });
-  callStates(ledger);
-  return ledger;
+  return (await authenticatedCallLedger(root)).entries;
 }
 
 type CallState = {
@@ -708,6 +692,10 @@ async function assertCurrentAdmissionAuthorization(root: string, job: ImageGener
   if (digest !== job.authorizationDigest || plan.projectRevisionId !== job.projectRevisionId) {
     throw new Error("generation call requires the current matching authorization");
   }
+  if (job.kind !== "style-sample") {
+    if (!job.authorizationTrust) throw new Error("generation call has no trusted authorization record");
+    await assertTrustedGenerationAuthorizationCurrent(root, job.authorizationTrust, job.authorizationPlan, job.authorizationGate);
+  }
 }
 
 export async function admitDelegatedGenerationCall(
@@ -732,7 +720,7 @@ export async function admitDelegatedGenerationCall(
       admissionTokenSha256: sha256(admissionToken),
       recordedAt: new Date().toISOString(),
     });
-    appendPrivateInputLine(join(canonicalRoot, CALL_LEDGER_PATH), JSON.stringify(admission));
+    await appendTrustedGenerationCallLedgerEntry(canonicalRoot, job, admission);
     return {
       ...request,
       admissionToken,
@@ -773,29 +761,31 @@ export async function settleDelegatedGenerationCall(
         admissionTokenSha256: tokenSha256,
         recordedAt: new Date().toISOString(),
       });
-      appendPrivateInputLine(join(canonicalRoot, CALL_LEDGER_PATH), JSON.stringify(terminal));
+      await appendTrustedGenerationCallLedgerEntry(canonicalRoot, job, terminal);
     }
     return callBudgetForDigest(canonicalRoot, job.authorizationDigest, job.callBudget);
   });
 }
 
 async function callBudgetForDigest(root: string, digest: string, budget: number): Promise<{ consumed: number; remaining: number }> {
-  const ledger = await readCallLedger(root);
-  const jobDigests = new Map<string, string>();
-  const admissions = ledger.filter((entry): entry is Extract<CallLedgerEntry, { entryKind: "admission" }> =>
-    entry.entryKind === "admission"
-  );
-  for (const entry of admissions) {
-    if (jobDigests.has(entry.jobId)) continue;
-    const historicalJob = await readJob(root, entry.jobId);
+  const trusted = await authenticatedCallLedger(root);
+  const jobs = new Map<string, ImageGenerationJob>();
+  for (const event of trusted.events) {
+    let historicalJob = jobs.get(event.entry.jobId);
+    if (!historicalJob) {
+      historicalJob = await readJob(root, event.entry.jobId);
+      jobs.set(event.entry.jobId, historicalJob);
+    }
     try {
       await assertAuthorizedJobBinding(root, historicalJob);
+      assertTrustedCallEventJobBinding(event, historicalJob);
     } catch (error: unknown) {
-      throw new Error(`historical image generation job is not authorized: ${entry.jobId}`, { cause: error });
+      throw new Error(`historical image generation job is not authorized: ${event.entry.jobId}`, { cause: error });
     }
-    jobDigests.set(entry.jobId, historicalJob.authorizationDigest);
   }
-  const consumed = admissions.filter(({ jobId }) => jobDigests.get(jobId) === digest).length;
+  const consumed = trusted.events.filter((event) =>
+    event.entry.entryKind === "admission" && event.authorizationDigest === digest
+  ).length;
   if (consumed > budget) throw new Error("generation call ledger exceeds its authorized budget");
   return { consumed, remaining: budget - consumed };
 }
@@ -830,7 +820,7 @@ export async function executeAuthorizedGenerationCall<T>(
       admissionTokenSha256: null,
       recordedAt: new Date().toISOString(),
     });
-    appendPrivateInputLine(join(canonicalRoot, CALL_LEDGER_PATH), JSON.stringify(admission));
+    await appendTrustedGenerationCallLedgerEntry(canonicalRoot, job, admission);
     const admitted = { consumed: before.consumed + 1, remaining: before.remaining - 1 };
     await operations.afterAdmission?.();
 
@@ -845,7 +835,7 @@ export async function executeAuthorizedGenerationCall<T>(
         admissionTokenSha256: null,
         recordedAt: new Date().toISOString(),
       });
-      appendPrivateInputLine(join(canonicalRoot, CALL_LEDGER_PATH), JSON.stringify(terminal));
+      await appendTrustedGenerationCallLedgerEntry(canonicalRoot, job, terminal);
       throw error;
     }
     const terminal = CallLedgerEntrySchema.parse({
@@ -855,7 +845,7 @@ export async function executeAuthorizedGenerationCall<T>(
       admissionTokenSha256: null,
       recordedAt: new Date().toISOString(),
     });
-    appendPrivateInputLine(join(canonicalRoot, CALL_LEDGER_PATH), JSON.stringify(terminal));
+    await appendTrustedGenerationCallLedgerEntry(canonicalRoot, job, terminal);
     return { executed: true, outcome: "success", value, ...admitted };
   });
 }
