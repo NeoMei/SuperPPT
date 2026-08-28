@@ -93,9 +93,11 @@ async function assertAcceptedSampleResult(root: string, job: ImageGenerationJob)
   return result;
 }
 
+const OWNED_FINALIZATION_UUID = "[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}";
+
 function cleanupOwnedStyleTemps(style: ReturnType<typeof openGenerationDirectory>): void {
   for (const entry of readdirSync(style.path, { withFileTypes: true })) {
-    if (!/^\.style-sample-finalize-[a-f0-9-]+-selection\.json$/.test(entry.name)) continue;
+    if (!(new RegExp(`^\\.style-sample-finalize-${OWNED_FINALIZATION_UUID}-selection\\.json$`)).test(entry.name)) continue;
     if (entry.isSymbolicLink() || !entry.isFile()) throw new Error("style sample finalization temporary is unsafe");
     const fd = style.openRegular(entry.name);
     closeSync(fd);
@@ -105,7 +107,7 @@ function cleanupOwnedStyleTemps(style: ReturnType<typeof openGenerationDirectory
 
 function cleanupOwnedSampleTemps(sample: ReturnType<typeof openGenerationDirectory>): void {
   for (const entry of readdirSync(sample.path, { withFileTypes: true })) {
-    if (!/^(?:\.finalize-(?:director\.json|prompt\.txt|ledger\.json|slide\.png)|\.style-sample-finalize-[a-f0-9-]+-(?:director\.json|prompt\.txt|ledger\.json|slide\.png|completion\.json))$/.test(entry.name)) continue;
+    if (!(new RegExp(`^(?:\\.finalize-(?:director\\.json|prompt\\.txt|ledger\\.json|slide\\.png)|\\.style-sample-finalize-${OWNED_FINALIZATION_UUID}-(?:director\\.json|prompt\\.txt|ledger\\.json|slide\\.png|completion\\.json))$`)).test(entry.name)) continue;
     if (entry.isSymbolicLink() || !entry.isFile()) throw new Error("style sample finalization temporary is unsafe");
     const fd = sample.openRegular(entry.name);
     closeSync(fd);
