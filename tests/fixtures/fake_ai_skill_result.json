@@ -1,0 +1,24 @@
+{
+  "dependency": {
+    "status": "success",
+    "provider": "openai",
+    "channel": "host",
+    "output_path": "/workspace/generated/slide.png",
+    "safe_message": "host image imported"
+  },
+  "batchReport": {
+    "batch_mode": "serial-sticky-monotonic",
+    "stopped": false,
+    "search_candidate": "host-openai",
+    "sticky_candidate": "host-openai",
+    "pages": [
+      {
+        "page": 1,
+        "outcome": "success",
+        "candidate": "host-openai",
+        "summary": ""
+      }
+    ],
+    "switches": []
+  }
+}

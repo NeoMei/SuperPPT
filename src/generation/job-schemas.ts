@@ -149,12 +149,14 @@ export const CallLedgerEntrySchema = z.discriminatedUnion("entryKind", [
     ...CallLedgerTupleShape,
     entryKind: z.literal("admission"),
     outcome: z.literal("in-flight"),
+    admissionTokenSha256: Sha256Schema.nullable().default(null),
     recordedAt: z.string().datetime(),
   }).strict(),
   z.object({
     ...CallLedgerTupleShape,
     entryKind: z.literal("terminal"),
     outcome: z.enum(["success", "failed"]),
+    admissionTokenSha256: Sha256Schema.nullable().default(null),
     recordedAt: z.string().datetime(),
   }).strict(),
 ]);

@@ -1,6 +1,197 @@
 import { z } from "zod";
 
-import { Sha256Schema } from "../project/schemas.js";
+import { ArtifactSchema, Sha256Schema } from "../project/schemas.js";
+
+export const DependencyGenerationResultSchema = z.object({
+  status: z.enum([
+    "success",
+    "unavailable",
+    "auth_unavailable",
+    "retryable_exhausted",
+    "policy_refused",
+    "invalid_input",
+    "invalid_output",
+    "local_failure",
+  ]),
+  provider: z.string().min(1).nullable(),
+  channel: z.string().min(1).nullable(),
+  output_path: z.string().min(1).nullable(),
+  safe_message: z.string().min(1),
+}).strict().superRefine((result, context) => {
+  if (result.status === "success") {
+    if (!result.provider) context.addIssue({ code: "custom", path: ["provider"], message: "success requires a provider" });
+    if (!result.channel) context.addIssue({ code: "custom", path: ["channel"], message: "success requires a channel" });
+    if (!result.output_path) context.addIssue({ code: "custom", path: ["output_path"], message: "success requires an output path" });
+  } else if (result.output_path !== null) {
+    context.addIssue({ code: "custom", path: ["output_path"], message: "only success may carry an output path" });
+  }
+});
+
+const RoutingCandidateSchema = z.enum([
+  "host-openai",
+  "api-openai",
+  "host-gemini",
+  "api-gemini",
+  "host-doubao",
+  "api-doubao",
+]);
+
+const SerialStickyPageSchema = z.object({
+  page: z.number().int().positive(),
+  outcome: z.enum(["success", "cached", "fatal", "exhausted"]),
+  candidate: RoutingCandidateSchema.nullable(),
+  summary: z.string(),
+}).strict().superRefine((page, context) => {
+  const requiresCandidate = page.outcome === "success" || page.outcome === "fatal";
+  if (requiresCandidate !== (page.candidate !== null)) {
+    context.addIssue({ code: "custom", path: ["candidate"], message: "routing page candidate does not match its outcome" });
+  }
+});
+
+const SerialStickySwitchSchema = z.object({
+  page: z.number().int().positive(),
+  from: RoutingCandidateSchema,
+  to: RoutingCandidateSchema,
+  reason: z.string().min(1),
+}).strict();
+
+export const SerialStickyReportSchema = z.object({
+  batch_mode: z.literal("serial-sticky-monotonic"),
+  stopped: z.boolean(),
+  search_candidate: RoutingCandidateSchema,
+  sticky_candidate: RoutingCandidateSchema.nullable(),
+  pages: z.array(SerialStickyPageSchema),
+  switches: z.array(SerialStickySwitchSchema),
+}).strict().superRefine((report, context) => {
+  report.pages.forEach((page, index) => {
+    if (index > 0 && page.page <= report.pages[index - 1]!.page) {
+      context.addIssue({ code: "custom", path: ["pages", index, "page"], message: "routing pages must be strictly increasing" });
+    }
+  });
+  const terminal = report.pages.at(-1)?.outcome;
+  if (report.stopped !== (terminal === "fatal" || terminal === "exhausted")) {
+    context.addIssue({ code: "custom", path: ["stopped"], message: "stopped must match the terminal routing outcome" });
+  }
+  const candidates = ["host-openai", "api-openai", "host-gemini", "api-gemini", "host-doubao", "api-doubao"];
+  let selected: z.infer<typeof RoutingCandidateSchema> | null = null;
+  const expectedSwitchPages = new Set<number>();
+  for (const page of report.pages) {
+    if (page.outcome !== "success") continue;
+    if (selected !== null && page.candidate !== selected) expectedSwitchPages.add(page.page);
+    selected = page.candidate;
+  }
+  if (report.sticky_candidate !== selected) {
+    context.addIssue({ code: "custom", path: ["sticky_candidate"], message: "sticky candidate must equal the last successful candidate" });
+  }
+  if (report.search_candidate !== (selected ?? "host-openai")) {
+    context.addIssue({ code: "custom", path: ["search_candidate"], message: "search candidate must equal the committed successful candidate" });
+  }
+  report.switches.forEach((entry, index) => {
+    if (report.switches.findIndex(({ page }) => page === entry.page) !== index) {
+      context.addIssue({ code: "custom", path: ["switches", index, "page"], message: "routing switch pages must be unique" });
+    }
+    if (candidates.indexOf(entry.to) <= candidates.indexOf(entry.from)) {
+      context.addIssue({ code: "custom", path: ["switches", index], message: "routing switches must move forward" });
+    }
+    if (!report.pages.some(({ page }) => page === entry.page)) {
+      context.addIssue({ code: "custom", path: ["switches", index, "page"], message: "routing switch page is absent" });
+    }
+    const pageIndex = report.pages.findIndex(({ page }) => page === entry.page);
+    const priorSuccess = report.pages.slice(0, pageIndex).filter(({ outcome }) => outcome === "success").at(-1);
+    const switchedPage = report.pages[pageIndex];
+    if (!priorSuccess?.candidate || entry.from !== priorSuccess.candidate || switchedPage?.candidate !== entry.to) {
+      context.addIssue({ code: "custom", path: ["switches", index], message: "routing switch does not bind the prior and current successful candidates" });
+    }
+    expectedSwitchPages.delete(entry.page);
+  });
+  if (expectedSwitchPages.size > 0) {
+    context.addIssue({ code: "custom", path: ["switches"], message: "routing report is missing a committed provider switch" });
+  }
+});
+
+const ReferenceUsageSchema = z.object({
+  path: z.string().min(1),
+  sha256: Sha256Schema,
+  usage: z.enum(["used", "unsupported"]),
+}).strict();
+
+export const ImagePageResultSchema = z.object({
+  contractVersion: z.literal(1),
+  jobId: z.string().uuid(),
+  projectRevisionId: z.string().uuid(),
+  slideId: z.string().uuid(),
+  attempt: z.number().int().positive(),
+  requestCount: z.number().int().min(0),
+  status: z.enum(["success", "cached", "failed", "paused"]),
+  dependency: DependencyGenerationResultSchema,
+  actualPromptSha256: Sha256Schema,
+  styleLockSha256: Sha256Schema,
+  styleRecipeSha256: Sha256Schema,
+  referenceUsage: z.array(ReferenceUsageSchema),
+  artifacts: z.object({
+    raw: ArtifactSchema.nullable(),
+    master: ArtifactSchema,
+    normalized: ArtifactSchema,
+  }).strict().nullable(),
+  styleConsistency: z.enum(["accepted", "rejected", "not-reviewed"]),
+  recordedAt: z.string().datetime(),
+}).strict().superRefine((page, context) => {
+  if ((page.status === "success" || page.status === "cached") !== (page.artifacts !== null)) {
+    context.addIssue({ code: "custom", path: ["artifacts"], message: "successful pages require authenticated artifacts" });
+  }
+  if ((page.status === "failed" || page.status === "paused") && page.styleConsistency !== "not-reviewed") {
+    context.addIssue({ code: "custom", path: ["styleConsistency"], message: "non-success pages cannot carry presentation acceptance" });
+  }
+  if (page.status === "success" && page.dependency.status !== "success") {
+    context.addIssue({ code: "custom", path: ["dependency", "status"], message: "successful pages require dependency success" });
+  }
+  if (page.status === "failed" && page.dependency.status === "success") {
+    context.addIssue({ code: "custom", path: ["dependency", "status"], message: "failed pages require dependency failure" });
+  }
+  if (
+    page.artifacts
+    && page.dependency.status === "success"
+    && page.dependency.channel === "host"
+    && page.artifacts.raw === null
+  ) context.addIssue({ code: "custom", path: ["artifacts", "raw"], message: "host success requires a raw artifact" });
+  if (page.artifacts) {
+    for (const [name, artifact] of Object.entries(page.artifacts)) {
+      if (artifact && artifact.revisionId !== page.projectRevisionId) {
+        context.addIssue({ code: "custom", path: ["artifacts", name, "revisionId"], message: "page artifacts must bind the project revision" });
+      }
+    }
+  }
+});
+
+export const ImageGenerationResultSchema = z.object({
+  contractVersion: z.literal(1),
+  jobId: z.string().uuid(),
+  projectRevisionId: z.string().uuid(),
+  styleRecipeSha256: Sha256Schema,
+  approvedSampleSha256: Sha256Schema.nullable(),
+  outcome: z.enum(["success", "partial", "fatal", "exhausted", "attention-required"]),
+  actualRequestCount: z.number().int().nonnegative(),
+  batchReport: SerialStickyReportSchema,
+  pages: z.array(ImagePageResultSchema),
+  updatedAt: z.string().datetime(),
+}).strict().superRefine((result, context) => {
+  const requestCount = result.pages.reduce((sum, page) => sum + page.requestCount, 0);
+  if (result.actualRequestCount !== requestCount) {
+    context.addIssue({ code: "custom", path: ["actualRequestCount"], message: "actual request count must equal page intake evidence" });
+  }
+  if (result.pages.some((page) => page.jobId !== result.jobId || page.projectRevisionId !== result.projectRevisionId)) {
+    context.addIssue({ code: "custom", path: ["pages"], message: "aggregate pages must bind the job revision" });
+  }
+  if (result.outcome === "attention-required" && !result.pages.some(({ status }) => status === "paused")) {
+    context.addIssue({ code: "custom", path: ["outcome"], message: "attention-required requires a paused page" });
+  }
+  if (result.outcome === "fatal" && result.batchReport.pages.at(-1)?.outcome !== "fatal") {
+    context.addIssue({ code: "custom", path: ["outcome"], message: "fatal aggregate requires a fatal routing report" });
+  }
+  if (result.outcome === "exhausted" && result.batchReport.pages.at(-1)?.outcome !== "exhausted") {
+    context.addIssue({ code: "custom", path: ["outcome"], message: "exhausted aggregate requires an exhausted routing report" });
+  }
+});
 
 export const QualityDecisionSchema = z.object({
   ok: z.boolean(),
@@ -99,3 +290,7 @@ export const AttemptLedgerSchema = z.object({
 export type QualityDecision = z.infer<typeof QualityDecisionSchema>;
 export type QualityEvidence = z.infer<typeof QualityEvidenceSchema>;
 export type AttemptLedger = z.infer<typeof AttemptLedgerSchema>;
+export type DependencyGenerationResult = z.infer<typeof DependencyGenerationResultSchema>;
+export type SerialStickyReport = z.infer<typeof SerialStickyReportSchema>;
+export type ImagePageResult = z.infer<typeof ImagePageResultSchema>;
+export type ImageGenerationResult = z.infer<typeof ImageGenerationResultSchema>;

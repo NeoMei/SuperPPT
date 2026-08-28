@@ -308,6 +308,30 @@ export class GenerationDirectory {
     this.assertCurrent();
   }
 
+  promoteFileExclusive(stagingName: string, targetName: string): void {
+    safeName(stagingName);
+    safeName(targetName);
+    const staged = lstatSync(join(this.path, stagingName));
+    if (staged.isSymbolicLink() || !staged.isFile()) throw new Error("generation staged file is unsafe");
+    if (nativeAt) {
+      if (nativeAt.renameExclusive(this.fd, stagingName, this.fd, targetName) !== 0) throw nativeError("exclusive renameat");
+    } else if (process.platform === "win32") {
+      moveWindows(join(this.path, stagingName), join(this.path, targetName), false);
+    } else {
+      try {
+        lstatSync(join(this.path, targetName));
+        const error = new Error("generation file already exists") as NodeJS.ErrnoException;
+        error.code = "EEXIST";
+        throw error;
+      } catch (error: unknown) {
+        if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+      }
+      renameSync(join(this.path, stagingName), join(this.path, targetName));
+    }
+    syncDirectory(this.fd);
+    this.assertCurrent();
+  }
+
   close(): void {
     if (this.fd >= 0) closeSync(this.fd);
     if (this.windowsGuard !== null) windowsApi!.closeHandle(this.windowsGuard);

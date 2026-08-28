@@ -2,12 +2,36 @@ import { createHash } from "node:crypto";
 import { closeSync } from "node:fs";
 import { basename, dirname } from "node:path";
 
+import { z } from "zod";
+
+import { RoleSchema } from "../planning/schemas.js";
+import { Sha256Schema } from "../project/schemas.js";
 import { openGenerationDirectory } from "./anchored-dir.js";
 import { runBridge } from "./bridge-process.js";
 import { withPrivateInput } from "./private-input.js";
 import { QualityDecisionSchema, QualityEvidenceSchema, type QualityDecision, type QualityEvidence } from "./schemas.js";
 
 const hash = (value: string): string => createHash("sha256").update(value).digest("hex");
+
+export const DelegatedPresentationQaSchema = z.object({
+  approvedSampleSha256: Sha256Schema,
+  pageRole: RoleSchema,
+  decision: QualityDecisionSchema,
+}).strict();
+
+export type DelegatedPresentationQa = z.infer<typeof DelegatedPresentationQaSchema>;
+
+export function delegatedStyleConsistency(
+  raw: DelegatedPresentationQa,
+  expected: { approvedSampleSha256: string; pageRole: z.infer<typeof RoleSchema> },
+): "accepted" | "rejected" {
+  const evidence = DelegatedPresentationQaSchema.parse(raw);
+  if (
+    evidence.approvedSampleSha256 !== expected.approvedSampleSha256
+    || evidence.pageRole !== expected.pageRole
+  ) throw new Error("presentation QA does not bind the approved sample and page-role rules");
+  return evidence.decision.ok && evidence.decision.styleConsistent ? "accepted" : "rejected";
+}
 
 export async function reviewSlide(options: {
   runner: string;
@@ -16,6 +40,8 @@ export async function reviewSlide(options: {
   image: string;
   requiredText: string[];
   styleName: string;
+  approvedSampleSha256?: string;
+  pageRole?: z.infer<typeof RoleSchema>;
   timeoutMs?: number;
   beforeExecute?: (privatePath: string) => Promise<void>;
   afterImageDirectoryOpened?: () => Promise<void>;
@@ -25,6 +51,9 @@ export async function reviewSlide(options: {
     "Return JSON only with exactly these keys: ok, issues, requiredText, styleConsistent, hierarchyClear, richDetail, noForbiddenContent.",
     `requiredText must contain one {text,present,exact} result for each required copy item: ${JSON.stringify(options.requiredText)}.`,
     `Expected style: ${options.styleName}.`,
+    ...(options.approvedSampleSha256 && options.pageRole ? [
+      `Compare against approved sample SHA-256 ${options.approvedSampleSha256} and apply the ${options.pageRole} page-role composition rules.`,
+    ] : []),
     "Mark ok true only when issues is empty, every required item is present and exact, and every boolean check is true.",
   ].join("\n");
   const directory = openGenerationDirectory(dirname(options.image));

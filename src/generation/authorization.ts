@@ -1,5 +1,5 @@
 import { execFile } from "node:child_process";
-import { createHash, randomUUID } from "node:crypto";
+import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { fsyncSync } from "node:fs";
 import { lstat, realpath } from "node:fs/promises";
 import { join, relative, sep } from "node:path";
@@ -51,6 +51,12 @@ type PlanPublicationRequest = {
 export type GenerationExecutionResult<T> =
   | { executed: true; outcome: "success"; value: T; consumed: number; remaining: number }
   | { executed: false; outcome: "in-flight" | "success" | "failed"; consumed: number; remaining: number };
+
+export type DelegatedGenerationAdmission = GenerationCallTuple & {
+  admissionToken: string;
+  consumed: number;
+  remaining: number;
+};
 
 function sha256(value: string | Buffer): string {
   return createHash("sha256").update(value).digest("hex");
@@ -529,10 +535,98 @@ function callStates(ledger: CallLedgerEntry[]): Map<string, CallState> {
     } else {
       if (!state) throw new Error("generation call ledger has a terminal entry without an admission");
       if (state.terminal) throw new Error("generation call ledger has a conflicting duplicate terminal entry");
+      if (state.admission.admissionTokenSha256 !== entry.admissionTokenSha256) {
+        throw new Error("generation call ledger terminal token does not match its admission");
+      }
       state.terminal = entry;
     }
   }
   return states;
+}
+
+async function validateCallTuple(
+  root: string,
+  raw: GenerationCallTuple,
+  options: { allowStaleRevision?: boolean } = {},
+): Promise<{ request: GenerationCallTuple; job: ImageGenerationJob }> {
+  const request = GenerationCallTupleSchema.parse(raw);
+  const job = await readJob(root, request.jobId);
+  const manifest = await readProject(root);
+  if (!options.allowStaleRevision || manifest.currentRevision.id === job.projectRevisionId) {
+    await assertAuthorizedJobBinding(root, job);
+  }
+  const page = job.pages.find(({ slideId }) => slideId === request.slideId);
+  if (!page || page.attempt !== request.attempt) {
+    throw new Error("generation call tuple is not declared by the immutable job");
+  }
+  return { request, job };
+}
+
+export async function admitDelegatedGenerationCall(
+  root: string,
+  raw: GenerationCallTuple,
+): Promise<DelegatedGenerationAdmission> {
+  return withProjectLease(root, "generation", async (canonicalRoot) => {
+    const { request, job } = await validateCallTuple(canonicalRoot, raw);
+    const ledger = await readCallLedger(canonicalRoot);
+    if (callStates(ledger).has(tupleKey(request))) {
+      throw new Error("delegated generation call tuple already has a durable admission");
+    }
+    const before = await callBudgetForDigest(canonicalRoot, job.authorizationDigest, job.callBudget);
+    if (before.remaining === 0) throw new Error("generation call budget is exhausted");
+    const admissionToken = randomBytes(32).toString("hex");
+    const admission = CallLedgerEntrySchema.parse({
+      ...request,
+      entryKind: "admission",
+      outcome: "in-flight",
+      admissionTokenSha256: sha256(admissionToken),
+      recordedAt: new Date().toISOString(),
+    });
+    appendPrivateInputLine(join(canonicalRoot, CALL_LEDGER_PATH), JSON.stringify(admission));
+    return {
+      ...request,
+      admissionToken,
+      consumed: before.consumed + 1,
+      remaining: before.remaining - 1,
+    };
+  });
+}
+
+export async function settleDelegatedGenerationCall(
+  root: string,
+  raw: GenerationCallTuple & { admissionToken: string; outcome: "success" | "failed" },
+): Promise<{ consumed: number; remaining: number }> {
+  return withProjectLease(root, "generation", async (canonicalRoot) => {
+    const request = GenerationCallTupleSchema.parse({
+      jobId: raw.jobId,
+      slideId: raw.slideId,
+      attempt: raw.attempt,
+      requestOrdinal: raw.requestOrdinal,
+    });
+    const { job } = await validateCallTuple(canonicalRoot, request, { allowStaleRevision: true });
+    const ledger = await readCallLedger(canonicalRoot);
+    const state = callStates(ledger).get(tupleKey(request));
+    if (!state) throw new Error("delegated generation result has no prior admission");
+    const tokenSha256 = sha256(raw.admissionToken);
+    if (state.admission.admissionTokenSha256 === null || state.admission.admissionTokenSha256 !== tokenSha256) {
+      throw new Error("delegated generation admission token is invalid");
+    }
+    if (state.terminal) {
+      if (state.terminal.outcome !== raw.outcome) {
+        throw new Error("delegated generation result conflicts with its terminal call outcome");
+      }
+    } else {
+      const terminal = CallLedgerEntrySchema.parse({
+        ...request,
+        entryKind: "terminal",
+        outcome: raw.outcome,
+        admissionTokenSha256: tokenSha256,
+        recordedAt: new Date().toISOString(),
+      });
+      appendPrivateInputLine(join(canonicalRoot, CALL_LEDGER_PATH), JSON.stringify(terminal));
+    }
+    return callBudgetForDigest(canonicalRoot, job.authorizationDigest, job.callBudget);
+  });
 }
 
 async function callBudgetForDigest(root: string, digest: string, budget: number): Promise<{ consumed: number; remaining: number }> {
@@ -556,13 +650,7 @@ export async function executeAuthorizedGenerationCall<T>(
   operations: { afterAdmission?: () => Promise<void> | void } = {},
 ): Promise<GenerationExecutionResult<T>> {
   return withProjectLease(root, "generation", async (canonicalRoot) => {
-    const request = GenerationCallTupleSchema.parse(raw);
-    const job = await readJob(canonicalRoot, request.jobId);
-    await assertAuthorizedJobBinding(canonicalRoot, job);
-    const page = job.pages.find(({ slideId }) => slideId === request.slideId);
-    if (!page || page.attempt !== request.attempt) {
-      throw new Error("generation call tuple is not declared by the immutable job");
-    }
+    const { request, job } = await validateCallTuple(canonicalRoot, raw);
     const ledger = await readCallLedger(canonicalRoot);
     const existing = callStates(ledger).get(tupleKey(request));
     const before = await callBudgetForDigest(canonicalRoot, job.authorizationDigest, job.callBudget);
@@ -580,6 +668,7 @@ export async function executeAuthorizedGenerationCall<T>(
       ...request,
       entryKind: "admission",
       outcome: "in-flight",
+      admissionTokenSha256: null,
       recordedAt: new Date().toISOString(),
     });
     appendPrivateInputLine(join(canonicalRoot, CALL_LEDGER_PATH), JSON.stringify(admission));
@@ -594,6 +683,7 @@ export async function executeAuthorizedGenerationCall<T>(
         ...request,
         entryKind: "terminal",
         outcome: "failed",
+        admissionTokenSha256: null,
         recordedAt: new Date().toISOString(),
       });
       appendPrivateInputLine(join(canonicalRoot, CALL_LEDGER_PATH), JSON.stringify(terminal));
@@ -603,6 +693,7 @@ export async function executeAuthorizedGenerationCall<T>(
       ...request,
       entryKind: "terminal",
       outcome: "success",
+      admissionTokenSha256: null,
       recordedAt: new Date().toISOString(),
     });
     appendPrivateInputLine(join(canonicalRoot, CALL_LEDGER_PATH), JSON.stringify(terminal));

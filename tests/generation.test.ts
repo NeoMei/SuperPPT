@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFile, spawn } from "node:child_process";
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { closeSync, constants, openSync } from "node:fs";
 import { access, chmod, lstat, mkdir, mkdtemp, readFile, readdir, realpath, rename, stat, symlink, unlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -12,6 +12,7 @@ import sharp from "sharp";
 
 import { generateProject, recordManualQa, retryProjectPage, runBatch } from "../src/generation/batch.js";
 import {
+  admitDelegatedGenerationCall,
   executeAuthorizedGenerationCall,
   generationCallBudget,
   publishGenerationAuthorizationPlan,
@@ -19,13 +20,22 @@ import {
   publishStyleSampleGenerationPlan,
   readCallLedger,
 } from "../src/generation/authorization.js";
+import {
+  recordDelegatedResult,
+} from "../src/generation/delegation-result.js";
 import { ImageGenerationJobSchema } from "../src/generation/job-schemas.js";
 import { assertJobAuthorized, prepareImageGenerationJob } from "../src/generation/jobs.js";
 import { generateSlide } from "../src/generation/provider.js";
 import { reviewSlide } from "../src/generation/quality.js";
 import { privateSecurityPolicy } from "../src/generation/private-input.js";
 import { bridgeContainmentPolicy } from "../src/generation/bridge-process.js";
-import { AttemptLedgerSchema, QualityDecisionSchema } from "../src/generation/schemas.js";
+import {
+  AttemptLedgerSchema,
+  DependencyGenerationResultSchema,
+  ImageGenerationResultSchema,
+  QualityDecisionSchema,
+  SerialStickyReportSchema,
+} from "../src/generation/schemas.js";
 import { resolveSkillDependencies } from "../src/dependencies/resolve.js";
 import type { AiImageSkillDependency, LegacyResolvedDependencies } from "../src/dependencies/schemas.js";
 import { approveExecutionGate, approveGate, assertGateCurrent } from "../src/planning/confirm.js";
@@ -563,6 +573,290 @@ test("an orphaned in-flight admission remains spent and its replay never invokes
     return "must not run";
   }), { executed: false, outcome: "in-flight", consumed: 1, remaining: 2 });
   assert.equal(actualCalls, 0);
+});
+
+test("delegated result schemas cover every dependency status and reject non-contract prose", async () => {
+  const fixture = JSON.parse(await readFile(join(process.cwd(), "tests", "fixtures", "fake_ai_skill_result.json"), "utf8"));
+  const statuses = [
+    "success",
+    "unavailable",
+    "auth_unavailable",
+    "retryable_exhausted",
+    "policy_refused",
+    "invalid_input",
+    "invalid_output",
+    "local_failure",
+  ] as const;
+  for (const status of statuses) {
+    const result = {
+      ...fixture.dependency,
+      status,
+      output_path: status === "success" ? fixture.dependency.output_path : null,
+    };
+    assert.equal(DependencyGenerationResultSchema.parse(result).status, status);
+  }
+  assert.equal(SerialStickyReportSchema.parse(fixture.batchReport).batch_mode, "serial-sticky-monotonic");
+  assert.throws(
+    () => SerialStickyReportSchema.parse({ ...fixture.batchReport, sticky_candidate: "api-openai" }),
+    /sticky.*successful|successful.*sticky/i,
+  );
+  assert.throws(
+    () => SerialStickyReportSchema.parse({
+      ...fixture.batchReport,
+      switches: [{ page: 1, from: "host-openai", to: "api-openai", reason: "forged switch" }],
+    }),
+    /switch.*prior|prior.*switch/i,
+  );
+  assert.throws(
+    () => DependencyGenerationResultSchema.parse({ ...fixture.dependency, explanation: "provider said this probably worked" }),
+    /unrecognized|invalid/i,
+  );
+});
+
+test("delegated result authenticates host raw and master output, exact bindings, and routing report", async (t) => {
+  const fixture = await approvedProject(t, "superppt-delegated-result-host-");
+  const referencePath = "style/references/art-direction.png";
+  await mkdir(join(fixture.root, "style", "references"), { recursive: true });
+  const referenceBytes = await sharp({ create: { width: 32, height: 18, channels: 3, background: "#6a4c93" } }).png().toBuffer();
+  await writeFile(join(fixture.root, ...referencePath.split("/")), referenceBytes);
+  await createProvisionalStyleLock(fixture.root, {
+    selection: { kind: "catalog", styleId: "cinematic-tech" },
+    referenceArtifacts: [{ path: referencePath, role: "art-direction" }],
+  });
+  const lock = await approveStyleLock(fixture.root);
+  await publishGenerationAuthorizationPlan(fixture.root, { aiDependency: fixture.aiDependency, callBudget: 3 });
+  await approveGate(fixture.root, "generation-authorization");
+  const job = await prepareImageGenerationJob(fixture.root, { kind: "deck", aiDependency: fixture.aiDependency });
+  const page = job.pages[0]!;
+  const masterPath = join(fixture.root, ...page.target.split("/"));
+  const rawPath = join(masterPath, "..", "raw", `${page.slideId}.png`);
+  await mkdir(join(masterPath, "..", "raw"));
+  await sharp({ create: { width: 2048, height: 1152, channels: 3, background: "#112233" } }).png().toFile(masterPath);
+
+  const admission = await admitDelegatedGenerationCall(fixture.root, {
+    jobId: job.jobId,
+    slideId: page.slideId,
+    attempt: page.attempt,
+    requestOrdinal: 1,
+  });
+  const dependency = {
+    status: "success" as const,
+    provider: "openai" as const,
+    channel: "host" as const,
+    output_path: masterPath,
+    safe_message: "host image imported",
+  };
+  const batchReport = {
+    batch_mode: "serial-sticky-monotonic" as const,
+    stopped: false,
+    search_candidate: "host-openai" as const,
+    sticky_candidate: "host-openai" as const,
+    pages: [{ page: 1, outcome: "success" as const, candidate: "host-openai" as const, summary: "" }],
+    switches: [],
+  };
+  const intake = {
+    jobId: job.jobId,
+    slideId: page.slideId,
+    attempt: page.attempt,
+    requestOrdinal: 1,
+    admissionToken: admission.admissionToken,
+    dependency,
+    batchReport,
+    actualPromptSha256: page.promptSha256,
+    styleLockSha256: job.styleLockSha256,
+    styleRecipeSha256: job.styleLock.styleRecipeSha256,
+    referenceUsage: job.styleLock.referenceArtifacts.map(({ path, sha256 }) => ({ path, sha256, usage: "used" as const })),
+    presentationQa: {
+      approvedSampleSha256: lock.approvedSample!.sha256,
+      pageRole: "cover" as const,
+      decision: {
+        ok: true,
+        issues: [],
+        requiredText: [{ text: "Title", present: true, exact: true }],
+        styleConsistent: true,
+        hierarchyClear: true,
+        richDetail: true,
+        noForbiddenContent: true,
+      },
+    },
+  };
+
+  await assert.rejects(recordDelegatedResult(fixture.root, intake), /raw.*required|raw.*artifact/i);
+  await sharp({ create: { width: 2050, height: 1152, channels: 3, background: "#223344" } }).png().toFile(rawPath);
+  await assert.rejects(
+    recordDelegatedResult(fixture.root, { ...intake, actualPromptSha256: "0".repeat(64) }),
+    /prompt.*hash/i,
+  );
+  await assert.rejects(
+    recordDelegatedResult(fixture.root, {
+      ...intake,
+      batchReport: {
+        ...batchReport,
+        search_candidate: "api-openai",
+        sticky_candidate: "api-openai",
+        pages: [{ ...batchReport.pages[0]!, candidate: "api-openai" }],
+      },
+    }),
+    /routing report.*provider|provider.*routing report/i,
+  );
+
+  const recorded = await recordDelegatedResult(fixture.root, intake);
+  assert.equal(ImageGenerationResultSchema.parse(recorded).outcome, "partial");
+  assert.equal(recorded.actualRequestCount, 1);
+  assert.equal(recorded.pages[0]!.status, "success");
+  assert.equal(recorded.pages[0]!.styleConsistency, "accepted");
+  assert.equal(recorded.pages[0]!.artifacts!.raw?.path, `generation/jobs/${job.jobId}/ai-image-output/raw/${page.slideId}.png`);
+  assert.equal(recorded.pages[0]!.artifacts!.master.path, page.target);
+  assert.equal(recorded.pages[0]!.artifacts!.normalized.path, `generation/jobs/${job.jobId}/normalized/${page.slideId}.png`);
+  const normalized = await sharp(join(fixture.root, ...recorded.pages[0]!.artifacts!.normalized.path.split("/"))).metadata();
+  assert.deepEqual([normalized.width, normalized.height, normalized.format], [1920, 1080, "png"]);
+  const manifestBeforeReplay = await lstat(join(fixture.root, "superppt.json"), { bigint: true });
+  assert.deepEqual(await recordDelegatedResult(fixture.root, intake), recorded, "an exact replay is read-only and idempotent");
+  const manifestAfterReplay = await lstat(join(fixture.root, "superppt.json"), { bigint: true });
+  assert.equal(manifestAfterReplay.ino, manifestBeforeReplay.ino, "exact replay must not rewrite the project manifest");
+  await assert.rejects(
+    recordDelegatedResult(fixture.root, { ...intake, dependency: { ...dependency, safe_message: "conflicting replay" } }),
+    /conflicting delegated result replay/i,
+  );
+  assert.deepEqual((await readCallLedger(fixture.root)).map(({ entryKind, outcome }) => ({ entryKind, outcome })), [
+    { entryKind: "admission", outcome: "in-flight" },
+    { entryKind: "terminal", outcome: "success" },
+  ]);
+  await sharp({ create: { width: 1920, height: 1080, channels: 3, background: "#abcdef" } }).png().toFile(
+    join(fixture.root, ...recorded.pages[0]!.artifacts!.normalized.path.split("/")),
+  );
+  await assert.rejects(recordDelegatedResult(fixture.root, intake), /normalized.*deterministic|normalized.*master/i);
+});
+
+test("unsupported art direction pauses intake and every failed actual request remains spent", async (t) => {
+  const fixture = await approvedProject(t, "superppt-delegated-result-paused-");
+  const referencePath = "style/references/art-direction.png";
+  await mkdir(join(fixture.root, "style", "references"), { recursive: true });
+  await writeFile(join(fixture.root, ...referencePath.split("/")), "required art direction reference");
+  await createProvisionalStyleLock(fixture.root, {
+    selection: { kind: "catalog", styleId: "cinematic-tech" },
+    referenceArtifacts: [{ path: referencePath, role: "art-direction" }],
+  });
+  await approveStyleLock(fixture.root);
+  await publishGenerationAuthorizationPlan(fixture.root, { aiDependency: fixture.aiDependency, callBudget: 3 });
+  await approveGate(fixture.root, "generation-authorization");
+  const job = await prepareImageGenerationJob(fixture.root, { kind: "deck", aiDependency: fixture.aiDependency });
+  const page = job.pages[0]!;
+  const admission = await admitDelegatedGenerationCall(fixture.root, {
+    jobId: job.jobId,
+    slideId: page.slideId,
+    attempt: page.attempt,
+    requestOrdinal: 1,
+  });
+  const recorded = await recordDelegatedResult(fixture.root, {
+    jobId: job.jobId,
+    slideId: page.slideId,
+    attempt: page.attempt,
+    requestOrdinal: 1,
+    admissionToken: admission.admissionToken,
+    dependency: {
+      status: "invalid_input",
+      provider: "openai",
+      channel: "host",
+      output_path: null,
+      safe_message: "required reference capability unavailable",
+    },
+    batchReport: {
+      batch_mode: "serial-sticky-monotonic",
+      stopped: true,
+      search_candidate: "host-openai",
+      sticky_candidate: null,
+      pages: [{ page: 1, outcome: "fatal", candidate: "host-openai", summary: "reference capability unavailable" }],
+      switches: [],
+    },
+    actualPromptSha256: page.promptSha256,
+    styleLockSha256: job.styleLockSha256,
+    styleRecipeSha256: job.styleLock.styleRecipeSha256,
+    referenceUsage: job.styleLock.referenceArtifacts.map(({ path, sha256 }) => ({ path, sha256, usage: "unsupported" as const })),
+    presentationQa: null,
+  });
+
+  assert.equal(recorded.outcome, "attention-required");
+  assert.equal(recorded.pages[0]!.status, "paused");
+  assert.equal(recorded.pages[0]!.artifacts, null);
+  assert.equal(recorded.pages[0]!.styleConsistency, "not-reviewed");
+  assert.deepEqual(await generationCallBudget(fixture.root, job), { authorized: 3, consumed: 1, remaining: 2 });
+  assert.equal((await readCallLedger(fixture.root)).at(-1)?.outcome, "failed");
+});
+
+test("delegated result permits API raw null and records stale revision evidence without attaching it", async (t) => {
+  const fixture = await authorizedDeckProject(t, "superppt-delegated-result-stale-api-");
+  const job = await prepareImageGenerationJob(fixture.root, { kind: "deck", aiDependency: fixture.aiDependency });
+  const page = job.pages[0]!;
+  const masterPath = join(fixture.root, ...page.target.split("/"));
+  await sharp({ create: { width: 1920, height: 1080, channels: 3, background: "#334455" } }).png().toFile(masterPath);
+  const lock = await readApprovedStyleLock(fixture.root);
+  const batchReport = {
+    batch_mode: "serial-sticky-monotonic" as const,
+    stopped: false,
+    search_candidate: "api-openai" as const,
+    sticky_candidate: "api-openai" as const,
+    pages: [{ page: 1, outcome: "success" as const, candidate: "api-openai" as const, summary: "" }],
+    switches: [],
+  };
+  const baseIntake = {
+    jobId: job.jobId,
+    slideId: page.slideId,
+    attempt: page.attempt,
+    requestOrdinal: 1,
+    admissionToken: "0".repeat(64),
+    dependency: {
+      status: "success" as const,
+      provider: "openai",
+      channel: "api",
+      output_path: masterPath,
+      safe_message: "API image generated",
+    },
+    batchReport,
+    actualPromptSha256: page.promptSha256,
+    styleLockSha256: job.styleLockSha256,
+    styleRecipeSha256: job.styleLock.styleRecipeSha256,
+    referenceUsage: [],
+    presentationQa: {
+      approvedSampleSha256: lock.approvedSample!.sha256,
+      pageRole: "cover" as const,
+      decision: {
+        ok: true,
+        issues: [],
+        requiredText: [{ text: "Title", present: true, exact: true }],
+        styleConsistent: true,
+        hierarchyClear: true,
+        richDetail: true,
+        noForbiddenContent: true,
+      },
+    },
+  };
+  await assert.rejects(recordDelegatedResult(fixture.root, baseIntake), /no prior admission/i);
+  const admission = await admitDelegatedGenerationCall(fixture.root, {
+    jobId: job.jobId,
+    slideId: page.slideId,
+    attempt: page.attempt,
+    requestOrdinal: 1,
+  });
+
+  const manifestPath = join(fixture.root, "superppt.json");
+  const manifest = JSON.parse(await readFile(manifestPath, "utf8"));
+  const staleRevision = {
+    id: randomUUID(),
+    number: manifest.currentRevision.number + 1,
+    createdAt: new Date().toISOString(),
+    parentId: manifest.currentRevision.id,
+  };
+  manifest.currentRevision = staleRevision;
+  manifest.revisions.push(staleRevision);
+  await writeFile(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`);
+  const staleManifestBytes = await readFile(manifestPath);
+
+  const recorded = await recordDelegatedResult(fixture.root, { ...baseIntake, admissionToken: admission.admissionToken });
+  assert.equal(recorded.pages[0]!.artifacts!.raw, null);
+  assert.equal(recorded.pages[0]!.artifacts!.master.path, page.target);
+  assert.equal(await readFile(manifestPath, "utf8"), staleManifestBytes.toString("utf8"), "stale evidence must not rewrite the current manifest");
+  await access(join(fixture.root, "generation", "jobs", job.jobId, "results", `${page.slideId}-${page.attempt}.json`));
 });
 
 test("passes prompts through a 0600 file in a 0700 directory and atomically normalizes output", async (t) => {
