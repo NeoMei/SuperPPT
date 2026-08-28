@@ -338,11 +338,16 @@ async function main(argv: string[]): Promise<void> {
 
   if (command === "convert-page") {
     const options = exactFlags(argv.slice(1), ["--project", "--slide"]);
-    const resolved = await configuredDependencies();
+    const configured = await configuredDependencies();
+    const resolved = await resolveSkillDependencies({
+      aiSkillRoot: configured.ai.root,
+      editableSkillRoot: configured.editable.root,
+    });
     const result = await convertProjectPage({
       root: options.get("--project")!,
       slideId: options.get("--slide")!,
       converterRoot: resolved.editable.root,
+      dependencies: resolved,
     });
     outputJson({
       route: "editable",

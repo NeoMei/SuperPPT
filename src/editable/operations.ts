@@ -516,6 +516,11 @@ async function createProjectModifiedRevision(
   let sourceBackgroundSha256: string;
   let sourceAssetHashes: Record<string, string>;
   let originalSourceManifestSha256: string;
+  let deckReviewSelection: {
+    candidateId: string;
+    reviewDescriptorSha256: string;
+    actionEvidenceSha256: string;
+  } | null = null;
   if (currentEditable) {
     const modified = await validateModifiedRevision(sourceRoot, currentEditable.expectedModifiedRevisionRecordSha256);
     sourceManifest = modified.manifest;
@@ -550,20 +555,31 @@ async function createProjectModifiedRevision(
     sourceFinalRender = conversionRecord.value.finalRender;
     sourceBackgroundSha256 = source.artifactHashes.cleanBackground;
     sourceAssetHashes = source.artifactHashes.assets;
+    deckReviewSelection = conversionRecord.value.deckReviewSelection;
   }
-  const currentRender = slide.finalRender
-    ? await readOwnedRegularFile(root, slide.finalRender.path).catch(() => null)
+  let currentFinalRender = slide.finalRender;
+  if (!currentEditable && !currentFinalRender && deckReviewSelection) {
+    const selected = await (await import("../project/promotion.js")).authenticateCurrentDeckEditSelection(root, slide.id);
+    if (
+      selected.candidateId !== deckReviewSelection.candidateId
+      || selected.reviewDescriptorSha256 !== deckReviewSelection.reviewDescriptorSha256
+      || selected.actionEvidenceSha256 !== deckReviewSelection.actionEvidenceSha256
+    ) throw new Error("source reviewed deck selection is stale");
+    currentFinalRender = selected.sourceMaster;
+  }
+  const currentRender = currentFinalRender
+    ? await readOwnedRegularFile(root, currentFinalRender.path).catch(() => null)
     : null;
   if (
     sourceProjectRevisionId !== project.currentRevision.id
-    || !slide.finalRender
+    || !currentFinalRender
     || (slide.status !== "ready" && slide.status !== "editable")
-    || slide.finalRender.revisionId !== project.currentRevision.id
+    || currentFinalRender.revisionId !== project.currentRevision.id
     || !currentRender
-    || sha256(currentRender) !== slide.finalRender.sha256
+    || sha256(currentRender) !== currentFinalRender.sha256
     || (!currentEditable && (
-      sourceFinalRender.path !== slide.finalRender.path
-      || sourceFinalRender.sha256 !== slide.finalRender.sha256
+      sourceFinalRender.path !== currentFinalRender.path
+      || sourceFinalRender.sha256 !== currentFinalRender.sha256
     ))
     || (currentEditable && (
       currentEditable.projectRevisionId !== project.currentRevision.id

@@ -16,9 +16,12 @@ import {
   validateQuarantinedOutput,
   type FinalRender,
 } from "../src/deck/assemble.js";
+import * as deckAssembly from "../src/deck/assemble.js";
 import { buildMontage } from "../src/deck/montage.js";
 import { exportPdf } from "../src/deck/pdf.js";
 import { convertProjectPage } from "../src/editable/adapter.js";
+import { resolveSkillDependencies } from "../src/dependencies/resolve.js";
+import type { ResolvedDependencies } from "../src/dependencies/schemas.js";
 import { configureGenerationAuthorizationTrustForTests } from "../src/generation/trusted-authorization.js";
 import { applyProjectEditPlan, promoteProjectEditableTarget } from "../src/editable/operations.js";
 import { confirmEditablePreview, renderEditablePage, renderProjectEditablePreview } from "../src/editable/render.js";
@@ -132,7 +135,10 @@ async function splitEscapedEditableTextRuns(pptx: string, slideNumber = 2): Prom
   await writeFile(pptx, await zip.generateAsync({ type: "nodebuffer" }));
 }
 
-async function readyProject(t: TestContext): Promise<string> {
+async function reviewedProject(
+  t: TestContext,
+  action: "confirm-delivery" | "edit-page",
+): Promise<{ root: string; candidateId: string; reviewDescriptorSha256: string }> {
   const root = join(await temporary(t, "superppt-mixed-project-"), "project");
   await initializeProject({ root, title: "Mixed deck" });
   await writeFile(join(root, "brief.json"), `${JSON.stringify({
@@ -254,11 +260,19 @@ async function readyProject(t: TestContext): Promise<string> {
   const candidate = await assembleProjectCandidate(root, { buildOutputs: fakeInitialOutputs });
   const review = await publishDeckReview(root, candidate.candidateId);
   await applyDeckReviewAction(root, {
-    action: "confirm-delivery",
+    action,
     candidateId: candidate.candidateId,
     descriptorSha256: review.descriptorSha256,
   });
-  return root;
+  return {
+    root,
+    candidateId: candidate.candidateId,
+    reviewDescriptorSha256: review.descriptorSha256,
+  };
+}
+
+async function readyProject(t: TestContext): Promise<string> {
+  return (await reviewedProject(t, "confirm-delivery")).root;
 }
 
 async function converterRoot(t: TestContext): Promise<string> {
@@ -272,6 +286,24 @@ async function converterRoot(t: TestContext): Promise<string> {
   })}\n`);
   await writeFile(join(root, "skills", "image-to-editable-pptx", "SKILL.md"), "---\nname: image-to-editable-pptx\n---\n");
   return root;
+}
+
+async function resolvedDependencies(
+  t: TestContext,
+  editableRoot: string,
+): Promise<ResolvedDependencies> {
+  const aiRoot = join(await temporary(t, "superppt-mixed-ai-skill-"), "ai-image-to-ppt");
+  await mkdir(join(aiRoot, "scripts"), { recursive: true });
+  await writeFile(join(aiRoot, "SKILL.md"), "---\nname: ai-image-to-ppt\n---\n");
+  for (const script of [
+    "generation_result.py",
+    "host_routing_policy.py",
+    "import_host_image.py",
+    "prepare_editable_input.py",
+  ]) {
+    await writeFile(join(aiRoot, "scripts", script), `# fixture ${script}\n`);
+  }
+  return resolveSkillDependencies({ aiSkillRoot: aiRoot, editableSkillRoot: editableRoot });
 }
 
 async function transparentPng(width: number, height: number): Promise<Buffer> {
@@ -330,6 +362,198 @@ async function writeFakeConverterOutput(outDir: string, sourcePng: string): Prom
   }, null, 2)}\n`);
   await writeFile(join(outDir, ".image-to-editable-pptx-output.json"), `${JSON.stringify({ markerVersion: 1, appId: "image-to-editable-pptx", artifactKind: "published-output" })}\n`);
 }
+
+test("prepare editable input and selected page replacement invalidate only the reviewed candidate", async (t) => {
+  const reviewed = await reviewedProject(t, "edit-page");
+  const { root } = reviewed;
+  const before = await readProject(root);
+  const untouched = before.slides
+    .filter((slide) => slide.id !== slideIds[1])
+    .map((slide) => structuredClone(slide));
+  const styleArtifact = structuredClone(before.style);
+  const styleLockBytes = await readFile(join(root, "style/lock.json"));
+  const initialGates = before.gates
+    .filter((gate) => ["outline", "slide-specs", "style-sample", "generation-authorization"].includes(gate.gate))
+    .map((gate) => ({ gate: gate.gate, approvalId: gate.approvalId, snapshotPath: gate.snapshotPath }));
+  const candidateMarker = JSON.parse(await readFile(
+    join(root, "output", "candidates", reviewed.candidateId, ".superppt-candidate.json"),
+    "utf8",
+  ));
+  const selectedMaster = candidateMarker.slides.find((slide: { id: string }) => slide.id === slideIds[1]);
+  assert.ok(selectedMaster);
+  const selectedMasterBytes = await readFile(join(root, ...selectedMaster.path.split("/")));
+  const candidateMarkerBytes = await readFile(
+    join(root, "output", "candidates", reviewed.candidateId, ".superppt-candidate.json"),
+  );
+
+  const plugin = await converterRoot(t);
+  const editableDecoy = join(plugin, "scripts", "prepare_editable_input.py");
+  await mkdir(join(plugin, "scripts"));
+  await writeFile(editableDecoy, "# image-to-editable-pptx must not substitute for the resolved ai-image-to-ppt script\n");
+  const dependencies = await resolvedDependencies(t, plugin);
+  let prepareCalls = 0;
+  const converted = await convertProjectPage({
+    root,
+    slideId: slideIds[1],
+    converterRoot: plugin,
+    dependencies,
+    prepareExecute: async (command: string, args: string[]) => {
+      prepareCalls += 1;
+      assert.equal(command, "python3");
+      assert.equal(args[0], dependencies.ai.scripts.prepareEditableInput);
+      assert.notEqual(args[0], editableDecoy);
+      assert.equal(args[1], join(root, ...selectedMaster.path.split("/")));
+      await sharp(await readFile(args[1]!)).resize(1280, 720).png().toFile(args[2]!);
+      return {
+        stdout: `  OK: ${args[2]} (1280x720 PNG, editable-converter input)\n`,
+        stderr: "",
+      };
+    },
+    execute: async (_command, args) => {
+      const source = args[args.indexOf("--image") + 1]!;
+      const outDir = args[args.indexOf("--out") + 1]!;
+      await mkdir(outDir);
+      await writeFakeConverterOutput(outDir, source);
+      return { stdout: "", stderr: "" };
+    },
+  } as Parameters<typeof convertProjectPage>[0]);
+  assert.equal(prepareCalls, 1);
+  assert.notEqual(converted.sourcePng, join(root, ...selectedMaster.path.split("/")));
+  assert.deepEqual(
+    [(await sharp(converted.sourcePng).metadata()).width, (await sharp(converted.sourcePng).metadata()).height],
+    [1280, 720],
+  );
+  const conversionRecord = JSON.parse(await readFile(converted.conversionRecord, "utf8"));
+  assert.equal(conversionRecord.prepareEditableInput.scriptPath, dependencies.ai.scripts.prepareEditableInput);
+  assert.equal(conversionRecord.prepareEditableInput.scriptSha256, dependencies.ai.scriptSha256.prepareEditableInput);
+  assert.deepEqual(conversionRecord.prepareEditableInput.sourceMaster, {
+    path: selectedMaster.path,
+    sha256: selectedMaster.sha256,
+    revisionId: before.currentRevision.id,
+  });
+  assert.equal(conversionRecord.prepareEditableInput.output1280x720.path, `editable/${slideIds[1]}/${converted.revisionId}/source-1280x720.png`);
+  assert.deepEqual(await readFile(join(root, ...selectedMaster.path.split("/"))), selectedMasterBytes);
+  assert.deepEqual(
+    await readFile(join(root, "output", "candidates", reviewed.candidateId, ".superppt-candidate.json")),
+    candidateMarkerBytes,
+  );
+
+  const modified = await promoteProjectEditableTarget({
+    root,
+    slideId: slideIds[1],
+    sourceRevisionId: converted.revisionId,
+    elementId: "ocr-title",
+    expectedKind: "text",
+  });
+  const recordSha256 = sha256(await readFile(join(modified.revisionRoot, "modified-revision-record.json")));
+  const preview = await renderProjectEditablePreview({
+    root,
+    slideId: slideIds[1],
+    modifiedRevisionId: modified.revisionId,
+    expectedModifiedRevisionRecordSha256: recordSha256,
+  });
+  await confirmEditablePreview({
+    root,
+    slideId: slideIds[1],
+    modifiedRevisionId: modified.revisionId,
+    expectedModifiedRevisionRecordSha256: recordSha256,
+    preview: join(root, preview.preview.path),
+  });
+
+  const applyEditableReplacement = (deckAssembly as unknown as {
+    applyEditableReplacement?: (options: {
+      root: string;
+      slideId: string;
+      modifiedRevisionId: string;
+      expectedModifiedRevisionRecordSha256: string;
+    }) => Promise<unknown>;
+  }).applyEditableReplacement;
+  assert.equal(typeof applyEditableReplacement, "function", "candidate-first editable replacement API must exist");
+  await applyEditableReplacement!({
+    root,
+    slideId: slideIds[1],
+    modifiedRevisionId: modified.revisionId,
+    expectedModifiedRevisionRecordSha256: recordSha256,
+  });
+
+  const after = await readProject(root);
+  assert.equal(after.stage, "revising");
+  assert.equal(after.slides[1]!.status, "editable");
+  assert.equal(after.slides[1]!.editableRevision?.modifiedRevisionId, modified.revisionId);
+  assert.deepEqual(after.slides.filter((slide) => slide.id !== slideIds[1]), untouched);
+  assert.deepEqual(after.style, styleArtifact);
+  assert.deepEqual(await readFile(join(root, "style/lock.json")), styleLockBytes);
+  assert.deepEqual(after.gates
+    .filter((gate) => ["outline", "slide-specs", "style-sample", "generation-authorization"].includes(gate.gate))
+    .map((gate) => ({ gate: gate.gate, approvalId: gate.approvalId, snapshotPath: gate.snapshotPath })), initialGates);
+  assert.equal(after.gates.some((gate) => gate.gate === "deck-review"), false);
+  assert.equal(after.gates.some((gate) => gate.gate === "slide-preview"), true);
+  for (const name of ["action.json", "review.json", "montage.jpg"]) {
+    await assert.rejects(lstat(join(root, "output/candidates/current", name)), { code: "ENOENT" });
+  }
+  await assert.rejects(publishDeckReview(root, reviewed.candidateId), /stale|current project revision|candidate/);
+
+  const rebuilt = await assembleProjectCandidate(root, { buildOutputs: mixedOutputs });
+  assert.notEqual(rebuilt.candidateId, reviewed.candidateId);
+  const rebuiltReview = await publishDeckReview(root, rebuilt.candidateId);
+  assert.equal(rebuiltReview.candidateId, rebuilt.candidateId);
+});
+
+test("prepare editable input rejects dependency drift, extra output, wrong dimensions, and linked output", async (t) => {
+  const reviewed = await reviewedProject(t, "edit-page");
+  const plugin = await converterRoot(t);
+  const dependencies = await resolvedDependencies(t, plugin);
+  let converterCalls = 0;
+  const execute = async (): Promise<{ stdout: string; stderr: string }> => {
+    converterCalls += 1;
+    return { stdout: "", stderr: "" };
+  };
+  const attempt = async (
+    revisionId: string,
+    prepareExecute: NonNullable<Parameters<typeof convertProjectPage>[0]["prepareExecute"]>,
+  ): Promise<void> => {
+    await convertProjectPage({
+      root: reviewed.root,
+      slideId: slideIds[1],
+      converterRoot: plugin,
+      dependencies,
+      idFactory: () => revisionId,
+      prepareExecute,
+      execute,
+    });
+  };
+
+  await assert.rejects(attempt("00000000-0000-4000-8000-000000000930", async (_command, args) => {
+    await sharp({ create: { width: 1280, height: 720, channels: 3, background: "#21354b" } }).png().toFile(args[2]!);
+    return { stdout: `  OK: ${args[2]} (1280x720 PNG, editable-converter input)\nextra\n`, stderr: "" };
+  }), /malformed or extra output/);
+
+  await assert.rejects(attempt("00000000-0000-4000-8000-000000000931", async (_command, args) => {
+    await sharp({ create: { width: 1279, height: 720, channels: 3, background: "#21354b" } }).png().toFile(args[2]!);
+    return { stdout: `  OK: ${args[2]} (1280x720 PNG, editable-converter input)\n`, stderr: "" };
+  }), /exact 1280x720 PNG/);
+
+  const outside = join(await temporary(t, "superppt-prepared-outside-"), "outside.png");
+  await sharp({ create: { width: 1280, height: 720, channels: 3, background: "#21354b" } }).png().toFile(outside);
+  await assert.rejects(attempt("00000000-0000-4000-8000-000000000932", async (_command, args) => {
+    await symlink(outside, args[2]!);
+    return { stdout: `  OK: ${args[2]} (1280x720 PNG, editable-converter input)\n`, stderr: "" };
+  }), /regular non-symlink file/);
+
+  const editablePackage = await readFile(dependencies.editable.packageFile);
+  await assert.rejects(attempt("00000000-0000-4000-8000-000000000933", async (_command, args) => {
+    await sharp({ create: { width: 1280, height: 720, channels: 3, background: "#21354b" } }).png().toFile(args[2]!);
+    await writeFile(dependencies.editable.packageFile, `${editablePackage.toString("utf8")} `);
+    return { stdout: `  OK: ${args[2]} (1280x720 PNG, editable-converter input)\n`, stderr: "" };
+  }), /dependency changed after input preparation/);
+  await writeFile(dependencies.editable.packageFile, editablePackage);
+
+  await writeFile(dependencies.ai.scripts.prepareEditableInput, "# drifted script\n");
+  await assert.rejects(attempt("00000000-0000-4000-8000-000000000934", async () => {
+    throw new Error("drifted preparation script must never execute");
+  }), /preflight failed|identity changed/);
+  assert.equal(converterCalls, 0);
+});
 
 test("renders a deterministic 1920x1080 editable preview and authors real editable objects", async (t) => {
   const root = await mkdtemp(join(tmpdir(), "superppt-mixed-"));

@@ -274,12 +274,21 @@ async function validateSlidePreviewGateEvidence(
   const binding = gate.slidePreview;
   if (gate.gate !== "slide-preview" || !binding) throw new Error("slide preview binding is missing");
   const slide = manifest.slides.find((candidate) => candidate.id === binding.slideId);
+  const appliedBinding = slide?.status === "editable" && slide.editableRevision
+    && sameJson(binding, slide.editableRevision)
+    ? slide.editableRevision.sourceFinalRender
+    : null;
+  let source = appliedBinding ?? slide?.finalRender ?? null;
+  if (!source && slide?.status === "ready" && slide.image) {
+    const selected = await (await import("./promotion.js")).authenticateCurrentDeckEditSelection(root, slide.id);
+    if (sameJson(selected.sourceMaster, binding.sourceFinalRender)) source = selected.sourceMaster;
+  }
   if (
-    !slide?.finalRender
+    !source
     || binding.projectId !== manifest.projectId
     || binding.projectRevisionId !== manifest.currentRevision.id
     || gate.revisionId !== manifest.currentRevision.id
-    || !sameJson(binding.sourceFinalRender, slide.finalRender)
+    || !sameJson(binding.sourceFinalRender, source)
   ) throw new Error("slide preview binding is stale");
   for (const [path, expected] of Object.entries(gate.artifactHashes)) {
     const bytes = await readOwnedRegularFile(root, path);

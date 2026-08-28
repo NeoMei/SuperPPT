@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
-import { lstat, mkdir, readdir, realpath, rename, unlink } from "node:fs/promises";
+import { lstat, mkdir, readdir, realpath, rename, rmdir, unlink } from "node:fs/promises";
 import { dirname, isAbsolute, join, posix, relative, sep } from "node:path";
 
 import JSZip from "jszip";
@@ -21,7 +21,7 @@ import { validateAppliedEditableBinding, validateConfirmedEditablePreview } from
 import { assertGateCurrent } from "../planning/confirm.js";
 import { sha256Evidence } from "../project/evidence.js";
 import { syncDirectory, writeDurableExclusive } from "../project/durable.js";
-import { withProjectLease } from "../project/lock.js";
+import { withPlanningLock, withProjectLease } from "../project/lock.js";
 import { promoteExclusive } from "../project/exclusive.js";
 import { readOwnedRegularFile, readRegularFileNoFollow, type SafeReadOperations } from "../project/safe-file.js";
 import { ArtifactSchema, type Artifact, type ProjectManifest } from "../project/schemas.js";
@@ -1460,6 +1460,64 @@ export async function replaceSlide(options: {
       operations: options.operations,
     });
   });
+}
+
+export type ApplyEditableReplacementResult = {
+  candidateId: string;
+  slideId: string;
+  modifiedRevisionId: string;
+  deckRevision: number;
+};
+
+export async function applyEditableReplacement(options: {
+  root: string;
+  slideId: string;
+  modifiedRevisionId: string;
+  expectedModifiedRevisionRecordSha256: string;
+}): Promise<ApplyEditableReplacementResult> {
+  return withPlanningLock(options.root, async (planningRoot) =>
+    withProjectLease(planningRoot, "slide-replacement", async (root) => {
+      const promotion = await import("../project/promotion.js");
+      const selection = await promotion.authenticateCurrentDeckEditSelection(root, options.slideId);
+      const before = await readProject(root);
+      const binding = await validateConfirmedEditablePreview(
+        root,
+        before,
+        options.slideId,
+        options.modifiedRevisionId,
+        options.expectedModifiedRevisionRecordSha256,
+      );
+      if (JSON.stringify(binding.sourceFinalRender) !== JSON.stringify(selection.sourceMaster)) {
+        throw new Error("confirmed editable preview does not bind the selected reviewed page master");
+      }
+      const candidate = replacementCandidate(before, options.slideId, binding);
+      const invalidated = await promotion.invalidateCurrentDeckReviewPresentation(root, selection);
+      try {
+        await updateProject(root, (current) => {
+          if (JSON.stringify(current) !== JSON.stringify(before)) {
+            throw new Error("project changed during editable candidate invalidation");
+          }
+          return candidate;
+        });
+      } catch (error: unknown) {
+        const currentPresentation = join(root, "output/candidates/current");
+        try {
+          await rmdir(currentPresentation);
+          await rename(invalidated, currentPresentation);
+          await syncDirectory(join(root, "output/candidates"));
+        } catch (rollbackError: unknown) {
+          throw new AggregateError([error, rollbackError], "editable replacement failed and deck-review invalidation rollback failed");
+        }
+        throw error;
+      }
+      return {
+        candidateId: selection.candidateId,
+        slideId: options.slideId,
+        modifiedRevisionId: options.modifiedRevisionId,
+        deckRevision: deckRevisionNumber(candidate),
+      };
+    })
+  );
 }
 
 async function validateAcceptanceCurrent(root: string, manifest: ProjectManifest, acceptance: Acceptance): Promise<void> {

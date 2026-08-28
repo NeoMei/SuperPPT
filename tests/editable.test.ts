@@ -27,6 +27,8 @@ import {
   prepareConversionInput,
   runEditableConversion,
 } from "../src/editable/adapter.js";
+import { resolveSkillDependencies } from "../src/dependencies/resolve.js";
+import type { ResolvedDependencies } from "../src/dependencies/schemas.js";
 import {
   applyEditPlan,
   applyProjectEditPlan,
@@ -87,6 +89,24 @@ async function converterRoot(t: TestContext): Promise<string> {
   })}\n`);
   await writeFile(join(root, "skills", "image-to-editable-pptx", "SKILL.md"), "---\nname: image-to-editable-pptx\n---\n");
   return root;
+}
+
+async function resolvedDependencies(
+  t: TestContext,
+  editableRoot: string,
+): Promise<ResolvedDependencies> {
+  const aiRoot = join(await temporary(t, "superppt-editable-ai-skill-"), "ai-image-to-ppt");
+  await mkdir(join(aiRoot, "scripts"), { recursive: true });
+  await writeFile(join(aiRoot, "SKILL.md"), "---\nname: ai-image-to-ppt\n---\n");
+  for (const script of [
+    "generation_result.py",
+    "host_routing_policy.py",
+    "import_host_image.py",
+    "prepare_editable_input.py",
+  ]) {
+    await writeFile(join(aiRoot, "scripts", script), `# fixture ${script}\n`);
+  }
+  return resolveSkillDependencies({ aiSkillRoot: aiRoot, editableSkillRoot: editableRoot });
 }
 
 async function png(width: number, height: number, alpha = false): Promise<Buffer> {
@@ -587,6 +607,23 @@ async function readyProject(t: TestContext): Promise<{ root: string; slideId: st
   }));
   return { root, slideId };
 }
+
+test("selected page conversion rejects a ready page that was not selected from the current reviewed deck", async (t) => {
+  const project = await readyProject(t);
+  const plugin = await converterRoot(t);
+  const dependencies = await resolvedDependencies(t, plugin);
+  await assert.rejects(convertProjectPage({
+    ...project,
+    converterRoot: plugin,
+    dependencies,
+    prepareExecute: async () => {
+      throw new Error("unreviewed preparation must not execute");
+    },
+    execute: async () => {
+      throw new Error("unreviewed conversion must not execute");
+    },
+  } as Parameters<typeof convertProjectPage>[0]), /current reviewed deck|edit-page selection/);
+});
 
 async function readyCurrentEditableProject(t: TestContext): Promise<{
   root: string;

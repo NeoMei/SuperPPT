@@ -216,6 +216,25 @@ export const ConversionRecordSchema = z.object({
     path: EditableProjectPathSchema,
     sha256: Sha256Schema,
   }).strict(),
+  prepareEditableInput: z.object({
+    scriptPath: z.string().min(1),
+    scriptSha256: Sha256Schema,
+    sourceMaster: z.object({
+      path: EditableProjectPathSchema,
+      sha256: Sha256Schema,
+      revisionId: z.string().uuid(),
+    }).strict(),
+    output1280x720: z.object({
+      path: EditableProjectPathSchema,
+      sha256: Sha256Schema,
+      revisionId: z.string().uuid(),
+    }).strict(),
+  }).strict(),
+  deckReviewSelection: z.object({
+    candidateId: z.string().uuid(),
+    reviewDescriptorSha256: Sha256Schema,
+    actionEvidenceSha256: Sha256Schema,
+  }).strict().nullable(),
   converterVersion: z.string().min(1),
   artifacts: z.object({
     sourceImage: Sha256Schema,
@@ -225,7 +244,19 @@ export const ConversionRecordSchema = z.object({
     assets: z.record(EditableProjectPathSchema, Sha256Schema),
     outputs: z.record(z.string().min(1), Sha256Schema),
   }).strict(),
-}).strict();
+}).strict().superRefine((record, context) => {
+  const expectedOutput = `editable/${record.slideId}/${record.revisionId}/source-1280x720.png`;
+  if (
+    record.prepareEditableInput.output1280x720.path !== expectedOutput
+    || record.prepareEditableInput.output1280x720.revisionId !== record.projectRevisionId
+    || record.prepareEditableInput.output1280x720.sha256 !== record.artifacts.sourceImage
+  ) context.addIssue({ code: "custom", path: ["prepareEditableInput", "output1280x720"], message: "prepared editable input must bind the conversion source artifact" });
+  if (
+    record.prepareEditableInput.sourceMaster.path !== record.finalRender.path
+    || record.prepareEditableInput.sourceMaster.sha256 !== record.finalRender.sha256
+    || record.prepareEditableInput.sourceMaster.revisionId !== record.projectRevisionId
+  ) context.addIssue({ code: "custom", path: ["prepareEditableInput", "sourceMaster"], message: "prepared editable input must bind the selected source master" });
+});
 
 export const EditPlanSchema = z.discriminatedUnion("route", [
   z.object({ route: z.literal("regenerate"), reason: z.string().min(1) }).strict(),

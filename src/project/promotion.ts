@@ -34,6 +34,18 @@ export type DeckReviewActionOutcome =
   | { action: "edit-page"; stage: "revising"; delivery: null }
   | { action: "return-upstream"; stage: "generation-authorization"; delivery: null };
 
+export type CurrentDeckEditSelection = {
+  candidateId: string;
+  sourceMaster: Artifact;
+  reviewDescriptorSha256: string;
+  actionEvidenceSha256: string;
+  currentPresentation: {
+    actionSha256: string;
+    montageSha256: string;
+    reviewSha256: string;
+  };
+};
+
 const {
   OutputMarkerSchema,
   canonicalArtifactRefs,
@@ -115,6 +127,84 @@ function assertReviewCandidateBinding(
       }]),
     ))
   ) throw new Error("deck-review descriptor does not bind the exact candidate");
+}
+
+export async function authenticateCurrentDeckEditSelection(
+  root: string,
+  slideId: string,
+): Promise<CurrentDeckEditSelection> {
+  const manifest = await readProject(root);
+  if (manifest.stage !== "revising") throw new Error("editable conversion requires an edit-page selection from the current reviewed deck");
+  const { review, reviewBytes, montageBytes } = await readCurrentReviewPresentation(root);
+  const actionBytes = await readOwnedRegularFile(root, "output/candidates/current/action.json");
+  const action = verifiedDeckReviewAction(actionBytes);
+  if (
+    action.action !== "edit-page"
+    || action.candidateId !== review.candidateId
+    || action.projectId !== manifest.projectId
+    || action.projectRevisionId !== manifest.currentRevision.id
+    || action.reviewDescriptorSha256 !== review.descriptorSha256
+    || action.presentedMontageSha256 !== review.artifacts.montage.sha256
+  ) throw new Error("editable conversion requires an authenticated edit-page selection from the current reviewed deck");
+  const candidate = await readDeckCandidate(root, review.candidateId, manifest);
+  assertReviewCandidateBinding(review, review.candidateId, manifest, candidate);
+  const selected = candidate.marker.slides.find((slide) => slide.id === slideId);
+  const projectSlide = manifest.slides.find((slide) => slide.id === slideId);
+  if (
+    !selected
+    || selected.mode !== "image"
+    || !projectSlide
+    || projectSlide.status !== "ready"
+    || !projectSlide.image
+    || projectSlide.image.path !== selected.path
+    || projectSlide.image.sha256 !== selected.sha256
+    || projectSlide.image.revisionId !== manifest.currentRevision.id
+  ) throw new Error("selected page is not the authenticated current page master in the reviewed deck");
+  const sourceBytes = await readOwnedRegularFile(root, selected.path);
+  if (sha256Evidence(sourceBytes) !== selected.sha256) throw new Error("selected reviewed page master changed");
+  return {
+    candidateId: review.candidateId,
+    sourceMaster: {
+      path: selected.path,
+      sha256: selected.sha256,
+      revisionId: manifest.currentRevision.id,
+    },
+    reviewDescriptorSha256: review.descriptorSha256,
+    actionEvidenceSha256: action.actionEvidenceSha256,
+    currentPresentation: {
+      actionSha256: sha256Evidence(actionBytes),
+      montageSha256: sha256Evidence(montageBytes),
+      reviewSha256: sha256Evidence(reviewBytes),
+    },
+  };
+}
+
+export async function invalidateCurrentDeckReviewPresentation(
+  root: string,
+  expected: CurrentDeckEditSelection,
+): Promise<string> {
+  const currentRoot = join(root, "output/candidates/current");
+  const names = ["action.json", "montage.jpg", "review.json"] as const;
+  const expectedHashes = {
+    "action.json": expected.currentPresentation.actionSha256,
+    "montage.jpg": expected.currentPresentation.montageSha256,
+    "review.json": expected.currentPresentation.reviewSha256,
+  } as const;
+  const entries = await readdir(currentRoot, { withFileTypes: true });
+  if (
+    JSON.stringify(entries.map((entry) => entry.name).sort()) !== JSON.stringify([...names].sort())
+    || entries.some((entry) => entry.isSymbolicLink() || !entry.isFile())
+  ) throw new Error("current deck-review presentation is unsafe to invalidate");
+  for (const name of names) {
+    const bytes = await readRegularFileNoFollow(join(currentRoot, name));
+    if (sha256Evidence(bytes) !== expectedHashes[name]) throw new Error("current deck-review presentation changed before invalidation");
+  }
+  const candidatesRoot = dirname(currentRoot);
+  const invalidated = join(candidatesRoot, `.invalidated-${expected.candidateId}-${randomUUID()}`);
+  await rename(currentRoot, invalidated);
+  await mkdir(currentRoot, { mode: 0o700 });
+  await syncDirectory(candidatesRoot);
+  return invalidated;
 }
 
 export async function publishDeckReview(root: string, candidateId: string): Promise<DeckReviewDescriptor> {

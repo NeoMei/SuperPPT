@@ -133,13 +133,30 @@ async function ensureOwnedDirectory(root: string, projectPath: string): Promise<
 function currentSlide(manifest: ProjectManifest, slideId: string): ProjectManifest["slides"][number] {
   const slide = manifest.slides.find((candidate) => candidate.id === slideId);
   if (!slide) throw new Error("editable preview slide ID is not in the current project");
-  if ((slide.status !== "ready" && slide.status !== "editable") || !slide.finalRender) {
+  if (slide.status !== "ready" && slide.status !== "editable") {
     throw new Error("editable preview requires a current final render");
   }
-  if (slide.finalRender.revisionId !== manifest.currentRevision.id) {
+  if (slide.finalRender && slide.finalRender.revisionId !== manifest.currentRevision.id) {
     throw new Error("editable preview source final render is stale");
   }
   return slide;
+}
+
+async function currentSlideSource(
+  root: string,
+  manifest: ProjectManifest,
+  slideId: string,
+): Promise<{
+  slide: ProjectManifest["slides"][number];
+  source: NonNullable<ProjectManifest["slides"][number]["finalRender"]>;
+}> {
+  const slide = currentSlide(manifest, slideId);
+  if (slide.finalRender) return { slide, source: slide.finalRender };
+  const selected = await (await import("../project/promotion.js")).authenticateCurrentDeckEditSelection(root, slideId);
+  if (selected.sourceMaster.revisionId !== manifest.currentRevision.id) {
+    throw new Error("editable preview source reviewed page is stale");
+  }
+  return { slide, source: selected.sourceMaster };
 }
 
 async function authenticatedBinding(options: {
@@ -150,7 +167,7 @@ async function authenticatedBinding(options: {
   expectedModifiedRevisionRecordSha256: string;
   preview: string;
 }): Promise<EditableRevisionBinding> {
-  const slide = currentSlide(options.manifest, options.slideId);
+  const { slide, source: currentSource } = await currentSlideSource(options.root, options.manifest, options.slideId);
   const revisionRoot = join(options.root, "editable", slide.id, options.modifiedRevisionId);
   if (await realpath(revisionRoot) !== revisionRoot) throw new Error("modified revision path is not canonical");
   const validated = await validateModifiedRevision(revisionRoot, options.expectedModifiedRevisionRecordSha256);
@@ -162,8 +179,8 @@ async function authenticatedBinding(options: {
     || record.revisionId !== options.modifiedRevisionId
     || record.projectRevisionId !== options.manifest.currentRevision.id
     || (!currentEditable && (
-      record.finalRender.path !== slide.finalRender!.path
-      || record.finalRender.sha256 !== slide.finalRender!.sha256
+      record.finalRender.path !== currentSource.path
+      || record.finalRender.sha256 !== currentSource.sha256
     ))
     || (currentEditable && (
       record.parentRevisionId !== currentEditable.modifiedRevisionId
@@ -172,7 +189,7 @@ async function authenticatedBinding(options: {
       || record.finalRender.sha256 !== currentEditable.conversionFinalRender.sha256
     ))
   ) throw new Error("modified revision does not bind the current project/slide/final render identity");
-  const sourceFinalRender = slide.finalRender!;
+  const sourceFinalRender = currentSource;
   const currentRender = await readRegularFileNoFollow(join(options.root, ...sourceFinalRender.path.split("/")));
   if (sha256(currentRender) !== sourceFinalRender.sha256) throw new Error("source final render hash changed");
 
@@ -218,7 +235,7 @@ export async function renderProjectEditablePreview(options: {
 }): Promise<EditableRevisionBinding> {
   const root = await realpath(options.root);
   const manifest = await readProject(root);
-  const slide = currentSlide(manifest, options.slideId);
+  const { slide, source: currentSource } = await currentSlideSource(root, manifest, options.slideId);
   const revisionRoot = join(root, "editable", slide.id, options.modifiedRevisionId);
   const validated = await validateModifiedRevision(revisionRoot, options.expectedModifiedRevisionRecordSha256);
   const currentEditable = slide.status === "editable" ? slide.editableRevision : null;
@@ -226,7 +243,7 @@ export async function renderProjectEditablePreview(options: {
     validated.record.projectId !== manifest.projectId
     || validated.record.slideId !== slide.id
     || validated.record.projectRevisionId !== manifest.currentRevision.id
-    || (!currentEditable && JSON.stringify(validated.record.finalRender) !== JSON.stringify({ path: slide.finalRender!.path, sha256: slide.finalRender!.sha256 }))
+    || (!currentEditable && JSON.stringify(validated.record.finalRender) !== JSON.stringify({ path: currentSource.path, sha256: currentSource.sha256 }))
     || (currentEditable && (
       validated.record.parentRevisionId !== currentEditable.modifiedRevisionId
       || validated.record.sourceRevisionId !== currentEditable.sourceRevisionId
@@ -274,7 +291,7 @@ export async function confirmEditablePreview(options: {
     await updateProject(root, async (current) => {
       if (
         current.currentRevision.id !== manifest.currentRevision.id
-        || JSON.stringify(currentSlide(current, options.slideId).finalRender) !== JSON.stringify(binding.sourceFinalRender)
+        || JSON.stringify((await currentSlideSource(root, current, options.slideId)).source) !== JSON.stringify(binding.sourceFinalRender)
       ) throw new Error("project or slide changed during preview confirmation");
       return {
         ...current,
@@ -311,12 +328,12 @@ export async function validateConfirmedEditablePreview(
   if (expectedRecordSha256 && binding.expectedModifiedRevisionRecordSha256 !== expectedRecordSha256) {
     throw new Error("confirmed preview record digest does not match the external expectation");
   }
-  const current = currentSlide(manifest, slideId);
+  const current = await currentSlideSource(root, manifest, slideId);
   if (
     binding.projectId !== manifest.projectId
     || binding.projectRevisionId !== manifest.currentRevision.id
     || gate.revisionId !== manifest.currentRevision.id
-    || JSON.stringify(binding.sourceFinalRender) !== JSON.stringify(current.finalRender)
+    || JSON.stringify(binding.sourceFinalRender) !== JSON.stringify(current.source)
   ) throw new Error("confirmed slide preview is stale");
   const validated = await authenticatedBinding({
     root,
