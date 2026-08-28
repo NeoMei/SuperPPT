@@ -89,6 +89,7 @@ async function approvedProject(
   t: TestContext,
   prefix: string,
   styleLock?: Parameters<typeof createProvisionalStyleLock>[1],
+  prepareStyleSample = true,
 ): Promise<{ root: string; ai: LegacyResolvedDependencies["ai"]; aiDependency: AiImageSkillDependency; editableRoot: string }> {
   const parent = await directory(t, prefix);
   const root = join(parent, "project");
@@ -170,9 +171,9 @@ async function approvedProject(
     await createProvisionalStyleLock(root, styleLock);
     await finalizeDelegatedStyleSampleForTest(root);
     await approveStyleLock(root);
-  } else {
-    await publishStyleSample(root);
-    await approveGate(root, "style-sample");
+  } else if (prepareStyleSample) {
+    await finalizeDelegatedStyleSampleForTest(root);
+    await approveStyleLock(root);
   }
   return {
     root,
@@ -323,7 +324,7 @@ test("image generation job publishes an immutable approved deck binding", async 
 });
 
 test("image job publication failure removes only its owned nested staging inputs", async (t) => {
-  const fixture = await approvedProject(t, "superppt-image-job-staging-cleanup-");
+  const fixture = await approvedProject(t, "superppt-image-job-staging-cleanup-", undefined, false);
   const referencePath = "style/references/private-round-2.bin";
   const referenceBytes = Buffer.from("private reference bytes that must not remain in abandoned staging\n");
   await mkdir(join(fixture.root, "style", "references"), { recursive: true });
@@ -436,7 +437,8 @@ test("image generation job rejects a changed non-null Skill Git revision", async
 });
 
 test("delegated style sample requires execution authorization, finalizes its authenticated artifact, then approves the lock", async (t) => {
-  const fixture = await approvedProject(t, "superppt-image-job-sample-");
+  const fixture = await approvedProject(t, "superppt-image-job-sample-", undefined, false);
+  await assert.rejects(publishStyleSample(fixture.root), /completion receipt|delegated style sample/i);
   const referencePath = "style/references/style-direction.txt";
   await mkdir(join(fixture.root, "style", "references"), { recursive: true });
   await writeFile(join(fixture.root, ...referencePath.split("/")), "required art direction");
@@ -445,7 +447,6 @@ test("delegated style sample requires execution authorization, finalizes its aut
     referenceArtifacts: [{ path: referencePath, role: "art-direction" }],
   });
   await writeCanonicalStyleSample(fixture.root);
-  await assert.rejects(publishStyleSample(fixture.root), /completion receipt|delegated style sample/i);
   await assert.rejects(
     publishStyleSampleGenerationPlan(fixture.root, { aiDependency: fixture.aiDependency, callBudget: 2 }),
     /exactly 1/i,
@@ -519,9 +520,19 @@ test("delegated style sample requires execution authorization, finalizes its aut
   await writeFile(aggregatePath, aggregateBytes);
   const staleTemp = join(fixture.root, "style", "sample", ".style-sample-finalize-00000000-0000-4000-8000-000000000000-director.json");
   await writeFile(staleTemp, "stale owned finalization temporary");
+  const staleSelectionTemp = join(fixture.root, "style", ".style-sample-finalize-00000000-0000-4000-8000-000000000000-selection.json");
+  await writeFile(staleSelectionTemp, "stale owned selection temporary");
+  const wrongDirectoryStyleTemp = join(fixture.root, "style", ".style-sample-finalize-00000000-0000-4000-8000-000000000000-director.json");
+  const wrongDirectorySampleTemp = join(fixture.root, "style", "sample", ".style-sample-finalize-00000000-0000-4000-8000-000000000000-selection.json");
+  await writeFile(wrongDirectoryStyleTemp, "unowned wrong-directory style evidence");
+  await writeFile(wrongDirectorySampleTemp, "unowned wrong-directory sample evidence");
   const finalized = await finalizeStyleSample(fixture.root, job.jobId);
   assert.deepEqual(Object.keys(finalized).sort(), ["style/sample/director.json", "style/sample/ledger.json", "style/sample/prompt.txt", "style/sample/slide.png", "style/selection.json"]);
   await assert.rejects(access(staleTemp), { code: "ENOENT" });
+  await assert.rejects(access(staleSelectionTemp), { code: "ENOENT" });
+  assert.equal(await readFile(wrongDirectoryStyleTemp, "utf8"), "unowned wrong-directory style evidence");
+  assert.equal(await readFile(wrongDirectorySampleTemp, "utf8"), "unowned wrong-directory sample evidence");
+  assert.equal(JSON.parse(finalized["style/sample/ledger.json"].toString("utf8")).durationMs, null);
   const receiptPath = join(fixture.root, "style", "sample", "completion.json");
   const receipt = await readFile(receiptPath);
   await finalizeStyleSample(fixture.root, job.jobId);
@@ -532,8 +543,47 @@ test("delegated style sample requires execution authorization, finalizes its aut
   assert.equal(approved.approvalState, "approved");
 });
 
+test("a newly authorized delegated style sample supersedes a prior receipt", async (t) => {
+  const fixture = await approvedProject(t, "superppt-image-job-sample-regeneration-", undefined, false);
+  await finalizeDelegatedStyleSampleForTest(fixture.root);
+  const before = JSON.parse(await readFile(join(fixture.root, "style", "sample", "completion.json"), "utf8")) as { jobId: string };
+  const plan = await publishStyleSampleGenerationPlan(fixture.root, { aiDependency: fixture.aiDependency, callBudget: 1 });
+  await approveExecutionGate(fixture.root, "style-sample-generation", "style/sample/generation-plan.json");
+  const job = await prepareStyleSampleJob(fixture.root, fixture.aiDependency);
+  assert.notEqual(job.jobId, before.jobId);
+  const page = job.pages[0]!;
+  const masterPath = join(fixture.root, ...page.target.split("/"));
+  await sharp({ create: { width: 1920, height: 1080, channels: 3, background: "#d04020" } }).png().toFile(masterPath);
+  const admission = await admitDelegatedGenerationCall(fixture.root, {
+    jobId: job.jobId, slideId: page.slideId, attempt: page.attempt, requestOrdinal: 1,
+  });
+  await recordDelegatedResult(fixture.root, {
+    jobId: job.jobId,
+    slideId: page.slideId,
+    attempt: page.attempt,
+    requestOrdinal: 1,
+    admissionToken: admission.admissionToken,
+    dependency: { status: "success", provider: "openai", channel: "api", output_path: masterPath, safe_message: "" },
+    batchReport: {
+      batch_mode: "serial-sticky-monotonic", stopped: false, search_candidate: "api-openai", sticky_candidate: "api-openai",
+      pages: [{ page: 1, outcome: "success", candidate: "api-openai", summary: "" }], switches: [],
+    },
+    actualPromptSha256: page.promptSha256,
+    styleLockSha256: job.styleLockSha256,
+    styleRecipeSha256: job.styleLock.styleRecipeSha256,
+    referenceUsage: [],
+    presentationQa: null,
+  });
+  await finalizeStyleSample(fixture.root, job.jobId);
+  await publishStyleSample(fixture.root);
+  const after = JSON.parse(await readFile(join(fixture.root, "style", "sample", "completion.json"), "utf8")) as { jobId: string };
+  assert.equal(after.jobId, job.jobId);
+  assert.notEqual(after.jobId, before.jobId);
+  assert.equal(plan.kind, "style-sample");
+});
+
 test("delegated style sample cannot finalize or retry after its one authorized call fails", async (t) => {
-  const fixture = await approvedProject(t, "superppt-image-job-sample-failure-");
+  const fixture = await approvedProject(t, "superppt-image-job-sample-failure-", undefined, false);
   await createProvisionalStyleLock(fixture.root, lockedStyle);
   await publishStyleSampleGenerationPlan(fixture.root, { aiDependency: fixture.aiDependency, callBudget: 1 });
   await approveExecutionGate(fixture.root, "style-sample-generation", "style/sample/generation-plan.json");
@@ -909,7 +959,7 @@ test("exhausted delegated result binds the live final routing candidate", async 
 });
 
 test("delegated result authenticates host raw and master output, exact bindings, and routing report", async (t) => {
-  const fixture = await approvedProject(t, "superppt-delegated-result-host-");
+  const fixture = await approvedProject(t, "superppt-delegated-result-host-", undefined, false);
   const referencePath = "style/references/art-direction.png";
   await mkdir(join(fixture.root, "style", "references"), { recursive: true });
   const referenceBytes = await sharp({ create: { width: 32, height: 18, channels: 3, background: "#6a4c93" } }).png().toBuffer();
@@ -918,6 +968,7 @@ test("delegated result authenticates host raw and master output, exact bindings,
     selection: { kind: "catalog", styleId: "cinematic-tech" },
     referenceArtifacts: [{ path: referencePath, role: "art-direction" }],
   });
+  await finalizeDelegatedStyleSampleForTest(fixture.root);
   const lock = await approveStyleLock(fixture.root);
   await publishGenerationAuthorizationPlan(fixture.root, { aiDependency: fixture.aiDependency, callBudget: 3 });
   await approveGate(fixture.root, "generation-authorization");
@@ -1018,7 +1069,7 @@ test("delegated result authenticates host raw and master output, exact bindings,
     recordDelegatedResult(fixture.root, { ...intake, dependency: { ...dependency, safe_message: "conflicting replay" } }),
     /conflicting delegated result replay/i,
   );
-  assert.deepEqual((await readCallLedger(fixture.root)).map(({ entryKind, outcome }) => ({ entryKind, outcome })), [
+  assert.deepEqual((await readCallLedger(fixture.root)).filter(({ jobId }) => jobId === job.jobId).map(({ entryKind, outcome }) => ({ entryKind, outcome })), [
     { entryKind: "admission", outcome: "in-flight" },
     { entryKind: "terminal", outcome: "success" },
   ]);
@@ -1029,7 +1080,7 @@ test("delegated result authenticates host raw and master output, exact bindings,
 });
 
 test("unsupported art direction pauses intake and every failed actual request remains spent", async (t) => {
-  const fixture = await approvedProject(t, "superppt-delegated-result-paused-");
+  const fixture = await approvedProject(t, "superppt-delegated-result-paused-", undefined, false);
   const referencePath = "style/references/art-direction.png";
   await mkdir(join(fixture.root, "style", "references"), { recursive: true });
   await writeFile(join(fixture.root, ...referencePath.split("/")), "required art direction reference");
@@ -1037,6 +1088,7 @@ test("unsupported art direction pauses intake and every failed actual request re
     selection: { kind: "catalog", styleId: "cinematic-tech" },
     referenceArtifacts: [{ path: referencePath, role: "art-direction" }],
   });
+  await finalizeDelegatedStyleSampleForTest(fixture.root);
   await approveStyleLock(fixture.root);
   await publishGenerationAuthorizationPlan(fixture.root, { aiDependency: fixture.aiDependency, callBudget: 3 });
   await approveGate(fixture.root, "generation-authorization");
@@ -1085,7 +1137,7 @@ test("unsupported art direction pauses intake and every failed actual request re
 });
 
 test("delegated result permits API raw null and records stale revision evidence without attaching it", async (t) => {
-  const fixture = await approvedProject(t, "superppt-delegated-result-stale-api-");
+  const fixture = await approvedProject(t, "superppt-delegated-result-stale-api-", undefined, false);
   const referencePath = "style/references/content.png";
   await mkdir(join(fixture.root, "style", "references"), { recursive: true });
   await writeFile(join(fixture.root, ...referencePath.split("/")), "sealed content reference");
@@ -1093,6 +1145,7 @@ test("delegated result permits API raw null and records stale revision evidence 
     selection: { kind: "catalog", styleId: "cinematic-tech" },
     referenceArtifacts: [{ path: referencePath, role: "content-reference" }],
   });
+  await finalizeDelegatedStyleSampleForTest(fixture.root);
   await approveStyleLock(fixture.root);
   await publishGenerationAuthorizationPlan(fixture.root, { aiDependency: fixture.aiDependency, callBudget: 3 });
   await approveGate(fixture.root, "generation-authorization");
@@ -1759,13 +1812,11 @@ test("generates a gated project through the manifest-declared provider and retai
 test("batch generation hashes each page's canonical spec recipe and director prompt", async (t) => {
   const fixture = await approvedProject(t, "superppt-canonical-batch-");
   await generateProject({ root: fixture.root, ai: fixture.ai, runner, concurrency: 2 });
-  const catalog = await loadBuiltInStyleCatalog();
-  const style = catalog.styles.find(({ id }) => id === "cinematic-tech");
-  assert.ok(style);
+  const styleLock = await readApprovedStyleLock(fixture.root);
 
   for (const slideId of SLIDE_IDS) {
     const spec = JSON.parse(await readFile(join(fixture.root, "slides", slideId, "spec.json"), "utf8"));
-    const expected = compileSlidePrompt({ spec, style });
+    const expected = compileSlidePrompt({ spec, styleLock });
     const ledger = AttemptLedgerSchema.parse(JSON.parse(await readFile(
       join(fixture.root, "images", slideId, "attempt-1", "ledger.json"),
       "utf8",
@@ -1823,11 +1874,12 @@ test("rejects generation when any of the three planning gates is no longer curre
 });
 
 test("deck generation refuses an existing provisional Style Lock", async (t) => {
-  const fixture = await approvedProject(t, "superppt-provisional-style-lock-");
+  const fixture = await approvedProject(t, "superppt-provisional-style-lock-", undefined, false);
   await createProvisionalStyleLock(fixture.root, {
     selection: { kind: "catalog", styleId: "cinematic-tech" },
     referenceArtifacts: [],
   });
+  await finalizeDelegatedStyleSampleForTest(fixture.root);
   await assert.rejects(
     generateProject({ root: fixture.root, ai: fixture.ai, runner, concurrency: 1 }),
     /style lock must be approved before deck generation/,

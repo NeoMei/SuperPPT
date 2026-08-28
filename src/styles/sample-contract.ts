@@ -67,7 +67,6 @@ export function delegatedStyleSampleArtifacts(
   canonical: CanonicalStyleSample,
   normalizedSample: Buffer,
   providerId: string,
-  durationMs: number,
 ): StyleSampleArtifacts {
   const ledger = AttemptLedgerSchema.parse({
     ledgerVersion: 1,
@@ -80,7 +79,7 @@ export function delegatedStyleSampleArtifacts(
     output: STYLE_SAMPLE_ARTIFACTS[3],
     outputSha256: digest(normalizedSample),
     outputBytes: normalizedSample.length,
-    durationMs,
+    durationMs: null,
     quality: null,
     outcome: "generated",
     errorCode: null,

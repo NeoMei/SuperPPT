@@ -10,6 +10,8 @@ import { recordDelegatedResult } from "../../src/generation/delegation-result.js
 import { finalizeStyleSample, prepareStyleSampleJob } from "../../src/generation/style-sample.js";
 import { approveExecutionGate, approveGate } from "../../src/planning/confirm.js";
 import { publishStyleSample } from "../../src/planning/views.js";
+import { createProvisionalStyleLock, readStyleLockIfPresent } from "../../src/styles/style-lock.js";
+import { StyleSampleSelectionSchema } from "../../src/styles/schemas.js";
 
 function sha256(value: string | Buffer): string {
   return createHash("sha256").update(value).digest("hex");
@@ -52,7 +54,18 @@ async function testAiDependency(root: string): Promise<AiImageSkillDependency> {
 }
 
 /** Creates authenticated sample evidence as if the external Agent had completed its one admitted call. */
-export async function finalizeDelegatedStyleSampleForTest(root: string): Promise<void> {
+export async function finalizeDelegatedStyleSampleForTest(
+  root: string,
+  options: { publish?: boolean; approveGate?: boolean } = {},
+): Promise<{ jobId: string }> {
+  if (!await readStyleLockIfPresent(root)) {
+    const selection = StyleSampleSelectionSchema.parse(JSON.parse(await readFile(join(root, "style", "selection.json"), "utf8")));
+    if (!("styleId" in selection)) throw new Error("test fake needs an explicit Style Lock for custom sample selection");
+    await createProvisionalStyleLock(root, {
+      selection: { kind: "catalog", styleId: selection.styleId },
+      referenceArtifacts: [],
+    });
+  }
   const aiDependency = await testAiDependency(root);
   await publishStyleSampleGenerationPlan(root, { aiDependency, callBudget: 1 });
   await approveExecutionGate(root, "style-sample-generation", "style/sample/generation-plan.json");
@@ -89,6 +102,7 @@ export async function finalizeDelegatedStyleSampleForTest(root: string): Promise
     presentationQa: null,
   });
   await finalizeStyleSample(root, job.jobId);
-  await publishStyleSample(root);
-  await approveGate(root, "style-sample");
+  if (options.publish ?? true) await publishStyleSample(root);
+  if (options.approveGate ?? true) await approveGate(root, "style-sample");
+  return { jobId: job.jobId };
 }

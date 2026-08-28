@@ -93,9 +93,19 @@ async function assertAcceptedSampleResult(root: string, job: ImageGenerationJob)
   return result;
 }
 
-function cleanupOwnedFinalizationTemps(sample: ReturnType<typeof openGenerationDirectory>): void {
+function cleanupOwnedStyleTemps(style: ReturnType<typeof openGenerationDirectory>): void {
+  for (const entry of readdirSync(style.path, { withFileTypes: true })) {
+    if (!/^\.style-sample-finalize-[a-f0-9-]+-selection\.json$/.test(entry.name)) continue;
+    if (entry.isSymbolicLink() || !entry.isFile()) throw new Error("style sample finalization temporary is unsafe");
+    const fd = style.openRegular(entry.name);
+    closeSync(fd);
+    style.remove(entry.name);
+  }
+}
+
+function cleanupOwnedSampleTemps(sample: ReturnType<typeof openGenerationDirectory>): void {
   for (const entry of readdirSync(sample.path, { withFileTypes: true })) {
-    if (!/^(?:\.finalize-(?:director\.json|prompt\.txt|ledger\.json|slide\.png)|\.style-sample-finalize-[a-f0-9-]+-(?:selection\.json|director\.json|prompt\.txt|ledger\.json|slide\.png|completion\.json))$/.test(entry.name)) continue;
+    if (!/^(?:\.finalize-(?:director\.json|prompt\.txt|ledger\.json|slide\.png)|\.style-sample-finalize-[a-f0-9-]+-(?:director\.json|prompt\.txt|ledger\.json|slide\.png|completion\.json))$/.test(entry.name)) continue;
     if (entry.isSymbolicLink() || !entry.isFile()) throw new Error("style sample finalization temporary is unsafe");
     const fd = sample.openRegular(entry.name);
     closeSync(fd);
@@ -164,16 +174,15 @@ export async function finalizeStyleSample(root: string, jobId: string): Promise<
       canonical,
       normalized,
       `${result.pages[0]!.dependency.channel}-${result.pages[0]!.dependency.provider}`,
-      Math.max(0, Date.parse(result.pages[0]!.recordedAt) - Date.parse(job.createdAt)),
     );
     await validateCanonicalStyleSample(canonicalRoot, values);
-    const receiptExists = await readOwnedRegularFile(canonicalRoot, STYLE_SAMPLE_COMPLETION_RECEIPT)
-      .then(() => true)
+    const existingReceipt = await readReceipt(canonicalRoot)
+      .then((receipt) => receipt)
       .catch((error: unknown) => {
-        if (isMissing(error)) return false;
+        if (isMissing(error)) return null;
         throw error;
       });
-    if (receiptExists) {
+    if (existingReceipt?.jobId === jobId) {
       await assertFinalizedStyleSample(canonicalRoot, values);
       return values;
     }
@@ -181,8 +190,8 @@ export async function finalizeStyleSample(root: string, jobId: string): Promise<
     const style = project.child("style", false);
     const sample = style.child("sample", false);
     try {
-      cleanupOwnedFinalizationTemps(style);
-      cleanupOwnedFinalizationTemps(sample);
+      cleanupOwnedStyleTemps(style);
+      cleanupOwnedSampleTemps(sample);
       style.replace(
         "selection.json",
         values[STYLE_SAMPLE_ARTIFACTS[0]],

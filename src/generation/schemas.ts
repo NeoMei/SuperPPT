@@ -290,7 +290,7 @@ export const AttemptLedgerSchema = z.object({
   output: z.string().min(1).nullable(),
   outputSha256: Sha256Schema.nullable(),
   outputBytes: z.number().int().positive().nullable().default(null),
-  durationMs: z.number().int().nonnegative(),
+  durationMs: z.number().int().nonnegative().nullable(),
   quality: QualityEvidenceSchema.nullable(),
   outcome: z.enum(["generated", "accepted", "rejected", "provider-error", "review-error"]).default("generated"),
   errorCode: z.enum(["provider-failed", "invalid-image", "review-failed"]).nullable().default(null),

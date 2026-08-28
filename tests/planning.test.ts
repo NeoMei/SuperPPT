@@ -26,6 +26,7 @@ import { withProjectLease } from "../src/project/lock.js";
 import { readProject, updateProject, writeProject } from "../src/project/store.js";
 import { applyRevision, approveImpact, publishImpactPlan } from "../src/revisions/apply.js";
 import { writeCanonicalStyleSample } from "./helpers/style-sample.js";
+import { finalizeDelegatedStyleSampleForTest } from "./helpers/delegated-style-sample.js";
 
 const execFileAsync = promisify(execFile);
 const PROJECT_ID = "00000000-0000-4000-8000-000000000101";
@@ -200,15 +201,13 @@ async function writeValidStyleSample(root: string): Promise<void> {
     styleId: "cinematic-tech",
     representativeSlideId: SLIDE_IDS[1],
   }, null, 2)}\n`);
-  await writeCanonicalStyleSample(root);
 }
 
 async function approveAll(root: string): Promise<void> {
   await publishPlanViews(root);
   await approveGate(root, "outline");
   await approveGate(root, "slide-specs");
-  await publishStyleSample(root);
-  await approveGate(root, "style-sample");
+  await finalizeDelegatedStyleSampleForTest(root);
 }
 
 async function approveDownstreamGates(root: string): Promise<{
@@ -342,10 +341,10 @@ test("ordinary gates derive and validate fixed artifact sets in exact order", as
   await assert.rejects(approveGate(root, "style-sample"), /slide-specs gate must be current/);
   await approveAll(root);
   const manifest = await readProject(root);
-  assert.deepEqual(manifest.gates.map(({ gate }) => gate), ["outline", "slide-specs", "style-sample"]);
+  assert.deepEqual(manifest.gates.map(({ gate }) => gate), ["outline", "slide-specs", "style-sample-generation", "style-sample"]);
   assert.deepEqual(Object.keys(manifest.gates[0]!.artifactHashes).sort(), ["brief.json", "outline.json"]);
   assert.deepEqual(Object.keys(manifest.gates[1]!.artifactHashes).sort(), ["outline.json", ...SLIDE_IDS.map((id) => `slides/${id}/spec.json`)].sort());
-  assert.deepEqual(Object.keys(manifest.gates[2]!.artifactHashes).sort(), [
+  assert.deepEqual(Object.keys(manifest.gates[3]!.artifactHashes).sort(), [
     "style/sample/director.json",
     "style/sample/ledger.json",
     "style/sample/prompt.txt",
@@ -361,10 +360,13 @@ test("published style samples expose the user choices before Style Lock approval
   const root = await project(t, "superppt-style-sample-choices-");
   await writeValidPlan(root);
   await writeValidStyleSample(root);
-  const descriptor = await publishStyleSample(root);
+  await publishPlanViews(root);
+  await approveGate(root, "outline");
+  await approveGate(root, "slide-specs");
+  await finalizeDelegatedStyleSampleForTest(root);
   const published = await readPublishedStyleSample(root);
 
-  assert.equal(published.descriptor.publicationPath, descriptor.publicationPath);
+  assert.equal(published.descriptor.kind, "style-sample");
   assert.deepEqual(published.nextActions, ["keep-style", "revise-style-recipe", "authorize-new-sample"]);
 });
 
@@ -537,6 +539,7 @@ test("rejects invalid empty, target-count, must-cover, spec, and style contracts
   await initializeProject({ root: styleRoot, title: "Style" });
   await writeValidPlan(styleRoot);
   await writeValidStyleSample(styleRoot);
+  await writeCanonicalStyleSample(styleRoot);
   await publishPlanViews(styleRoot);
   await approveGate(styleRoot, "outline");
   await approveGate(styleRoot, "slide-specs");
@@ -548,6 +551,7 @@ test("style publication requires a built-in recipe and an exact decodable canoni
   const root = await project(t, "superppt-style-semantics-");
   await writeValidPlan(root);
   await writeValidStyleSample(root);
+  await writeCanonicalStyleSample(root);
 
   await writeFile(join(root, "style", "selection.json"), JSON.stringify({
     schemaVersion: 1,
@@ -1102,8 +1106,9 @@ test("gate approval is bound to the exact authoritative plan and style publicati
   await approveGate(root, "slide-specs");
 
   await writeValidStyleSample(root);
+  await finalizeDelegatedStyleSampleForTest(root, { publish: false, approveGate: false });
   await assert.rejects(approveGate(root, "style-sample"), /authoritative style sample publication is required/);
-  await publishStyleSample(root);
+  await finalizeDelegatedStyleSampleForTest(root);
   await writeFile(join(root, "style", "sample", "prompt.txt"), "changed after presentation\n");
   await assert.rejects(approveGate(root, "style-sample"), /canonical style sample prompt/);
 });
@@ -1277,11 +1282,11 @@ test("CLI publishes authoritative style evidence before the existing approval ga
   await run(["validate-plan", "--project", root]);
   await run(["approve", "--project", root, "--gate", "outline"]);
   await run(["approve", "--project", root, "--gate", "slide-specs"]);
+  await finalizeDelegatedStyleSampleForTest(root, { publish: false, approveGate: false });
   await assert.rejects(
     run(["approve", "--project", root, "--gate", "style-sample"]),
     /authoritative style sample publication is required/,
   );
-
   const published = await run(["publish-style-sample", "--project", root]);
   assert.equal(published.stderr, "");
   const descriptor = JSON.parse(published.stdout) as {
@@ -1307,7 +1312,7 @@ test("CLI publishes authoritative style evidence before the existing approval ga
     run(["approve", "--project", root, "--gate", "style-sample"]),
     /canonical style sample prompt/,
   );
-  await writeCanonicalStyleSample(root);
+  await finalizeDelegatedStyleSampleForTest(root, { publish: false, approveGate: false });
   await run(["publish-style-sample", "--project", root]);
   await run(["approve", "--project", root, "--gate", "style-sample"]);
   assert.equal(await assertGateCurrent(root, "style-sample"), true);

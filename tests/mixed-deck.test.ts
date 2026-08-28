@@ -22,10 +22,10 @@ import { convertProjectPage } from "../src/editable/adapter.js";
 import { applyProjectEditPlan, promoteProjectEditableTarget } from "../src/editable/operations.js";
 import { confirmEditablePreview, renderEditablePage, renderProjectEditablePreview } from "../src/editable/render.js";
 import { approveGate } from "../src/planning/confirm.js";
-import { publishPlanViews, publishStyleSample } from "../src/planning/views.js";
+import { publishPlanViews } from "../src/planning/views.js";
 import { initializeProject } from "../src/project/initialize.js";
 import { readProject, sha256, updateProject } from "../src/project/store.js";
-import { writeCanonicalStyleSample } from "./helpers/style-sample.js";
+import { finalizeDelegatedStyleSampleForTest } from "./helpers/delegated-style-sample.js";
 
 const fixtureRoot = resolve("tests/fixtures/editable");
 const slideIds = [
@@ -177,12 +177,10 @@ async function readyProject(t: TestContext): Promise<string> {
     styleId: "cinematic-tech",
     representativeSlideId: slideIds[1],
   })}\n`);
-  await writeCanonicalStyleSample(root);
   await publishPlanViews(root);
   await approveGate(root, "outline");
   await approveGate(root, "slide-specs");
-  await publishStyleSample(root);
-  await approveGate(root, "style-sample");
+  await finalizeDelegatedStyleSampleForTest(root);
 
   const manifest = await readProject(root);
   const images = await Promise.all(slideIds.map(async (id, order) => {

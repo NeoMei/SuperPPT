@@ -283,7 +283,7 @@ export async function publishStyleSample(root: string): Promise<StylePublication
       const manifest = await readProject(canonicalRoot);
       const { values, selection } = await styleArtifacts(canonicalRoot);
       const styleLock = await readStyleLockIfPresent(canonicalRoot);
-      if (styleLock) await assertFinalizedStyleSample(canonicalRoot, values);
+      await assertFinalizedStyleSample(canonicalRoot, values);
       const recipe = styleLock?.recipe
         ?? await resolveStyleRecipe(lockSelection(selection));
       const publicationId = randomUUID();

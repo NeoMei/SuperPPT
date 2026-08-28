@@ -23,7 +23,7 @@ export async function writeCanonicalStyleSample(root: string, providerId = "fixt
     output: STYLE_SAMPLE_ARTIFACTS[3],
     outputSha256: createHash("sha256").update(sample).digest("hex"),
     outputBytes: sample.length,
-    durationMs: 0,
+    durationMs: null,
     quality: null,
     outcome: "generated",
     errorCode: null,

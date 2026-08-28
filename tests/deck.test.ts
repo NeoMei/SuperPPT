@@ -18,14 +18,14 @@ import { assembleDeck, assembleProject, readProjectAcceptance, recordClientAccep
 import { exportPdf } from "../src/deck/pdf.js";
 import { buildMontage } from "../src/deck/montage.js";
 import { approveGate } from "../src/planning/confirm.js";
-import { publishPlanViews, publishStyleSample } from "../src/planning/views.js";
+import { publishPlanViews } from "../src/planning/views.js";
 import { initializeProject } from "../src/project/initialize.js";
 import { ClientSmokeCopyAnchorSchema } from "../src/project/schemas.js";
 import { readProject, updateProject } from "../src/project/store.js";
 import * as projectStore from "../src/project/store.js";
 import { applyRevision, approveImpact, publishImpactPlan } from "../src/revisions/apply.js";
 import { publishRevisionSnapshot } from "../src/revisions/snapshot.js";
-import { writeCanonicalStyleSample } from "./helpers/style-sample.js";
+import { finalizeDelegatedStyleSampleForTest } from "./helpers/delegated-style-sample.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -100,12 +100,10 @@ async function readyProject(t: TestContext): Promise<{ root: string; revisionId:
     styleId: "cinematic-tech",
     representativeSlideId: PROJECT_SLIDES[0],
   })}\n`);
-  await writeCanonicalStyleSample(root);
   await publishPlanViews(root);
   await approveGate(root, "outline");
   await approveGate(root, "slide-specs");
-  await publishStyleSample(root);
-  await approveGate(root, "style-sample");
+  await finalizeDelegatedStyleSampleForTest(root);
 
   const manifest = await readProject(root);
   const artifacts = await Promise.all(PROJECT_SLIDES.map(async (id, order) => {
