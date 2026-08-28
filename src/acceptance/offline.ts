@@ -6,7 +6,7 @@ import JSZip from "jszip";
 import sharp from "sharp";
 
 import type { LegacyResolvedDependencies } from "../dependencies/schemas.js";
-import { assembleProject, replaceSlide, type FinalRender } from "../deck/assemble.js";
+import { assembleProjectCandidate, replaceSlide, type FinalRender } from "../deck/assemble.js";
 import { prepareEditableSlide } from "../deck/editable-slide.js";
 import { buildMontage } from "../deck/montage.js";
 import { exportPdf } from "../deck/pdf.js";
@@ -14,16 +14,22 @@ import { convertProjectPage } from "../editable/adapter.js";
 import { applyProjectEditPlan } from "../editable/operations.js";
 import { confirmEditablePreview, renderProjectEditablePreview } from "../editable/render.js";
 import { generateProject } from "../generation/batch.js";
-import { admitDelegatedGenerationCall, publishStyleSampleGenerationPlan } from "../generation/authorization.js";
+import {
+  admitDelegatedGenerationCall,
+  publishGenerationAuthorizationPlan,
+  publishStyleSampleGenerationPlan,
+} from "../generation/authorization.js";
 import { recordDelegatedResult } from "../generation/delegation-result.js";
 import { generateSlide } from "../generation/provider.js";
 import { finalizeStyleSample, prepareStyleSampleJob } from "../generation/style-sample.js";
+import { configureGenerationAuthorizationTrustForTests } from "../generation/trusted-authorization.js";
 import { approveExecutionGate, approveGate } from "../planning/confirm.js";
 import { normalizeInput } from "../planning/intake.js";
 import { loadValidatedOutline, loadValidatedPlan } from "../planning/load.js";
 import { BriefSchema, OutlineSchema, SlideSpecSchema } from "../planning/schemas.js";
 import { publishOutlineViews, publishPlanViews, publishStyleSample } from "../planning/views.js";
 import { initializeProject } from "../project/initialize.js";
+import { applyDeckReviewAction, publishDeckReview } from "../project/promotion.js";
 import { readProject, sha256 } from "../project/store.js";
 import { resolveSkillDependencies } from "../dependencies/resolve.js";
 import { approveStyleLock, createProvisionalStyleLock } from "../styles/style-lock.js";
@@ -45,6 +51,7 @@ export type OfflineAcceptanceResult = {
   editOperation: { kind: "replace-text"; elementId: string; before: string; after: string };
   providerCalls: { total: number; perSlide: number[] };
   logs: string[];
+  deckReview: { action: "confirm-delivery"; promotedRevision: number };
 };
 
 type OfflineAcceptanceOptions = {
@@ -371,6 +378,15 @@ export async function runOfflineAcceptance(options: OfflineAcceptanceOptions): P
     await publishStyleSample(root);
     await approveGate(root, "style-sample");
     await approveStyleLock(root);
+    await configureGenerationAuthorizationTrustForTests(root, {
+      root: join(parent, "authorization-trust"),
+      deterministicKeySeed: `superppt-offline-acceptance:${root}`,
+    });
+    await publishGenerationAuthorizationPlan(root, {
+      aiDependency,
+      callBudget: 3,
+    });
+    await approveGate(root, "generation-authorization");
     generation = await generateProject({ root, ai, runner: RUNNER, concurrency: 2 });
   } finally {
     if (previousCounter === undefined) delete process.env.SUPERPPT_TEST_CALL_COUNTER;
@@ -378,7 +394,16 @@ export async function runOfflineAcceptance(options: OfflineAcceptanceOptions): P
   }
   if (generation.pages.some(({ status }) => status !== "ready")) throw new Error("offline fixture generation did not pass QA");
 
-  await assembleProject({ root, operations: { buildOutputs: offlineBuildOutputs } });
+  const candidate = await assembleProjectCandidate(root, { buildOutputs: offlineBuildOutputs });
+  const review = await publishDeckReview(root, candidate.candidateId);
+  const deckReviewAction = await applyDeckReviewAction(root, {
+    action: "confirm-delivery",
+    candidateId: candidate.candidateId,
+    descriptorSha256: review.descriptorSha256,
+  });
+  if (deckReviewAction.action !== "confirm-delivery" || !deckReviewAction.delivery) {
+    throw new Error("offline acceptance deck review did not promote the confirmed candidate");
+  }
   const before = await snapshot(root);
   const conversion = await convertProjectPage({
     root,
@@ -439,5 +464,9 @@ export async function runOfflineAcceptance(options: OfflineAcceptanceOptions): P
     editOperation: { kind: "replace-text", elementId: sourceElement.id, before: sourceElement.text, after: changedText },
     providerCalls: calls,
     logs,
+    deckReview: {
+      action: deckReviewAction.action,
+      promotedRevision: deckReviewAction.delivery.revisionNumber,
+    },
   };
 }

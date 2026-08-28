@@ -12,7 +12,7 @@ import {
 } from "../acceptance/schema.js";
 import { assertCompleteEditablePreview } from "../editable/preview-image.js";
 import { syncDirectory, writeDurableExclusive } from "./durable.js";
-import { promoteExclusive } from "./promotion.js";
+import { promoteExclusive } from "./exclusive.js";
 import {
   sha256Evidence,
   validateCurrentPresentationBinding,

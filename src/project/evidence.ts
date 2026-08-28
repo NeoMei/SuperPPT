@@ -3,6 +3,8 @@ import { lstat, readdir, realpath } from "node:fs/promises";
 import { join, relative, sep } from "node:path";
 import { z } from "zod";
 
+import { DeckReviewActionEvidenceSchema, DeckReviewDescriptorSchema } from "../acceptance/schema.js";
+
 import { localProjectPath, readOwnedRegularFile } from "./safe-file.js";
 import { ProjectManifestSchema, type ProjectManifest } from "./schemas.js";
 
@@ -330,7 +332,11 @@ function assertExactGateKeys(
     return;
   }
   if (gate === "deck-review") {
-    if (!sameJson(keys, ["output/candidates/current/montage.jpg", "output/candidates/current/review.json"])) {
+    if (!sameJson(keys, [
+      "output/candidates/current/action.json",
+      "output/candidates/current/montage.jpg",
+      "output/candidates/current/review.json",
+    ])) {
       throw new Error("ordinary gate evidence has invalid deck review keys");
     }
     return;
@@ -407,6 +413,27 @@ export async function validateOrdinaryGateEvidence(
     artifacts[path] = bytes;
   }
   assertExactGateKeys(gate.data, gateRecord.artifactHashes, artifacts);
+  if (gate.data === "deck-review") {
+    const action = DeckReviewActionEvidenceSchema.parse(JSON.parse(
+      artifacts["output/candidates/current/action.json"]!.toString("utf8"),
+    ));
+    const { actionEvidenceSha256, ...actionBase } = action;
+    if (
+      action.action !== "confirm-delivery"
+      || actionEvidenceSha256 !== sha256Evidence(JSON.stringify(actionBase))
+    ) throw new Error("snapshot deck-review action is not an authenticated confirmation");
+    const review = DeckReviewDescriptorSchema.parse(JSON.parse(
+      artifacts["output/candidates/current/review.json"]!.toString("utf8"),
+    ));
+    if (
+      action.candidateId !== review.candidateId
+      || action.projectId !== review.projectId
+      || action.projectRevisionId !== review.projectRevisionId
+      || action.reviewDescriptorSha256 !== review.descriptorSha256
+      || action.presentedMontageSha256 !== review.artifacts.montage.sha256
+      || sha256Evidence(artifacts["output/candidates/current/montage.jpg"]!) !== review.artifacts.montage.sha256
+    ) throw new Error("snapshot deck-review action does not bind the exact presentation");
+  }
   const expectedTree = [
     "snapshot.json",
     "superppt.json",

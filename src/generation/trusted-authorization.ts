@@ -8,7 +8,7 @@ import { z } from "zod";
 
 import type { GateSnapshotDescriptor } from "../project/evidence.js";
 import { syncDirectory } from "../project/durable.js";
-import { promoteExclusive } from "../project/promotion.js";
+import { promoteExclusive } from "../project/exclusive.js";
 import { readProject } from "../project/store.js";
 import type { ProjectManifest } from "../project/schemas.js";
 import {

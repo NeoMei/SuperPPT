@@ -13,6 +13,32 @@ export const CandidateAcceptanceBindingSchema = z.object({
   projectBindingSha256: Sha256Schema,
 }).strict();
 
+export const DeckReviewActionSchema = z.enum([
+  "edit-page",
+  "return-upstream",
+  "confirm-delivery",
+]);
+
+export const DeckReviewActionRequestSchema = z.object({
+  action: DeckReviewActionSchema,
+  candidateId: z.string().uuid(),
+  descriptorSha256: Sha256Schema,
+}).strict();
+
+export const DeckReviewActionEvidenceSchema = z.object({
+  schemaVersion: z.literal(1),
+  kind: z.literal("deck-review-action"),
+  actionId: z.string().uuid(),
+  action: DeckReviewActionSchema,
+  candidateId: z.string().uuid(),
+  projectId: z.string().uuid(),
+  projectRevisionId: z.string().uuid(),
+  reviewDescriptorSha256: Sha256Schema,
+  presentedMontageSha256: Sha256Schema,
+  actedAt: z.string().datetime(),
+  actionEvidenceSha256: Sha256Schema,
+}).strict();
+
 export const DeckReviewDescriptorSchema = z.object({
   schemaVersion: z.literal(1),
   kind: z.literal("deck-review"),
@@ -39,10 +65,6 @@ export const DeckReviewDescriptorSchema = z.object({
     z.literal("return-upstream"),
     z.literal("confirm-delivery"),
   ]),
-  confirmation: z.object({
-    action: z.literal("confirm-delivery"),
-    gate: z.literal("deck-review"),
-  }).strict(),
   createdAt: z.string().datetime(),
   descriptorSha256: Sha256Schema,
 }).strict();
@@ -120,6 +142,12 @@ export const AcceptanceSchema = z.object({
   editablePageIds: z.array(z.string().uuid()),
   warnings: z.array(z.string().min(1)),
   candidateReview: CandidateAcceptanceBindingSchema.nullable().optional(),
+  deckReviewConfirmation: z.object({
+    actionId: z.string().uuid(),
+    action: z.literal("confirm-delivery"),
+    candidateId: z.string().uuid(),
+    actionEvidenceSha256: Sha256Schema,
+  }).strict().optional(),
   deliveryComplete: z.boolean(),
   clientAcceptance: ClientAcceptanceSchema,
 }).strict().superRefine((value, context) => {
@@ -155,3 +183,6 @@ export const AcceptanceSchema = z.object({
 export type Acceptance = z.infer<typeof AcceptanceSchema>;
 export type ClientAcceptance = z.infer<typeof ClientAcceptanceSchema>;
 export type DeckReviewDescriptor = z.infer<typeof DeckReviewDescriptorSchema>;
+export type DeckReviewAction = z.infer<typeof DeckReviewActionSchema>;
+export type DeckReviewActionRequest = z.infer<typeof DeckReviewActionRequestSchema>;
+export type DeckReviewActionEvidence = z.infer<typeof DeckReviewActionEvidenceSchema>;

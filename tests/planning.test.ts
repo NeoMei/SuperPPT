@@ -7,10 +7,12 @@ import test, { type TestContext } from "node:test";
 import { promisify } from "node:util";
 import sharp from "sharp";
 
+import { DeckReviewActionEvidenceSchema, DeckReviewDescriptorSchema } from "../src/acceptance/schema.js";
 import { GenerationAuthorizationPlanSchema } from "../src/generation/job-schemas.js";
 import { configureGenerationAuthorizationTrustForTests } from "../src/generation/trusted-authorization.js";
 import {
   approveExecutionGate,
+  approveDeckReviewActionGate,
   approveGate,
   assertGateCurrent,
   previousOrdinaryGate,
@@ -220,6 +222,7 @@ async function approveDownstreamGates(root: string): Promise<{
   authorization: Buffer;
   review: Buffer;
   montage: Buffer;
+  action: Buffer;
 }> {
   const authorization = Buffer.from(JSON.stringify({
     styleLockSha256: "a".repeat(64),
@@ -234,17 +237,56 @@ async function approveDownstreamGates(root: string): Promise<{
   await approveGate(root, "generation-authorization");
 
   const montage = Buffer.from("candidate montage\n");
-  const review = Buffer.from(JSON.stringify({
+  const manifest = await readProject(root);
+  const generationGate = manifest.gates.at(-1)!;
+  const reviewDescriptor = DeckReviewDescriptorSchema.parse(addDescriptorIntegrity({
+    schemaVersion: 1,
+    kind: "deck-review",
     candidateId: "00000000-0000-4000-8000-000000000099",
-    pptxSha256: "c".repeat(64),
-    pdfSha256: "d".repeat(64),
-    montageSha256: sha256Evidence(montage),
-  }, null, 2) + "\n");
+    projectId: manifest.projectId,
+    projectRevisionId: manifest.currentRevision.id,
+    deckRevision: 1,
+    candidatePath: "output/candidates/00000000-0000-4000-8000-000000000099",
+    candidateMarkerSha256: "e".repeat(64),
+    projectBindingSha256: "f".repeat(64),
+    generationAuthorization: {
+      approvalId: generationGate.approvalId!,
+      snapshotPath: generationGate.snapshotPath!,
+      snapshotManifestSha256: generationGate.snapshotManifestSha256!,
+    },
+    artifacts: {
+      pptx: { path: "output/candidates/00000000-0000-4000-8000-000000000099/deck.pptx", sha256: "c".repeat(64) },
+      pdf: { path: "output/candidates/00000000-0000-4000-8000-000000000099/deck.pdf", sha256: "d".repeat(64) },
+      montage: { path: "output/candidates/00000000-0000-4000-8000-000000000099/montage.jpg", sha256: sha256Evidence(montage) },
+      acceptance: { path: "output/candidates/00000000-0000-4000-8000-000000000099/acceptance.json", sha256: "a".repeat(64) },
+    },
+    actions: ["edit-page", "return-upstream", "confirm-delivery"],
+    createdAt: new Date().toISOString(),
+  }));
+  const review = Buffer.from(`${JSON.stringify(reviewDescriptor, null, 2)}\n`);
+  const actionBase = {
+    schemaVersion: 1 as const,
+    kind: "deck-review-action" as const,
+    actionId: "00000000-0000-4000-8000-000000000098",
+    action: "confirm-delivery" as const,
+    candidateId: reviewDescriptor.candidateId,
+    projectId: manifest.projectId,
+    projectRevisionId: manifest.currentRevision.id,
+    reviewDescriptorSha256: reviewDescriptor.descriptorSha256,
+    presentedMontageSha256: sha256Evidence(montage),
+    actedAt: new Date().toISOString(),
+  };
+  const action = Buffer.from(`${JSON.stringify(DeckReviewActionEvidenceSchema.parse({
+    ...actionBase,
+    actionEvidenceSha256: sha256Evidence(JSON.stringify(actionBase)),
+  }), null, 2)}\n`);
   await mkdir(join(root, "output", "candidates", "current"), { recursive: true });
   await writeFile(join(root, "output", "candidates", "current", "review.json"), review);
   await writeFile(join(root, "output", "candidates", "current", "montage.jpg"), montage);
-  await approveGate(root, "deck-review");
-  return { authorization, review, montage };
+  await writeFile(join(root, "output", "candidates", "current", "action.json"), action);
+  await assert.rejects(approveGate(root, "deck-review"), /action boundary/i);
+  await approveDeckReviewActionGate(root);
+  return { authorization, review, montage, action };
 }
 
 test("preserves text and Markdown bytes with strict runtime input validation", async (t) => {
@@ -455,7 +497,7 @@ test("generation authorization and deck review snapshots bind their published ar
   await writeValidStyleSample(root);
   await approveAll(root);
 
-  const { authorization, review, montage } = await approveDownstreamGates(root);
+  const { authorization, review, montage, action } = await approveDownstreamGates(root);
   assert.equal(await assertGateCurrent(root, "generation-authorization"), true);
   assert.equal(await assertGateCurrent(root, "deck-review"), true);
 
@@ -463,6 +505,7 @@ test("generation authorization and deck review snapshots bind their published ar
   const reviewSnapshot = await readGateSnapshot(root, "deck-review");
   assert.deepEqual(generationSnapshot.artifacts, { "generation/authorization-plan.json": authorization });
   assert.deepEqual(reviewSnapshot.artifacts, {
+    "output/candidates/current/action.json": action,
     "output/candidates/current/review.json": review,
     "output/candidates/current/montage.jpg": montage,
   });

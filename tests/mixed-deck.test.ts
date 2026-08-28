@@ -10,7 +10,7 @@ import sharp from "sharp";
 
 import {
   assembleDeck,
-  assembleProject,
+  assembleProjectCandidate,
   readProjectAcceptance,
   replaceSlide,
   validateQuarantinedOutput,
@@ -19,11 +19,13 @@ import {
 import { buildMontage } from "../src/deck/montage.js";
 import { exportPdf } from "../src/deck/pdf.js";
 import { convertProjectPage } from "../src/editable/adapter.js";
+import { configureGenerationAuthorizationTrustForTests } from "../src/generation/trusted-authorization.js";
 import { applyProjectEditPlan, promoteProjectEditableTarget } from "../src/editable/operations.js";
 import { confirmEditablePreview, renderEditablePage, renderProjectEditablePreview } from "../src/editable/render.js";
 import { approveGate } from "../src/planning/confirm.js";
 import { publishPlanViews } from "../src/planning/views.js";
 import { initializeProject } from "../src/project/initialize.js";
+import { applyDeckReviewAction, publishDeckReview } from "../src/project/promotion.js";
 import { readProject, sha256, updateProject } from "../src/project/store.js";
 import { finalizeDelegatedStyleSampleForTest } from "./helpers/delegated-style-sample.js";
 
@@ -235,7 +237,27 @@ async function readyProject(t: TestContext): Promise<string> {
       staleReasons: [],
     })),
   }));
-  await assembleProject({ root, operations: { buildOutputs: fakeInitialOutputs } });
+  await configureGenerationAuthorizationTrustForTests(root, {
+    root: join(root, "..", "authorization-trust"),
+    deterministicKeySeed: `superppt-mixed-test:${root}`,
+  });
+  await mkdir(join(root, "generation"), { recursive: true });
+  await writeFile(join(root, "generation", "authorization-plan.json"), `${JSON.stringify({
+    styleLockSha256: "a".repeat(64),
+    pageIds: slideIds,
+    callBudget: slideIds.length,
+    outboundDisclosure: { sendsText: true, references: [] },
+    dependency: { kind: "ai-image-to-ppt", sha256: "b".repeat(64) },
+    revisionId: (await readProject(root)).currentRevision.id,
+  }, null, 2)}\n`);
+  await approveGate(root, "generation-authorization");
+  const candidate = await assembleProjectCandidate(root, { buildOutputs: fakeInitialOutputs });
+  const review = await publishDeckReview(root, candidate.candidateId);
+  await applyDeckReviewAction(root, {
+    action: "confirm-delivery",
+    candidateId: candidate.candidateId,
+    descriptorSha256: review.descriptorSha256,
+  });
   return root;
 }
 
@@ -346,6 +368,9 @@ test("renders a deterministic 1920x1080 editable preview and authors real editab
 test("replaces only after a bound preview confirmation, rebuilds every output, and re-edits without conversion", async (t) => {
   const root = await readyProject(t);
   const original = await readProject(root);
+  const initialAction = JSON.parse(await readFile(join(root, "output/candidates/current/action.json"), "utf8"));
+  assert.equal(initialAction.action, "confirm-delivery");
+  assert.equal(initialAction.candidateId, JSON.parse(await readFile(join(root, "output/candidates/current/review.json"), "utf8")).candidateId);
   const untouchedBefore = original.slides[0]!.finalRender!;
   const initialExports = original.exports;
   const plugin = await converterRoot(t);

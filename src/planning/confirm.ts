@@ -13,7 +13,7 @@ import {
   validateOrdinaryGateEvidence,
 } from "../project/evidence.js";
 import { withPlanningLock, type ProjectLockOptions } from "../project/lock.js";
-import { promoteExclusive } from "../project/promotion.js";
+import { promoteExclusive } from "../project/exclusive.js";
 import { localProjectPath, readOwnedRegularFile, type SafeReadOperations } from "../project/safe-file.js";
 import { ProjectManifestSchema, type ProjectManifest } from "../project/schemas.js";
 import { readProject, updateProject } from "../project/store.js";
@@ -32,6 +32,7 @@ import {
 } from "../styles/sample-contract.js";
 import { appendTrustedGenerationAuthorizationRecord } from "../generation/trusted-authorization.js";
 import { withGenerationLease } from "../generation/lease.js";
+import { DeckReviewActionEvidenceSchema } from "../acceptance/schema.js";
 
 export type OrdinaryGate =
   | "outline"
@@ -132,10 +133,29 @@ async function gateArtifacts(
   if (gate === "generation-authorization") return {
     "generation/authorization-plan.json": await readOwnedRegularFile(root, "generation/authorization-plan.json", operations),
   };
-  if (gate === "deck-review") return Object.fromEntries(await Promise.all([
+  if (gate === "deck-review") {
+    const artifacts = Object.fromEntries(await Promise.all([
+      "output/candidates/current/action.json",
     "output/candidates/current/review.json",
     "output/candidates/current/montage.jpg",
-  ].map(async (path) => [path, await readOwnedRegularFile(root, path, operations)])));
+    ].map(async (path) => [path, await readOwnedRegularFile(root, path, operations)])));
+    let action;
+    try {
+      action = DeckReviewActionEvidenceSchema.parse(JSON.parse(
+        artifacts["output/candidates/current/action.json"]!.toString("utf8"),
+      ));
+    } catch (error: unknown) {
+      throw new Error("authenticated deck-review action is required", { cause: error });
+    }
+    if (action.action !== "confirm-delivery") {
+      throw new Error("only confirm-delivery may approve deck-review");
+    }
+    const { actionEvidenceSha256, ...base } = action;
+    if (actionEvidenceSha256 !== sha256Evidence(JSON.stringify(base))) {
+      throw new Error("deck-review action integrity check failed");
+    }
+    return artifacts;
+  }
   const values = Object.fromEntries(await Promise.all(STYLE_SAMPLE_ARTIFACTS.map(async (path) => [
     path,
     await readOwnedRegularFile(root, path, operations),
@@ -283,7 +303,7 @@ export async function assertGateCurrent(root: string, gate: PlanningGate): Promi
   return gateCurrentWithManifest(root, gate, await readProject(root));
 }
 
-export async function approveGate(
+async function approveOrdinaryGate(
   root: string,
   gate: PlanningGate,
   rawOptions?: ApprovalOptions,
@@ -358,6 +378,24 @@ export async function approveGate(
   }, options.lock);
   if (gate === "generation-authorization") await withGenerationLease(root, approve);
   else await approve();
+}
+
+export async function approveGate(
+  root: string,
+  gate: PlanningGate,
+  rawOptions?: ApprovalOptions,
+): Promise<void> {
+  if (gate === "deck-review") {
+    throw new Error("deck-review approval requires the authenticated review action boundary");
+  }
+  await approveOrdinaryGate(root, gate, rawOptions);
+}
+
+export async function approveDeckReviewActionGate(
+  root: string,
+  rawOptions?: ApprovalOptions,
+): Promise<void> {
+  await approveOrdinaryGate(root, "deck-review", rawOptions);
 }
 
 export async function readGateSnapshot(root: string, gate: PlanningGate): Promise<GateSnapshot> {

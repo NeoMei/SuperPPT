@@ -15,7 +15,7 @@ import {
   validateStylePublicationEvidence,
 } from "../project/evidence.js";
 import { withPlanningLock, withProjectLease, type ProjectLockOptions } from "../project/lock.js";
-import { promoteExclusive } from "../project/promotion.js";
+import { promoteExclusive } from "../project/exclusive.js";
 import { localProjectPath, readOwnedRegularFile } from "../project/safe-file.js";
 import { readProject } from "../project/store.js";
 import { loadValidatedOutline, loadValidatedPlan } from "./load.js";
@@ -420,7 +420,11 @@ async function requireCurrentArtifactPresentation(
 ): Promise<PresentationBinding> {
   const expected = kind === "generation-plan"
     ? ["generation/authorization-plan.json"]
-    : ["output/candidates/current/montage.jpg", "output/candidates/current/review.json"];
+    : [
+      "output/candidates/current/action.json",
+      "output/candidates/current/montage.jpg",
+      "output/candidates/current/review.json",
+    ];
   if (!sameJson(Object.keys(artifactHashes).sort(), expected)) {
     throw new Error("gate artifacts do not match authoritative publication");
   }

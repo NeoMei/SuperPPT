@@ -1,7 +1,11 @@
 import { createHash } from "node:crypto";
 
 import { readRegularFileNoFollow } from "../project/safe-file.js";
-import { AcceptanceSchema, type Acceptance } from "./schema.js";
+import {
+  AcceptanceSchema,
+  type Acceptance,
+  type DeckReviewActionEvidence,
+} from "./schema.js";
 
 const sha256Bytes = (bytes: Buffer): string =>
   createHash("sha256").update(bytes).digest("hex");
@@ -94,6 +98,30 @@ export async function buildAcceptance(input: AcceptanceInput): Promise<Acceptanc
       result: null,
       observedResult: null,
       confirmedAt: null,
+    },
+  });
+}
+
+export function bindConfirmedDeckReview(
+  acceptance: Acceptance,
+  action: DeckReviewActionEvidence,
+): Acceptance {
+  if (action.action !== "confirm-delivery") {
+    throw new Error("only confirm-delivery may bind formal acceptance");
+  }
+  if (
+    acceptance.projectId !== action.projectId
+    || acceptance.revisionId !== action.projectRevisionId
+    || acceptance.candidateReview?.candidateId !== action.candidateId
+    || acceptance.candidateReview.projectRevisionId !== action.projectRevisionId
+  ) throw new Error("confirm-delivery action does not bind candidate acceptance");
+  return AcceptanceSchema.parse({
+    ...acceptance,
+    deckReviewConfirmation: {
+      actionId: action.actionId,
+      action: action.action,
+      candidateId: action.candidateId,
+      actionEvidenceSha256: action.actionEvidenceSha256,
     },
   });
 }

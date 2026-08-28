@@ -4,7 +4,7 @@ import { basename, dirname, join } from "node:path";
 
 import { syncDirectory, writeDurableExclusive } from "./durable.js";
 import { validateProjectRoot } from "./paths.js";
-import { promoteExclusive } from "./promotion.js";
+import { promoteExclusive } from "./exclusive.js";
 import {
   ProjectManifestSchema,
   type ProjectManifest,

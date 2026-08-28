@@ -24,6 +24,13 @@ test("runs intake through mixed-slide replacement without changing untouched ren
   });
 
   assert.equal(result.before.slideCount, 3);
+  assert.deepEqual(result.deckReview, {
+    action: "confirm-delivery",
+    promotedRevision: 1,
+  });
+  const initialAcceptance = JSON.parse(await readFile(result.before.acceptance, "utf8"));
+  assert.equal(initialAcceptance.deckReviewConfirmation.action, "confirm-delivery");
+  assert.equal(initialAcceptance.deckReviewConfirmation.candidateId, initialAcceptance.candidateReview.candidateId);
   assert.equal(result.before.slideCount, result.after.slideCount);
   assert.deepEqual(result.after.slideOrder, result.before.slideOrder);
   assert.deepEqual(result.after.editableSlideIds, [result.changedSlideId]);

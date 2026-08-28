@@ -5,7 +5,7 @@ import sharp from "sharp";
 
 import { syncDirectory, writeDurableExclusive } from "../project/durable.js";
 import { validateProjectRoot } from "../project/paths.js";
-import { promoteExclusive } from "../project/promotion.js";
+import { promoteExclusive } from "../project/exclusive.js";
 import { readOwnedRegularFile, readRegularFileNoFollow } from "../project/safe-file.js";
 import { readProject } from "../project/store.js";
 import { validateEditableConversionOutput } from "./adapter.js";

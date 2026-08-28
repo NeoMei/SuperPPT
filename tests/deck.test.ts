@@ -19,17 +19,20 @@ import {
   assembleDeck,
   assembleProject,
   assembleProjectCandidate,
-  promoteApprovedCandidate,
-  publishDeckReview,
   readProjectAcceptance,
   recordClientAcceptance,
   type FinalRender,
 } from "../src/deck/assemble.js";
 import { exportPdf } from "../src/deck/pdf.js";
 import { buildMontage } from "../src/deck/montage.js";
-import { approveGate } from "../src/planning/confirm.js";
+import { approveGate, assertGateCurrent } from "../src/planning/confirm.js";
 import { publishPlanViews } from "../src/planning/views.js";
 import { initializeProject } from "../src/project/initialize.js";
+import {
+  applyDeckReviewAction,
+  promoteApprovedCandidate,
+  publishDeckReview,
+} from "../src/project/promotion.js";
 import { ClientSmokeCopyAnchorSchema } from "../src/project/schemas.js";
 import { readProject, updateProject } from "../src/project/store.js";
 import * as projectStore from "../src/project/store.js";
@@ -479,52 +482,77 @@ test("assembles a review-only candidate and promotes it only after exact deck re
   assert.equal((await readProject(fixture.root)).stage, "deck-review");
   await assert.rejects(
     promoteApprovedCandidate(fixture.root, candidate.candidateId),
-    /deck-review/i,
+    /deck-review|action/i,
   );
-  await approveGate(fixture.root, "deck-review");
-  const delivery = await promoteApprovedCandidate(fixture.root, candidate.candidateId);
+  await assert.rejects(approveGate(fixture.root, "deck-review"), /action/i);
+  const action = await applyDeckReviewAction(fixture.root, {
+    action: "confirm-delivery",
+    candidateId: candidate.candidateId,
+    descriptorSha256: review.descriptorSha256,
+  });
+  assert.equal(action.action, "confirm-delivery");
+  assert.ok(action.delivery);
+  const delivery = action.delivery;
   assert.equal(delivery.revisionNumber, 1);
   assert.match(delivery.destination, /output\/revisions\/1$/);
   assert.deepEqual((await readProject(fixture.root)).exports, delivery.artifacts);
-  const legacyRecovery = await assembleProject({
-    root: fixture.root,
-    operations: { buildOutputs: async () => { throw new Error("must reuse candidate-promoted output"); } },
-  });
-  assert.equal(legacyRecovery.recovered, true);
 });
 
-test("deck review exposes edit and upstream choices without changing formal output", async (t) => {
-  const fixture = await readyProject(t);
-  await authorizeDeckGeneration(fixture.root);
-  const candidate = await assembleProjectCandidate(fixture.root, { buildOutputs: fakeOutputs });
-  const before = await readProject(fixture.root);
-  const review = await publishDeckReview(fixture.root, candidate.candidateId);
-
-  assert.deepEqual(review.actions, ["edit-page", "return-upstream", "confirm-delivery"]);
-  assert.equal(review.confirmation.action, "confirm-delivery");
-  assert.equal(review.confirmation.gate, "deck-review");
-  assert.deepEqual((await readProject(fixture.root)).exports, before.exports);
-  assert.equal((await readProject(fixture.root)).outputRevisions?.length ?? 0, 0);
+test("deck review return and edit actions are real non-promotion transitions", async (t) => {
+  for (const [action, expectedStage] of [
+    ["return-upstream", "generation-authorization"],
+    ["edit-page", "revising"],
+  ] as const) {
+    const fixture = await readyProject(t);
+    await authorizeDeckGeneration(fixture.root);
+    const candidate = await assembleProjectCandidate(fixture.root, { buildOutputs: fakeOutputs });
+    const before = await readProject(fixture.root);
+    const review = await publishDeckReview(fixture.root, candidate.candidateId);
+    const outcome = await applyDeckReviewAction(fixture.root, {
+      action,
+      candidateId: candidate.candidateId,
+      descriptorSha256: review.descriptorSha256,
+    });
+    const after = await readProject(fixture.root);
+    assert.equal(outcome.action, action);
+    assert.equal(outcome.delivery, null);
+    assert.equal(after.stage, expectedStage);
+    assert.deepEqual(after.exports, before.exports);
+    assert.deepEqual(after.outputRevisions ?? [], before.outputRevisions ?? []);
+    assert.equal(await assertGateCurrent(fixture.root, "deck-review"), false);
+    assert.equal(await assertGateCurrent(fixture.root, "generation-authorization"), true);
+    await assert.rejects(promoteApprovedCandidate(fixture.root, candidate.candidateId), /action|deck-review/i);
+    await access(join(fixture.root, `output/candidates/${candidate.candidateId}/.superppt-candidate.json`));
+  }
 });
 
 test("promotion fails closed for candidate tampering and stale project revisions", async (t) => {
   const tampered = await readyProject(t);
   await authorizeDeckGeneration(tampered.root);
   const candidate = await assembleProjectCandidate(tampered.root, { buildOutputs: fakeOutputs });
-  await publishDeckReview(tampered.root, candidate.candidateId);
-  await approveGate(tampered.root, "deck-review");
-  await writeFile(join(tampered.root, candidate.artifacts.montage.path), "tampered");
+  const review = await publishDeckReview(tampered.root, candidate.candidateId);
+  await writeFile(join(tampered.root, "output/candidates/current/montage.jpg"), "wrong candidate montage");
   await assert.rejects(
-    promoteApprovedCandidate(tampered.root, candidate.candidateId),
-    /candidate|hash|evidence|tamper/i,
+    applyDeckReviewAction(tampered.root, {
+      action: "confirm-delivery",
+      candidateId: candidate.candidateId,
+      descriptorSha256: review.descriptorSha256,
+    }),
+    /montage|hash|evidence|tamper/i,
   );
+  assert.equal(await assertGateCurrent(tampered.root, "deck-review"), false);
+  await assert.rejects(promoteApprovedCandidate(tampered.root, candidate.candidateId), /action|deck-review|montage/i);
   assert.equal((await readProject(tampered.root)).exports.pptx, null);
 
   const stale = await readyProject(t);
   await authorizeDeckGeneration(stale.root);
   const staleCandidate = await assembleProjectCandidate(stale.root, { buildOutputs: fakeOutputs });
-  await publishDeckReview(stale.root, staleCandidate.candidateId);
-  await approveGate(stale.root, "deck-review");
+  const staleReview = await publishDeckReview(stale.root, staleCandidate.candidateId);
+  await applyDeckReviewAction(stale.root, {
+    action: "edit-page",
+    candidateId: staleCandidate.candidateId,
+    descriptorSha256: staleReview.descriptorSha256,
+  });
   const impact = await publishImpactPlan(stale.root, { kind: "brief", title: "Changed after review" });
   await approveImpact(stale.root, impact.sha256);
   await applyRevision(stale.root, impact, impact.change);
@@ -540,21 +568,28 @@ test("promotion rejects the wrong candidate approval and serializes concurrent r
   await authorizeDeckGeneration(wrong.root);
   const approved = await assembleProjectCandidate(wrong.root, { buildOutputs: fakeOutputs });
   await publishDeckReview(wrong.root, approved.candidateId);
-  await approveGate(wrong.root, "deck-review");
   const unapproved = await assembleProjectCandidate(wrong.root, { buildOutputs: fakeOutputs });
   await publishDeckReview(wrong.root, unapproved.candidateId);
-  await assert.rejects(promoteApprovedCandidate(wrong.root, unapproved.candidateId), /deck-review|approval/i);
+  await assert.rejects(promoteApprovedCandidate(wrong.root, unapproved.candidateId), /deck-review|approval|action/i);
   await assert.rejects(promoteApprovedCandidate(wrong.root, approved.candidateId), /candidate|current|deck-review/i);
   assert.equal((await readProject(wrong.root)).exports.pptx, null);
 
   const concurrent = await readyProject(t);
   await authorizeDeckGeneration(concurrent.root);
   const candidate = await assembleProjectCandidate(concurrent.root, { buildOutputs: fakeOutputs });
-  await publishDeckReview(concurrent.root, candidate.candidateId);
-  await approveGate(concurrent.root, "deck-review");
+  const concurrentReview = await publishDeckReview(concurrent.root, candidate.candidateId);
+  await assert.rejects(approveGate(concurrent.root, "deck-review"), /action/i);
   const attempts = await Promise.allSettled([
-    promoteApprovedCandidate(concurrent.root, candidate.candidateId),
-    promoteApprovedCandidate(concurrent.root, candidate.candidateId),
+    applyDeckReviewAction(concurrent.root, {
+      action: "confirm-delivery",
+      candidateId: candidate.candidateId,
+      descriptorSha256: concurrentReview.descriptorSha256,
+    }),
+    applyDeckReviewAction(concurrent.root, {
+      action: "confirm-delivery",
+      candidateId: candidate.candidateId,
+      descriptorSha256: concurrentReview.descriptorSha256,
+    }),
   ]);
   assert.equal(attempts.filter(({ status }) => status === "fulfilled").length, 1);
   assert.equal(attempts.filter(({ status }) => status === "rejected").length, 1);
@@ -565,10 +600,13 @@ test("promote approved candidate recovers a formal revision published before a m
   const fixture = await readyProject(t);
   await authorizeDeckGeneration(fixture.root);
   const candidate = await assembleProjectCandidate(fixture.root, { buildOutputs: fakeOutputs });
-  await publishDeckReview(fixture.root, candidate.candidateId);
-  await approveGate(fixture.root, "deck-review");
+  const review = await publishDeckReview(fixture.root, candidate.candidateId);
 
-  await assert.rejects(promoteApprovedCandidate(fixture.root, candidate.candidateId, {
+  await assert.rejects(applyDeckReviewAction(fixture.root, {
+    action: "confirm-delivery",
+    candidateId: candidate.candidateId,
+    descriptorSha256: review.descriptorSha256,
+  }, {
     checkpoint(step) {
       if (step === "output-promoted") throw new Error("simulated candidate promotion crash");
     },

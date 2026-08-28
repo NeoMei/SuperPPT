@@ -3,7 +3,7 @@ import { lstat, mkdir, mkdtemp, readFile, realpath, rm, symlink, writeFile } fro
 import { delimiter, dirname, isAbsolute, join, relative } from "node:path";
 import { promisify } from "node:util";
 
-import { promoteExclusive } from "../project/promotion.js";
+import { promoteExclusive } from "../project/exclusive.js";
 import type { PreparedEditableSlide } from "./editable-slide.js";
 import { SLIDE_HEIGHT_PX, SLIDE_WIDTH_PX } from "./geometry.js";
 

@@ -4,7 +4,7 @@ import { join } from "node:path";
 
 import { syncDirectory, writeDurableExclusive } from "../project/durable.js";
 import { withProjectLease } from "../project/lock.js";
-import { promoteExclusive } from "../project/promotion.js";
+import { promoteExclusive } from "../project/exclusive.js";
 import { readOwnedRegularFile } from "../project/safe-file.js";
 import type { ClientSmokeCopyAnchor, ProjectManifest } from "../project/schemas.js";
 import {
