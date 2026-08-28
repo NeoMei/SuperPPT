@@ -210,6 +210,37 @@ async function approveAll(root: string): Promise<void> {
   await approveGate(root, "style-sample");
 }
 
+async function approveDownstreamGates(root: string): Promise<{
+  authorization: Buffer;
+  review: Buffer;
+  montage: Buffer;
+}> {
+  const authorization = Buffer.from(JSON.stringify({
+    styleLockSha256: "a".repeat(64),
+    pageIds: SLIDE_IDS,
+    callBudget: 3,
+    outboundDisclosure: { sendsText: true, references: [] },
+    dependency: { kind: "ai-image-to-ppt", sha256: "b".repeat(64) },
+    revisionId: (await readProject(root)).currentRevision.id,
+  }, null, 2) + "\n");
+  await mkdir(join(root, "generation"), { recursive: true });
+  await writeFile(join(root, "generation", "authorization-plan.json"), authorization);
+  await approveGate(root, "generation-authorization");
+
+  const montage = Buffer.from("candidate montage\n");
+  const review = Buffer.from(JSON.stringify({
+    candidateId: "00000000-0000-4000-8000-000000000099",
+    pptxSha256: "c".repeat(64),
+    pdfSha256: "d".repeat(64),
+    montageSha256: sha256Evidence(montage),
+  }, null, 2) + "\n");
+  await mkdir(join(root, "output", "candidates", "current"), { recursive: true });
+  await writeFile(join(root, "output", "candidates", "current", "review.json"), review);
+  await writeFile(join(root, "output", "candidates", "current", "montage.jpg"), montage);
+  await approveGate(root, "deck-review");
+  return { authorization, review, montage };
+}
+
 test("preserves text and Markdown bytes with strict runtime input validation", async (t) => {
   const root = await project(t, "superppt-input-");
   const source = "# 原始标题\n\n保留  **Markdown**  间距。\r\n";
@@ -352,30 +383,8 @@ test("generation authorization and deck review snapshots bind their published ar
   await writeValidStyleSample(root);
   await approveAll(root);
 
-  const authorization = Buffer.from(JSON.stringify({
-    styleLockSha256: "a".repeat(64),
-    pageIds: SLIDE_IDS,
-    callBudget: 3,
-    outboundDisclosure: { sendsText: true, references: [] },
-    dependency: { kind: "ai-image-to-ppt", sha256: "b".repeat(64) },
-    revisionId: (await readProject(root)).currentRevision.id,
-  }, null, 2) + "\n");
-  await mkdir(join(root, "generation"), { recursive: true });
-  await writeFile(join(root, "generation", "authorization-plan.json"), authorization);
-  await approveGate(root, "generation-authorization");
+  const { authorization, review, montage } = await approveDownstreamGates(root);
   assert.equal(await assertGateCurrent(root, "generation-authorization"), true);
-
-  const montage = Buffer.from("candidate montage\n");
-  const review = Buffer.from(JSON.stringify({
-    candidateId: "00000000-0000-4000-8000-000000000099",
-    pptxSha256: "c".repeat(64),
-    pdfSha256: "d".repeat(64),
-    montageSha256: sha256Evidence(montage),
-  }, null, 2) + "\n");
-  await mkdir(join(root, "output", "candidates", "current"), { recursive: true });
-  await writeFile(join(root, "output", "candidates", "current", "review.json"), review);
-  await writeFile(join(root, "output", "candidates", "current", "montage.jpg"), montage);
-  await approveGate(root, "deck-review");
   assert.equal(await assertGateCurrent(root, "deck-review"), true);
 
   const generationSnapshot = await readGateSnapshot(root, "generation-authorization");
@@ -397,8 +406,22 @@ test("sample execution authorization records its evidence without becoming a con
   const manifest = await readProject(root);
   assert.deepEqual(manifest.gates.map(({ gate }) => gate), ["style-sample-generation"]);
   assert.equal(manifest.gates[0]!.presentation, undefined);
-  assert.equal(manifest.gates[0]!.snapshotPath, undefined);
+  assert.match(manifest.gates[0]!.snapshotPath ?? "", /^revisions\/[0-9a-f-]{36}\/execution-gates\/style-sample-generation-[0-9a-f-]{36}$/);
+  assert.match(manifest.gates[0]!.snapshotManifestSha256 ?? "", /^[a-f0-9]{64}$/);
   assert.equal(await assertGateCurrent(root, "style-sample"), false);
+});
+
+test("sample execution authorization fails closed after its current evidence is tampered", async (t) => {
+  const root = await project(t, "superppt-sample-execution-tamper-");
+  await writeValidPlan(root);
+  await publishPlanViews(root);
+  await approveGate(root, "outline");
+  await writeFile(join(root, "style", "sample", "generation-plan.json"), "{\"schemaVersion\":1}\n");
+  await approveExecutionGate(root, "style-sample-generation", "style/sample/generation-plan.json");
+  await writeFile(join(root, "style", "sample", "generation-plan.json"), "tampered\n");
+
+  const plan = await publishImpactPlan(root, { kind: "brief", title: "Tampered execution evidence" });
+  await assert.rejects(approveImpact(root, plan.sha256), /execution.*evidence|planning gate evidence/i);
 });
 
 test("revision changes invalidate downstream gates while preserving upstream history", async (t) => {
@@ -406,6 +429,9 @@ test("revision changes invalidate downstream gates while preserving upstream his
   await writeValidPlan(root);
   await writeValidStyleSample(root);
   await approveAll(root);
+  await approveDownstreamGates(root);
+  assert.equal(await assertGateCurrent(root, "generation-authorization"), true);
+  assert.equal(await assertGateCurrent(root, "deck-review"), true);
   const priorGates = (await readProject(root)).gates.map(({ gate }) => gate);
 
   const plan = await publishImpactPlan(root, { kind: "brief", title: "Revised demo" });

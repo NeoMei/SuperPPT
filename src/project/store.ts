@@ -16,6 +16,7 @@ import { promoteExclusive } from "./promotion.js";
 import {
   sha256Evidence,
   validateCurrentPresentationBinding,
+  validateExecutionGateEvidence,
   validateOrdinaryGateEvidence,
 } from "./evidence.js";
 import { withProjectLease } from "./lock.js";
@@ -406,17 +407,18 @@ async function persistProject(
       }
     } else if (gate.gate === "style-sample-generation") {
       try {
-        const path = "style/sample/generation-plan.json";
-        if (
-          gate.revisionId !== valid.currentRevision.id
-          || Object.keys(gate.artifactHashes).length !== 1
-          || !gate.artifactHashes[path]
-          || gate.approvalId
-          || gate.snapshotPath
-          || gate.snapshotManifestSha256
-          || gate.presentation
-          || sha256Evidence(await readOwnedRegularFile(owned.root, path)) !== gate.artifactHashes[path]
-        ) throw new Error("execution authorization must bind its current generation plan only");
+        if (gate.revisionId !== valid.currentRevision.id) {
+          throw new Error("execution authorization revision must be current");
+        }
+        const evidence = await validateExecutionGateEvidence(owned.root, valid, gate);
+        if (!sameJson(evidence.manifest, valid)) {
+          throw new Error("execution authorization snapshot manifest must exactly match the publication");
+        }
+        for (const [path, expected] of Object.entries(gate.artifactHashes)) {
+          if (sha256Evidence(await readOwnedRegularFile(owned.root, path)) !== expected) {
+            throw new Error("execution authorization artifact is not current");
+          }
+        }
       } catch (error: unknown) {
         throw new Error("execution authorization evidence is invalid", { cause: error });
       }
@@ -434,18 +436,19 @@ async function persistProject(
       }
     }
   }
-  const ordinarySnapshotPaths = valid.gates
+  const immutableSnapshotPaths = valid.gates
     .filter((gate) => (
       gate.gate === "outline"
       || gate.gate === "slide-specs"
       || gate.gate === "style-sample"
+      || gate.gate === "style-sample-generation"
       || gate.gate === "generation-authorization"
       || gate.gate === "deck-review"
     ))
     .map((gate) => gate.snapshotPath)
     .filter((path): path is string => path !== undefined);
-  if (new Set(ordinarySnapshotPaths).size !== ordinarySnapshotPaths.length) {
-    throw new Error("ordinary gate evidence snapshot paths must be unique");
+  if (new Set(immutableSnapshotPaths).size !== immutableSnapshotPaths.length) {
+    throw new Error("immutable gate evidence snapshot paths must be unique");
   }
 
   const staging = join(owned.root, `.superppt.${randomUUID()}.staging.json`);

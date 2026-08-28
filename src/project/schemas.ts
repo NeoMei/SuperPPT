@@ -167,11 +167,11 @@ export const GateSchema = z.object({
   if (gate.gate === "style-sample-generation") {
     if (
       JSON.stringify(Object.keys(gate.artifactHashes).sort()) !== JSON.stringify(["style/sample/generation-plan.json"])
-      || gate.approvalId
-      || gate.snapshotPath
-      || gate.snapshotManifestSha256
+      || !gate.approvalId
+      || gate.snapshotPath !== `revisions/${gate.revisionId}/execution-gates/style-sample-generation-${gate.approvalId}`
+      || !gate.snapshotManifestSha256
       || gate.presentation
-    ) context.addIssue({ code: "custom", message: "style-sample-generation accepts only direct execution authorization evidence" });
+    ) context.addIssue({ code: "custom", message: "style-sample-generation requires immutable execution authorization evidence" });
     return;
   }
   if (gate.gate !== "revision-impact") return;

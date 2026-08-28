@@ -5,6 +5,7 @@ import { dirname, join, sep } from "node:path";
 import { syncDirectory, writeDurableExclusive } from "../project/durable.js";
 import {
   addDescriptorIntegrity,
+  ExecutionGateSnapshotDescriptorSchema,
   GateSnapshotDescriptorSchema,
   type PresentationBinding,
   sha256Evidence,
@@ -228,6 +229,53 @@ async function publishSnapshot(
   await syncDirectory(parent);
 }
 
+async function publishExecutionSnapshot(
+  root: string,
+  gate: ExecutionGate,
+  approvalId: string,
+  snapshotPath: string,
+  manifest: ProjectManifest,
+  artifacts: Record<string, Buffer>,
+): Promise<void> {
+  const parentPath = dirname(snapshotPath).split(sep).join("/");
+  const parent = await ensureDirectoryTree(root, parentPath);
+  const staging = join(parent, `.${gate}-${randomUUID()}.staging`);
+  await mkdir(staging, { mode: 0o700 });
+  const manifestBytes = Buffer.from(`${JSON.stringify(manifest, null, 2)}\n`);
+  const hashes = hashArtifacts(artifacts);
+  const descriptor = ExecutionGateSnapshotDescriptorSchema.parse(addDescriptorIntegrity({
+    schemaVersion: 1 as const,
+    kind: "execution-gate-snapshot" as const,
+    projectId: manifest.projectId,
+    gate,
+    revisionId: manifest.currentRevision.id,
+    approvalId,
+    snapshotPath,
+    manifestSha256: sha256Evidence(manifestBytes),
+    artifactHashes: hashes,
+    artifactSizes: Object.fromEntries(Object.entries(artifacts).map(([path, bytes]) => [path, bytes.length])),
+  }));
+  const directories = new Set<string>([staging]);
+  await writeDurableExclusive(join(staging, "superppt.json"), manifestBytes);
+  await writeDurableExclusive(join(staging, "snapshot.json"), `${JSON.stringify(descriptor, null, 2)}\n`);
+  for (const [projectPath, bytes] of Object.entries(artifacts)) {
+    const destination = join(staging, "artifacts", localProjectPath(projectPath));
+    await mkdir(dirname(destination), { recursive: true, mode: 0o700 });
+    let cursor = dirname(destination);
+    while (cursor.startsWith(staging) && cursor !== staging) {
+      directories.add(cursor);
+      cursor = dirname(cursor);
+    }
+    await writeDurableExclusive(destination, bytes);
+  }
+  for (const directory of [...directories].sort((left, right) => right.length - left.length)) {
+    await syncDirectory(directory);
+  }
+  await syncDirectory(parent);
+  await promoteExclusive(staging, join(root, localProjectPath(snapshotPath)));
+  await syncDirectory(parent);
+}
+
 export async function assertGateCurrent(root: string, gate: PlanningGate): Promise<boolean> {
   assertOrdinaryGate(gate);
   return gateCurrentWithManifest(root, gate, await readProject(root));
@@ -321,16 +369,39 @@ export async function approveExecutionGate(
   }
   await withPlanningLock(root, async (canonicalRoot) => {
     await updateProject(canonicalRoot, async (manifest) => {
-      const evidence = await readOwnedRegularFile(canonicalRoot, evidencePath);
-      return {
-        ...manifest,
-        gates: [...manifest.gates, {
-          gate,
-          revisionId: manifest.currentRevision.id,
-          artifactHashes: { [evidencePath]: sha256Evidence(evidence) },
-          confirmedAt: new Date().toISOString(),
-        }],
+      const artifacts = { [evidencePath]: await readOwnedRegularFile(canonicalRoot, evidencePath) };
+      const hashes = hashArtifacts(artifacts);
+      const approvalId = randomUUID();
+      const snapshotPath = toPortableProjectPath(join(
+        "revisions",
+        manifest.currentRevision.id,
+        "execution-gates",
+        `${gate}-${approvalId}`,
+      ));
+      const gateRecord: ProjectManifest["gates"][number] = {
+        gate,
+        revisionId: manifest.currentRevision.id,
+        approvalId,
+        artifactHashes: hashes,
+        snapshotPath,
+        confirmedAt: new Date().toISOString(),
       };
+      const provisional: ProjectManifest = {
+        ...manifest,
+        gates: [...manifest.gates, gateRecord],
+      };
+      const nextGate = {
+        ...gateRecord,
+        snapshotManifestSha256: snapshotManifestEvidenceHash(provisional, approvalId),
+      };
+      const next: ProjectManifest = {
+        ...manifest,
+        gates: [...manifest.gates, nextGate],
+      };
+      await publishExecutionSnapshot(canonicalRoot, gate, approvalId, snapshotPath, next, artifacts);
+      const current = hashArtifacts({ [evidencePath]: await readOwnedRegularFile(canonicalRoot, evidencePath) });
+      if (!sameJson(current, hashes)) throw new Error("style-sample-generation evidence changed during approval");
+      return next;
     });
   });
 }

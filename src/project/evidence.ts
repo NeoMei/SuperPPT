@@ -17,6 +17,7 @@ const OrdinaryGateSchema = z.enum([
   "generation-authorization",
   "deck-review",
 ]);
+const ExecutionGateSchema = z.literal("style-sample-generation");
 
 export const PresentationBindingSchema = z.object({
   kind: z.enum(["planning-views", "style-sample", "generation-plan", "deck-review"]),
@@ -78,9 +79,27 @@ export const GateSnapshotDescriptorSchema = SnapshotBaseSchema.extend({
   descriptorSha256: HashSchema,
 }).strict();
 
+const ExecutionSnapshotBaseSchema = z.object({
+  schemaVersion: z.literal(1),
+  kind: z.literal("execution-gate-snapshot"),
+  projectId: z.string().uuid(),
+  gate: ExecutionGateSchema,
+  revisionId: z.string().uuid(),
+  approvalId: z.string().uuid(),
+  snapshotPath: z.string().startsWith("revisions/"),
+  manifestSha256: HashSchema,
+  artifactHashes: HashesSchema,
+  artifactSizes: SizesSchema,
+}).strict();
+
+export const ExecutionGateSnapshotDescriptorSchema = ExecutionSnapshotBaseSchema.extend({
+  descriptorSha256: HashSchema,
+}).strict();
+
 export type PlanPublicationDescriptor = z.infer<typeof PlanPublicationDescriptorSchema>;
 export type StylePublicationDescriptor = z.infer<typeof StylePublicationDescriptorSchema>;
 export type GateSnapshotDescriptor = z.infer<typeof GateSnapshotDescriptorSchema>;
+export type ExecutionGateSnapshotDescriptor = z.infer<typeof ExecutionGateSnapshotDescriptorSchema>;
 export type PresentationBinding = z.infer<typeof PresentationBindingSchema>;
 export type OrdinaryGate = z.infer<typeof OrdinaryGateSchema>;
 
@@ -424,6 +443,82 @@ export async function validateOrdinaryGateEvidence(
     for (const [path, expected] of Object.entries(gateRecord.artifactHashes)) {
       if (presented[path] !== expected) throw new Error("snapshot presentation artifact mismatch");
     }
+  }
+  return { descriptor, manifest: snapshotManifest, artifacts };
+}
+
+export async function validateExecutionGateEvidence(
+  root: string,
+  project: ProjectManifest,
+  gateRecord: ProjectManifest["gates"][number],
+): Promise<{
+  descriptor: ExecutionGateSnapshotDescriptor;
+  manifest: ProjectManifest;
+  artifacts: Record<string, Buffer>;
+}> {
+  if (gateRecord.gate !== "style-sample-generation") {
+    throw new Error("execution gate evidence validator received a non-execution gate");
+  }
+  const path = "style/sample/generation-plan.json";
+  if (
+    Object.keys(gateRecord.artifactHashes).length !== 1
+    || !gateRecord.approvalId
+    || !gateRecord.snapshotPath
+    || !gateRecord.snapshotManifestSha256
+    || gateRecord.presentation
+    || !gateRecord.artifactHashes[path]
+  ) throw new Error("execution gate evidence has incomplete identity");
+  const expectedPath = `revisions/${gateRecord.revisionId}/execution-gates/style-sample-generation-${gateRecord.approvalId}`;
+  if (gateRecord.snapshotPath !== expectedPath) {
+    throw new Error("execution gate evidence has an untrusted snapshot path");
+  }
+  let descriptor: ExecutionGateSnapshotDescriptor;
+  try {
+    descriptor = ExecutionGateSnapshotDescriptorSchema.parse(JSON.parse(
+      (await readOwnedRegularFile(root, `${gateRecord.snapshotPath}/snapshot.json`)).toString("utf8"),
+    ));
+  } catch (error: unknown) {
+    throw new Error("execution snapshot descriptor is invalid", { cause: error });
+  }
+  verifyIntegrity(descriptor);
+  if (
+    descriptor.projectId !== project.projectId
+    || descriptor.gate !== gateRecord.gate
+    || descriptor.revisionId !== gateRecord.revisionId
+    || descriptor.approvalId !== gateRecord.approvalId
+    || descriptor.snapshotPath !== gateRecord.snapshotPath
+    || !sameJson(descriptor.artifactHashes, gateRecord.artifactHashes)
+    || !sameJson(Object.keys(descriptor.artifactSizes).sort(), Object.keys(gateRecord.artifactHashes).sort())
+  ) throw new Error("execution snapshot descriptor identity mismatch");
+
+  const manifestBytes = await readOwnedRegularFile(root, `${gateRecord.snapshotPath}/superppt.json`);
+  if (sha256Evidence(manifestBytes) !== descriptor.manifestSha256) {
+    throw new Error("execution snapshot manifest hash mismatch");
+  }
+  const snapshotManifest = ProjectManifestSchema.parse(JSON.parse(manifestBytes.toString("utf8")));
+  if (
+    snapshotManifest.projectId !== project.projectId
+    || snapshotManifest.currentRevision.id !== descriptor.revisionId
+    || !sameJson(snapshotManifest.gates.at(-1), gateRecord)
+    || snapshotManifestEvidenceHash(snapshotManifest, descriptor.approvalId) !== gateRecord.snapshotManifestSha256
+  ) throw new Error("execution snapshot manifest identity mismatch");
+
+  const artifacts: Record<string, Buffer> = {};
+  for (const [artifactPath, expected] of Object.entries(gateRecord.artifactHashes)) {
+    const bytes = await readOwnedRegularFile(root, `${gateRecord.snapshotPath}/artifacts/${artifactPath}`);
+    if (sha256Evidence(bytes) !== expected || bytes.length !== descriptor.artifactSizes[artifactPath]) {
+      throw new Error(`execution snapshot artifact integrity mismatch: ${artifactPath}`);
+    }
+    artifacts[artifactPath] = bytes;
+  }
+  const expectedTree = [
+    "snapshot.json",
+    "superppt.json",
+    ...Object.keys(gateRecord.artifactHashes).map((artifactPath) => `artifacts/${artifactPath}`),
+  ].sort();
+  const treeRoot = join(await realpath(root), localProjectPath(gateRecord.snapshotPath));
+  if (!sameJson(await listTree(treeRoot), expectedTree)) {
+    throw new Error("execution snapshot tree coverage is invalid");
   }
   return { descriptor, manifest: snapshotManifest, artifacts };
 }

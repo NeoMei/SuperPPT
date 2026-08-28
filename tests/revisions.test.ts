@@ -18,7 +18,7 @@ import { join } from "node:path";
 import test, { type TestContext } from "node:test";
 import { promisify } from "node:util";
 
-import { approveGate } from "../src/planning/confirm.js";
+import { approveExecutionGate, approveGate } from "../src/planning/confirm.js";
 import { publishPlanViews } from "../src/planning/views.js";
 import { initializeProject } from "../src/project/initialize.js";
 import {
@@ -453,6 +453,10 @@ test("restores authenticated fixed planning artifacts from the rollback target",
   await writeApprovedOutline(root);
   const v1Brief = await readFile(join(root, "brief.json"));
   const v1Outline = await readFile(join(root, "outline.json"));
+  const executionPath = join(root, "style", "sample", "generation-plan.json");
+  const v1Execution = Buffer.from("{\"schemaVersion\":1,\"authorization\":\"v1\"}\n");
+  await writeFile(executionPath, v1Execution);
+  await approveExecutionGate(root, "style-sample-generation", "style/sample/generation-plan.json");
   const targetId = (await readProject(root)).currentRevision.id;
 
   const plan = await publishImpactPlan(root, { kind: "outline-order" });
@@ -469,6 +473,7 @@ test("restores authenticated fixed planning artifacts from the rollback target",
   };
   await advanceWithBriefArtifact(root, v2Brief);
   await writeApprovedOutline(root, v2Brief, v2Outline);
+  await writeFile(executionPath, "{\"schemaVersion\":1,\"authorization\":\"v2\"}\n");
   const before = await readProject(root);
   assert.notDeepEqual(await readFile(join(root, "brief.json")), v1Brief);
   assert.notDeepEqual(await readFile(join(root, "outline.json")), v1Outline);
@@ -478,6 +483,7 @@ test("restores authenticated fixed planning artifacts from the rollback target",
   const rolledBack = await readProject(root);
   assert.deepEqual(await readFile(join(root, "brief.json")), v1Brief);
   assert.deepEqual(await readFile(join(root, "outline.json")), v1Outline);
+  assert.deepEqual(await readFile(executionPath), v1Execution);
   assert.equal(rolledBack.revisions.length, before.revisions.length + 1);
   assert.deepEqual(rolledBack.gates, before.gates);
   assert.equal(rolledBack.brief, null);

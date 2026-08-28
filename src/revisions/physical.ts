@@ -1,6 +1,7 @@
 import {
   sha256Evidence,
   validateCurrentPresentationBinding,
+  validateExecutionGateEvidence,
   validateOrdinaryGateEvidence,
 } from "../project/evidence.js";
 import { readOwnedRegularFile } from "../project/safe-file.js";
@@ -13,6 +14,20 @@ const ORDINARY_GATES = [
   "generation-authorization",
   "deck-review",
 ] as const;
+const EXECUTION_GATES = ["style-sample-generation"] as const;
+
+async function validatedGateEvidence(
+  root: string,
+  manifest: ProjectManifest,
+  gate: ProjectManifest["gates"][number],
+): Promise<{ artifacts: Record<string, Buffer>; presentation?: Parameters<typeof validateCurrentPresentationBinding>[1] }> {
+  if (gate.gate === "style-sample-generation") {
+    const evidence = await validateExecutionGateEvidence(root, manifest, gate);
+    return { artifacts: evidence.artifacts };
+  }
+  const evidence = await validateOrdinaryGateEvidence(root, manifest, gate);
+  return { artifacts: evidence.artifacts, presentation: evidence.descriptor.presentation };
+}
 
 function artifactReferences(manifest: ProjectManifest): Artifact[] {
   return [
@@ -33,19 +48,19 @@ export async function assertCurrentRevisionPlanningEvidence(
   manifest: ProjectManifest,
 ): Promise<void> {
   try {
-    for (const gateName of ORDINARY_GATES) {
+    for (const gateName of [...ORDINARY_GATES, ...EXECUTION_GATES]) {
       const gate = [...manifest.gates].reverse().find((candidate) =>
         candidate.gate === gateName
         && candidate.revisionId === manifest.currentRevision.id
       );
       if (!gate) continue;
-      const evidence = await validateOrdinaryGateEvidence(root, manifest, gate);
+      const evidence = await validatedGateEvidence(root, manifest, gate);
       for (const [path, expected] of Object.entries(gate.artifactHashes)) {
         if (sha256Evidence(await readOwnedRegularFile(root, path)) !== expected) {
           throw new Error(`ordinary gate artifact changed: ${path}`);
         }
       }
-      await validateCurrentPresentationBinding(root, evidence.descriptor.presentation);
+      if (evidence.presentation) await validateCurrentPresentationBinding(root, evidence.presentation);
     }
   } catch (error: unknown) {
     throw new Error("ordinary planning gate evidence is not current", { cause: error });
@@ -80,13 +95,13 @@ export async function authenticatedPlanningArtifacts(
 ): Promise<Map<string, Buffer>> {
   const result = new Map<string, Buffer>();
   try {
-    for (const gateName of ORDINARY_GATES) {
+    for (const gateName of [...ORDINARY_GATES, ...EXECUTION_GATES]) {
       const gate = [...manifest.gates].reverse().find((candidate) =>
         candidate.gate === gateName
         && candidate.revisionId === manifest.currentRevision.id
       );
       if (!gate) continue;
-      const evidence = await validateOrdinaryGateEvidence(root, manifest, gate);
+      const evidence = await validatedGateEvidence(root, manifest, gate);
       for (const [path, bytes] of Object.entries(evidence.artifacts)) {
         const prior = result.get(path);
         if (prior && !prior.equals(bytes)) {
