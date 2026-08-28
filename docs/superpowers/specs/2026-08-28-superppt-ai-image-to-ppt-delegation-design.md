@@ -56,6 +56,22 @@ SuperPPT 在项目所有的 `generation/jobs/<job-id>/` 下创建不可变任务
   "authorizationDigest": "sha256",
   "callBudget": 1,
   "routePolicy": "ai-image-to-ppt-default",
+  "styleLock": {
+    "mode": "superppt-locked",
+    "approvalState": "provisional | approved",
+    "recipeArtifact": "style/recipe.json",
+    "recipeSha256": "sha256",
+    "approvedSample": "style/sample/sample.png",
+    "approvedSampleSha256": "sha256",
+    "referenceArtifacts": [
+      {
+        "path": "style/references/reference-01.png",
+        "sha256": "sha256",
+        "role": "art-direction"
+      }
+    ],
+    "applyDependencyDefaultStyle": false
+  },
   "pages": [
     {
       "slideId": "stable-slide-id",
@@ -73,6 +89,9 @@ SuperPPT 在项目所有的 `generation/jobs/<job-id>/` 下创建不可变任务
 - `style-sample` 只有一页且 `callBudget` 为 1，必须绑定当次“生成这张样页”授权。
 - `deck` 页面顺序与当前 slide specs 一致，必须绑定整套生成授权。
 - `page-regeneration` 只针对用户已确认需要重新生图的一页。
+- `styleLock` 显式绑定当前风格配方、已批准样页和参考素材哈希。样页 job 使用 `provisional`，此时 `approvedSample` 和其哈希为 `null`；用户确认样页后，SuperPPT 将样页哈希并入 `approved` Style Lock。整套、重试和单页重生 job 只接受 `approved`。
+- `applyDependencyDefaultStyle` 必须为 `false`。SuperPPT Style Lock 属于用户已选定的自定义艺术方向；`ai-image-to-ppt` 不得再追加其默认米白教科书 Style 块。
+- `referenceArtifacts` 中的文件和哈希一并交给 `ai-image-to-ppt`，具体模型的参考图调用方式由依赖 Skill 处理。标记为 `art-direction` 的参考图不可静默忽略；当前候选不支持时必须返回结构化能力结果，由 SuperPPT 向用户说明后再决定是否仅使用文本配方继续。
 - `callBudget` 统计真正发出的宿主或 API 生图请求；不产生生图请求的能力发现和缺失凭证检查不计入。已消耗额度的失败尝试仍计数；依赖 Skill 不得为降级、重试或切换 Provider 超过该上限。
 - `routePolicy` 只指向 `ai-image-to-ppt` 的默认策略，不在 job 中复制候选顺序、密钥状态或重试规则。
 - 所有路径均为项目相对路径，且指向项目所有的专属 job 目录。
@@ -85,9 +104,10 @@ SuperPPT Skill 按以下顺序编排：
 1. 确认当前对话门禁和调用授权。
 2. 发布 `ImageGenerationJob`。
 3. 加载并遵循已解析的 `ai-image-to-ppt/SKILL.md`。
-4. 把整份 job 作为一个串行批次，不把每页拆成独立路由会话。
-5. 让 `ai-image-to-ppt` 依其自有策略生成并导入 job 专属目录。
-6. 从其现有 `GenerationResult` 和 `SerialStickyRouter.report()` 捕获结构化结果，不解析未受信任的自然语言 Provider 响应。
+4. 将 Style Lock 视为已选定的用户艺术方向，要求依赖跳过其默认 Style 块，并把 job 绑定的最终提示词原样用于每个 Provider/channel 候选。质量修正使用新的 page-regeneration job 和新哈希，不在依赖内部隐式改写。
+5. 把整份 job 作为一个串行批次，不把每页拆成独立路由会话。
+6. 让 `ai-image-to-ppt` 依其自有策略生成并导入 job 专属目录。
+7. 从其现有 `GenerationResult` 和 `SerialStickyRouter.report()` 捕获结构化结果，不解析未受信任的自然语言 Provider 响应。
 
 已缓存且经 SuperPPT 重新验证的页面作为 cached 交给 `ai-image-to-ppt`，不重新生成，也不建立或修改路由粘性状态。
 
@@ -100,6 +120,8 @@ SuperPPT 将依赖 Skill 返回的结构化结果收敛为：
   "contractVersion": 1,
   "jobId": "uuid",
   "projectRevisionId": "revision-id",
+  "styleRecipeSha256": "sha256",
+  "approvedSampleSha256": "sha256 | null",
   "outcome": "success | partial | fatal | exhausted",
   "batchReport": {},
   "pages": [
@@ -108,6 +130,14 @@ SuperPPT 将依赖 Skill 返回的结构化结果收敛为：
       "status": "success | cached | failed",
       "provider": "openai | gemini | doubao | null",
       "channel": "host | api | null",
+      "promptSha256": "sha256",
+      "referenceUsage": [
+        {
+          "sha256": "sha256",
+          "status": "used | unsupported"
+        }
+      ],
+      "styleConsistency": "accepted | rejected | not-reviewed",
       "master": "generation/jobs/<job-id>/ai-image-output/<id>.png",
       "raw": "generation/jobs/<job-id>/ai-image-output/raw/<id>.png",
       "masterSha256": "sha256"
@@ -118,6 +148,8 @@ SuperPPT 将依赖 Skill 返回的结构化结果收敛为：
 
 `batchReport` 保留 `ai-image-to-ppt` 的串行粘性报告语义，包括页面结果和安全的切换原因。SuperPPT 不往其中添加原始 Provider 响应、密钥或未脱敏错误。API 成功页可以没有单独 raw 文件；宿主成功页必须保留 raw 与 master。
 
+`styleConsistency` 由 SuperPPT 的演示文稿质量门根据 Style Lock、已批准样页和当前页面角色判定，不要求 `ai-image-to-ppt` 证明审美结论。依赖 Skill 只负责确保它实际使用了 job 中的完整提示词与 Style Lock 语义。
+
 SuperPPT 只提供一个薄的结果记录命令：它消费 `ai-image-to-ppt` 脚本产生的 `GenerationResult` JSON 和 `SerialStickyRouter.report()` JSON，校验 job 与产物后原子更新 `ImageGenerationResult`。命令不解析自然语言回复，不调用模型，不判断候选顺序。这使现有 `ai-image-to-ppt` 无需增加 SuperPPT 专用 Provider 或重复路由代码。
 
 ## 7. SuperPPT 结果接收
@@ -126,10 +158,11 @@ SuperPPT 在项目租约内验证：
 
 1. job 尚未被接收，且仍指向当前 revision 和当前授权。
 2. 页面 ID、顺序、提示词哈希和目标路径与 job 一致。
-3. 产物位于 job 专属目录，是非符号链接的安全普通文件。
-4. master 可完整解码，是严格 16:9，字节数、像素与 SHA-256 符合限制。
-5. 宿主成功页有对应 raw，且 result 的 provider/channel 与 batch report 一致。
-6. 实际宿主/API 生图请求数不超过 `callBudget`，且没有未授权的额外页。
+3. 风格配方、已批准样页、参考素材和每页实际发送提示词的哈希与 job 的 Style Lock 一致，且没有追加依赖默认 Style。必须使用的 `art-direction` 参考图若为 `unsupported`，结果在用户另行确认前不可接收。
+4. 产物位于 job 专属目录，是非符号链接的安全普通文件。
+5. master 可完整解码，是严格 16:9，字节数、像素与 SHA-256 符合限制。
+6. 宿主成功页有对应 raw，且 result 的 provider/channel 与 batch report 一致。
+7. 实际宿主/API 生图请求数不超过 `callBudget`，且没有未授权的额外页。
 
 通过后，SuperPPT 保留 `ai-image-to-ppt` master 和 raw，另行派生自身组装所需的 1920×1080 PNG，并把页面绑定到当前 revision。这个派生是本地确定性格式转换，不是文生图。
 
@@ -143,7 +176,7 @@ SuperPPT 在项目租约内验证：
 2. SuperPPT 显示依赖 Skill、一次调用、对外调用和输出位置。
 3. 用户明确选择“生成这张样页”。
 4. SuperPPT 发布单页 job，Agent 委托 `ai-image-to-ppt` 执行。
-5. SuperPPT 验证结果并向用户展示样页，等待风格样页确认。
+5. SuperPPT 验证结果并向用户展示样页，等待风格样页确认。确认后将样页哈希并入 approved Style Lock。
 
 ### 8.2 整套生成
 
@@ -175,6 +208,10 @@ SuperPPT 在项目租约内验证：
 - 依赖从 Skill 目录解析，不依赖兄弟仓库或开发机绝对路径。
 - 样页 job 与 deck job 的授权不能互用；上游变更后授权和 job 失效。
 - job 的页面、顺序、提示词哈希、调用上限和输出目录不可被提交参数替换。
+- job 会显式携带同一 Style Lock；样页确认后的整套、重试和单页重生不会遗失风格、重新选风格或追加依赖默认 Style。
+- 修改风格配方、样页或参考素材会使旧 job、图片和整套候选产物失效。
+- 每页 result 的实际提示词哈希必须与 job 一致，从而捕获遗失 Style Lock 或追加依赖默认 Style 的错误。
+- 必须使用的风格参考图不可被静默忽略；不支持时保持在用户决策门，不自动降级。
 - result 的页面、provider/channel、batch report、master/raw 和哈希一致性。
 - 错 job、旧 revision、错页、路径逃逸、符号链接、图片篡改和额外未授权页失败关闭。
 - 中断后成功页作为 cached 恢复，不触发重新生成。
@@ -189,7 +226,7 @@ SuperPPT 在项目租约内验证：
 1. 用户逐步确认大纲、逐页描述和风格，并单独授权一次样页生成。
 2. SuperPPT 发布一页 job，Agent 真实委托 `ai-image-to-ppt` 生成样页。
 3. 样页确认后，用户授权三页整套批次。最多 4 次宿主生图调用（1 样页 + 3 正式页），串行，失败不自动超出授权重试。
-4. 验证 `ImageGenerationResult`、master/raw、页面绑定和整套缩略图。
+4. 验证 `ImageGenerationResult`、Style Lock 哈希、master/raw、页面绑定和整套缩略图，并以已批准样页检查三页的色彩、材质、光影、媒介和细节语言一致性。
 5. 选一页从 master 派生 1280×720 PNG，真实委托 `image-to-editable-pptx` 转换为可编辑页并替换回整套。
 6. 先向用户展示整套回看；只在用户确认交付后提升正式 output revision。
 7. 在 WPS 的 `acceptance-smoke-copy` 上临时修改选定文字或对象，撤销，不保存，关闭并重开。

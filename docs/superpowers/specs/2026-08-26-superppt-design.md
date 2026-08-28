@@ -109,7 +109,7 @@ SuperPPT 不实现文生图 Provider，也不复制宿主能力发现、模型�
 
 SuperPPT 只做 Skill 级委托：
 
-1. 根据已确认的逐页描述和风格编译一份不可变的 `ImageGenerationJob`。
+1. 根据已确认的逐页描述和风格编译一份不可变的 `ImageGenerationJob`；job 显式绑定完整 Style Lock，不只传递风格名称。
 2. 当前 Agent 加载并遵循 `ai-image-to-ppt` Skill，以一份 job 作为一个串行批次执行。
 3. `ai-image-to-ppt` 负责宿主/API 候选、粘性路由、生图、宿主产物导入、raw/master 保留、16:9 规范化和安全失败分类。
 4. SuperPPT 接收 `ai-image-to-ppt` 现有 `GenerationResult` 和 `SerialStickyRouter.report()` 所表达的结果，形成 `ImageGenerationResult`，再对 job、revision、提示词哈希和图片产物做本地验证。
@@ -264,7 +264,15 @@ SuperPPT 必须以引导对话推进项目，不得从导入内容开始静默�
 
 同一套演示稿共享风格配方，但封面、章节页、流程页、对比页、数据页和总结页采用不同构图策略，避免整套像重复模板。
 
-### 7.3 自定义风格
+### 7.3 Style Lock 与生图委托
+
+用户选定风格和代表页后，SuperPPT 先将风格配方、页面类型变体、禁用项和参考素材哈希冻结为 provisional Style Lock，用于生成代表性样页。用户确认样页后，SuperPPT 将样页路径和哈希并入 approved Style Lock。后续整套、重试和单页重生的每个 `ImageGenerationJob` 都自动绑定这一 approved 版本，不要求用户重复选择或重述风格。
+
+SuperPPT 提示词编译器必须把完整配方和当前页面类型变体写入规范化 Style Lock 区块，并为配方、样页和最终提示词分别记录 SHA-256。`ai-image-to-ppt` 应把这视为用户已选定的自定义艺术方向，不得再叠加其默认米白教科书风或其他冲突的默认 Style 块。
+
+Provider/channel 切换只能改变调用通道，不得改写当次 job 的最终提示词文本。若质量检查需要定向修正提示词，SuperPPT 必须在同一 Style Lock 下发布新的 page-regeneration job 和新提示词哈希，而不是让依赖在不可见的内部改写。任何新提示词都不得修改 Style Lock 的色彩、材质、光影、媒介、字体气质、构图原则、详情语言和禁用项语义。若依赖无法保留该风格，应返回结构化失败，不应静默降级为默认风格。
+
+### 7.4 自定义风格
 
 用户可以输入风格描述或提供参考图。系统据此生成本项目风格配方和代表页；用户确认后，将配方、参考图哈希、样页、模型、参数和提示词哈希保存为当前风格版本。
 
