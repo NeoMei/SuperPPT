@@ -103,9 +103,15 @@ SuperPPT 不自行复制上述图片处理规则。
 
 ## 6. 数据与命令流
 
+### 6.0 对话编排前置条件
+
+宿主适配命令只是可验证的执行原语，不是绕过用户的自动化入口。SuperPPT Skill 必须先按上位设计完成引导对话：展示并确认大纲和逐页描述；在风格阶段先显示选定风格、代表页、实际 provider/channel、一次调用、对外调用和输出位置，获得单次“生成这张样页”授权后才能准备样页请求。样页结果确认后，系统再显示整套批次的页数、调用次数上限和输出位置。只有用户对当前 revision 的整套生成计划明确授权后，才能创建第一个正式页宿主生成请求。样页单次授权不能充当整套批次授权。
+
+已授权的串行批次可以自动完成各页，不逐页打断用户。但批次完成后只能生成候选组装产物；系统必须先展示整套缩略图和检查结果，让用户选择改页、返回修改上游或确认交付。未获得“确认交付”时，不得提升正式 output revision 或宣称项目交付完成。
+
 ### 6.1 风格样例
 
-1. `prepare-host-style-sample` 检查 outline 和 slide-specs 门禁，选定代表页，并创建不可变请求。
+1. `prepare-host-style-sample` 检查 outline 和 slide-specs 门禁，并要求当前 revision 已有与选定风格、代表页、provider/channel 和一次调用计划一致的样页生成授权；通过后创建不可变请求。
 2. 命令只返回安全调用所需的请求 ID、候选、提示词位置和预期输出位置。
 3. Agent 调用宿主工具并使用导入器写入请求 staging。
 4. `commit-host-generation --request <request-id>` 完成验证和提升，写入 `style/sample/`。
@@ -114,7 +120,7 @@ SuperPPT 不自行复制上述图片处理规则。
 ### 6.2 正式页面
 
 1. `prepare-next-host-slide` 检查 outline、slide-specs 和 style-sample 三个当前门禁。
-2. 它跳过已有经验证成功产物的页面，且每次只准备一个有效请求。
+2. 它还要求生成授权门禁与当前 revision 及调用计划一致；随后跳过已有经验证成功产物的页面，且每次只准备一个有效请求。
 3. Agent 完成宿主调用和导入后，使用同一个提交命令提升到 `images/<slide-id>/attempt-<n>/`。
 4. 现有质检器生成质量决策。成功页立即写回项目状态；未提交或不合格页不标记为 ready。
 5. 上一页完成后才能准备下一页，以符合串行粘性路由。
@@ -170,7 +176,9 @@ SuperPPT Skill 使用 `ai-image-to-ppt/scripts/host_routing_policy.py` 管理已
 
 ### 10.1 请求行为
 
+- 未有与当前 revision、风格、代表页、provider/channel 和一次调用计划匹配的样页生成授权时，拒绝准备宿主样页请求。
 - 准备风格样例会绑定代表页、当前 revision、门禁和提示词哈希。
+- 未有与当前 revision、provider/channel、页数和调用次数上限匹配的整套生成授权时，拒绝准备正式页宿主请求。
 - 正式页面一次只准备一页，已验证成功页不重复生成。
 - 存在未完成请求时，重试返回同一请求，不创建竞态请求。
 
@@ -186,6 +194,7 @@ SuperPPT Skill 使用 `ai-image-to-ppt/scripts/host_routing_policy.py` 管理已
 
 - 现有 API Provider 风格样例和批量生成测试保持通过。
 - 现有规划门禁、影响分析、回滚、可编辑页替换、整套组装和验收 smoke 测试保持通过。
+- 候选整套可以渲染与回看，但在缺失当前 revision 的整套回看确认时不能提升正式 output revision。
 - 源码测试、编译后测试、类型检查、构建、插件验证、Skill 验证和 `git diff --check` 全部通过。
 
 ## 11. 真实验收
@@ -197,6 +206,7 @@ SuperPPT Skill 使用 `ai-image-to-ppt/scripts/host_routing_policy.py` 管理已
 3. **可编辑转换**：从高分辨率 master 派生独立 1280×720 PNG，选一页调用 `image-to-editable-pptx`，验证文字是真实文本框而非整页位图。
 4. **替换与整套交付**：将可编辑页替换回三页 PPTX，验证页数、顺序、渲染预览、PDF 和验收清单均对应同一 revision。
 5. **WPS 客户端**：只在 `acceptance-smoke-copy` 受控副本上临时修改选定文字或对象，执行撤销，明确选择不保存，关闭后重新打开，验证原内容和文档标题。
+6. **对话证据**：保留大纲、逐页描述、风格样例、生成授权和整套回看五个当前门禁的 revision 绑定证据，并保留风格样页的单次生成授权记录。用户在整套回看后明确选择“确认交付”，候选产物才能提升为正式 output revision。
 
 结构检查、渲染预览或方案文字都不能替代上述三类真实证据：宿主生图、可编辑转换和 WPS 实际操作。
 
@@ -209,5 +219,6 @@ SuperPPT Skill 使用 `ai-image-to-ppt/scripts/host_routing_policy.py` 管理已
 - 真实宿主生图在 4 次调用上限内产出风格样例和三页正式页。
 - 选定页真实转换为可编辑对象并替换回整套。
 - WPS 受控副本的修改、撤销、不保存、关闭和重开验证成功。
+- 对话门禁证明系统没有从内容导入静默运行到最终交付，且正式 output revision 仅在用户回看整套后提升。
 
 若任一环节未执行或只有模拟证据，结论必须明确标记为“未完成真实验收”。
