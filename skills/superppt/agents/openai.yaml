@@ -1,4 +1,6 @@
 interface:
   display_name: "SuperPPT"
-  short_description: "Create polished image-first decks with editable revisions"
-  default_prompt: "Create a polished presentation from my content with SuperPPT."
+  short_description: "Guide image-first PPT creation through staged review"
+  default_prompt: "Use $superppt to guide me step by step from my content to a reviewed presentation."
+policy:
+  allow_implicit_invocation: true

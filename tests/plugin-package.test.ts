@@ -29,6 +29,14 @@ test("packages the approved SuperPPT identity", async () => {
   assert.match(skill, /^name: superppt$/m);
   assert.match(skill, /^# SuperPPT$/m);
   assert.match(ui, /display_name: "SuperPPT"/);
+  assert.match(ui, /default_prompt: "[^"]*\$superppt[^"]*"/);
+  assert.match(ui, /allow_implicit_invocation: true/);
+  for (const line of ui.split("\n")) {
+    const value = line.match(/^\s*[a-z_]+:\s*(.+)$/)?.[1];
+    if (value && value !== "true" && value !== "false") {
+      assert.match(value, /^".*"$/, `openai.yaml string must be quoted: ${line}`);
+    }
+  }
   assert.doesNotMatch(`${skill}\n${ui}`, new RegExp(`\\[${"TO" + "DO"}:|${"T" + "BD"}`));
 });
 

@@ -1,21 +1,104 @@
 {
-  "contractVersion": 1,
+  "contractVersion": 2,
   "stages": [
-    { "stage": 0, "id": "preflight", "interaction": "machine", "action": "continue" },
-    { "stage": 1, "id": "intake", "interaction": "machine", "action": "continue" },
-    { "stage": 2, "id": "outline", "interaction": "human", "action": "wait" },
-    { "stage": 3, "id": "slide-specs", "interaction": "human", "action": "wait" },
-    { "stage": 4, "id": "style-sample", "interaction": "human", "action": "wait" },
-    { "stage": 5, "id": "generation", "interaction": "machine", "action": "continue" },
-    { "stage": 6, "id": "assembly", "interaction": "machine", "action": "continue" },
-    { "stage": 7, "id": "revision", "interaction": "machine", "action": "on-demand" },
-    { "stage": 8, "id": "delivery", "interaction": "machine", "action": "continue" }
+    {
+      "id": "outline",
+      "kind": "ordinary",
+      "inputs": ["brief.json", "source/original.md", "material answers gathered one at a time"],
+      "userVisibleArtifact": "完整大纲：页码、稳定页面 ID、标题、页面角色、目的和来源覆盖",
+      "allowedNextActions": ["approve-outline", "revise-outline", "return-to-intake"],
+      "invalidationDependencies": ["slide-specs", "style-sample", "generation-authorization", "deck-review"],
+      "canSpendImageCalls": false
+    },
+    {
+      "id": "slide-specs",
+      "kind": "ordinary",
+      "inputs": ["approved outline", "source evidence", "all slides/<stable-id>/spec.json"],
+      "userVisibleArtifact": "逐页描述：核心信息、精确文字、视觉主体、构图关系、来源证据和禁用内容",
+      "allowedNextActions": ["approve-slide-specs", "revise-one-or-more-slide-specs", "return-to-outline"],
+      "invalidationDependencies": ["style-sample", "generation-authorization", "deck-review"],
+      "canSpendImageCalls": false
+    },
+    {
+      "id": "style-sample",
+      "kind": "ordinary",
+      "inputs": ["single Style Lock", "authenticated real sample", "representative slide spec"],
+      "userVisibleArtifact": "真实样页及其代表页、Style Lock 和调用结果证据",
+      "allowedNextActions": ["approve-style-sample", "revise-style", "revise-representative-slide", "return-to-slide-specs"],
+      "invalidationDependencies": ["generation-authorization", "deck-review"],
+      "canSpendImageCalls": false
+    },
+    {
+      "id": "generation-authorization",
+      "kind": "ordinary",
+      "inputs": ["approved Style Lock", "approved real sample", "immutable deck job disclosure", "call budget"],
+      "userVisibleArtifact": "整套生成授权：所有出站提示词、参考图用途、页数、调用次数、输出位置及宿主调用说明",
+      "allowedNextActions": ["authorize-once-and-start-serial-generation", "revise-inputs", "return-to-style-sample"],
+      "invalidationDependencies": ["deck-review"],
+      "canSpendImageCalls": true
+    },
+    {
+      "id": "deck-review",
+      "kind": "ordinary",
+      "inputs": ["review-only candidate descriptor", "candidate montage", "page QA evidence"],
+      "userVisibleArtifact": "候选稿 montage 和逐页审阅证据，不是正式交付",
+      "allowedNextActions": ["edit-page", "return-upstream", "confirm-delivery"],
+      "invalidationDependencies": ["formal delivery", "acceptance evidence"],
+      "canSpendImageCalls": false
+    },
+    {
+      "id": "style-sample-generation",
+      "kind": "execution-authorization",
+      "inputs": ["provisional single Style Lock", "representative page immutable prompt", "one-call outbound disclosure"],
+      "userVisibleArtifact": "样页生成授权：精确出站提示词、参考图用途、一次调用、输出位置及宿主调用说明",
+      "allowedNextActions": ["authorize-one-sample-call", "revise-style-selection", "return-to-slide-specs"],
+      "invalidationDependencies": ["style-sample", "generation-authorization", "deck-review"],
+      "canSpendImageCalls": true
+    },
+    {
+      "id": "revision-impact",
+      "kind": "conditional",
+      "inputs": ["requested earlier-stage change", "current revision identity", "immutable impact plan"],
+      "userVisibleArtifact": "受影响稳定页面 ID、失效下游产物、恢复阶段和 impact plan 哈希",
+      "allowedNextActions": ["approve-impact", "revise-change-request", "reject-and-keep-current-revision"],
+      "invalidationDependencies": ["only the downstream slides and exports named by the impact plan"],
+      "canSpendImageCalls": false
+    },
+    {
+      "id": "slide-preview",
+      "kind": "conditional",
+      "inputs": ["one action-bound selected slide", "editable or regenerated candidate", "before-and-after preview"],
+      "userVisibleArtifact": "选中单页的修改前后预览、编辑路由和稳定页面 ID",
+      "allowedNextActions": ["approve-and-replace-selected-slide", "revise-selected-slide", "reject-and-keep-current-deck"],
+      "invalidationDependencies": ["candidate montage", "deck-review"],
+      "canSpendImageCalls": false
+    }
   ],
-  "gates": [
-    { "id": "outline", "kind": "ordinary", "interaction": "human", "action": "wait" },
-    { "id": "slide-specs", "kind": "ordinary", "interaction": "human", "action": "wait" },
-    { "id": "style-sample", "kind": "ordinary", "interaction": "human", "action": "wait" },
-    { "id": "revision-impact", "kind": "conditional", "interaction": "human", "action": "wait" },
-    { "id": "slide-preview", "kind": "conditional", "interaction": "human", "action": "wait" }
-  ]
+  "workflowPolicy": {
+    "conversation": {
+      "silentEndToEndAllowed": false,
+      "decisionMode": "one-content-specific-decision-at-a-time",
+      "earlierStagesRevisable": true
+    },
+    "style": {
+      "selectionMode": "single",
+      "defaultAllowed": false,
+      "catalog": "assets/styles/catalog.json",
+      "previewMode": "compact-real-preview-grid"
+    },
+    "generation": {
+      "executor": "agent-invokes-resolved-ai-image-to-ppt-skill",
+      "cliExecutesDependency": false,
+      "scheduling": "serial",
+      "providerSelectedBy": "ai-image-to-ppt-host-routing"
+    },
+    "delivery": {
+      "reviewRequired": true,
+      "genericApprovalAllowed": false,
+      "reviewActions": ["edit-page", "return-upstream", "confirm-delivery"]
+    },
+    "smoke": {
+      "copyDisposition": "discard-no-save"
+    }
+  }
 }
