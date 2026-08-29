@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
-import { lstat, readFile, readdir, realpath, rename } from "node:fs/promises";
+import { lstat, readFile, readdir, realpath, rename, unlink } from "node:fs/promises";
 import { join } from "node:path";
 import { z } from "zod";
 
@@ -33,6 +33,7 @@ import {
 import {
   ProjectManifestSchema,
   type Artifact,
+  type ClientAcceptanceTransaction,
   type ClientSmokeCopyAnchor,
   type ProjectManifest,
 } from "./schemas.js";
@@ -168,6 +169,7 @@ type ProjectPersistMode =
   | "rollback-finish"
   | "smoke-copy-create"
   | "smoke-copy-ready"
+  | "acceptance-transaction-begin"
   | "smoke-copy-complete";
 
 async function assertControlledRevisionTrust(
@@ -179,20 +181,45 @@ async function assertControlledRevisionTrust(
   const appended = next.revisions.slice(previous.revisions.length);
   const markerChanged = !sameJson(previous.rollbackTransaction, next.rollbackTransaction);
   const smokeAnchorChanged = !sameJson(previous.clientSmokeCopyAnchor, next.clientSmokeCopyAnchor);
+  const acceptanceTransactionChanged = !sameJson(
+    previous.clientAcceptanceTransaction,
+    next.clientAcceptanceTransaction,
+  );
   if (mode === "ordinary" || mode === "delegated-generation-attach") {
-    if (appended.length > 0 || markerChanged || smokeAnchorChanged) {
-      throw new Error("revision, rollback, and client smoke copy trust fields require a controlled store transition");
+    if (appended.length > 0 || markerChanged || smokeAnchorChanged || acceptanceTransactionChanged) {
+      throw new Error("revision, rollback, and client acceptance trust fields require a controlled store transition");
     }
     return;
   }
-  if (mode === "smoke-copy-create" || mode === "smoke-copy-ready" || mode === "smoke-copy-complete") {
-    if (appended.length > 0 || markerChanged || !smokeAnchorChanged) {
+  if (mode === "smoke-copy-create" || mode === "smoke-copy-ready") {
+    if (appended.length > 0 || markerChanged || !smokeAnchorChanged || acceptanceTransactionChanged) {
       throw new Error("client smoke copy trust transition is invalid");
     }
     return;
   }
+  if (mode === "acceptance-transaction-begin") {
+    if (
+      appended.length > 0
+      || markerChanged
+      || smokeAnchorChanged
+      || previous.clientAcceptanceTransaction
+      || !next.clientAcceptanceTransaction
+    ) throw new Error("client acceptance transaction begin is invalid");
+    return;
+  }
+  if (mode === "smoke-copy-complete") {
+    if (
+      appended.length > 0
+      || markerChanged
+      || !smokeAnchorChanged
+      || !acceptanceTransactionChanged
+      || !previous.clientAcceptanceTransaction
+      || next.clientAcceptanceTransaction
+    ) throw new Error("client smoke copy completion trust transition is invalid");
+    return;
+  }
   if (mode === "revision-append") {
-    if (appended.length === 0 || markerChanged || smokeAnchorChanged) {
+    if (appended.length === 0 || markerChanged || smokeAnchorChanged || acceptanceTransactionChanged) {
       throw new Error("controlled revision append has an invalid rollback marker transition");
     }
   } else if (mode === "rollback-begin") {
@@ -200,6 +227,7 @@ async function assertControlledRevisionTrust(
     if (
       appended.length !== 0
       || previous.rollbackTransaction
+      || acceptanceTransactionChanged
       || !marker
       || marker.baseRevisionId !== previous.currentRevision.id
       || !previous.revisions.some((revision) => revision.id === marker.targetRevisionId)
@@ -210,6 +238,7 @@ async function assertControlledRevisionTrust(
       appended.length !== 0
       || !previous.rollbackTransaction
       || next.rollbackTransaction
+      || acceptanceTransactionChanged
     ) throw new Error("rollback abort marker transition is invalid");
     return;
   } else {
@@ -219,6 +248,7 @@ async function assertControlledRevisionTrust(
       appended.length !== 1
       || !marker
       || next.rollbackTransaction
+      || acceptanceTransactionChanged
       || !revision
       || revision.id !== marker.rollbackRevisionId
       || revision.parentId !== marker.baseRevisionId
@@ -461,7 +491,9 @@ async function persistProject(
   await assertControlledRevisionTrust(owned.root, owned.manifest, valid, mode);
   const snapshotBase = mode === "rollback-finish" && owned.manifest.rollbackTransaction
     ? ProjectManifestSchema.parse((({ rollbackTransaction: _marker, ...base }) => base)(owned.manifest))
-    : owned.manifest;
+    : mode === "smoke-copy-complete" && owned.manifest.clientAcceptanceTransaction
+      ? ProjectManifestSchema.parse((({ clientAcceptanceTransaction: _transaction, ...base }) => base)(owned.manifest))
+      : owned.manifest;
   if (
     !preservesArtifactEvidence(owned.manifest, valid)
     && !await hasExactRevisionSnapshot(owned.root, snapshotBase)
@@ -801,6 +833,99 @@ export async function createClientSmokeCopyAnchor(
   return anchor;
 }
 
+function transactionMatchesAnchor(
+  manifest: ProjectManifest,
+  anchor: ClientSmokeCopyAnchor,
+  transaction: ClientAcceptanceTransaction,
+): boolean {
+  return transaction.projectId === manifest.projectId
+    && transaction.revisionId === manifest.currentRevision.id
+    && transaction.deckRevision === currentDeckRevision(manifest)
+    && transaction.anchorId === anchor.anchorId
+    && sameJson(transaction.descriptor, anchor.descriptor)
+    && sameJson(transaction.source, anchor.source)
+    && sameJson(transaction.initialCopy, anchor.initialCopy)
+    && transaction.reopenedCopySha256 === anchor.initialCopy.sha256
+    && transaction.observation.path === `output/revisions/${currentDeckRevision(manifest)}/acceptance-observation.json`
+    && transaction.acceptanceRecord.path === `output/revisions/${currentDeckRevision(manifest)}/acceptance-record.json`;
+}
+
+async function beginClientAcceptanceTransaction(options: {
+  root: string;
+  expectedManifest: ProjectManifest;
+  transaction: ClientAcceptanceTransaction;
+}): Promise<ProjectManifest> {
+  let result: ProjectManifest | undefined;
+  const owned = await ownedProject(options.root);
+  await assertNoPendingRollbackTransaction(owned.root);
+  await withProjectLease(owned.root, "state", async (canonicalRoot) => {
+    const current = await ownedProject(canonicalRoot);
+    await assertNoPendingRollbackTransaction(current.root);
+    if (!sameJson(current.manifest, options.expectedManifest)) {
+      throw new Error("project changed while committing client acceptance transaction");
+    }
+    const anchor = current.manifest.clientSmokeCopyAnchor;
+    if (
+      !anchor
+      || anchor.state !== "ready"
+      || !transactionMatchesAnchor(current.manifest, anchor, options.transaction)
+    ) throw new Error("client acceptance transaction does not bind the current smoke anchor");
+    const existing = current.manifest.clientAcceptanceTransaction;
+    if (existing) {
+      if (!sameJson(existing, options.transaction)) {
+        throw new Error("immutable client acceptance transaction commitment does not match first write");
+      }
+      result = current.manifest;
+      return;
+    }
+    for (const artifact of [options.transaction.observation, options.transaction.acceptanceRecord]) {
+      const artifactPath = join(canonicalRoot, ...artifact.path.split("/"));
+      try {
+        await lstat(artifactPath);
+        throw new Error("orphaned client acceptance evidence exists without a transaction commitment");
+      } catch (error: unknown) {
+        if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+      }
+    }
+    const valid = ProjectManifestSchema.parse({
+      ...current.manifest,
+      clientAcceptanceTransaction: options.transaction,
+    });
+    await persistProject(current, valid, {}, "acceptance-transaction-begin");
+    result = valid;
+  });
+  return result!;
+}
+
+async function publishCommittedAcceptanceArtifact(options: {
+  directory: string;
+  path: string;
+  bytes: Buffer;
+  stagingLabel: string;
+}): Promise<void> {
+  let exists = true;
+  try {
+    await lstat(options.path);
+  } catch (error: unknown) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+    exists = false;
+  }
+  if (exists) {
+    const current = await readRegularFileNoFollow(options.path);
+    if (current.equals(options.bytes)) return;
+  }
+  const staging = join(options.directory, `.${options.stagingLabel}-${randomUUID()}.staging.json`);
+  await writeDurableExclusive(staging, options.bytes);
+  try {
+    if (exists) await rename(staging, options.path);
+    else await promoteExclusive(staging, options.path);
+    await syncDirectory(options.directory);
+  } catch (error: unknown) {
+    await unlink(staging).catch(() => undefined);
+    throw error;
+  }
+}
+
 async function completeClientSmokeCopyAcceptance(options: {
   root: string;
   expectedManifest: ProjectManifest;
@@ -820,11 +945,18 @@ async function completeClientSmokeCopyAcceptance(options: {
       throw new Error("project changed while completing client smoke copy acceptance");
     }
     const anchor = current.manifest.clientSmokeCopyAnchor;
+    const transaction = current.manifest.clientAcceptanceTransaction;
     if (!anchor || anchor.anchorId !== options.anchorId || !anchorTargetsCurrentDeck(current.manifest, anchor)) {
       throw new Error("trusted client smoke copy anchor is missing or stale");
     }
     if (
       anchor.state !== "ready"
+      || !transaction
+      || !transactionMatchesAnchor(current.manifest, anchor, transaction)
+      || !sameJson(transaction.observation, options.observation)
+      || transaction.reopenedCopySha256 !== options.reopenedCopySha256
+      || !sameJson(transaction.acceptanceRecord, options.acceptanceRecord)
+      || transaction.confirmedAt !== options.completedAt
       || options.reopenedCopySha256 !== anchor.initialCopy.sha256
       || options.observation.revisionId !== current.manifest.currentRevision.id
       || options.observation.path !== `output/revisions/${currentDeckRevision(current.manifest)}/acceptance-observation.json`
@@ -880,7 +1012,7 @@ async function completeClientSmokeCopyAcceptance(options: {
       completedAt: options.completedAt,
     };
     const valid = ProjectManifestSchema.parse({
-      ...current.manifest,
+      ...((({ clientAcceptanceTransaction: _transaction, ...manifest }) => manifest)(current.manifest)),
       stage: "delivered",
       clientSmokeCopyAnchor: completed,
       exports: { ...current.manifest.exports, acceptance: options.acceptanceRecord },
@@ -1050,7 +1182,7 @@ export async function recordClientAcceptance(
     throw new Error("client acceptance input is invalid", { cause: error });
   }
   return withProjectLease(root, "acceptance", async (canonicalRoot) => {
-    const manifest = await readProject(canonicalRoot);
+    let manifest: ProjectManifest = await readProject(canonicalRoot);
     const current = await readBoundAcceptance(canonicalRoot, manifest);
     if (current.deliveryComplete) {
       const recorded = current.clientAcceptance;
@@ -1106,40 +1238,52 @@ export async function recordClientAcceptance(
       confirmedAt: submitted.confirmedAt,
     });
     const completed = AcceptanceSchema.parse({ ...current, deliveryComplete: true, clientAcceptance: client });
-    await publishRevisionSnapshot(canonicalRoot, manifest);
-    const directory = join(canonicalRoot, "output", "revisions", String(currentDeckRevision(manifest)));
-    const observationPath = join(canonicalRoot, ...observationRef.split("/"));
-    try {
-      await lstat(observationPath);
-      const existing = await readRegularFileNoFollow(observationPath);
-      if (!existing.equals(observationBytes)) throw new Error("immutable client observation does not match current discard evidence");
-    } catch (error: unknown) {
-      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
-      const staging = join(directory, `.acceptance-observation-${randomUUID()}.staging.json`);
-      await writeDurableExclusive(staging, observationBytes);
-      await promoteExclusive(staging, observationPath);
-      await syncDirectory(directory);
-    }
-    await operations.checkpoint?.("observation-promoted");
     const bytes = Buffer.from(`${JSON.stringify(completed, null, 2)}\n`);
     const recordRef = acceptancePath(manifest, true);
-    const recordPath = join(canonicalRoot, ...recordRef.split("/"));
     const nextAcceptance: Artifact = {
       path: recordRef,
       sha256: sha256(bytes),
       revisionId: manifest.currentRevision.id,
     };
-    try {
-      await lstat(recordPath);
-      const existing = await readRegularFileNoFollow(recordPath);
-      if (!existing.equals(bytes)) throw new Error("immutable acceptance record does not match current client evidence");
-    } catch (error: unknown) {
-      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
-      const staging = join(directory, `.acceptance-record-${randomUUID()}.staging.json`);
-      await writeDurableExclusive(staging, bytes);
-      await promoteExclusive(staging, recordPath);
-      await syncDirectory(directory);
-    }
+    const existingTransaction = manifest.clientAcceptanceTransaction;
+    const transaction: ClientAcceptanceTransaction = {
+      transactionVersion: 1,
+      transactionId: existingTransaction?.transactionId ?? randomUUID(),
+      projectId: manifest.projectId,
+      revisionId: manifest.currentRevision.id,
+      deckRevision: currentDeckRevision(manifest),
+      anchorId: anchor.anchorId,
+      descriptor: anchor.descriptor,
+      source: anchor.source,
+      initialCopy: anchor.initialCopy,
+      observation: observationArtifact,
+      reopenedCopySha256: smoke.copySha256,
+      acceptanceRecord: nextAcceptance,
+      confirmedAt: submitted.confirmedAt,
+      createdAt: existingTransaction?.createdAt ?? new Date().toISOString(),
+    };
+    if (!existingTransaction) await publishRevisionSnapshot(canonicalRoot, manifest);
+    manifest = await beginClientAcceptanceTransaction({
+      root: canonicalRoot,
+      expectedManifest: manifest,
+      transaction,
+    });
+    const directory = join(canonicalRoot, "output", "revisions", String(currentDeckRevision(manifest)));
+    const observationPath = join(canonicalRoot, ...observationRef.split("/"));
+    await publishCommittedAcceptanceArtifact({
+      directory,
+      path: observationPath,
+      bytes: observationBytes,
+      stagingLabel: "acceptance-observation",
+    });
+    await operations.checkpoint?.("observation-promoted");
+    const recordPath = join(canonicalRoot, ...recordRef.split("/"));
+    await publishCommittedAcceptanceArtifact({
+      directory,
+      path: recordPath,
+      bytes,
+      stagingLabel: "acceptance-record",
+    });
     await operations.checkpoint?.("record-promoted");
     await completeClientSmokeCopyAcceptance({
       root: canonicalRoot,

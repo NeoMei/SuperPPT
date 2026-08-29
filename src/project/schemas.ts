@@ -55,6 +55,40 @@ export const ClientSmokeCopyAnchorSchema = z.object({
   }
 });
 
+export const ClientAcceptanceTransactionSchema = z.object({
+  transactionVersion: z.literal(1),
+  transactionId: z.string().uuid(),
+  projectId: z.string().uuid(),
+  revisionId: z.string().uuid(),
+  deckRevision: z.number().int().positive(),
+  anchorId: z.string().uuid(),
+  descriptor: ArtifactSchema,
+  source: ArtifactSchema,
+  initialCopy: ArtifactSchema,
+  observation: ArtifactSchema,
+  reopenedCopySha256: Sha256Schema,
+  acceptanceRecord: ArtifactSchema,
+  confirmedAt: z.string().datetime(),
+  createdAt: z.string().datetime(),
+}).strict().superRefine((transaction, context) => {
+  for (const field of ["descriptor", "source", "initialCopy", "observation", "acceptanceRecord"] as const) {
+    if (transaction[field].revisionId !== transaction.revisionId) {
+      context.addIssue({
+        code: "custom",
+        path: [field, "revisionId"],
+        message: "client acceptance transaction artifacts must bind the current revision",
+      });
+    }
+  }
+  if (transaction.reopenedCopySha256 !== transaction.initialCopy.sha256) {
+    context.addIssue({
+      code: "custom",
+      path: ["reopenedCopySha256"],
+      message: "client acceptance transaction must commit an unchanged reopened copy",
+    });
+  }
+});
+
 export const EditableRevisionBindingSchema = z.object({
   projectId: z.string().uuid(),
   slideId: z.string().uuid(),
@@ -242,6 +276,7 @@ export const ProjectManifestSchema = z.object({
   slides: z.array(SlideSchema),
   deckRevision: z.number().int().positive().optional(),
   clientSmokeCopyAnchor: ClientSmokeCopyAnchorSchema.optional(),
+  clientAcceptanceTransaction: ClientAcceptanceTransactionSchema.optional(),
   outputRevisions: z.array(z.object({
     number: z.number().int().positive(),
     projectRevisionId: z.string().uuid(),
@@ -266,10 +301,36 @@ export const ProjectManifestSchema = z.object({
     montage: ArtifactSchema.nullable(),
     acceptance: ArtifactSchema.nullable(),
   }).strict(),
-}).strict();
+}).strict().superRefine((manifest, context) => {
+  const transaction = manifest.clientAcceptanceTransaction;
+  if (!transaction) return;
+  const anchor = manifest.clientSmokeCopyAnchor;
+  const deckRevision = manifest.deckRevision ?? manifest.currentRevision.number;
+  if (
+    manifest.stage === "delivered"
+    || !anchor
+    || anchor.state !== "ready"
+    || transaction.projectId !== manifest.projectId
+    || transaction.revisionId !== manifest.currentRevision.id
+    || transaction.deckRevision !== deckRevision
+    || transaction.anchorId !== anchor.anchorId
+    || JSON.stringify(transaction.descriptor) !== JSON.stringify(anchor.descriptor)
+    || JSON.stringify(transaction.source) !== JSON.stringify(anchor.source)
+    || JSON.stringify(transaction.initialCopy) !== JSON.stringify(anchor.initialCopy)
+    || transaction.observation.path !== `output/revisions/${deckRevision}/acceptance-observation.json`
+    || transaction.acceptanceRecord.path !== `output/revisions/${deckRevision}/acceptance-record.json`
+  ) {
+    context.addIssue({
+      code: "custom",
+      path: ["clientAcceptanceTransaction"],
+      message: "client acceptance transaction must bind the current ready smoke anchor and revision",
+    });
+  }
+});
 
 export type ProjectManifest = z.infer<typeof ProjectManifestSchema>;
 export type SlideRecord = z.infer<typeof SlideSchema>;
 export type Artifact = z.infer<typeof ArtifactSchema>;
 export type ClientSmokeCopyAnchor = z.infer<typeof ClientSmokeCopyAnchorSchema>;
+export type ClientAcceptanceTransaction = z.infer<typeof ClientAcceptanceTransactionSchema>;
 export type EditableRevisionBinding = z.infer<typeof EditableRevisionBindingSchema>;

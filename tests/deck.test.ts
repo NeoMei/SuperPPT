@@ -34,7 +34,7 @@ import {
   promoteApprovedCandidate,
   publishDeckReview,
 } from "../src/project/promotion.js";
-import { ClientSmokeCopyAnchorSchema } from "../src/project/schemas.js";
+import { ClientSmokeCopyAnchorSchema, ProjectManifestSchema } from "../src/project/schemas.js";
 import { readProject, updateProject } from "../src/project/store.js";
 import * as projectStore from "../src/project/store.js";
 import { applyRevision, approveImpact, publishImpactPlan } from "../src/revisions/apply.js";
@@ -251,6 +251,67 @@ async function writeCompletedClientEvidence(
     confirmedAt: new Date().toISOString(),
   })}\n`, { mode: 0o600 });
   return evidence;
+}
+
+async function rewriteAcceptanceTransactionForConflictingInput(
+  root: string,
+  originalEvidence: string,
+  name: string,
+): Promise<string> {
+  const manifest = await readProject(root);
+  const anchor = manifest.clientSmokeCopyAnchor!;
+  const submitted = JSON.parse(await readFile(originalEvidence, "utf8"));
+  const conflicting = {
+    ...submitted,
+    selectedObject: "slide-9:forged-title",
+    observedResult: "coordinated forged observation and acceptance record",
+    confirmedAt: new Date(Date.parse(submitted.confirmedAt) + 1_000).toISOString(),
+  };
+  const observationPath = join(root, "output", "revisions", "1", "acceptance-observation.json");
+  const observation = JSON.parse(await readFile(observationPath, "utf8"));
+  const forgedObservation = {
+    ...observation,
+    selectedObject: conflicting.selectedObject,
+    observedResult: conflicting.observedResult,
+    confirmedAt: conflicting.confirmedAt,
+  };
+  const observationBytes = Buffer.from(`${JSON.stringify(forgedObservation, null, 2)}\n`);
+  const observationArtifact = {
+    path: "output/revisions/1/acceptance-observation.json",
+    sha256: createHash("sha256").update(observationBytes).digest("hex"),
+    revisionId: manifest.currentRevision.id,
+  };
+  const base = await readProjectAcceptance(root);
+  const forgedAcceptance = AcceptanceSchema.parse({
+    ...base,
+    deliveryComplete: true,
+    clientAcceptance: {
+      application: conflicting.application,
+      observation: observationArtifact,
+      smokeCopy: {
+        descriptorPath: anchor.descriptor.path,
+        descriptorSha256: anchor.descriptor.sha256,
+        path: anchor.initialCopy.path,
+        initialSha256: anchor.initialCopy.sha256,
+        reopenedSha256: conflicting.reopenedCopySha256,
+      },
+      selectedObject: conflicting.selectedObject,
+      temporaryEditObserved: true,
+      undoObserved: true,
+      saveDecision: "discarded",
+      reopenObserved: true,
+      observedResult: conflicting.observedResult,
+      confirmedAt: conflicting.confirmedAt,
+    },
+  });
+  await writeFile(observationPath, observationBytes);
+  await writeFile(
+    join(root, "output", "revisions", "1", "acceptance-record.json"),
+    `${JSON.stringify(forgedAcceptance, null, 2)}\n`,
+  );
+  const conflictingEvidence = join(root, name);
+  await writeFile(conflictingEvidence, `${JSON.stringify(conflicting)}\n`, { mode: 0o600 });
+  return conflictingEvidence;
 }
 
 async function fakeUnboundOutputs(renders: FinalRender[], paths: { pptx: string; pdf: string; montage: string }): Promise<void> {
@@ -1045,7 +1106,7 @@ test("rejects ordinary anchor forgery plus linked or stale anchored smoke eviden
       ...manifest.clientSmokeCopyAnchor!,
       descriptor: { ...manifest.clientSmokeCopyAnchor!.descriptor, sha256: "f".repeat(64) },
     },
-  })), /client smoke copy trust fields require a controlled store transition/);
+  })), /client acceptance trust fields require a controlled store transition/);
 
   const copy = join(fixture.root, smoke.copy.path);
   const replacement = join(fixture.root, "linked-smoke.pptx");
@@ -1215,6 +1276,79 @@ test("recovers discard acceptance across observation, record, and manifest publi
   }
 });
 
+test("first discard commitment rejects coordinated observation and record rewrites after crash", async (t) => {
+  for (const checkpoint of ["observation-promoted", "record-promoted"] as const) {
+    const fixture = await readyProject(t);
+    await deliverReviewedCandidate({ root: fixture.root, operations: { buildOutputs: fakeOutputs } });
+    const original = await writeCompletedClientEvidence(fixture.root, `original-${checkpoint}.json`);
+    await assert.rejects(recordClientAcceptance(fixture.root, original, {
+      checkpoint: (step) => {
+        if (step === checkpoint) throw new Error(`crash before completion at ${checkpoint}`);
+      },
+    }), new RegExp(`crash before completion at ${checkpoint}`));
+    const committed = await readProject(fixture.root);
+    const originalObservation = await readFile(join(fixture.root, "output", "revisions", "1", "acceptance-observation.json"));
+    const conflicting = await rewriteAcceptanceTransactionForConflictingInput(
+      fixture.root,
+      original,
+      `conflicting-${checkpoint}.json`,
+    );
+
+    await assert.rejects(
+      recordClientAcceptance(fixture.root, conflicting),
+      /first-write|commitment|immutable client acceptance transaction/i,
+    );
+    assert.equal((await readProject(fixture.root)).stage, "assembling");
+    assert.deepEqual(
+      (await readProject(fixture.root)).clientAcceptanceTransaction,
+      committed.clientAcceptanceTransaction,
+    );
+
+    const recovered = await recordClientAcceptance(fixture.root, original);
+    assert.equal(recovered.deliveryComplete, true);
+    assert.equal((await readProject(fixture.root)).clientAcceptanceTransaction, undefined);
+    assert.deepEqual(
+      await readFile(join(fixture.root, "output", "revisions", "1", "acceptance-observation.json")),
+      originalObservation,
+    );
+  }
+});
+
+test("acceptance transaction commitment rejects marker tamper and wrong anchor bindings", async (t) => {
+  const fixture = await readyProject(t);
+  await deliverReviewedCandidate({ root: fixture.root, operations: { buildOutputs: fakeOutputs } });
+  const evidence = await writeCompletedClientEvidence(fixture.root, "committed-marker.json");
+  await assert.rejects(recordClientAcceptance(fixture.root, evidence, {
+    checkpoint: (step) => {
+      if (step === "observation-promoted") throw new Error("crash with committed marker");
+    },
+  }), /crash with committed marker/);
+  const manifest = await readProject(fixture.root);
+  const transaction = manifest.clientAcceptanceTransaction!;
+  assert.ok(transaction);
+
+  for (const tampered of [
+    { ...transaction, revisionId: "00000000-0000-4000-8000-000000000999" },
+    { ...transaction, descriptor: { ...transaction.descriptor, sha256: "f".repeat(64) } },
+    { ...transaction, initialCopy: { ...transaction.initialCopy, sha256: "e".repeat(64) }, reopenedCopySha256: "e".repeat(64) },
+    { ...transaction, source: { ...transaction.source, sha256: "d".repeat(64) } },
+  ]) {
+    assert.throws(
+      () => ProjectManifestSchema.parse({ ...manifest, clientAcceptanceTransaction: tampered }),
+      /client acceptance transaction|artifacts must bind/i,
+    );
+  }
+
+  const manifestPath = join(fixture.root, "superppt.json");
+  const raw = JSON.parse(await readFile(manifestPath, "utf8"));
+  raw.clientAcceptanceTransaction.observation.sha256 = "c".repeat(64);
+  await writeFile(manifestPath, `${JSON.stringify(raw, null, 2)}\n`);
+  await assert.rejects(
+    recordClientAcceptance(fixture.root, evidence),
+    /first-write|commitment|immutable client acceptance transaction/i,
+  );
+});
+
 test("client acceptance input rejects a pathname swap through its anchored CLI reader", async (t) => {
   const fixture = await readyProject(t);
   await deliverReviewedCandidate({ root: fixture.root, operations: { buildOutputs: fakeOutputs } });
@@ -1231,7 +1365,7 @@ test("client acceptance input rejects a pathname swap through its anchored CLI r
   assert.equal((await readProject(fixture.root)).stage, "assembling");
 });
 
-test("rejects a coordinated rewrite of an orphaned immutable acceptance record", async (t) => {
+test("rejects orphaned acceptance evidence when the transaction commitment is missing", async (t) => {
   const fixture = await readyProject(t);
   await deliverReviewedCandidate({
     root: fixture.root,
@@ -1243,14 +1377,41 @@ test("rejects a coordinated rewrite of an orphaned immutable acceptance record",
       if (step === "record-promoted") throw new Error("simulated hard crash");
     },
   }), /simulated hard crash/);
-  const record = join(fixture.root, "output", "revisions", "1", "acceptance-record.json");
-  const forged = AcceptanceSchema.parse(JSON.parse(await readFile(record, "utf8")));
-  await writeFile(record, `${JSON.stringify({ ...forged, providerId: "forged-provider" }, null, 2)}\n`);
+  const manifestPath = join(fixture.root, "superppt.json");
+  const manifest = JSON.parse(await readFile(manifestPath, "utf8"));
+  delete manifest.clientAcceptanceTransaction;
+  await writeFile(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`);
   await assert.rejects(
     recordClientAcceptance(fixture.root, evidence),
-    /immutable acceptance record does not match current client evidence/,
+    /orphaned client acceptance evidence/i,
   );
   assert.equal((await readProject(fixture.root)).stage, "assembling");
+});
+
+test("confirm-delivery CLI requires temporary edit, undo, discard, reopen, and authenticated evidence", async (t) => {
+  const fixture = await readyProject(t);
+  await authorizeDeckGeneration(fixture.root);
+  const candidate = await assembleProjectCandidate(fixture.root, { buildOutputs: fakeOutputs });
+  const review = await publishDeckReview(fixture.root, candidate.candidateId);
+  const cli = join(process.cwd(), "src", "cli.ts");
+  const { stdout } = await execFileAsync(process.execPath, [
+    "--import",
+    "tsx",
+    cli,
+    "deck-review-action",
+    "--project",
+    fixture.root,
+    "--candidate-id",
+    candidate.candidateId,
+    "--descriptor-sha256",
+    review.descriptorSha256,
+    "--action",
+    "confirm-delivery",
+  ]);
+  const output = JSON.parse(stdout);
+  assert.match(output.nextRequiredAction, /controlled smoke copy/i);
+  assert.match(output.nextRequiredAction, /temporarily edit.*observe.*undo.*discard.*do not save.*close.*reopen.*verify (?:the )?original.*acceptance-record/i);
+  assert.doesNotMatch(output.nextRequiredAction, /edit-save|save[ -]?and[ -]?reopen/i);
 });
 
 test("uses only injected workspace runtime paths and a platform PATH delimiter", async () => {

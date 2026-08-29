@@ -574,7 +574,7 @@ async function main(argv: string[]): Promise<void> {
     outputJson({
       ...outcome,
       nextRequiredAction: action === "confirm-delivery"
-        ? "perform client edit-save-reopen acceptance on a smoke copy"
+        ? "create a controlled smoke copy; temporarily edit the selected object, observe the edit, undo it, discard/do not save, close, reopen, verify the original content, then submit authenticated acceptance-record evidence"
         : action === "edit-page"
           ? "convert only the selected page, confirm its preview, then assemble a new candidate"
           : "revise the upstream generation inputs with the user",
