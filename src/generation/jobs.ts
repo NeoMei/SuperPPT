@@ -10,7 +10,7 @@ import { AiImageSkillDependencySchema, type AiImageSkillDependency } from "../de
 import { loadValidatedPlan } from "../planning/load.js";
 import type { SlideSpec } from "../planning/schemas.js";
 import { readOwnedRegularFile } from "../project/safe-file.js";
-import { readProject } from "../project/store.js";
+import { assertProjectMutationNotFrozen, readProject } from "../project/store.js";
 import { canonicalStyleSample } from "../styles/sample-contract.js";
 import { compileSlidePrompt } from "../styles/prompt-compiler.js";
 import { readApprovedStyleLock, readStyleLock, type LockedStyle } from "../styles/style-lock.js";
@@ -455,6 +455,7 @@ export async function prepareImageGenerationJob(
     throw new Error("invalid image generation job request", { cause: error });
   }
   return withGenerationLease(root, async (canonicalRoot) => {
+    await assertProjectMutationNotFrozen(canonicalRoot);
     const ai = await assertAiImageSkillDependencyCurrent(request.aiDependency);
     const authorization = await authorizationForPreparation(canonicalRoot, request.kind);
     const [manifest, lock] = await Promise.all([

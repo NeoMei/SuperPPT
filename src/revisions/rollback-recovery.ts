@@ -1,9 +1,11 @@
 import { sha256Evidence } from "../project/evidence.js";
 import { withProjectLease } from "../project/lock.js";
+import { withGenerationLease } from "../generation/lease.js";
 import { hasPendingRollbackTransaction } from "../project/rollback-guard.js";
 import { ProjectManifestSchema, type ProjectManifest } from "../project/schemas.js";
 import {
   abortProjectRollbackTransaction,
+  assertProjectMutationNotFrozen,
   readProjectForRollbackRecovery,
 } from "../project/store.js";
 import type { RevisionEvidenceOperations } from "./anchored-fs.js";
@@ -103,7 +105,9 @@ export async function recoverRollbackTransaction(
   root: string,
   options: RollbackRecoveryOptions = {},
 ): Promise<boolean> {
-  const result = await withProjectLease(root, "revision-impact", (canonicalRoot) =>
-    recoverRollbackTransactionLocked(canonicalRoot, options));
+  const result = await withGenerationLease(root, (generationRoot) => withProjectLease(generationRoot, "revision-impact", async (canonicalRoot) => {
+    await assertProjectMutationNotFrozen(canonicalRoot);
+    return recoverRollbackTransactionLocked(canonicalRoot, options);
+  }));
   return result !== false;
 }

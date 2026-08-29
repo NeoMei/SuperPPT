@@ -8,7 +8,8 @@ import { readRegularFileNoFollow } from "../project/safe-file.js";
 import { syncDirectory, writeDurableExclusive } from "../project/durable.js";
 import { withProjectLease } from "../project/lock.js";
 import { type EditableRevisionBinding, type ProjectManifest } from "../project/schemas.js";
-import { readProject, updateProject } from "../project/store.js";
+import { assertProjectMutationNotFrozen, readProject, updateProject } from "../project/store.js";
+import { withGenerationLease } from "../generation/lease.js";
 import { validateModifiedRevision } from "./operations.js";
 import {
   assertCompleteEditablePreview,
@@ -233,7 +234,9 @@ export async function renderProjectEditablePreview(options: {
   modifiedRevisionId: string;
   expectedModifiedRevisionRecordSha256: string;
 }): Promise<EditableRevisionBinding> {
-  const root = await realpath(options.root);
+  return withGenerationLease(options.root, async (generationRoot) => {
+  await assertProjectMutationNotFrozen(generationRoot);
+  const root = await realpath(generationRoot);
   const manifest = await readProject(root);
   const { slide, source: currentSource } = await currentSlideSource(root, manifest, options.slideId);
   const revisionRoot = join(root, "editable", slide.id, options.modifiedRevisionId);
@@ -274,6 +277,7 @@ export async function renderProjectEditablePreview(options: {
     await unlink(staging).catch(() => undefined);
   }
   return authenticatedBinding({ ...options, root, manifest, preview: output });
+  });
 }
 
 export async function confirmEditablePreview(options: {
@@ -285,7 +289,9 @@ export async function confirmEditablePreview(options: {
   approved?: boolean;
 }): Promise<EditableRevisionBinding | null> {
   if (options.approved === false) return null;
-  return withProjectLease(options.root, "slide-preview", async (root) => {
+  return withGenerationLease(options.root, async (generationRoot) => {
+    await assertProjectMutationNotFrozen(generationRoot);
+    return withProjectLease(generationRoot, "slide-preview", async (root) => {
     const manifest = await readProject(root);
     const binding = await authenticatedBinding({ ...options, root, manifest });
     await updateProject(root, async (current) => {
@@ -308,6 +314,7 @@ export async function confirmEditablePreview(options: {
       };
     });
     return binding;
+    });
   });
 }
 

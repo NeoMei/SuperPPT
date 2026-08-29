@@ -2,11 +2,13 @@ import { randomUUID } from "node:crypto";
 import { z } from "zod";
 
 import { withProjectLease } from "../project/lock.js";
+import { withGenerationLease } from "../generation/lease.js";
 import { ProjectManifestSchema, type ProjectManifest } from "../project/schemas.js";
 import {
   beginProjectRollbackTransaction,
   commitApprovedImpactRevision,
   finishProjectRollbackTransaction,
+  assertProjectMutationNotFrozen,
   readProject,
   updateProject,
 } from "../project/store.js";
@@ -126,11 +128,12 @@ export async function publishImpactPlan(
   options: RevisionControlOptions = {},
 ): Promise<ImpactPlan> {
   const validChange = ChangeRequestSchema.parse(change);
-  return withProjectLease(root, "revision-impact", async (canonicalRoot) => {
+  return withGenerationLease(root, (generationRoot) => withProjectLease(generationRoot, "revision-impact", async (canonicalRoot) => {
+    await assertProjectMutationNotFrozen(canonicalRoot);
     const plan = planImpact(await readProject(canonicalRoot), validChange);
     await replacePendingImpact(canonicalRoot, serializeImpactPlan(plan), options.operations);
     return plan;
-  });
+  }));
 }
 
 export async function approveImpact(
@@ -139,7 +142,8 @@ export async function approveImpact(
   options: RevisionControlOptions = {},
 ): Promise<void> {
   const expected = z.string().regex(/^[a-f0-9]{64}$/).parse(sha256);
-  await withProjectLease(root, "revision-impact", async (canonicalRoot) => {
+  await withGenerationLease(root, (generationRoot) => withProjectLease(generationRoot, "revision-impact", async (canonicalRoot) => {
+    await assertProjectMutationNotFrozen(canonicalRoot);
     const evidence = await readPendingImpactEvidence(canonicalRoot);
     if (evidence.plan.sha256 !== expected) {
       throw new Error("pending impact hash does not match the requested approval");
@@ -182,7 +186,7 @@ export async function approveImpact(
         }],
       };
     });
-  });
+  }));
 }
 
 export async function applyRevision(
@@ -211,7 +215,8 @@ export async function rollbackToRevision(
   options: RevisionControlOptions = {},
 ): Promise<void> {
   const revisionId = RevisionIdSchema.parse(rawRevisionId);
-  await withProjectLease(root, "revision-impact", async (canonicalRoot) => {
+  await withGenerationLease(root, (generationRoot) => withProjectLease(generationRoot, "revision-impact", async (canonicalRoot) => {
+    await assertProjectMutationNotFrozen(canonicalRoot);
     const recovered = await recoverRollbackTransactionLocked(canonicalRoot, options);
     if (
       recovered
@@ -226,5 +231,5 @@ export async function rollbackToRevision(
     await finishProjectRollbackTransaction(canonicalRoot, options.operations);
     await options.operations?.rollbackCheckpoint?.("manifest-published");
     await finalizeRollbackJournal(canonicalRoot, published.journal.transactionId, options.operations);
-  });
+  }));
 }

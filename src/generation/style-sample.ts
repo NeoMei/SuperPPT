@@ -18,6 +18,7 @@ import {
 import { openGenerationDirectory } from "./anchored-dir.js";
 import { authorizationCallBudget, authorizationForPreparation } from "./authorization.js";
 import { readAndReauthenticateDelegatedResult } from "./delegation-result.js";
+import { assertProjectMutationNotFrozen } from "../project/store.js";
 import { type ImageGenerationJob } from "./job-schemas.js";
 import { prepareImageGenerationJob } from "./jobs.js";
 
@@ -161,6 +162,7 @@ export async function prepareStyleSampleJob(
 
 export async function finalizeStyleSample(root: string, jobId: string): Promise<StyleSampleArtifacts> {
   return withGenerationLease(root, (generationRoot) => withProjectLease(generationRoot, "state", async (canonicalRoot) => {
+    await assertProjectMutationNotFrozen(canonicalRoot);
     const { job } = await readAndReauthenticateDelegatedResult(canonicalRoot, jobId);
     const result = await assertAcceptedSampleResult(canonicalRoot, job);
     const normalized = await readOwnedRegularFile(canonicalRoot, result.pages[0]!.artifacts!.normalized.path);

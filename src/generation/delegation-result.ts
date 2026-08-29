@@ -29,6 +29,7 @@ import {
 import { DelegatedPresentationQaSchema, delegatedStyleConsistency } from "./quality.js";
 import { readOwnedRegularFile } from "../project/safe-file.js";
 import {
+  assertProjectMutationNotFrozen,
   readProject,
   updateProjectWithDelegatedGenerationAttachment,
 } from "../project/store.js";
@@ -703,8 +704,10 @@ export async function recordDelegatedResult(
     checkpoint?: (step: "after-page-promotion" | "after-aggregate-promotion" | "before-manifest-attach" | "after-manifest-attach") => Promise<void> | void;
   } = {},
 ): Promise<ImageGenerationResult> {
-  const preflight = await authenticateIntake(root, raw, false);
-  await settleDelegatedGenerationCall(root, {
+  return withGenerationLease(root, async (canonicalRoot) => {
+  await assertProjectMutationNotFrozen(canonicalRoot);
+  const preflight = await authenticateIntake(canonicalRoot, raw, false);
+  await settleDelegatedGenerationCall(canonicalRoot, {
     jobId: preflight.job.jobId,
     slideId: preflight.page.slideId,
     attempt: preflight.page.attempt,
@@ -713,7 +716,7 @@ export async function recordDelegatedResult(
     outcome: preflight.intake.dependency.status === "success" ? "success" : "failed",
   });
 
-  const publication = await withGenerationLease(root, async (canonicalRoot) => {
+  const publication = await withGenerationLease(canonicalRoot, async (canonicalRoot) => {
     const authenticated = await authenticateIntake(canonicalRoot, raw, false);
     const ledger = await readCallLedgerUnderGenerationLease(canonicalRoot);
     const requestCount = ledger.filter((entry) =>
@@ -831,7 +834,8 @@ export async function recordDelegatedResult(
   });
 
   await operations.checkpoint?.("before-manifest-attach");
-  await attachAcceptedPagesMonotonically(root, publication.pages, preflight.job);
+  await attachAcceptedPagesMonotonically(canonicalRoot, publication.pages, preflight.job);
   await operations.checkpoint?.("after-manifest-attach");
   return publication;
+  });
 }

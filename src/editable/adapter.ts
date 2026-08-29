@@ -8,10 +8,11 @@ import sharp from "sharp";
 import { preflightDependencies } from "../dependencies/preflight.js";
 import type { ResolvedDependencies } from "../dependencies/schemas.js";
 import { assertAiImageSkillDependencyCurrent } from "../generation/authorization.js";
+import { withGenerationLease } from "../generation/lease.js";
 import { syncDirectory, writeDurableExclusive } from "../project/durable.js";
 import { validateProjectRoot } from "../project/paths.js";
 import { readOwnedRegularFile, readRegularFileNoFollow } from "../project/safe-file.js";
-import { readProject, sha256 as projectSha256 } from "../project/store.js";
+import { assertProjectMutationNotFrozen, readProject, sha256 as projectSha256 } from "../project/store.js";
 import {
   ConversionRecordSchema,
   ConverterOwnershipMarkerSchema,
@@ -497,8 +498,10 @@ export async function convertProjectPage(options: {
   nodeVersion?: string;
   idFactory?: () => string;
 }): Promise<ProjectConversionResult> {
-  const manifest = await readProject(options.root);
-  const root = await validateProjectRoot(options.root);
+  return withGenerationLease(options.root, async (generationRoot) => {
+  await assertProjectMutationNotFrozen(generationRoot);
+  const manifest = await readProject(generationRoot);
+  const root = await validateProjectRoot(generationRoot);
   const slide = manifest.slides.find((candidate) => candidate.id === options.slideId);
   if (!slide) throw new Error("editable conversion slide ID is not in the current project");
   if (!options.dependencies) throw new Error("editable conversion requires preflight-resolved dependencies");
@@ -661,4 +664,5 @@ export async function convertProjectPage(options: {
     }
     throw error;
   }
+  });
 }

@@ -17,6 +17,7 @@ import {
   validateRecordedClientSmokeCopy,
 } from "../acceptance/smoke-copy.js";
 import { AttemptLedgerSchema } from "../generation/schemas.js";
+import { withGenerationLease } from "../generation/lease.js";
 import { readAndReauthenticateDelegatedResult } from "../generation/delegation-result.js";
 import { validateAppliedEditableBinding, validateConfirmedEditablePreview } from "../editable/render.js";
 import { assertGateCurrent } from "../planning/confirm.js";
@@ -26,7 +27,7 @@ import { withPlanningLock, withProjectLease } from "../project/lock.js";
 import { promoteExclusive } from "../project/exclusive.js";
 import { readOwnedRegularFile, readRegularFileNoFollow, type SafeReadOperations } from "../project/safe-file.js";
 import { ArtifactSchema, type Artifact, type ProjectManifest } from "../project/schemas.js";
-import { readProject, recordClientAcceptance, updateProject } from "../project/store.js";
+import { assertProjectMutationNotFrozen, readProject, recordClientAcceptance, updateProject } from "../project/store.js";
 import { prepareEditableSlide, type EditablePage } from "./editable-slide.js";
 import { SOURCE_HEIGHT_PX, SOURCE_WIDTH_PX } from "./geometry.js";
 import { buildMontage, buildMontageBytes } from "./montage.js";
@@ -814,7 +815,9 @@ export async function assembleProjectCandidate(
   projectRoot: string,
   operations: AssembleProjectOperations = {},
 ): Promise<AssembleProjectCandidateResult> {
-  return withProjectLease(projectRoot, "assembly", async (root) => {
+  return withGenerationLease(projectRoot, async (generationRoot) => {
+    await assertProjectMutationNotFrozen(generationRoot);
+    return withProjectLease(generationRoot, "assembly", async (root) => {
     const manifest = await readProject(root);
     if (!await assertGateCurrent(root, "generation-authorization")) {
       throw new Error("current generation-authorization gate is required before candidate assembly");
@@ -887,6 +890,7 @@ export async function assembleProjectCandidate(
     await promoteExclusive(staging, destination);
     await syncDirectory(candidatesRoot);
     return { candidateId, destination, artifacts: built.artifacts };
+    });
   });
 }
 
@@ -1011,8 +1015,10 @@ export async function applyEditableReplacement(options: {
   modifiedRevisionId: string;
   expectedModifiedRevisionRecordSha256: string;
 }): Promise<ApplyEditableReplacementResult> {
-  return withPlanningLock(options.root, async (planningRoot) =>
-    withProjectLease(planningRoot, "slide-replacement", async (root) => {
+  return withGenerationLease(options.root, async (generationRoot) => {
+    await assertProjectMutationNotFrozen(generationRoot);
+    return withPlanningLock(generationRoot, async (planningRoot) =>
+      withProjectLease(planningRoot, "slide-replacement", async (root) => {
       const promotion = await import("../project/promotion.js");
       const selection = await promotion.authenticateCurrentDeckEditSelection(root, options.slideId);
       const before = await readProject(root);
@@ -1052,8 +1058,9 @@ export async function applyEditableReplacement(options: {
         modifiedRevisionId: options.modifiedRevisionId,
         deckRevision: deckRevisionNumber(candidate),
       };
-    })
-  );
+      })
+    );
+  });
 }
 
 async function validateAcceptanceCurrent(root: string, manifest: ProjectManifest, acceptance: Acceptance): Promise<void> {

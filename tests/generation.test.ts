@@ -1416,10 +1416,11 @@ test("authorization trust store rejects a symlinked ancestor outside the project
     root: join(alias, "authorization-trust"),
     deterministicKeySeed: "symlink-ancestor-key-seed",
   });
-  await publishGenerationAuthorizationPlan(fixture.root, { aiDependency: fixture.aiDependency, callBudget: 3 });
-
   await assert.rejects(
-    approveGate(fixture.root, "generation-authorization"),
+    async () => {
+      await publishGenerationAuthorizationPlan(fixture.root, { aiDependency: fixture.aiDependency, callBudget: 3 });
+      await approveGate(fixture.root, "generation-authorization");
+    },
     /trusted authorization.*symbolic link ancestor|symbolic link ancestor.*trusted authorization/i,
   );
   assert.equal((await readProject(fixture.root)).gates.some(({ gate }) => gate === "generation-authorization"), false);

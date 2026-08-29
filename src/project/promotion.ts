@@ -25,7 +25,8 @@ import { promoteExclusive } from "./exclusive.js";
 import { withPlanningLock, withProjectLease } from "./lock.js";
 import { readOwnedRegularFile, readRegularFileNoFollow } from "./safe-file.js";
 import { type Artifact, type ProjectManifest } from "./schemas.js";
-import { readProject, updateProject } from "./store.js";
+import { assertProjectMutationNotFrozen, readProject, updateProject } from "./store.js";
+import { withGenerationLease } from "../generation/lease.js";
 
 export { promoteExclusive } from "./exclusive.js";
 
@@ -186,7 +187,9 @@ export async function invalidateCurrentDeckReviewPresentation(
   root: string,
   expected: CurrentDeckEditSelection,
 ): Promise<string> {
-  const currentRoot = join(root, "output/candidates/current");
+  return withGenerationLease(root, async (generationRoot) => {
+  await assertProjectMutationNotFrozen(generationRoot);
+  const currentRoot = join(generationRoot, "output/candidates/current");
   const names = ["action.json", "montage.jpg", "review.json"] as const;
   const expectedHashes = {
     "action.json": expected.currentPresentation.actionSha256,
@@ -208,10 +211,13 @@ export async function invalidateCurrentDeckReviewPresentation(
   await mkdir(currentRoot, { mode: 0o700 });
   await syncDirectory(candidatesRoot);
   return invalidated;
+  });
 }
 
 export async function publishDeckReview(root: string, candidateId: string): Promise<DeckReviewDescriptor> {
-  return withPlanningLock(root, async (canonicalRoot) => {
+  return withGenerationLease(root, async (generationRoot) => {
+    await assertProjectMutationNotFrozen(generationRoot);
+    return withPlanningLock(generationRoot, async (canonicalRoot) => {
     const manifest = await readProject(canonicalRoot);
     if (!await assertGateCurrent(canonicalRoot, "generation-authorization")) {
       throw new Error("current generation-authorization gate is required before deck review");
@@ -257,6 +263,7 @@ export async function publishDeckReview(root: string, candidateId: string): Prom
     });
     await readCurrentReviewPresentation(canonicalRoot);
     return descriptor;
+    });
   });
 }
 
@@ -318,17 +325,20 @@ export async function applyDeckReviewAction(
   rawRequest: DeckReviewActionRequest,
   operations: CandidatePromotionOperations = {},
 ): Promise<DeckReviewActionOutcome> {
-  const request = DeckReviewActionRequestSchema.parse(rawRequest);
-  await recordDeckReviewAction(root, request);
-  if (request.action === "return-upstream") {
-    return { action: request.action, stage: "generation-authorization", delivery: null };
-  }
-  if (request.action === "edit-page") {
-    return { action: request.action, stage: "revising", delivery: null };
-  }
-  await approveDeckReviewActionGate(root);
-  const delivery = await promoteApprovedCandidate(root, request.candidateId, operations);
-  return { action: request.action, stage: "assembling", delivery };
+  return withGenerationLease(root, async (generationRoot) => {
+    await assertProjectMutationNotFrozen(generationRoot);
+    const request = DeckReviewActionRequestSchema.parse(rawRequest);
+    await recordDeckReviewAction(generationRoot, request);
+    if (request.action === "return-upstream") {
+      return { action: request.action, stage: "generation-authorization", delivery: null };
+    }
+    if (request.action === "edit-page") {
+      return { action: request.action, stage: "revising", delivery: null };
+    }
+    await approveDeckReviewActionGate(generationRoot);
+    const delivery = await promoteApprovedCandidate(generationRoot, request.candidateId, operations);
+    return { action: request.action, stage: "assembling", delivery };
+  });
 }
 
 export async function promoteApprovedCandidate(
@@ -336,7 +346,9 @@ export async function promoteApprovedCandidate(
   candidateId: string,
   operations: CandidatePromotionOperations = {},
 ): Promise<AssembleProjectResult> {
-  return withProjectLease(projectRoot, "assembly", async (root) => {
+  return withGenerationLease(projectRoot, async (generationRoot) => {
+    await assertProjectMutationNotFrozen(generationRoot);
+    return withProjectLease(generationRoot, "assembly", async (root) => {
     const manifest = await readProject(root);
     const { review, reviewBytes } = await readCurrentReviewPresentation(root);
     if (review.candidateId !== candidateId) throw new Error("candidate is not the current deck-review presentation");
@@ -450,5 +462,6 @@ export async function promoteApprovedCandidate(
       recovered: false,
       artifacts: verified.artifacts,
     };
+    });
   });
 }

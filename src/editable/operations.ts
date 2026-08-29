@@ -8,6 +8,8 @@ import { validateProjectRoot } from "../project/paths.js";
 import { promoteExclusive } from "../project/exclusive.js";
 import { readOwnedRegularFile, readRegularFileNoFollow } from "../project/safe-file.js";
 import { readProject } from "../project/store.js";
+import { assertProjectMutationNotFrozen } from "../project/store.js";
+import { withGenerationLease } from "../generation/lease.js";
 import { validateEditableConversionOutput } from "./adapter.js";
 import {
   ConversionRecordSchema,
@@ -466,6 +468,7 @@ function validatePromotionTarget(manifest: EditableManifest, intent: PromoteEdit
 async function createProjectModifiedRevision(
   options: ProjectModifiedRevisionOptions,
   request: ModifiedRevisionRequest,
+  mutationLeaseHeld = false,
 ): Promise<AppliedEditRevision> {
   const project = await readProject(options.root);
   const root = await validateProjectRoot(options.root);
@@ -597,6 +600,12 @@ async function createProjectModifiedRevision(
   } else {
     validatePromotionTarget(sourceManifest, request.intent);
     if (currentEditable) throw new AlreadyEditableSlideError();
+  }
+  if (!mutationLeaseHeld) {
+    return withGenerationLease(root, async (generationRoot) => {
+      await assertProjectMutationNotFrozen(generationRoot);
+      return createProjectModifiedRevision({ ...options, root: generationRoot }, request, true);
+    });
   }
   await options.operations?.afterSourceValidation?.();
   await assertEditableLayoutIdentity(layout);

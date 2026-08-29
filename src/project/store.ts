@@ -24,6 +24,7 @@ import {
 import { withProjectLease } from "./lock.js";
 import { validateProjectRoot } from "./paths.js";
 import { assertNoPendingRollbackTransaction } from "./rollback-guard.js";
+import { withGenerationLease } from "../generation/lease.js";
 import {
   readAnchoredRegularFile,
   readOwnedRegularFile,
@@ -106,6 +107,15 @@ function sameJson(left: unknown, right: unknown): boolean {
   return JSON.stringify(left) === JSON.stringify(right);
 }
 
+export async function assertProjectMutationNotFrozen(root: string): Promise<void> {
+  const current = await ownedProject(root);
+  if (current.manifest.clientAcceptanceTransaction) {
+    throw new Error("project mutations are frozen while client acceptance is pending");
+  }
+  const { assertNoPendingTrustedClientAcceptanceForProject } = await import("../generation/trusted-authorization.js");
+  await assertNoPendingTrustedClientAcceptanceForProject(current.root, current.manifest.projectId);
+}
+
 function assertRevisionEvolution(
   previous: ProjectManifest,
   next: ProjectManifest,
@@ -170,6 +180,7 @@ type ProjectPersistMode =
   | "smoke-copy-create"
   | "smoke-copy-ready"
   | "acceptance-transaction-begin"
+  | "acceptance-transaction-recover"
   | "smoke-copy-complete";
 
 async function assertControlledRevisionTrust(
@@ -205,6 +216,17 @@ async function assertControlledRevisionTrust(
       || previous.clientAcceptanceTransaction
       || !next.clientAcceptanceTransaction
     ) throw new Error("client acceptance transaction begin is invalid");
+    return;
+  }
+  if (mode === "acceptance-transaction-recover") {
+    if (
+      appended.length > 0
+      || markerChanged
+      || smokeAnchorChanged
+      || !previous.clientAcceptanceTransaction
+      || !next.clientAcceptanceTransaction
+      || sameJson(previous.clientAcceptanceTransaction, next.clientAcceptanceTransaction)
+    ) throw new Error("client acceptance transaction recovery is invalid");
     return;
   }
   if (mode === "smoke-copy-complete") {
@@ -481,6 +503,17 @@ async function persistProject(
   operations: WriteProjectOperations = {},
   mode: ProjectPersistMode = "ordinary",
 ): Promise<void> {
+  if (
+    mode !== "acceptance-transaction-begin"
+    && mode !== "acceptance-transaction-recover"
+    && mode !== "smoke-copy-complete"
+  ) {
+    if (owned.manifest.clientAcceptanceTransaction) {
+      throw new Error("project mutations are frozen while client acceptance is pending");
+    }
+    const { assertNoPendingTrustedClientAcceptanceForProject } = await import("../generation/trusted-authorization.js");
+    await assertNoPendingTrustedClientAcceptanceForProject(owned.root, owned.manifest.projectId);
+  }
   if (valid.projectId !== owned.manifest.projectId) {
     throw new Error("project directory is not owned by SuperPPT");
   }
@@ -593,6 +626,15 @@ export async function writeProject(
   manifest: ReadProjectManifest,
   operations: WriteProjectOperations = {},
 ): Promise<void> {
+  return withGenerationLease(root, async (trustedRoot) => writeProjectUnderTrustedLease(trustedRoot, manifest, operations));
+}
+
+async function writeProjectUnderTrustedLease(
+  root: string,
+  manifest: ReadProjectManifest,
+  operations: WriteProjectOperations = {},
+): Promise<void> {
+  await assertProjectMutationNotFrozen(root);
   const valid = ProjectManifestSchema.parse(manifest);
   const expected = await ownedProject(root);
   await assertNoPendingRollbackTransaction(expected.root);
@@ -617,6 +659,15 @@ export async function updateProject(
   updater: ProjectUpdater,
   operations: WriteProjectOperations = {},
 ): Promise<ProjectManifest> {
+  return withGenerationLease(root, (trustedRoot) => updateProjectUnderTrustedLease(trustedRoot, updater, operations));
+}
+
+async function updateProjectUnderTrustedLease(
+  root: string,
+  updater: ProjectUpdater,
+  operations: WriteProjectOperations = {},
+): Promise<ProjectManifest> {
+  await assertProjectMutationNotFrozen(root);
   let result: ProjectManifest | undefined;
   const owned = await ownedProject(root);
   await assertNoPendingRollbackTransaction(owned.root);
@@ -635,6 +686,15 @@ export async function updateProjectWithDelegatedGenerationAttachment(
   root: string,
   updater: (current: ProjectManifest) => ProjectManifest,
 ): Promise<void> {
+  return withGenerationLease(root, (trustedRoot) =>
+    updateProjectWithDelegatedGenerationAttachmentUnderTrustedLease(trustedRoot, updater));
+}
+
+async function updateProjectWithDelegatedGenerationAttachmentUnderTrustedLease(
+  root: string,
+  updater: (current: ProjectManifest) => ProjectManifest,
+): Promise<void> {
+  await assertProjectMutationNotFrozen(root);
   const before = await readProject(root);
   const planned = ProjectManifestSchema.parse(updater(before));
   await assertGenerationHistoryEvolution(root, before, planned);
@@ -794,6 +854,14 @@ export async function createClientSmokeCopyAnchor(
   root: string,
   operations: CreateClientSmokeCopyAnchorOperations,
 ): Promise<ClientSmokeCopyAnchor> {
+  return withGenerationLease(root, (trustedRoot) => createClientSmokeCopyAnchorUnderTrustedLease(trustedRoot, operations));
+}
+
+async function createClientSmokeCopyAnchorUnderTrustedLease(
+  root: string,
+  operations: CreateClientSmokeCopyAnchorOperations,
+): Promise<ClientSmokeCopyAnchor> {
+  await assertProjectMutationNotFrozen(root);
   const manifest = await readProject(root);
   const canonical = manifest.exports.pptx;
   if (!canonical || !manifest.exports.acceptance) {
@@ -873,7 +941,13 @@ async function beginClientAcceptanceTransaction(options: {
     const existing = current.manifest.clientAcceptanceTransaction;
     if (existing) {
       if (!sameJson(existing, options.transaction)) {
-        throw new Error("immutable client acceptance transaction commitment does not match first write");
+        const valid = ProjectManifestSchema.parse({
+          ...current.manifest,
+          clientAcceptanceTransaction: options.transaction,
+        });
+        await persistProject(current, valid, {}, "acceptance-transaction-recover");
+        result = valid;
+        return;
       }
       result = current.manifest;
       return;
@@ -1152,7 +1226,13 @@ async function readBoundAcceptance(root: string, manifest: ProjectManifest): Pro
   return acceptance;
 }
 
-export type AcceptanceRecordCheckpoint = "observation-promoted" | "record-promoted" | "manifest-updated";
+export type AcceptanceRecordCheckpoint =
+  | "external-pending-committed"
+  | "observation-promoted"
+  | "record-promoted"
+  | "manifest-completed-before-external"
+  | "external-completed-committed"
+  | "manifest-updated";
 export type AcceptanceRecordOperations = {
   checkpoint?: (step: AcceptanceRecordCheckpoint) => Promise<void> | void;
   inputRead?: SafeReadOperations;
@@ -1181,9 +1261,15 @@ export async function recordClientAcceptance(
   } catch (error: unknown) {
     throw new Error("client acceptance input is invalid", { cause: error });
   }
-  return withProjectLease(root, "acceptance", async (canonicalRoot) => {
+  return withGenerationLease(root, (trustedRoot) => withProjectLease(trustedRoot, "acceptance", async (canonicalRoot) => {
+    const {
+      commitTrustedClientAcceptancePending,
+      completeTrustedClientAcceptance,
+      readTrustedClientAcceptanceCommitment,
+    } = await import("../generation/trusted-authorization.js");
     let manifest: ProjectManifest = await readProject(canonicalRoot);
     const current = await readBoundAcceptance(canonicalRoot, manifest);
+    const external = await readTrustedClientAcceptanceCommitment(canonicalRoot);
     if (current.deliveryComplete) {
       const recorded = current.clientAcceptance;
       if (
@@ -1198,6 +1284,23 @@ export async function recordClientAcceptance(
         || recorded.observedResult !== submitted.observedResult
         || recorded.confirmedAt !== submitted.confirmedAt
       ) throw new Error("immutable client acceptance replay does not match the recorded evidence");
+      const anchor = manifest.clientSmokeCopyAnchor;
+      if (
+        !external
+        || !anchor
+        || anchor.state !== "completed"
+        || external.transaction.projectId !== manifest.projectId
+        || external.transaction.revisionId !== manifest.currentRevision.id
+        || external.transaction.anchorId !== anchor.anchorId
+        || !sameJson(external.transaction.descriptor, anchor.descriptor)
+        || !sameJson(external.transaction.source, anchor.source)
+        || !sameJson(external.transaction.initialCopy, anchor.initialCopy)
+        || !sameJson(external.transaction.observation, anchor.observation)
+        || external.transaction.reopenedCopySha256 !== anchor.reopenedCopySha256
+        || !sameJson(external.transaction.acceptanceRecord, anchor.acceptanceRecord)
+        || external.transaction.confirmedAt !== anchor.completedAt
+      ) throw new Error("trusted client acceptance commitment does not match immutable first write");
+      await completeTrustedClientAcceptance(canonicalRoot, external.transaction, anchor);
       return current;
     }
     const anchor = manifest.clientSmokeCopyAnchor;
@@ -1246,9 +1349,10 @@ export async function recordClientAcceptance(
       revisionId: manifest.currentRevision.id,
     };
     const existingTransaction = manifest.clientAcceptanceTransaction;
+    const externalTransaction = external?.transaction;
     const transaction: ClientAcceptanceTransaction = {
       transactionVersion: 1,
-      transactionId: existingTransaction?.transactionId ?? randomUUID(),
+      transactionId: existingTransaction?.transactionId ?? externalTransaction?.transactionId ?? randomUUID(),
       projectId: manifest.projectId,
       revisionId: manifest.currentRevision.id,
       deckRevision: currentDeckRevision(manifest),
@@ -1260,9 +1364,11 @@ export async function recordClientAcceptance(
       reopenedCopySha256: smoke.copySha256,
       acceptanceRecord: nextAcceptance,
       confirmedAt: submitted.confirmedAt,
-      createdAt: existingTransaction?.createdAt ?? new Date().toISOString(),
+      createdAt: existingTransaction?.createdAt ?? externalTransaction?.createdAt ?? new Date().toISOString(),
     };
     if (!existingTransaction) await publishRevisionSnapshot(canonicalRoot, manifest);
+    await commitTrustedClientAcceptancePending(canonicalRoot, transaction);
+    await operations.checkpoint?.("external-pending-committed");
     manifest = await beginClientAcceptanceTransaction({
       root: canonicalRoot,
       expectedManifest: manifest,
@@ -1285,7 +1391,7 @@ export async function recordClientAcceptance(
       stagingLabel: "acceptance-record",
     });
     await operations.checkpoint?.("record-promoted");
-    await completeClientSmokeCopyAcceptance({
+    const deliveredManifest = await completeClientSmokeCopyAcceptance({
       root: canonicalRoot,
       expectedManifest: manifest,
       anchorId: anchor.anchorId,
@@ -1294,11 +1400,18 @@ export async function recordClientAcceptance(
       acceptanceRecord: nextAcceptance,
       completedAt: submitted.confirmedAt,
     });
+    await operations.checkpoint?.("manifest-completed-before-external");
+    await completeTrustedClientAcceptance(
+      canonicalRoot,
+      transaction,
+      deliveredManifest.clientSmokeCopyAnchor!,
+    );
+    await operations.checkpoint?.("external-completed-committed");
     await operations.checkpoint?.("manifest-updated");
     const delivered = await readBoundAcceptance(canonicalRoot, await readProject(canonicalRoot));
     if (!sameJson(delivered, completed)) throw new Error("acceptance evidence is not current");
     return delivered;
-  });
+  }));
 }
 
 export async function readProjectForRollbackRecovery(root: string): Promise<{
@@ -1397,13 +1510,17 @@ export async function commitApprovedImpactRevision(
   rawChange: ChangeRequest,
   evidenceOperations?: RevisionEvidenceOperations,
 ): Promise<void> {
-  await withProjectLease(root, "revision-impact", (canonicalRoot) =>
-    commitApprovedImpactRevisionLocked(
-      canonicalRoot,
-      rawPlan,
-      rawChange,
-      evidenceOperations,
-    ));
+  await withGenerationLease(root, (trustedRoot) =>
+    withProjectLease(trustedRoot, "revision-impact", async (canonicalRoot) => {
+      await assertProjectMutationNotFrozen(canonicalRoot);
+      return (
+      commitApprovedImpactRevisionLocked(
+        canonicalRoot,
+        rawPlan,
+        rawChange,
+        evidenceOperations,
+      ));
+    }));
 }
 
 export async function beginProjectRollbackTransaction(
@@ -1411,6 +1528,16 @@ export async function beginProjectRollbackTransaction(
   targetRevisionId: string,
   evidenceOperations?: RevisionEvidenceOperations,
 ): Promise<void> {
+  return withGenerationLease(root, (trustedRoot) =>
+    beginProjectRollbackTransactionUnderTrustedLease(trustedRoot, targetRevisionId, evidenceOperations));
+}
+
+async function beginProjectRollbackTransactionUnderTrustedLease(
+  root: string,
+  targetRevisionId: string,
+  evidenceOperations?: RevisionEvidenceOperations,
+): Promise<void> {
+  await assertProjectMutationNotFrozen(root);
   const expected = await ownedProject(root);
   await assertNoPendingRollbackTransaction(expected.root);
   await withProjectLease(expected.root, "state", async (canonicalRoot) => {
@@ -1508,6 +1635,15 @@ export async function finishProjectRollbackTransaction(
   root: string,
   evidenceOperations?: RevisionEvidenceOperations,
 ): Promise<ProjectManifest> {
+  return withGenerationLease(root, (trustedRoot) =>
+    finishProjectRollbackTransactionUnderTrustedLease(trustedRoot, evidenceOperations));
+}
+
+async function finishProjectRollbackTransactionUnderTrustedLease(
+  root: string,
+  evidenceOperations?: RevisionEvidenceOperations,
+): Promise<ProjectManifest> {
+  await assertProjectMutationNotFrozen(root);
   let result: ProjectManifest | undefined;
   const expected = await ownedProject(root);
   await withProjectLease(expected.root, "state", async (canonicalRoot) => {
@@ -1533,6 +1669,15 @@ export async function abortProjectRollbackTransaction(
   root: string,
   evidenceOperations?: RevisionEvidenceOperations,
 ): Promise<ProjectManifest> {
+  return withGenerationLease(root, (trustedRoot) =>
+    abortProjectRollbackTransactionUnderTrustedLease(trustedRoot, evidenceOperations));
+}
+
+async function abortProjectRollbackTransactionUnderTrustedLease(
+  root: string,
+  evidenceOperations?: RevisionEvidenceOperations,
+): Promise<ProjectManifest> {
+  await assertProjectMutationNotFrozen(root);
   let result: ProjectManifest | undefined;
   const expected = await ownedProject(root);
   await withProjectLease(expected.root, "state", async (canonicalRoot) => {

@@ -17,7 +17,7 @@ import {
 import { withPlanningLock, withProjectLease, type ProjectLockOptions } from "../project/lock.js";
 import { promoteExclusive } from "../project/exclusive.js";
 import { localProjectPath, readOwnedRegularFile } from "../project/safe-file.js";
-import { readProject } from "../project/store.js";
+import { assertProjectMutationNotFrozen, readProject } from "../project/store.js";
 import { loadValidatedOutline, loadValidatedPlan } from "./load.js";
 import { renderBrief, renderOutline, renderSlideSpec } from "./render.js";
 import {
@@ -193,7 +193,8 @@ async function publishPlanningViews(
 ): Promise<{ publicationPath: string; slideCount: number }> {
   const pointerPath = stage === "outline" ? "outline-views.json" : "planning-views.json";
   const journalName = stage === "outline" ? ".superppt-outline-view-journals" : ".superppt-view-journals";
-  return withPlanningLock(root, async (canonicalRoot) => {
+  return withGenerationLease(root, (generationRoot) => withPlanningLock(generationRoot, async (canonicalRoot) => {
+    await assertProjectMutationNotFrozen(canonicalRoot);
     return withProjectLease(canonicalRoot, "state", async () => {
       await recoverUnlocked(canonicalRoot, pointerPath, journalName);
       const manifest = await readProject(canonicalRoot);
@@ -251,7 +252,7 @@ async function publishPlanningViews(
       await syncDirectory(journalRoot);
       return { publicationPath, slideCount: plan.outline.slides.length };
     });
-  }, options.lock);
+  }, options.lock));
 }
 
 export async function publishOutlineViews(
@@ -280,6 +281,7 @@ async function styleArtifacts(root: string): Promise<{
 
 export async function publishStyleSample(root: string): Promise<StylePublicationDescriptor> {
   return withGenerationLease(root, (generationRoot) => withPlanningLock(generationRoot, async (canonicalRoot) => {
+    await assertProjectMutationNotFrozen(canonicalRoot);
     return withProjectLease(canonicalRoot, "state", async () => {
       const manifest = await readProject(canonicalRoot);
       const { values, selection } = await styleArtifacts(canonicalRoot);
@@ -461,6 +463,9 @@ export async function requireCurrentDeckReviewPresentation(
 }
 
 export async function recoverPlanViews(root: string, lock: ProjectLockOptions = {}): Promise<void> {
-  await withPlanningLock(root, (canonicalRoot) =>
-    withProjectLease(canonicalRoot, "state", () => recoverUnlocked(canonicalRoot), lock), lock);
+  await withGenerationLease(root, (generationRoot) => withPlanningLock(generationRoot, (canonicalRoot) =>
+    withProjectLease(canonicalRoot, "state", async () => {
+      await assertProjectMutationNotFrozen(canonicalRoot);
+      await recoverUnlocked(canonicalRoot);
+    }, lock), lock));
 }

@@ -4,8 +4,9 @@ import { closeSync } from "node:fs";
 import { assertGateCurrent } from "../planning/confirm.js";
 import { withProjectLease } from "../project/lock.js";
 import { readOwnedRegularFile } from "../project/safe-file.js";
-import { readProject } from "../project/store.js";
+import { assertProjectMutationNotFrozen, readProject } from "../project/store.js";
 import { openGenerationDirectory } from "../generation/anchored-dir.js";
+import { withGenerationLease } from "../generation/lease.js";
 import { resolveStyleRecipe } from "./catalog.js";
 import {
   StyleLockSchema,
@@ -145,7 +146,8 @@ export async function createProvisionalStyleLock(root: string, input: {
   operations?: { afterLockPublished?: () => Promise<void> | void };
 }): Promise<LockedStyle> {
   const selection = StyleSelectionSchema.parse(input.selection);
-  return withProjectLease(root, "state", async (canonicalRoot) => {
+  return withGenerationLease(root, (generationRoot) => withProjectLease(generationRoot, "state", async (canonicalRoot) => {
+    await assertProjectMutationNotFrozen(canonicalRoot);
     const [manifest, recipe, references] = await Promise.all([
       readProject(canonicalRoot),
       resolveStyleRecipe(selection),
@@ -177,7 +179,7 @@ export async function createProvisionalStyleLock(root: string, input: {
     }
     await createLockFiles(canonicalRoot, recipe, lock, input.operations?.afterLockPublished);
     return { ...lock, styleLockSha256: sha256(canonicalFile(lock)) };
-  });
+  }));
 }
 
 export async function readStyleLock(root: string): Promise<LockedStyle> {
@@ -205,7 +207,8 @@ export async function approveStyleLock(
   root: string,
   options: { operations?: { afterExpectedProvisionalRead?: () => Promise<void> | void } } = {},
 ): Promise<LockedStyle> {
-  return withProjectLease(root, "state", async (canonicalRoot) => {
+  return withGenerationLease(root, (generationRoot) => withProjectLease(generationRoot, "state", async (canonicalRoot) => {
+    await assertProjectMutationNotFrozen(canonicalRoot);
     if (!await assertGateCurrent(canonicalRoot, "style-sample")) {
       throw new Error("style-sample gate must be current before style lock approval");
     }
@@ -231,5 +234,5 @@ export async function approveStyleLock(
     }
     replaceApprovedLock(canonicalRoot, approved);
     return { ...approved, styleLockSha256: sha256(canonicalFile(approved)) };
-  });
+  }));
 }

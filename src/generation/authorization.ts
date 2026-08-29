@@ -12,7 +12,7 @@ import { loadValidatedPlan } from "../planning/load.js";
 import { SlideSpecSchema } from "../planning/schemas.js";
 import { validateExecutionGateEvidence, validateOrdinaryGateEvidence } from "../project/evidence.js";
 import { readOwnedRegularFile, readRegularFileNoFollow } from "../project/safe-file.js";
-import { readProject } from "../project/store.js";
+import { assertProjectMutationNotFrozen, readProject } from "../project/store.js";
 import { canonicalStyleSample } from "../styles/sample-contract.js";
 import { compileSlidePrompt } from "../styles/prompt-compiler.js";
 import { readApprovedStyleLock, readStyleLock, type LockedStyle } from "../styles/style-lock.js";
@@ -224,6 +224,7 @@ export async function publishGenerationAuthorizationPlan(
   request: PlanPublicationRequest,
 ): Promise<GenerationAuthorizationPlan> {
   return withGenerationLease(root, async (canonicalRoot) => {
+    await assertProjectMutationNotFrozen(canonicalRoot);
     await requirePlanningGates(canonicalRoot, true);
     const [ai, manifest, lock, plan] = await Promise.all([
       assertAiImageSkillDependencyCurrent(request.aiDependency),
@@ -259,6 +260,7 @@ export async function publishStyleSampleGenerationPlan(
 ): Promise<GenerationAuthorizationPlan> {
   if (request.callBudget !== 1) throw new Error("style-sample call budget must be exactly 1");
   return withGenerationLease(root, async (canonicalRoot) => {
+    await assertProjectMutationNotFrozen(canonicalRoot);
     await requirePlanningGates(canonicalRoot, false);
     const [ai, manifest, lock, sample, plan] = await Promise.all([
       assertAiImageSkillDependencyCurrent(request.aiDependency),
@@ -292,6 +294,7 @@ export async function publishPageRegenerationAuthorizationPlan(root: string, req
   callBudget: number;
 }): Promise<GenerationAuthorizationPlan> {
   return withGenerationLease(root, async (canonicalRoot) => {
+    await assertProjectMutationNotFrozen(canonicalRoot);
     await requirePlanningGates(canonicalRoot, true);
     const [ai, manifest, lock, plan, currentAuthorization] = await Promise.all([
       assertAiImageSkillDependencyCurrent(request.aiDependency),

@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { syncDirectory, writeDurableExclusive } from "../project/durable.js";
 import { withProjectLease } from "../project/lock.js";
 import { promoteExclusive } from "../project/exclusive.js";
+import { withGenerationLease } from "../generation/lease.js";
 import { readOwnedRegularFile } from "../project/safe-file.js";
 import type { ClientSmokeCopyAnchor, ProjectManifest } from "../project/schemas.js";
 import {
@@ -175,7 +176,7 @@ export async function createClientSmokeCopy(
   root: string,
   operations: ClientSmokeCopyOperations = {},
 ): Promise<PublishedClientSmokeCopy> {
-  return withProjectLease(root, "acceptance-smoke-copy", async (canonicalRoot) => {
+  return withGenerationLease(root, (generationRoot) => withProjectLease(generationRoot, "acceptance-smoke-copy", async (canonicalRoot) => {
     let manifest = await readProject(canonicalRoot);
     const canonical = manifest.exports.pptx;
     const revisionNumber = deckRevisionNumber(manifest);
@@ -227,7 +228,7 @@ export async function createClientSmokeCopy(
     });
     const { currentCopySha256: _current, ...published } = existing;
     return published;
-  });
+  }));
 }
 
 export async function validateRecordedClientSmokeCopy(

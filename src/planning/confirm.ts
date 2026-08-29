@@ -376,8 +376,7 @@ async function approveOrdinaryGate(
     });
     await options.operations?.checkpoint?.("manifest-published");
   }, options.lock);
-  if (gate === "generation-authorization") await withGenerationLease(root, approve);
-  else await approve();
+  await withGenerationLease(root, approve);
 }
 
 export async function approveGate(
@@ -419,7 +418,7 @@ export async function approveExecutionGate(
   if (gate !== "style-sample-generation" || evidencePath !== "style/sample/generation-plan.json") {
     throw new Error("invalid execution authorization");
   }
-  await withPlanningLock(root, async (canonicalRoot) => {
+  await withGenerationLease(root, (generationRoot) => withPlanningLock(generationRoot, async (canonicalRoot) => {
     await updateProject(canonicalRoot, async (manifest) => {
       const artifacts = { [evidencePath]: await readOwnedRegularFile(canonicalRoot, evidencePath) };
       const hashes = hashArtifacts(artifacts);
@@ -455,5 +454,5 @@ export async function approveExecutionGate(
       if (!sameJson(current, hashes)) throw new Error("style-sample-generation evidence changed during approval");
       return next;
     });
-  });
+  }));
 }

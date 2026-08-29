@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
-import { createHash } from "node:crypto";
-import { access, copyFile, mkdir, mkdtemp, readFile, realpath, rename, symlink, unlink, writeFile } from "node:fs/promises";
+import { createHash, createHmac } from "node:crypto";
+import { access, chmod, copyFile, mkdir, mkdtemp, readFile, readdir, realpath, rename, symlink, unlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test, { type TestContext } from "node:test";
@@ -35,9 +35,15 @@ import {
   publishDeckReview,
 } from "../src/project/promotion.js";
 import { ClientSmokeCopyAnchorSchema, ProjectManifestSchema } from "../src/project/schemas.js";
-import { readProject, updateProject } from "../src/project/store.js";
+import {
+  beginProjectRollbackTransaction,
+  commitApprovedImpactRevision,
+  readProject,
+  updateProject,
+  updateProjectWithDelegatedGenerationAttachment,
+} from "../src/project/store.js";
 import * as projectStore from "../src/project/store.js";
-import { applyRevision, approveImpact, publishImpactPlan } from "../src/revisions/apply.js";
+import { applyRevision, approveImpact, publishImpactPlan, recoverRollbackTransaction } from "../src/revisions/apply.js";
 import { finalizeDelegatedStyleSampleForTest } from "./helpers/delegated-style-sample.js";
 
 const execFileAsync = promisify(execFile);
@@ -309,6 +315,21 @@ async function rewriteAcceptanceTransactionForConflictingInput(
     join(root, "output", "revisions", "1", "acceptance-record.json"),
     `${JSON.stringify(forgedAcceptance, null, 2)}\n`,
   );
+  const manifestPath = join(root, "superppt.json");
+  const coordinatedManifest = JSON.parse(await readFile(manifestPath, "utf8"));
+  coordinatedManifest.clientAcceptanceTransaction = {
+    ...coordinatedManifest.clientAcceptanceTransaction,
+    observation: observationArtifact,
+    acceptanceRecord: {
+      path: "output/revisions/1/acceptance-record.json",
+      sha256: createHash("sha256")
+        .update(`${JSON.stringify(forgedAcceptance, null, 2)}\n`)
+        .digest("hex"),
+      revisionId: manifest.currentRevision.id,
+    },
+    confirmedAt: conflicting.confirmedAt,
+  };
+  await writeFile(manifestPath, `${JSON.stringify(coordinatedManifest, null, 2)}\n`);
   const conflictingEvidence = join(root, name);
   await writeFile(conflictingEvidence, `${JSON.stringify(conflicting)}\n`, { mode: 0o600 });
   return conflictingEvidence;
@@ -796,6 +817,15 @@ test("records undo discard reopen evidence while preserving the canonical deck a
   assert.equal(observation.saveDecision, "discarded");
 
   assert.deepEqual(await recordClientAcceptance(fixture.root, evidence), accepted);
+  const acceptanceTrustRoot = join(
+    fixture.root,
+    "..",
+    "authorization-trust",
+    "client-acceptance",
+    delivered.projectId,
+  );
+  assert.equal((await readdir(join(acceptanceTrustRoot, "events"))).length, 2);
+  assert.equal((await readdir(join(acceptanceTrustRoot, "heads"))).length, 2);
   const conflictingReplay = join(fixture.root, "conflicting-discard-replay.json");
   const submitted = JSON.parse(await readFile(evidence, "utf8"));
   await writeFile(conflictingReplay, `${JSON.stringify({
@@ -1250,7 +1280,13 @@ test("derives provider identity from every accepted attempt ledger", async (t) =
 });
 
 test("recovers discard acceptance across observation, record, and manifest publication crashes", async (t) => {
-  for (const checkpoint of ["observation-promoted", "record-promoted", "manifest-updated"] as const) {
+  for (const checkpoint of [
+    "observation-promoted",
+    "record-promoted",
+    "manifest-completed-before-external",
+    "external-completed-committed",
+    "manifest-updated",
+  ] as const) {
     const fixture = await readyProject(t);
     await deliverReviewedCandidate({
       root: fixture.root,
@@ -1263,7 +1299,12 @@ test("recovers discard acceptance across observation, record, and manifest publi
       },
     }), new RegExp(`simulated crash at ${checkpoint}`));
     const crashed = await readProject(fixture.root);
-    assert.equal(crashed.stage, checkpoint === "manifest-updated" ? "delivered" : "assembling");
+    assert.equal(
+      crashed.stage,
+      ["manifest-completed-before-external", "external-completed-committed", "manifest-updated"].includes(checkpoint)
+        ? "delivered"
+        : "assembling",
+    );
     await access(join(fixture.root, "output", "revisions", "1", "acceptance-observation.json"));
     if (checkpoint === "observation-promoted") {
       await assert.rejects(access(join(fixture.root, "output", "revisions", "1", "acceptance-record.json")));
@@ -1286,7 +1327,6 @@ test("first discard commitment rejects coordinated observation and record rewrit
         if (step === checkpoint) throw new Error(`crash before completion at ${checkpoint}`);
       },
     }), new RegExp(`crash before completion at ${checkpoint}`));
-    const committed = await readProject(fixture.root);
     const originalObservation = await readFile(join(fixture.root, "output", "revisions", "1", "acceptance-observation.json"));
     const conflicting = await rewriteAcceptanceTransactionForConflictingInput(
       fixture.root,
@@ -1299,10 +1339,6 @@ test("first discard commitment rejects coordinated observation and record rewrit
       /first-write|commitment|immutable client acceptance transaction/i,
     );
     assert.equal((await readProject(fixture.root)).stage, "assembling");
-    assert.deepEqual(
-      (await readProject(fixture.root)).clientAcceptanceTransaction,
-      committed.clientAcceptanceTransaction,
-    );
 
     const recovered = await recordClientAcceptance(fixture.root, original);
     assert.equal(recovered.deliveryComplete, true);
@@ -1314,7 +1350,252 @@ test("first discard commitment rejects coordinated observation and record rewrit
   }
 });
 
-test("acceptance transaction commitment rejects marker tamper and wrong anchor bindings", async (t) => {
+test("external acceptance commitment freezes mutations before the local marker and exact replay recovers", async (t) => {
+  const fixture = await readyProject(t);
+  await deliverReviewedCandidate({ root: fixture.root, operations: { buildOutputs: fakeOutputs } });
+  const original = await writeCompletedClientEvidence(fixture.root, "external-pending-original.json");
+  await assert.rejects(recordClientAcceptance(fixture.root, original, {
+    checkpoint(step) {
+      if (step === "external-pending-committed") throw new Error("crash after external first write");
+    },
+  }), /crash after external first write/);
+  const before = await readFile(join(fixture.root, "superppt.json"));
+  const projectId = (await readProject(fixture.root)).projectId;
+  assert.equal((await readProject(fixture.root)).clientAcceptanceTransaction, undefined);
+  const trustRoot = join(fixture.root, "..", "authorization-trust");
+  const acceptanceRoot = join(trustRoot, "client-acceptance", projectId);
+  const registryStates = join(trustRoot, "project-registry", projectId, "states");
+  const beforeFrozenEvidence = {
+    events: await readdir(join(acceptanceRoot, "events")),
+    heads: await readdir(join(acceptanceRoot, "heads")),
+    registry: await readdir(registryStates),
+    smoke: await readdir(join(fixture.root, "output", "revisions", "1", "client-smoke")),
+    planningViews: await readFile(join(fixture.root, "planning-views.json")),
+  };
+
+  await assert.rejects(updateProject(fixture.root, (manifest) => ({ ...manifest, title: "forged while pending" })), /client acceptance.*pending|frozen/i);
+  await assert.rejects(updateProjectWithDelegatedGenerationAttachment(fixture.root, (manifest) => ({
+    ...manifest,
+    title: "delegated mutation while pending",
+  })), /client acceptance.*pending|frozen/i);
+  await assert.rejects(commitApprovedImpactRevision(fixture.root, {} as never, {} as never), /client acceptance.*pending|frozen/i);
+  await assert.rejects(beginProjectRollbackTransaction(fixture.root, (await readProject(fixture.root)).currentRevision.id), /client acceptance.*pending|frozen/i);
+  await assert.rejects(recoverRollbackTransaction(fixture.root), /client acceptance.*pending|frozen/i);
+  await assert.rejects(assembleProjectCandidate(fixture.root, { buildOutputs: fakeOutputs }), /client acceptance.*pending|frozen/i);
+  await assert.rejects(applyDeckReviewAction(fixture.root, {} as never), /client acceptance.*pending|frozen/i);
+  await assert.rejects(createClientSmokeCopy(fixture.root), /client acceptance.*pending|frozen/i);
+  await assert.rejects(publishPlanViews(fixture.root), /client acceptance.*pending|frozen/i);
+  await assert.rejects(publishImpactPlan(fixture.root, { kind: "style" }), /client acceptance.*pending|frozen/i);
+  await assert.rejects(access(join(fixture.root, "revisions", "pending-impact.json")));
+  assert.deepEqual(await readFile(join(fixture.root, "superppt.json")), before);
+  assert.deepEqual({
+    events: await readdir(join(acceptanceRoot, "events")),
+    heads: await readdir(join(acceptanceRoot, "heads")),
+    registry: await readdir(registryStates),
+    smoke: await readdir(join(fixture.root, "output", "revisions", "1", "client-smoke")),
+    planningViews: await readFile(join(fixture.root, "planning-views.json")),
+  }, beforeFrozenEvidence);
+
+  const recovered = await recordClientAcceptance(fixture.root, original);
+  assert.equal(recovered.deliveryComplete, true);
+});
+
+test("trusted client acceptance rejects registry, chain, subtree, mode, symlink, truncation, and fork tamper", async (t) => {
+  const fixture = await readyProject(t);
+  await deliverReviewedCandidate({ root: fixture.root, operations: { buildOutputs: fakeOutputs } });
+  const original = await writeCompletedClientEvidence(fixture.root, "external-tamper-original.json");
+  await assert.rejects(recordClientAcceptance(fixture.root, original, {
+    checkpoint(step) {
+      if (step === "external-pending-committed") throw new Error("retain external pending state");
+    },
+  }), /retain external pending state/);
+  const projectId = (await readProject(fixture.root)).projectId;
+  const trustRoot = join(fixture.root, "..", "authorization-trust");
+  const acceptanceRoot = join(trustRoot, "client-acceptance", projectId);
+  const headsRoot = join(acceptanceRoot, "heads");
+  const eventsRoot = join(acceptanceRoot, "events");
+  const headPath = join(headsRoot, (await readdir(headsRoot)).sort().at(-1)!);
+  const eventPath = join(eventsRoot, (await readdir(eventsRoot)).sort().at(-1)!);
+  const statesRoot = join(trustRoot, "project-registry", projectId, "states");
+  const registryPath = join(statesRoot, (await readdir(statesRoot)).sort().at(-1)!);
+  const [headBytes, eventBytes, registryBytes] = await Promise.all([
+    readFile(headPath),
+    readFile(eventPath),
+    readFile(registryPath),
+  ]);
+
+  await chmod(headPath, 0o644);
+  await assert.rejects(recordClientAcceptance(fixture.root, original), /mode 0600|trusted client acceptance head/i);
+  await chmod(headPath, 0o600);
+
+  const tamperedHead = JSON.parse(headBytes.toString("utf8"));
+  tamperedHead.eventSha256 = "f".repeat(64);
+  await writeFile(headPath, `${JSON.stringify(tamperedHead, null, 2)}\n`, { mode: 0o600 });
+  await assert.rejects(recordClientAcceptance(fixture.root, original), /signature|trusted client acceptance head/i);
+  await writeFile(headPath, headBytes, { mode: 0o600 });
+
+  await chmod(eventPath, 0o644);
+  await assert.rejects(recordClientAcceptance(fixture.root, original), /mode 0600|trusted client acceptance event/i);
+  await chmod(eventPath, 0o600);
+
+  const tamperedEvent = JSON.parse(eventBytes.toString("utf8"));
+  tamperedEvent.commitment.confirmedAt = "2039-01-01T00:00:00.000Z";
+  await writeFile(eventPath, `${JSON.stringify(tamperedEvent, null, 2)}\n`, { mode: 0o600 });
+  await assert.rejects(recordClientAcceptance(fixture.root, original), /signature|trusted client acceptance event/i);
+  await writeFile(eventPath, eventBytes, { mode: 0o600 });
+
+  await unlink(eventPath);
+  await assert.rejects(recordClientAcceptance(fixture.root, original), /event.*missing|missing.*event|digest/i);
+  await writeFile(eventPath, eventBytes, { mode: 0o600 });
+
+  await unlink(headPath);
+  await assert.rejects(recordClientAcceptance(fixture.root, original), /high-water|missing|truncated/i);
+  await writeFile(headPath, headBytes, { mode: 0o600 });
+
+  const forkName = "0000000000000002-00000000-0000-4000-8000-000000000998.json";
+  await writeFile(join(eventsRoot, forkName), eventBytes, { mode: 0o600 });
+  await assert.rejects(recordClientAcceptance(fixture.root, original), /missing, truncated, or forked|event history|orphan event conflicts/i);
+  await unlink(join(eventsRoot, forkName));
+
+  const tamperedRegistry = JSON.parse(registryBytes.toString("utf8"));
+  tamperedRegistry.clientAcceptance.headSha256 = "e".repeat(64);
+  await writeFile(registryPath, `${JSON.stringify(tamperedRegistry, null, 2)}\n`, { mode: 0o600 });
+  await assert.rejects(recordClientAcceptance(fixture.root, original), /registry state|signature|tampered/i);
+  await writeFile(registryPath, registryBytes, { mode: 0o600 });
+
+  const detached = `${acceptanceRoot}.detached`;
+  await rename(acceptanceRoot, detached);
+  await symlink(detached, acceptanceRoot);
+  await assert.rejects(recordClientAcceptance(fixture.root, original), /client acceptance directory is unsafe|symbolic link/i);
+  await unlink(acceptanceRoot);
+  await rename(detached, acceptanceRoot);
+
+  await rename(acceptanceRoot, detached);
+  await assert.rejects(recordClientAcceptance(fixture.root, original), /high-water|missing/i);
+  await rename(detached, acceptanceRoot);
+
+  await configureGenerationAuthorizationTrustForTests(fixture.root, {
+    root: trustRoot,
+    deterministicKeySeed: `superppt-deck-test:${fixture.root}`,
+    operations: { limits: { acceptanceHeads: 0 } },
+  });
+  await assert.rejects(recordClientAcceptance(fixture.root, original), /client acceptance head (?:directory|history) is too large/i);
+  await configureGenerationAuthorizationTrustForTests(fixture.root, {
+    root: trustRoot,
+    deterministicKeySeed: `superppt-deck-test:${fixture.root}`,
+  });
+
+  assert.equal((await recordClientAcceptance(fixture.root, original)).deliveryComplete, true);
+});
+
+test("registry V1 generation trust migrates to V2 without invalidating authorization history", async (t) => {
+  const fixture = await readyProject(t);
+  await deliverReviewedCandidate({ root: fixture.root, operations: { buildOutputs: fakeOutputs } });
+  const manifest = await readProject(fixture.root);
+  const trustRoot = join(fixture.root, "..", "authorization-trust");
+  const statesRoot = join(trustRoot, "project-registry", manifest.projectId, "states");
+  const statePath = join(statesRoot, (await readdir(statesRoot)).sort().at(-1)!);
+  const current = JSON.parse(await readFile(statePath, "utf8"));
+  const { signature: _signature, clientAcceptance: _acceptance, ...unsigned } = current;
+  const v1 = { ...unsigned, schemaVersion: 1 };
+  const key = createHash("sha256").update(`superppt-deck-test:${fixture.root}`).digest();
+  const signature = createHmac("sha256", key).update(JSON.stringify(v1)).digest("hex");
+  await writeFile(statePath, `${JSON.stringify({ ...v1, signature }, null, 2)}\n`, { mode: 0o600 });
+
+  const evidence = await writeCompletedClientEvidence(fixture.root, "v1-registry-acceptance.json");
+  assert.equal((await recordClientAcceptance(fixture.root, evidence)).deliveryComplete, true);
+  const latest = JSON.parse(await readFile(
+    join(statesRoot, (await readdir(statesRoot)).sort().at(-1)!),
+    "utf8",
+  ));
+  assert.equal(latest.schemaVersion, 2);
+  assert.equal(latest.clientAcceptance.sequence, 2);
+});
+
+test("trusted client acceptance recovers every external pending publication checkpoint", async (t) => {
+  for (const checkpoint of [
+    "acceptance-event-temp-synced",
+    "acceptance-event-published",
+    "acceptance-head-temp-synced",
+    "acceptance-head-published",
+    "registry-before-acceptance-advance",
+  ] as const) {
+    await t.test(checkpoint, async (t) => {
+      const fixture = await readyProject(t);
+      await deliverReviewedCandidate({ root: fixture.root, operations: { buildOutputs: fakeOutputs } });
+      const evidence = await writeCompletedClientEvidence(fixture.root, `external-${checkpoint}.json`);
+      const trustRoot = join(fixture.root, "..", "authorization-trust");
+      await configureGenerationAuthorizationTrustForTests(fixture.root, {
+        root: trustRoot,
+        deterministicKeySeed: `superppt-deck-test:${fixture.root}`,
+        operations: {
+          checkpoint(step) {
+            if (step === checkpoint) throw new Error(`injected ${checkpoint}`);
+          },
+        },
+      });
+      await assert.rejects(recordClientAcceptance(fixture.root, evidence), new RegExp(`injected ${checkpoint}`));
+
+      await configureGenerationAuthorizationTrustForTests(fixture.root, {
+        root: trustRoot,
+        deterministicKeySeed: `superppt-deck-test:${fixture.root}`,
+      });
+      if (checkpoint === "registry-before-acceptance-advance") {
+        const projectId = (await readProject(fixture.root)).projectId;
+        const statesRoot = join(trustRoot, "project-registry", projectId, "states");
+        const statesBeforeBlockedMutation = await readdir(statesRoot);
+        await assert.rejects(
+          updateProject(fixture.root, (manifest) => ({ ...manifest, title: "must stay frozen" })),
+          /client acceptance recovery is required|client acceptance.*pending|frozen/i,
+        );
+        assert.deepEqual(await readdir(statesRoot), statesBeforeBlockedMutation);
+      }
+      assert.equal((await recordClientAcceptance(fixture.root, evidence)).deliveryComplete, true);
+    });
+  }
+});
+
+test("trusted client acceptance recovers every external completion publication checkpoint", async (t) => {
+  for (const checkpoint of [
+    "acceptance-event-temp-synced",
+    "acceptance-event-published",
+    "acceptance-head-temp-synced",
+    "acceptance-head-published",
+    "registry-before-acceptance-advance",
+  ] as const) {
+    await t.test(checkpoint, async (t) => {
+      const fixture = await readyProject(t);
+      await deliverReviewedCandidate({ root: fixture.root, operations: { buildOutputs: fakeOutputs } });
+      const evidence = await writeCompletedClientEvidence(fixture.root, `external-complete-${checkpoint}.json`);
+      const trustRoot = join(fixture.root, "..", "authorization-trust");
+      let occurrences = 0;
+      await configureGenerationAuthorizationTrustForTests(fixture.root, {
+        root: trustRoot,
+        deterministicKeySeed: `superppt-deck-test:${fixture.root}`,
+        operations: {
+          checkpoint(step) {
+            if (step === checkpoint && ++occurrences === 2) {
+              throw new Error(`injected completion ${checkpoint}`);
+            }
+          },
+        },
+      });
+      await assert.rejects(
+        recordClientAcceptance(fixture.root, evidence),
+        new RegExp(`injected completion ${checkpoint}`),
+      );
+      assert.equal((await readProject(fixture.root)).stage, "delivered");
+
+      await configureGenerationAuthorizationTrustForTests(fixture.root, {
+        root: trustRoot,
+        deterministicKeySeed: `superppt-deck-test:${fixture.root}`,
+      });
+      assert.equal((await recordClientAcceptance(fixture.root, evidence)).deliveryComplete, true);
+    });
+  }
+});
+
+test("acceptance transaction commitment repairs marker tamper only on exact original replay and rejects wrong anchor bindings", async (t) => {
   const fixture = await readyProject(t);
   await deliverReviewedCandidate({ root: fixture.root, operations: { buildOutputs: fakeOutputs } });
   const evidence = await writeCompletedClientEvidence(fixture.root, "committed-marker.json");
@@ -1343,10 +1624,7 @@ test("acceptance transaction commitment rejects marker tamper and wrong anchor b
   const raw = JSON.parse(await readFile(manifestPath, "utf8"));
   raw.clientAcceptanceTransaction.observation.sha256 = "c".repeat(64);
   await writeFile(manifestPath, `${JSON.stringify(raw, null, 2)}\n`);
-  await assert.rejects(
-    recordClientAcceptance(fixture.root, evidence),
-    /first-write|commitment|immutable client acceptance transaction/i,
-  );
+  assert.equal((await recordClientAcceptance(fixture.root, evidence)).deliveryComplete, true);
 });
 
 test("client acceptance input rejects a pathname swap through its anchored CLI reader", async (t) => {
