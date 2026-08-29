@@ -452,7 +452,9 @@ async function persistProject(
     throw new Error("project directory is not owned by SuperPPT");
   }
   assertRevisionEvolution(owned.manifest, valid);
-  if (mode !== "delegated-generation-attach") assertGenerationHistoryUnchanged(owned.manifest, valid);
+  if (mode !== "delegated-generation-attach" && mode !== "rollback-finish") {
+    assertGenerationHistoryUnchanged(owned.manifest, valid);
+  }
   await assertControlledRevisionTrust(owned.root, owned.manifest, valid, mode);
   const snapshotBase = mode === "rollback-finish" && owned.manifest.rollbackTransaction
     ? ProjectManifestSchema.parse((({ rollbackTransaction: _marker, ...base }) => base)(owned.manifest))

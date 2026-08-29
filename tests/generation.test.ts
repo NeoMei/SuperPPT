@@ -52,7 +52,13 @@ import { initializeProject } from "../src/project/initialize.js";
 import { addDescriptorIntegrity, sha256Evidence, snapshotManifestEvidenceHash } from "../src/project/evidence.js";
 import { ProjectManifestSchema } from "../src/project/schemas.js";
 import { readProject } from "../src/project/store.js";
-import { applyRevision, approveImpact, publishImpactPlan } from "../src/revisions/apply.js";
+import {
+  applyRevision,
+  approveImpact,
+  publishImpactPlan,
+  recoverRollbackTransaction,
+  rollbackToRevision,
+} from "../src/revisions/apply.js";
 import { loadBuiltInStyleCatalog } from "../src/styles/catalog.js";
 import { compileSlidePrompt } from "../src/styles/prompt-compiler.js";
 import { approveStyleLock, createProvisionalStyleLock, readApprovedStyleLock } from "../src/styles/style-lock.js";
@@ -386,7 +392,7 @@ async function fakeCandidateOutputs(
   await buildMontage(renders, paths.montage);
 }
 
-test("older delegated replay cannot replace a newer authenticated regeneration in manifest or candidate", async (t) => {
+test("older delegated replay stays read-only and rollback restores the exact authenticated target history", async (t) => {
   const fixture = await approvedProject(t, "superppt-monotonic-attachment-", lockedStyle);
   await approveStyleLock(fixture.root);
   await publishGenerationAuthorizationPlan(fixture.root, {
@@ -473,6 +479,148 @@ test("older delegated replay cannot replace a newer authenticated regeneration i
     path: newerArtifact.path,
     sha256: newerArtifact.sha256,
   });
+
+  const targetPrompt = `${regeneration.pages[0]!.finalPrompt}\n\nCorrection: add an authenticated rollback focal point.`;
+  await publishPageRegenerationAuthorizationPlan(fixture.root, {
+    aiDependency: fixture.aiDependency,
+    slideId: original.slideId,
+    previousPromptSha256: regeneration.pages[0]!.promptSha256,
+    finalPrompt: targetPrompt,
+    callBudget: 1,
+  });
+  await approveGate(fixture.root, "generation-authorization");
+  const targetRegeneration = await prepareImageGenerationJob(fixture.root, {
+    kind: "page-regeneration",
+    aiDependency: fixture.aiDependency,
+    slideId: original.slideId,
+    previousPromptSha256: regeneration.pages[0]!.promptSha256,
+    finalPrompt: targetPrompt,
+  });
+  const targetResult = await recordDelegatedResult(fixture.root, await admittedApiSuccessIntake(
+    fixture.root,
+    targetRegeneration,
+    targetRegeneration.pages[0]!,
+    1,
+    regenerationReport,
+    "#c0ffee",
+  ));
+  const targetArtifact = targetResult.pages[0]!.artifacts!.normalized;
+  const targetProjectManifest = await readProject(fixture.root);
+  const targetRevisionId = targetProjectManifest.currentRevision.id;
+  const targetSlide = targetProjectManifest.slides.find(({ id }) => id === original.slideId)!;
+  assert.equal(targetSlide.generationHistory?.length, 2);
+  assert.deepEqual(targetSlide.image, targetArtifact);
+  const impact = await publishImpactPlan(fixture.root, { kind: "outline-order" });
+  await approveImpact(fixture.root, impact.sha256);
+  await applyRevision(fixture.root, impact, impact.change);
+  await publishPlanViews(fixture.root);
+  await approveGate(fixture.root, "outline");
+  await approveGate(fixture.root, "slide-specs");
+  await unlink(join(fixture.root, "style", "lock.json"));
+  await unlink(join(fixture.root, "style", "recipe.json"));
+  await createProvisionalStyleLock(fixture.root, lockedStyle);
+  await finalizeDelegatedStyleSampleForTest(fixture.root);
+  await approveStyleLock(fixture.root);
+  await publishGenerationAuthorizationPlan(fixture.root, {
+    aiDependency: fixture.aiDependency,
+    callBudget: 3,
+  });
+  await approveGate(fixture.root, "generation-authorization");
+  const latest = await prepareDeckJob(fixture.root, fixture.aiDependency);
+  const latestResult = await recordDelegatedResult(fixture.root, await admittedApiSuccessIntake(
+    fixture.root,
+    latest,
+    latest.pages[0]!,
+    1,
+    regenerationReport,
+    "#fedcba",
+  ));
+  const latestArtifact = latestResult.pages[0]!.artifacts!.normalized;
+  const beforeRollback = await readProject(fixture.root);
+  const latestSlide = beforeRollback.slides.find(({ id }) => id === original.slideId)!;
+  assert.equal(latestSlide.generationHistory?.length, 3);
+  assert.deepEqual(latestSlide.image, latestArtifact);
+
+  await assert.rejects(rollbackToRevision(fixture.root, targetRevisionId, {
+    operations: {
+      rollbackCheckpoint: (step) => {
+        if (step === "manifest-published") throw new Error("crash after history restore");
+      },
+    },
+  }), /crash after history restore/);
+  await rollbackToRevision(fixture.root, targetRevisionId);
+
+  const rolledBack = await readProject(fixture.root);
+  const restored = rolledBack.slides.find(({ id }) => id === original.slideId)!;
+  assert.deepEqual(restored.generationHistory, targetSlide.generationHistory);
+  assert.deepEqual(restored.image, targetSlide.image);
+  assert.deepEqual(restored.finalRender, targetSlide.finalRender);
+
+  await assert.rejects(rollbackToRevision(fixture.root, targetRevisionId, {
+    operations: {
+      rollbackCheckpoint: (step) => {
+        if (step === "marker-published") throw new Error("leave authenticated history journal");
+      },
+    },
+  }), /leave authenticated history journal/);
+  const journalRoot = join(fixture.root, "revisions", "rollback-transaction");
+  const journalPath = join(journalRoot, "journal.json");
+  const rollbackManifestPath = join(journalRoot, "rollback-superppt.json");
+  const [journalBytes, rollbackManifestBytes] = await Promise.all([
+    readFile(journalPath),
+    readFile(rollbackManifestPath),
+  ]);
+  const originalRollbackManifest = JSON.parse(rollbackManifestBytes.toString("utf8"));
+  const originalHistory = originalRollbackManifest.slides
+    .find(({ id }: { id: string }) => id === original.slideId).generationHistory;
+  assert.equal(originalHistory.length, 2);
+  const historyForgeries = [
+    { name: "missing", history: undefined },
+    { name: "truncated", history: originalHistory.slice(0, 1) },
+    { name: "reordered", history: [...originalHistory].reverse() },
+    { name: "extended", history: [...originalHistory, originalHistory[0]] },
+    { name: "forged", history: [{ ...originalHistory[0], jobId: randomUUID() }, originalHistory[1]] },
+  ] as const;
+  for (const forgery of historyForgeries) {
+    const forgedRollbackManifest = structuredClone(originalRollbackManifest);
+    const forgedSlide = forgedRollbackManifest.slides.find(({ id }: { id: string }) => id === original.slideId);
+    if (forgery.history === undefined) delete forgedSlide.generationHistory;
+    else forgedSlide.generationHistory = forgery.history;
+    const forgedRollbackBytes = Buffer.from(`${JSON.stringify(forgedRollbackManifest, null, 2)}\n`);
+    const forgedJournal = JSON.parse(journalBytes.toString("utf8"));
+    forgedJournal.rollbackManifestSha256 = sha256(forgedRollbackBytes);
+    forgedJournal.rollbackManifestSize = forgedRollbackBytes.length;
+    const { descriptorSha256: _descriptor, ...forgedJournalBase } = forgedJournal;
+    forgedJournal.descriptorSha256 = sha256(JSON.stringify(forgedJournalBase));
+    await writeFile(rollbackManifestPath, forgedRollbackBytes);
+    await writeFile(journalPath, `${JSON.stringify(forgedJournal, null, 2)}\n`);
+    await assert.rejects(
+      recoverRollbackTransaction(fixture.root),
+      /rollback journal target snapshot or restored generation history is invalid/,
+      forgery.name,
+    );
+  }
+
+  await writeFile(rollbackManifestPath, rollbackManifestBytes);
+  await writeFile(journalPath, journalBytes);
+  await recoverRollbackTransaction(fixture.root);
+  const targetSnapshotRoot = join(fixture.root, "revisions", targetRevisionId, "manifest-snapshot");
+  const targetManifestPath = join(targetSnapshotRoot, "superppt.json");
+  const targetDescriptorPath = join(targetSnapshotRoot, "snapshot.json");
+  const targetManifest = JSON.parse(await readFile(targetManifestPath, "utf8"));
+  targetManifest.slides.find(({ id }: { id: string }) => id === original.slideId).generationHistory = [];
+  const forgedTargetBytes = Buffer.from(`${JSON.stringify(targetManifest, null, 2)}\n`);
+  const targetDescriptor = JSON.parse(await readFile(targetDescriptorPath, "utf8"));
+  targetDescriptor.manifestSha256 = sha256(forgedTargetBytes);
+  targetDescriptor.manifestSize = forgedTargetBytes.length;
+  const { descriptorSha256: _targetDescriptor, ...targetDescriptorBase } = targetDescriptor;
+  targetDescriptor.descriptorSha256 = sha256(JSON.stringify(targetDescriptorBase));
+  await writeFile(targetManifestPath, forgedTargetBytes);
+  await writeFile(targetDescriptorPath, `${JSON.stringify(targetDescriptor, null, 2)}\n`);
+  await assert.rejects(
+    rollbackToRevision(fixture.root, targetRevisionId),
+    /rollback target snapshot descriptor anchor mismatch/,
+  );
 });
 
 test("serial delegated deck preparation requires every current approval gate", async (t) => {

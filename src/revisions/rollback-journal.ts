@@ -12,6 +12,7 @@ import {
   type RevisionEvidenceOperations,
   withAnchoredRevisions,
 } from "./anchored-fs.js";
+import { readRevisionSnapshot } from "./snapshot.js";
 
 const HashSchema = z.string().regex(/^[a-f0-9]{64}$/);
 const BlobSchema = z.object({
@@ -56,6 +57,10 @@ type ReadJournal = {
 };
 
 type RollbackManifestFactory = (transactionAnchorSha256: string) => ProjectManifest;
+
+function sameJson(left: unknown, right: unknown): boolean {
+  return JSON.stringify(left) === JSON.stringify(right);
+}
 
 function sameList(left: readonly string[], right: readonly string[]): boolean {
   return JSON.stringify(left) === JSON.stringify(right);
@@ -170,6 +175,41 @@ function readJournalDirectory(directory: AnchoredDirectory): ReadJournal {
   return { journal, rollbackManifest, before, after };
 }
 
+async function assertAuthenticatedRollbackTarget(
+  root: string,
+  evidence: ReadJournal,
+  operations?: RevisionEvidenceOperations,
+): Promise<void> {
+  let target: Awaited<ReturnType<typeof readRevisionSnapshot>>;
+  try {
+    target = await readRevisionSnapshot(root, evidence.journal.targetRevisionId, operations);
+  } catch (error: unknown) {
+    throw new Error("rollback journal target snapshot is missing, unsafe, or unauthentic", { cause: error });
+  }
+  const rollback = evidence.rollbackManifest;
+  const targetIndex = rollback.revisions.findIndex(({ id }) => id === evidence.journal.targetRevisionId);
+  const baseIndex = rollback.revisions.findIndex(({ id }) => id === evidence.journal.baseRevisionId);
+  const targetChild = rollback.revisions[targetIndex + 1];
+  const expected = ProjectManifestSchema.parse({
+    ...target.manifest,
+    currentRevision: rollback.currentRevision,
+    revisions: rollback.revisions,
+    gates: rollback.gates,
+  });
+  if (
+    target.descriptor.projectId !== evidence.journal.projectId
+    || target.manifest.projectId !== evidence.journal.projectId
+    || targetIndex < 0
+    || baseIndex < targetIndex
+    || baseIndex !== rollback.revisions.length - 2
+    || !sameJson(target.manifest.revisions, rollback.revisions.slice(0, targetIndex + 1))
+    || !targetChild
+    || targetChild.parentId !== evidence.journal.targetRevisionId
+    || targetChild.parentSnapshotDescriptorSha256 !== target.descriptor.descriptorSha256
+    || !sameJson(rollback, expected)
+  ) throw new Error("rollback journal target snapshot or restored generation history is invalid");
+}
+
 export async function publishRollbackJournal(options: {
   root: string;
   current: ProjectManifest;
@@ -262,7 +302,7 @@ export async function readRollbackJournal(
   operations?: RevisionEvidenceOperations,
 ): Promise<ReadJournal> {
   try {
-    return await withAnchoredRevisions(root, operations, (revisions) => {
+    const evidence = await withAnchoredRevisions(root, operations, (revisions) => {
       const active = revisions.child(ACTIVE_ROLLBACK_TRANSACTION, false);
       try {
         return readJournalDirectory(active);
@@ -270,6 +310,8 @@ export async function readRollbackJournal(
         active.close();
       }
     });
+    await assertAuthenticatedRollbackTarget(root, evidence, operations);
+    return evidence;
   } catch (error: unknown) {
     const message = (error as Error).message;
     if (message.startsWith("rollback journal")) throw error;

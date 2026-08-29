@@ -486,6 +486,7 @@ test("restores authenticated fixed planning artifacts from the rollback target",
   assert.deepEqual(await readFile(executionPath), v1Execution);
   assert.equal(rolledBack.revisions.length, before.revisions.length + 1);
   assert.deepEqual(rolledBack.gates, before.gates);
+  assert.ok(rolledBack.slides.every((slide) => (slide.generationHistory ?? []).length === 0));
   assert.equal(rolledBack.brief, null);
 });
 
