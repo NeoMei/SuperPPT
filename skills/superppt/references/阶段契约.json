@@ -4,73 +4,97 @@
     {
       "id": "outline",
       "kind": "ordinary",
+      "interaction": "human",
+      "action": "wait",
+      "mustWaitForUser": true,
       "inputs": ["brief.json", "source/original.md", "material answers gathered one at a time"],
       "userVisibleArtifact": "完整大纲：页码、稳定页面 ID、标题、页面角色、目的和来源覆盖",
       "allowedNextActions": ["approve-outline", "revise-outline", "return-to-intake"],
-      "invalidationDependencies": ["slide-specs", "style-sample", "generation-authorization", "deck-review"],
+      "invalidationDependencies": ["slide-specs", "style-sample-generation", "style-sample", "generation-authorization", "deck-review", "formal-delivery", "acceptance-evidence"],
       "canSpendImageCalls": false
     },
     {
       "id": "slide-specs",
       "kind": "ordinary",
+      "interaction": "human",
+      "action": "wait",
+      "mustWaitForUser": true,
       "inputs": ["approved outline", "source evidence", "all slides/<stable-id>/spec.json"],
       "userVisibleArtifact": "逐页描述：核心信息、精确文字、视觉主体、构图关系、来源证据和禁用内容",
       "allowedNextActions": ["approve-slide-specs", "revise-one-or-more-slide-specs", "return-to-outline"],
-      "invalidationDependencies": ["style-sample", "generation-authorization", "deck-review"],
+      "invalidationDependencies": ["style-sample-generation", "style-sample", "generation-authorization", "deck-review", "formal-delivery", "acceptance-evidence"],
       "canSpendImageCalls": false
     },
     {
       "id": "style-sample",
       "kind": "ordinary",
-      "inputs": ["single Style Lock", "authenticated real sample", "representative slide spec"],
+      "interaction": "human",
+      "action": "wait",
+      "mustWaitForUser": true,
+      "inputs": ["provisional single Style Lock awaiting sample approval", "authenticated real sample receipt", "representative slide spec"],
       "userVisibleArtifact": "真实样页及其代表页、Style Lock 和调用结果证据",
       "allowedNextActions": ["approve-style-sample", "revise-style", "revise-representative-slide", "return-to-slide-specs"],
-      "invalidationDependencies": ["generation-authorization", "deck-review"],
+      "invalidationDependencies": ["generation-authorization", "deck-review", "formal-delivery", "acceptance-evidence"],
       "canSpendImageCalls": false
     },
     {
       "id": "generation-authorization",
       "kind": "ordinary",
-      "inputs": ["approved Style Lock", "approved real sample", "immutable deck job disclosure", "call budget"],
+      "interaction": "human",
+      "action": "wait",
+      "mustWaitForUser": true,
+      "inputs": ["approved Style Lock", "authenticated non-null approved sample", "immutable deck job disclosure", "call budget"],
       "userVisibleArtifact": "整套生成授权：所有出站提示词、参考图用途、页数、调用次数、输出位置及宿主调用说明",
       "allowedNextActions": ["authorize-once-and-start-serial-generation", "revise-inputs", "return-to-style-sample"],
-      "invalidationDependencies": ["deck-review"],
+      "invalidationDependencies": ["deck-review", "formal-delivery", "acceptance-evidence"],
       "canSpendImageCalls": true
     },
     {
       "id": "deck-review",
       "kind": "ordinary",
+      "interaction": "human",
+      "action": "wait",
+      "mustWaitForUser": true,
       "inputs": ["review-only candidate descriptor", "candidate montage", "page QA evidence"],
       "userVisibleArtifact": "候选稿 montage 和逐页审阅证据，不是正式交付",
       "allowedNextActions": ["edit-page", "return-upstream", "confirm-delivery"],
-      "invalidationDependencies": ["formal delivery", "acceptance evidence"],
+      "invalidationDependencies": ["formal-delivery", "acceptance-evidence"],
       "canSpendImageCalls": false
     },
     {
       "id": "style-sample-generation",
       "kind": "execution-authorization",
-      "inputs": ["provisional single Style Lock", "representative page immutable prompt", "one-call outbound disclosure"],
+      "interaction": "human",
+      "action": "wait",
+      "mustWaitForUser": true,
+      "inputs": ["provisional single Style Lock with exact recipe/hash/reference snapshots and approvedSample:null", "representative page immutable spec and prompt", "one-call outbound authorization"],
       "userVisibleArtifact": "样页生成授权：精确出站提示词、参考图用途、一次调用、输出位置及宿主调用说明",
       "allowedNextActions": ["authorize-one-sample-call", "revise-style-selection", "return-to-slide-specs"],
-      "invalidationDependencies": ["style-sample", "generation-authorization", "deck-review"],
+      "invalidationDependencies": ["style-sample", "generation-authorization", "deck-review", "formal-delivery", "acceptance-evidence"],
       "canSpendImageCalls": true
     },
     {
       "id": "revision-impact",
       "kind": "conditional",
+      "interaction": "human",
+      "action": "wait",
+      "mustWaitForUser": true,
       "inputs": ["requested earlier-stage change", "current revision identity", "immutable impact plan"],
       "userVisibleArtifact": "受影响稳定页面 ID、失效下游产物、恢复阶段和 impact plan 哈希",
       "allowedNextActions": ["approve-impact", "revise-change-request", "reject-and-keep-current-revision"],
-      "invalidationDependencies": ["only the downstream slides and exports named by the impact plan"],
+      "invalidationDependencies": ["approved-impact-plan.staleSlideIds", "approved-impact-plan.restartStage-and-downstream-gates", "formal-delivery", "acceptance-evidence"],
       "canSpendImageCalls": false
     },
     {
       "id": "slide-preview",
       "kind": "conditional",
+      "interaction": "human",
+      "action": "wait",
+      "mustWaitForUser": true,
       "inputs": ["one action-bound selected slide", "editable or regenerated candidate", "before-and-after preview"],
       "userVisibleArtifact": "选中单页的修改前后预览、编辑路由和稳定页面 ID",
       "allowedNextActions": ["approve-and-replace-selected-slide", "revise-selected-slide", "reject-and-keep-current-deck"],
-      "invalidationDependencies": ["candidate montage", "deck-review"],
+      "invalidationDependencies": ["candidate-montage", "deck-review", "formal-delivery", "acceptance-evidence"],
       "canSpendImageCalls": false
     }
   ],
@@ -98,7 +122,25 @@
       "reviewActions": ["edit-page", "return-upstream", "confirm-delivery"]
     },
     "smoke": {
-      "copyDisposition": "discard-no-save"
+      "copyDisposition": "discard-no-save",
+      "runtimeState": "task-11-save-based-incompatible",
+      "acceptanceRecordAction": "blocked-until-task-12",
+      "intermediateEvidence": "human-pending-acceptance-report"
+    },
+    "jobInputs": {
+      "styleSample": {
+        "styleLockState": "provisional",
+        "approvedSample": "must-be-null",
+        "required": ["exact-recipe-and-hash", "reference-snapshots", "representative-page-spec-and-prompt", "one-call-authorization"]
+      },
+      "deckAndPageRegeneration": {
+        "styleLockState": "approved",
+        "approvedSample": "authenticated-non-null",
+        "required": ["exact-recipe-and-hash", "reference-snapshots", "page-specific-spec-and-prompt", "generation-authorization"]
+      }
+    },
+    "changeInvalidation": {
+      "style": ["style-sample-generation", "style-sample", "generation-authorization", "deck-review", "formal-delivery", "acceptance-evidence"]
     }
   }
 }

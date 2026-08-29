@@ -7,7 +7,7 @@ description: Guide users from a topic, pasted content, or Markdown to a high-det
 
 Use a real guided conversation. The visible route is：内容导入/描述 → 针对内容追问 → `outline` → `slide-specs` → 紧凑单选风格 → `style-sample-generation` → `style-sample` → `generation-authorization` → 逐页串行生成 → `deck-review` → 修改某页 / 返回前序 / 确认交付。每个用户决定都要停下来等待；不得从导入静默跑到最终 PPT，也不得把反馈拖到交付时才收集。
 
-Before advancing, read [references/阶段契约.json](references/阶段契约.json). It is the 唯一 wait/continue authority. 每次只问一个与当前内容直接相关的问题，或展示一组当前决定；同时摘要已经知道的内容，让用户能即时纠正。确认建立可恢复基线，不锁死前序阶段。
+Before advancing, read [references/阶段契约.json](references/阶段契约.json). It is the 唯一 wait/continue authority. Its eight entries are all mandatory user waits: stop, present that entry's `userVisibleArtifact`, and wait for one of its `allowedNextActions`. Machine validation cannot advance a stage or imply approval. 每次只问一个与当前内容直接相关的问题，或展示一组当前决定；同时摘要已经知道的内容，让用户能即时纠正。确认建立可恢复基线，不锁死前序阶段。
 
 ## Start or resume
 
@@ -25,7 +25,7 @@ After outline approval, author every `slides/<stable-id>/spec.json`/`.md`. Make 
 
 Read `assets/styles/catalog.json`. Recommend a content-relevant compact subset—通常只推荐三种—using the real preview images in one tight grid. Each card carries high-information recipe cues for palette, medium/material, lighting, composition, and detail language; offer the remaining catalog only on request. 风格只能单选；never multi-select, accept a dependency default, or use oversized empty cards.
 
-Persist exactly one immutable Style Lock with `applyDependencyDefaultStyle: false`. Pass the exact recipe and hash, approved sample, page spec, compiled prompt, and reference bytes/paths/hashes unchanged into every immutable `ai-image-to-ppt` job. If provider/channel changes, do not ask the user to restate the approved style. SuperPPT performs editorial planning; it does not render images, choose a provider, or alter the dependency's host routing.
+Persist exactly one immutable Style Lock with `applyDependencyDefaultStyle: false`. A style-sample job binds the provisional Style Lock's exact recipe/hash/reference snapshots with `approvedSample: null`, plus the representative page spec/prompt and one-call authorization. Only the authenticated sample can promote that lock. Deck and page-regeneration jobs instead require the approved Style Lock with an authenticated non-null approved sample, plus each page-specific spec/prompt and generation authorization. Pass every sealed byte/path/hash unchanged. If provider/channel changes, do not ask the user to restate the approved style. SuperPPT performs editorial planning; it does not render images, choose a provider, or alter the dependency's host routing.
 
 ## Rich, auditable prompts
 
@@ -51,6 +51,8 @@ Read [references/门禁清单.md](references/门禁清单.md) whenever presentin
 
 ## Delivery acceptance
 
-Run `npm run cli -- acceptance-smoke-copy --project <root>` and open only its controlled `deck-smoke.pptx` in WPS or PowerPoint. Choose and record one 选定对象, temporarily edit that specific text/object, record the 观察到的修改, undo and record the 撤销结果, choose discard/no-save and record the 丢弃结果, close, reopen, and record the 重开结果 showing the original is intact. Then pass the private `0600` record to `npm run cli -- acceptance-record --project <root> --input <file>`.
+Run `npm run cli -- acceptance-smoke-copy --project <root>` and open only its controlled `deck-smoke.pptx` in WPS or PowerPoint. Choose and record one 选定对象, temporarily edit that specific text/object, record the 观察到的修改, undo and record the 撤销结果, choose discard/no-save and record the 丢弃结果, close, reopen, and record the 重开结果 showing the original is intact.
+
+Task 11 is an intermediate runtime: `acceptance-record` still requires `saved:true` and a changed copy hash, so it is incompatible with discard evidence. Record these observations in the human pending-acceptance report, mark client 验收待完成, and do **not** invoke `npm run cli -- acceptance-record --project <root> --input <file>` for this flow. That route remains blocked until Task 12 migrates the schema/runtime; never forge save evidence to satisfy it.
 
 Never open or save canonical `output/revisions/<n>/deck.pptx` for smoke testing, and never tell the client to save the smoke edit. If client control is unavailable, report acceptance pending. On any failure, keep the previous deliverable unchanged and report the exact resumable stage.

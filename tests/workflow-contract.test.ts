@@ -15,6 +15,9 @@ type GateKind = "ordinary" | "execution-authorization" | "conditional";
 type StageEntry = {
   id: string;
   kind: GateKind;
+  interaction: "human";
+  action: "wait";
+  mustWaitForUser: boolean;
   inputs: string[];
   userVisibleArtifact: string;
   allowedNextActions: string[];
@@ -46,6 +49,24 @@ type WorkflowPolicy = {
   };
   smoke: {
     copyDisposition: string;
+    runtimeState: string;
+    acceptanceRecordAction: string;
+    intermediateEvidence: string;
+  };
+  jobInputs: {
+    styleSample: {
+      styleLockState: string;
+      approvedSample: string;
+      required: string[];
+    };
+    deckAndPageRegeneration: {
+      styleLockState: string;
+      approvedSample: string;
+      required: string[];
+    };
+  };
+  changeInvalidation: {
+    style: string[];
   };
 };
 type StageContract = {
@@ -68,12 +89,25 @@ function validateStageContract(contract: StageContract): void {
     assert.deepEqual(contract.stages.filter((entry) => entry.kind === kind).map((entry) => entry.id), expected);
   }
   assert.equal(new Set(contract.stages.map(({ id }) => id)).size, contract.stages.length);
+  const expectedInvalidation: Record<string, string[]> = {
+    outline: ["slide-specs", "style-sample-generation", "style-sample", "generation-authorization", "deck-review", "formal-delivery", "acceptance-evidence"],
+    "slide-specs": ["style-sample-generation", "style-sample", "generation-authorization", "deck-review", "formal-delivery", "acceptance-evidence"],
+    "style-sample": ["generation-authorization", "deck-review", "formal-delivery", "acceptance-evidence"],
+    "generation-authorization": ["deck-review", "formal-delivery", "acceptance-evidence"],
+    "deck-review": ["formal-delivery", "acceptance-evidence"],
+    "style-sample-generation": ["style-sample", "generation-authorization", "deck-review", "formal-delivery", "acceptance-evidence"],
+    "revision-impact": ["approved-impact-plan.staleSlideIds", "approved-impact-plan.restartStage-and-downstream-gates", "formal-delivery", "acceptance-evidence"],
+    "slide-preview": ["candidate-montage", "deck-review", "formal-delivery", "acceptance-evidence"],
+  };
   for (const entry of contract.stages) {
+    assert.equal(entry.interaction, "human", `${entry.id} interaction`);
+    assert.equal(entry.action, "wait", `${entry.id} action`);
+    assert.equal(entry.mustWaitForUser, true, `${entry.id} mustWaitForUser`);
     assert.ok(entry.inputs.length > 0, `${entry.id} inputs`);
     assert.ok(entry.inputs.every((item) => item.trim().length > 0), `${entry.id} input values`);
     assert.ok(entry.userVisibleArtifact.trim().length > 0, `${entry.id} userVisibleArtifact`);
     assert.ok(entry.allowedNextActions.length > 0, `${entry.id} allowedNextActions`);
-    assert.ok(entry.invalidationDependencies.length > 0, `${entry.id} invalidationDependencies`);
+    assert.deepEqual(entry.invalidationDependencies, expectedInvalidation[entry.id], `${entry.id} invalidationDependencies`);
     assert.equal(typeof entry.canSpendImageCalls, "boolean", `${entry.id} canSpendImageCalls`);
   }
   assert.deepEqual(
@@ -97,6 +131,33 @@ function validateStageContract(contract: StageContract): void {
   assert.equal(policy.delivery.genericApprovalAllowed, false);
   assert.deepEqual(policy.delivery.reviewActions, ["edit-page", "return-upstream", "confirm-delivery"]);
   assert.equal(policy.smoke.copyDisposition, "discard-no-save");
+  assert.equal(policy.smoke.runtimeState, "task-11-save-based-incompatible");
+  assert.equal(policy.smoke.acceptanceRecordAction, "blocked-until-task-12");
+  assert.equal(policy.smoke.intermediateEvidence, "human-pending-acceptance-report");
+  assert.equal(policy.jobInputs.styleSample.styleLockState, "provisional");
+  assert.equal(policy.jobInputs.styleSample.approvedSample, "must-be-null");
+  assert.deepEqual(policy.jobInputs.styleSample.required, [
+    "exact-recipe-and-hash",
+    "reference-snapshots",
+    "representative-page-spec-and-prompt",
+    "one-call-authorization",
+  ]);
+  assert.equal(policy.jobInputs.deckAndPageRegeneration.styleLockState, "approved");
+  assert.equal(policy.jobInputs.deckAndPageRegeneration.approvedSample, "authenticated-non-null");
+  assert.deepEqual(policy.jobInputs.deckAndPageRegeneration.required, [
+    "exact-recipe-and-hash",
+    "reference-snapshots",
+    "page-specific-spec-and-prompt",
+    "generation-authorization",
+  ]);
+  assert.deepEqual(policy.changeInvalidation.style, [
+    "style-sample-generation",
+    "style-sample",
+    "generation-authorization",
+    "deck-review",
+    "formal-delivery",
+    "acceptance-evidence",
+  ]);
 }
 
 test("machine contract encodes all user decisions and rejects unsafe workflow variants", async () => {
@@ -113,6 +174,11 @@ test("machine contract encodes all user decisions and rejects unsafe workflow va
     ["generic deck-review approval", (fixture) => { fixture.workflowPolicy.delivery.genericApprovalAllowed = true; }],
     ["pre-review delivery", (fixture) => { fixture.workflowPolicy.delivery.reviewRequired = false; }],
     ["saved smoke mutation", (fixture) => { fixture.workflowPolicy.smoke.copyDisposition = "save"; }],
+    ["machine auto-advance", (fixture) => { fixture.stages[0]!.mustWaitForUser = false; }],
+    ["discard sent to save runtime", (fixture) => { fixture.workflowPolicy.smoke.acceptanceRecordAction = "invoke-now"; }],
+    ["sample requires approved sample", (fixture) => { fixture.workflowPolicy.jobInputs.styleSample.approvedSample = "authenticated-non-null"; }],
+    ["deck lacks approved sample", (fixture) => { fixture.workflowPolicy.jobInputs.deckAndPageRegeneration.approvedSample = "must-be-null"; }],
+    ["style change skips sample authorization", (fixture) => { fixture.workflowPolicy.changeInvalidation.style.shift(); }],
   ];
   for (const [label, mutate] of invalid) {
     const fixture = structuredClone(contract);
@@ -162,6 +228,8 @@ test("guided route stops at content-specific checkpoints and keeps every earlier
   assert.match(workflow, /影响.*证据.*下游|下游.*影响.*证据/is);
   assert.match(workflow, /impact.*approve-impact.*apply-impact/is);
   assert.match(workflow, /不得静默|禁止静默/);
+  assert.match(workflow, /展示.*userVisibleArtifact.*等待.*allowedNextActions|present.*userVisibleArtifact.*wait.*allowedNextActions/is);
+  assert.match(workflow, /机器.*校验.*不能.*继续|machine validation.*cannot.*advance/is);
 });
 
 test("style choice is one compact real-preview selection and its immutable lock is delegated unchanged", async () => {
@@ -181,6 +249,9 @@ test("style choice is one compact real-preview selection and its immutable lock 
   assert.match(workflow, /unchanged|原样/);
   assert.match(workflow, /provider.*channel.*不.*重述|提供者.*渠道.*不.*重述/is);
   assert.match(workflow, /applyDependencyDefaultStyle.*false/);
+  assert.match(workflow, /provisional.*approvedSample.*null/is);
+  assert.match(workflow, /approved Style Lock.*authenticated.*non-null approved sample/is);
+  assert.doesNotMatch(workflow, /pass .*approved sample.*into every immutable.*job|把.*approved sample.*交给每个.*job/i);
 });
 
 test("delegation discloses exact outbound inputs and preserves current Task 10 routes", async () => {
@@ -249,4 +320,12 @@ test("controlled WPS smoke edits, undoes, discards, and reopens without saving c
   assert.match(workflow, /deck-smoke\.pptx/);
   assert.match(workflow, /绝不.*canonical.*deck\.pptx|禁止.*canonical.*deck\.pptx/is);
   assert.doesNotMatch(workflow, /客户端编辑、保存、关闭|保存、关闭、重新打开|edit representative text.*then save/i);
+  assert.match(workflow, /Task 11.*saved:true.*changed copy hash.*不.*acceptance-record|Task 11.*acceptance-record.*blocked.*Task 12/is);
+  assert.match(workflow, /pending-acceptance|验收待完成/);
+  const unsafeAcceptanceLines = workflow.split("\n").filter((line) => (
+    /discard/i.test(line)
+    && /acceptance-record/i.test(line)
+    && !/blocked|不得|do not|不兼容/i.test(line)
+  ));
+  assert.deepEqual(unsafeAcceptanceLines, []);
 });
