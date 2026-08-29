@@ -1508,6 +1508,15 @@ export async function readProjectForRollbackRecovery(root: string): Promise<{
   return ownedProject(root);
 }
 
+export async function readProjectForTrustedAuthorization(root: string): Promise<{
+  root: string;
+  manifest: ProjectManifest;
+  manifestBytes: Buffer;
+  baseIdentity: string;
+}> {
+  return ownedProject(root);
+}
+
 async function commitApprovedImpactRevisionLocked(
   root: string,
   rawPlan: ImpactPlan,
