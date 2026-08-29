@@ -34,8 +34,10 @@ const JournalBaseSchema = z.object({
   baseRevisionId: z.string().uuid(),
   baseRevisionNumber: z.number().int().positive(),
   baseManifestSha256: HashSchema,
+  baseSnapshotDescriptorSha256: HashSchema,
   targetRevisionId: z.string().uuid(),
   rollbackRevisionId: z.string().uuid(),
+  rollbackPlanSha256: HashSchema,
   transactionAnchorSha256: HashSchema,
   rollbackManifestSha256: HashSchema,
   rollbackManifestSize: z.number().int().nonnegative(),
@@ -57,6 +59,31 @@ type ReadJournal = {
 };
 
 type RollbackManifestFactory = (transactionAnchorSha256: string) => ProjectManifest;
+
+export function rollbackRevisionBaseForEvidence(input: {
+  projectId: string;
+  baseRevision: ProjectManifest["currentRevision"];
+  targetRevisionId: string;
+  baseSnapshotDescriptorSha256: string;
+}): ProjectManifest["currentRevision"] {
+  const digest = sha256Evidence(JSON.stringify({
+    kind: "rollback-revision",
+    projectId: input.projectId,
+    baseRevisionId: input.baseRevision.id,
+    baseRevisionNumber: input.baseRevision.number,
+    targetRevisionId: input.targetRevisionId,
+    baseSnapshotDescriptorSha256: input.baseSnapshotDescriptorSha256,
+  }));
+  const uuidHex = `${digest.slice(0, 12)}4${digest.slice(13, 16)}8${digest.slice(17, 32)}`;
+  const id = `${uuidHex.slice(0, 8)}-${uuidHex.slice(8, 12)}-${uuidHex.slice(12, 16)}-${uuidHex.slice(16, 20)}-${uuidHex.slice(20)}`;
+  return {
+    id,
+    number: input.baseRevision.number + 1,
+    createdAt: new Date(Date.parse(input.baseRevision.createdAt) + 1).toISOString(),
+    parentId: input.baseRevision.id,
+    parentSnapshotDescriptorSha256: input.baseSnapshotDescriptorSha256,
+  };
+}
 
 function sameJson(left: unknown, right: unknown): boolean {
   return JSON.stringify(left) === JSON.stringify(right);
@@ -88,6 +115,21 @@ function transactionAnchor(base: Omit<z.infer<typeof JournalBaseSchema>,
   "transactionAnchorSha256" | "rollbackManifestSha256" | "rollbackManifestSize"
 >): string {
   return sha256Evidence(JSON.stringify(base));
+}
+
+function rollbackPlanSha256(manifest: ProjectManifest): string {
+  const withoutAnchor = (revision: ProjectManifest["currentRevision"]): ProjectManifest["currentRevision"] => {
+    const { rollbackTransactionDescriptorSha256: _anchor, ...base } = revision;
+    return base;
+  };
+  const normalized = ProjectManifestSchema.parse({
+    ...manifest,
+    currentRevision: withoutAnchor(manifest.currentRevision),
+    revisions: manifest.revisions.map((revision) => revision.id === manifest.currentRevision.id
+      ? withoutAnchor(revision)
+      : revision),
+  });
+  return sha256Evidence(`${JSON.stringify(normalized, null, 2)}\n`);
 }
 
 function readBlob(
@@ -157,6 +199,7 @@ function readJournalDirectory(directory: AnchoredDirectory): ReadJournal {
     || rollbackManifest.currentRevision.rollbackTransactionDescriptorSha256 !== journal.transactionAnchorSha256
     || rollbackManifest.rollbackTransaction
     || !rollbackManifest.revisions.some((revision) => revision.id === journal.targetRevisionId)
+    || rollbackPlanSha256(rollbackManifest) !== journal.rollbackPlanSha256
   ) throw new Error("rollback journal planned manifest identity is invalid");
 
   const before = new Map<string, Buffer | null>();
@@ -180,6 +223,21 @@ async function assertAuthenticatedRollbackTarget(
   evidence: ReadJournal,
   operations?: RevisionEvidenceOperations,
 ): Promise<void> {
+  let base: Awaited<ReturnType<typeof readRevisionSnapshot>>;
+  try {
+    base = await readRevisionSnapshot(root, evidence.journal.baseRevisionId, operations);
+  } catch (error: unknown) {
+    throw new Error("rollback journal pre-rollback base evidence is invalid", { cause: error });
+  }
+  if (
+    base.descriptor.descriptorSha256 !== evidence.journal.baseSnapshotDescriptorSha256
+    || base.descriptor.manifestSha256 !== evidence.journal.baseManifestSha256
+    || sha256Evidence(base.bytes) !== evidence.journal.baseManifestSha256
+    || base.manifest.projectId !== evidence.journal.projectId
+    || base.manifest.currentRevision.id !== evidence.journal.baseRevisionId
+    || base.manifest.currentRevision.number !== evidence.journal.baseRevisionNumber
+    || base.manifest.revisions.at(-1)?.id !== evidence.journal.baseRevisionId
+  ) throw new Error("rollback journal pre-rollback base evidence is invalid");
   let target: Awaited<ReturnType<typeof readRevisionSnapshot>>;
   try {
     target = await readRevisionSnapshot(root, evidence.journal.targetRevisionId, operations);
@@ -187,33 +245,48 @@ async function assertAuthenticatedRollbackTarget(
     throw new Error("rollback journal target snapshot is missing, unsafe, or unauthentic", { cause: error });
   }
   const rollback = evidence.rollbackManifest;
-  const targetIndex = rollback.revisions.findIndex(({ id }) => id === evidence.journal.targetRevisionId);
-  const baseIndex = rollback.revisions.findIndex(({ id }) => id === evidence.journal.baseRevisionId);
-  const targetChild = rollback.revisions[targetIndex + 1];
+  const expectedRevisionBase = rollbackRevisionBaseForEvidence({
+    projectId: evidence.journal.projectId,
+    baseRevision: base.manifest.currentRevision,
+    targetRevisionId: evidence.journal.targetRevisionId,
+    baseSnapshotDescriptorSha256: base.descriptor.descriptorSha256,
+  });
+  const expectedRollbackRevision = {
+    ...expectedRevisionBase,
+    rollbackTransactionDescriptorSha256: evidence.journal.transactionAnchorSha256,
+  };
+  if (
+    evidence.journal.rollbackRevisionId !== expectedRevisionBase.id
+    || !sameJson(rollback.currentRevision, expectedRollbackRevision)
+    || !sameJson(rollback.revisions.at(-1), expectedRollbackRevision)
+  ) throw new Error("rollback journal plan does not match immutable pre-rollback base snapshot");
+  const targetIndex = base.manifest.revisions.findIndex(({ id }) => id === evidence.journal.targetRevisionId);
+  const targetChild = base.manifest.revisions[targetIndex + 1];
   const expected = ProjectManifestSchema.parse({
     ...target.manifest,
     currentRevision: rollback.currentRevision,
-    revisions: rollback.revisions,
-    gates: rollback.gates,
+    revisions: [...base.manifest.revisions, rollback.currentRevision],
+    gates: base.manifest.gates,
   });
   if (
     target.descriptor.projectId !== evidence.journal.projectId
     || target.manifest.projectId !== evidence.journal.projectId
     || targetIndex < 0
-    || baseIndex < targetIndex
-    || baseIndex !== rollback.revisions.length - 2
-    || !sameJson(target.manifest.revisions, rollback.revisions.slice(0, targetIndex + 1))
+    || !sameJson(target.manifest.revisions, base.manifest.revisions.slice(0, targetIndex + 1))
     || !targetChild
     || targetChild.parentId !== evidence.journal.targetRevisionId
     || targetChild.parentSnapshotDescriptorSha256 !== target.descriptor.descriptorSha256
     || !sameJson(rollback, expected)
-  ) throw new Error("rollback journal target snapshot or restored generation history is invalid");
+  ) throw new Error(
+    "rollback journal target snapshot or restored generation history conflicts with authenticated pre-rollback base evidence",
+  );
 }
 
 export async function publishRollbackJournal(options: {
   root: string;
   current: ProjectManifest;
   baseManifestSha256: string;
+  baseSnapshotDescriptorSha256: string;
   targetRevisionId: string;
   rollbackRevisionId: string;
   rollbackManifest: RollbackManifestFactory;
@@ -254,13 +327,18 @@ export async function publishRollbackJournal(options: {
     baseRevisionId: options.current.currentRevision.id,
     baseRevisionNumber: options.current.currentRevision.number,
     baseManifestSha256: options.baseManifestSha256,
+    baseSnapshotDescriptorSha256: options.baseSnapshotDescriptorSha256,
     targetRevisionId: options.targetRevisionId,
     rollbackRevisionId: options.rollbackRevisionId,
+    rollbackPlanSha256: rollbackPlanSha256(options.rollbackManifest("0".repeat(64))),
     files: entries,
     createdAt,
   } as const;
   const transactionAnchorSha256 = transactionAnchor(anchorBase);
   const rollbackManifest = ProjectManifestSchema.parse(options.rollbackManifest(transactionAnchorSha256));
+  if (rollbackPlanSha256(rollbackManifest) !== anchorBase.rollbackPlanSha256) {
+    throw new Error("rollback journal planned manifest changed while binding its transaction anchor");
+  }
   const rollbackBytes = Buffer.from(`${JSON.stringify(rollbackManifest, null, 2)}\n`);
   const base = JournalBaseSchema.parse({
     ...anchorBase,

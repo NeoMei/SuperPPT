@@ -548,6 +548,119 @@ test("older delegated replay stays read-only and rollback restores the exact aut
       },
     },
   }), /crash after history restore/);
+  const crashJournalRoot = join(fixture.root, "revisions", "rollback-transaction");
+  const crashJournalPath = join(crashJournalRoot, "journal.json");
+  const crashRollbackManifestPath = join(crashJournalRoot, "rollback-superppt.json");
+  const crashTargetSnapshotRoot = join(fixture.root, "revisions", targetRevisionId, "manifest-snapshot");
+  const crashTargetManifestPath = join(crashTargetSnapshotRoot, "superppt.json");
+  const crashTargetDescriptorPath = join(crashTargetSnapshotRoot, "snapshot.json");
+  const [
+    publishedManifestBytes,
+    crashJournalBytes,
+    crashRollbackManifestBytes,
+    crashTargetManifestBytes,
+    crashTargetDescriptorBytes,
+  ] = await Promise.all([
+    readFile(manifestPath),
+    readFile(crashJournalPath),
+    readFile(crashRollbackManifestPath),
+    readFile(crashTargetManifestPath),
+    readFile(crashTargetDescriptorPath),
+  ]);
+  const forgedCrashTarget = JSON.parse(crashTargetManifestBytes.toString("utf8"));
+  const forgedCrashTargetSlide = forgedCrashTarget.slides.find(({ id }: { id: string }) => id === original.slideId);
+  forgedCrashTargetSlide.generationHistory = [...forgedCrashTargetSlide.generationHistory].reverse();
+  const forgedCrashTargetBytes = Buffer.from(`${JSON.stringify(forgedCrashTarget, null, 2)}\n`);
+  const forgedCrashTargetDescriptor = JSON.parse(crashTargetDescriptorBytes.toString("utf8"));
+  forgedCrashTargetDescriptor.manifestSha256 = sha256(forgedCrashTargetBytes);
+  forgedCrashTargetDescriptor.manifestSize = forgedCrashTargetBytes.length;
+  const { descriptorSha256: _crashTargetDescriptor, ...forgedCrashTargetDescriptorBase } = forgedCrashTargetDescriptor;
+  forgedCrashTargetDescriptor.descriptorSha256 = sha256(JSON.stringify(forgedCrashTargetDescriptorBase));
+  const forgedCrashRollback = JSON.parse(crashRollbackManifestBytes.toString("utf8"));
+  forgedCrashRollback.slides = forgedCrashTarget.slides;
+  const forgedTargetIndex = forgedCrashRollback.revisions
+    .findIndex(({ id }: { id: string }) => id === targetRevisionId);
+  forgedCrashRollback.revisions[forgedTargetIndex + 1].parentSnapshotDescriptorSha256
+    = forgedCrashTargetDescriptor.descriptorSha256;
+  const forgedCrashJournal = JSON.parse(crashJournalBytes.toString("utf8"));
+  const normalizedForgedRollback = structuredClone(forgedCrashRollback);
+  delete normalizedForgedRollback.currentRevision.rollbackTransactionDescriptorSha256;
+  delete normalizedForgedRollback.revisions.at(-1).rollbackTransactionDescriptorSha256;
+  forgedCrashJournal.rollbackPlanSha256 = sha256(`${JSON.stringify(normalizedForgedRollback, null, 2)}\n`);
+  const {
+    descriptorSha256: _crashJournalDescriptor,
+    transactionAnchorSha256: _crashTransactionAnchor,
+    rollbackManifestSha256: _crashRollbackManifest,
+    rollbackManifestSize: _crashRollbackSize,
+    ...forgedCrashAnchorBase
+  } = forgedCrashJournal;
+  forgedCrashJournal.transactionAnchorSha256 = sha256(JSON.stringify(forgedCrashAnchorBase));
+  forgedCrashRollback.currentRevision.rollbackTransactionDescriptorSha256
+    = forgedCrashJournal.transactionAnchorSha256;
+  forgedCrashRollback.revisions.at(-1).rollbackTransactionDescriptorSha256
+    = forgedCrashJournal.transactionAnchorSha256;
+  const forgedCrashRollbackBytes = Buffer.from(`${JSON.stringify(forgedCrashRollback, null, 2)}\n`);
+  forgedCrashJournal.rollbackManifestSha256 = sha256(forgedCrashRollbackBytes);
+  forgedCrashJournal.rollbackManifestSize = forgedCrashRollbackBytes.length;
+  const { descriptorSha256: _forgedCrashJournalDescriptor, ...forgedCrashJournalBase } = forgedCrashJournal;
+  forgedCrashJournal.descriptorSha256 = sha256(JSON.stringify(forgedCrashJournalBase));
+  await Promise.all([
+    writeFile(crashTargetManifestPath, forgedCrashTargetBytes),
+    writeFile(crashTargetDescriptorPath, `${JSON.stringify(forgedCrashTargetDescriptor, null, 2)}\n`),
+    writeFile(crashRollbackManifestPath, forgedCrashRollbackBytes),
+    writeFile(crashJournalPath, `${JSON.stringify(forgedCrashJournal, null, 2)}\n`),
+    writeFile(manifestPath, forgedCrashRollbackBytes),
+  ]);
+  await assert.rejects(
+    recoverRollbackTransaction(fixture.root),
+    /authenticated pre-rollback base evidence/,
+  );
+  await Promise.all([
+    writeFile(manifestPath, publishedManifestBytes),
+    writeFile(crashJournalPath, crashJournalBytes),
+    writeFile(crashRollbackManifestPath, crashRollbackManifestBytes),
+    writeFile(crashTargetManifestPath, crashTargetManifestBytes),
+    writeFile(crashTargetDescriptorPath, crashTargetDescriptorBytes),
+  ]);
+  const forgedPlanRollback = JSON.parse(crashRollbackManifestBytes.toString("utf8"));
+  forgedPlanRollback.currentRevision.createdAt = "2099-01-01T00:00:00.000Z";
+  forgedPlanRollback.revisions.at(-1).createdAt = "2099-01-01T00:00:00.000Z";
+  const forgedPlanJournal = JSON.parse(crashJournalBytes.toString("utf8"));
+  const normalizedForgedPlan = structuredClone(forgedPlanRollback);
+  delete normalizedForgedPlan.currentRevision.rollbackTransactionDescriptorSha256;
+  delete normalizedForgedPlan.revisions.at(-1).rollbackTransactionDescriptorSha256;
+  forgedPlanJournal.rollbackPlanSha256 = sha256(`${JSON.stringify(normalizedForgedPlan, null, 2)}\n`);
+  const {
+    descriptorSha256: _forgedPlanDescriptor,
+    transactionAnchorSha256: _forgedPlanTransaction,
+    rollbackManifestSha256: _forgedPlanManifest,
+    rollbackManifestSize: _forgedPlanSize,
+    ...forgedPlanAnchorBase
+  } = forgedPlanJournal;
+  forgedPlanJournal.transactionAnchorSha256 = sha256(JSON.stringify(forgedPlanAnchorBase));
+  forgedPlanRollback.currentRevision.rollbackTransactionDescriptorSha256
+    = forgedPlanJournal.transactionAnchorSha256;
+  forgedPlanRollback.revisions.at(-1).rollbackTransactionDescriptorSha256
+    = forgedPlanJournal.transactionAnchorSha256;
+  const forgedPlanRollbackBytes = Buffer.from(`${JSON.stringify(forgedPlanRollback, null, 2)}\n`);
+  forgedPlanJournal.rollbackManifestSha256 = sha256(forgedPlanRollbackBytes);
+  forgedPlanJournal.rollbackManifestSize = forgedPlanRollbackBytes.length;
+  const { descriptorSha256: _forgedPlanFinalDescriptor, ...forgedPlanJournalBase } = forgedPlanJournal;
+  forgedPlanJournal.descriptorSha256 = sha256(JSON.stringify(forgedPlanJournalBase));
+  await Promise.all([
+    writeFile(manifestPath, forgedPlanRollbackBytes),
+    writeFile(crashRollbackManifestPath, forgedPlanRollbackBytes),
+    writeFile(crashJournalPath, `${JSON.stringify(forgedPlanJournal, null, 2)}\n`),
+  ]);
+  await assert.rejects(
+    recoverRollbackTransaction(fixture.root),
+    /rollback journal plan does not match immutable pre-rollback base snapshot/,
+  );
+  await Promise.all([
+    writeFile(manifestPath, publishedManifestBytes),
+    writeFile(crashJournalPath, crashJournalBytes),
+    writeFile(crashRollbackManifestPath, crashRollbackManifestBytes),
+  ]);
   await rollbackToRevision(fixture.root, targetRevisionId);
 
   const rolledBack = await readProject(fixture.root);
@@ -570,6 +683,58 @@ test("older delegated replay stays read-only and rollback restores the exact aut
     readFile(journalPath),
     readFile(rollbackManifestPath),
   ]);
+  const originalJournal = JSON.parse(journalBytes.toString("utf8"));
+  const baseSnapshotRoot = join(
+    fixture.root,
+    "revisions",
+    originalJournal.baseRevisionId,
+    "manifest-snapshot",
+  );
+  const detachedBaseSnapshotRoot = `${baseSnapshotRoot}.detached`;
+  await rename(baseSnapshotRoot, detachedBaseSnapshotRoot);
+  await assert.rejects(
+    recoverRollbackTransaction(fixture.root),
+    /rollback journal pre-rollback base evidence is invalid/,
+  );
+  await rename(detachedBaseSnapshotRoot, baseSnapshotRoot);
+
+  const rolledBackAnchorJournal = structuredClone(originalJournal);
+  const targetSnapshotDescriptor = JSON.parse(await readFile(
+    join(fixture.root, "revisions", targetRevisionId, "manifest-snapshot", "snapshot.json"),
+    "utf8",
+  ));
+  assert.notEqual(
+    rolledBackAnchorJournal.baseSnapshotDescriptorSha256,
+    targetSnapshotDescriptor.descriptorSha256,
+  );
+  rolledBackAnchorJournal.baseSnapshotDescriptorSha256 = targetSnapshotDescriptor.descriptorSha256;
+  const {
+    descriptorSha256: _rolledBackDescriptor,
+    transactionAnchorSha256: _rolledBackTransaction,
+    rollbackManifestSha256: _rolledBackManifestHash,
+    rollbackManifestSize: _rolledBackManifestSize,
+    ...rolledBackAnchorBase
+  } = rolledBackAnchorJournal;
+  rolledBackAnchorJournal.transactionAnchorSha256 = sha256(JSON.stringify(rolledBackAnchorBase));
+  const rolledBackAnchorManifest = JSON.parse(rollbackManifestBytes.toString("utf8"));
+  rolledBackAnchorManifest.currentRevision.rollbackTransactionDescriptorSha256
+    = rolledBackAnchorJournal.transactionAnchorSha256;
+  rolledBackAnchorManifest.revisions.at(-1).rollbackTransactionDescriptorSha256
+    = rolledBackAnchorJournal.transactionAnchorSha256;
+  const rolledBackAnchorManifestBytes = Buffer.from(`${JSON.stringify(rolledBackAnchorManifest, null, 2)}\n`);
+  rolledBackAnchorJournal.rollbackManifestSha256 = sha256(rolledBackAnchorManifestBytes);
+  rolledBackAnchorJournal.rollbackManifestSize = rolledBackAnchorManifestBytes.length;
+  const { descriptorSha256: _rolledBackFinalDescriptor, ...rolledBackAnchorJournalBase } = rolledBackAnchorJournal;
+  rolledBackAnchorJournal.descriptorSha256 = sha256(JSON.stringify(rolledBackAnchorJournalBase));
+  await writeFile(rollbackManifestPath, rolledBackAnchorManifestBytes);
+  await writeFile(journalPath, `${JSON.stringify(rolledBackAnchorJournal, null, 2)}\n`);
+  await assert.rejects(
+    recoverRollbackTransaction(fixture.root),
+    /rollback journal pre-rollback base evidence is invalid/,
+  );
+  await writeFile(rollbackManifestPath, rollbackManifestBytes);
+  await writeFile(journalPath, journalBytes);
+
   const originalRollbackManifest = JSON.parse(rollbackManifestBytes.toString("utf8"));
   const originalHistory = originalRollbackManifest.slides
     .find(({ id }: { id: string }) => id === original.slideId).generationHistory;
@@ -596,7 +761,7 @@ test("older delegated replay stays read-only and rollback restores the exact aut
     await writeFile(journalPath, `${JSON.stringify(forgedJournal, null, 2)}\n`);
     await assert.rejects(
       recoverRollbackTransaction(fixture.root),
-      /rollback journal target snapshot or restored generation history is invalid/,
+      /rollback journal planned manifest identity|authenticated pre-rollback base evidence/,
       forgery.name,
     );
   }

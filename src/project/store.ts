@@ -51,6 +51,7 @@ import {
 import {
   publishRollbackJournal,
   readRollbackJournal,
+  rollbackRevisionBaseForEvidence,
 } from "../revisions/rollback-journal.js";
 import { readProjectFileSet } from "../revisions/project-files.js";
 import {
@@ -1180,18 +1181,18 @@ export async function beginProjectRollbackTransaction(
     await assertCurrentRevisionPlanningEvidence(canonicalRoot, current.manifest);
     await assertManifestArtifactReferences(canonicalRoot, current.manifest);
     const currentSnapshot = await publishRevisionSnapshot(canonicalRoot, current.manifest, evidenceOperations);
-    const rollbackRevisionBase = {
-      id: randomUUID(),
-      number: current.manifest.currentRevision.number + 1,
-      createdAt: new Date().toISOString(),
-      parentId: current.manifest.currentRevision.id,
-      parentSnapshotDescriptorSha256: currentSnapshot.descriptorSha256,
-    };
+    const rollbackRevisionBase = rollbackRevisionBaseForEvidence({
+      projectId: current.manifest.projectId,
+      baseRevision: current.manifest.currentRevision,
+      targetRevisionId,
+      baseSnapshotDescriptorSha256: currentSnapshot.descriptorSha256,
+    });
     const before = await readProjectFileSet(canonicalRoot, [...after.keys()]);
     const published = await publishRollbackJournal({
       root: canonicalRoot,
       current: current.manifest,
       baseManifestSha256: current.baseIdentity,
+      baseSnapshotDescriptorSha256: currentSnapshot.descriptorSha256,
       targetRevisionId,
       rollbackRevisionId: rollbackRevisionBase.id,
       rollbackManifest: (transactionAnchorSha256) => {
