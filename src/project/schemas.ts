@@ -36,14 +36,22 @@ export const ClientSmokeCopyAnchorSchema = z.object({
   initialCopy: ArtifactSchema,
   createdAt: z.string().datetime(),
   state: z.enum(["pending", "ready", "completed"]),
-  savedCopySha256: Sha256Schema.nullable(),
+  observation: ArtifactSchema.nullable(),
+  reopenedCopySha256: Sha256Schema.nullable(),
   acceptanceRecord: ArtifactSchema.nullable(),
   completedAt: z.string().datetime().nullable(),
 }).strict().superRefine((anchor, context) => {
   const completed = anchor.state === "completed";
-  const evidenceFields = [anchor.savedCopySha256, anchor.acceptanceRecord, anchor.completedAt];
+  const evidenceFields = [anchor.observation, anchor.reopenedCopySha256, anchor.acceptanceRecord, anchor.completedAt];
   if (completed ? evidenceFields.some((value) => value === null) : evidenceFields.some((value) => value !== null)) {
-    context.addIssue({ code: "custom", message: "completed smoke copy anchors require exact saved-copy and acceptance-record evidence" });
+    context.addIssue({ code: "custom", message: "completed smoke copy anchors require exact discard/reopen observation and acceptance-record evidence" });
+  }
+  if (completed && anchor.reopenedCopySha256 !== anchor.initialCopy.sha256) {
+    context.addIssue({
+      code: "custom",
+      path: ["reopenedCopySha256"],
+      message: "completed smoke copy anchors require the reopened copy to match the initial hash",
+    });
   }
 });
 

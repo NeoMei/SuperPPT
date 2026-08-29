@@ -1,6 +1,6 @@
 import { z } from "zod";
 
-import { Sha256Schema } from "../project/schemas.js";
+import { ArtifactSchema, Sha256Schema } from "../project/schemas.js";
 
 export const FileEvidenceSchema = z.object({
   path: z.string().min(1),
@@ -104,35 +104,100 @@ export const ClientSmokeCopyDescriptorSchema = z.object({
 export const ClientAcceptanceInputSchema = z.object({
   application: z.enum(["WPS", "PowerPoint"]),
   smokeCopyDescriptorPath: z.string().min(1),
-  savedCopySha256: Sha256Schema,
-  opened: z.boolean(),
-  edited: z.boolean(),
-  saved: z.boolean(),
-  closed: z.boolean(),
-  reopened: z.boolean(),
-  result: z.enum(["passed", "failed"]),
+  selectedObject: z.string().trim().min(1).max(500),
+  temporaryEditObserved: z.literal(true),
+  undoObserved: z.literal(true),
+  saveDecision: z.literal("discarded"),
+  reopenObserved: z.literal(true),
+  reopenedCopySha256: Sha256Schema,
   observedResult: z.string().min(1).max(1000),
   confirmedAt: z.string().datetime(),
 }).strict();
 
+export const ClientAcceptanceObservationSchema = z.object({
+  schemaVersion: z.literal(1),
+  kind: z.literal("client-acceptance-observation"),
+  anchorId: z.string().uuid(),
+  projectId: z.string().uuid(),
+  revisionId: z.string().uuid(),
+  deckRevision: z.number().int().positive(),
+  application: z.enum(["WPS", "PowerPoint"]),
+  selectedObject: z.string().trim().min(1).max(500),
+  descriptor: ArtifactSchema,
+  source: ArtifactSchema,
+  initialCopy: ArtifactSchema,
+  temporaryEditObserved: z.literal(true),
+  undoObserved: z.literal(true),
+  saveDecision: z.literal("discarded"),
+  reopenObserved: z.literal(true),
+  reopenedCopySha256: Sha256Schema,
+  observedResult: z.string().min(1).max(1000),
+  confirmedAt: z.string().datetime(),
+}).strict().superRefine((observation, context) => {
+  if (observation.reopenedCopySha256 !== observation.initialCopy.sha256) {
+    context.addIssue({
+      code: "custom",
+      path: ["reopenedCopySha256"],
+      message: "reopened smoke copy must match its initial hash after discard",
+    });
+  }
+  for (const field of ["descriptor", "source", "initialCopy"] as const) {
+    if (observation[field].revisionId !== observation.revisionId) {
+      context.addIssue({
+        code: "custom",
+        path: [field, "revisionId"],
+        message: "client observation artifacts must bind the current revision",
+      });
+    }
+  }
+});
+
 export const ClientAcceptanceSchema = z.object({
   application: z.enum(["WPS", "PowerPoint"]).nullable(),
+  observation: ArtifactSchema.nullable(),
   smokeCopy: z.object({
     descriptorPath: z.string().min(1),
     descriptorSha256: Sha256Schema,
     path: z.string().min(1),
     initialSha256: Sha256Schema,
-    savedSha256: Sha256Schema,
+    reopenedSha256: Sha256Schema,
   }).strict().nullable(),
-  opened: z.boolean(),
-  edited: z.boolean(),
-  saved: z.boolean(),
-  closed: z.boolean(),
-  reopened: z.boolean(),
-  result: z.enum(["passed", "failed"]).nullable(),
+  selectedObject: z.string().trim().min(1).max(500).nullable(),
+  temporaryEditObserved: z.boolean(),
+  undoObserved: z.boolean(),
+  saveDecision: z.literal("discarded").nullable(),
+  reopenObserved: z.boolean(),
   observedResult: z.string().min(1).max(1000).nullable(),
   confirmedAt: z.string().datetime().nullable(),
-}).strict();
+}).strict().superRefine((client, context) => {
+  const evidence = [
+    client.application,
+    client.observation,
+    client.smokeCopy,
+    client.selectedObject,
+    client.saveDecision,
+    client.observedResult,
+    client.confirmedAt,
+  ];
+  const complete = evidence.every((value) => value !== null)
+    && client.temporaryEditObserved
+    && client.undoObserved
+    && client.reopenObserved;
+  const empty = evidence.every((value) => value === null)
+    && !client.temporaryEditObserved
+    && !client.undoObserved
+    && !client.reopenObserved;
+  if (!complete && !empty) {
+    context.addIssue({ code: "custom", message: "client discard/reopen evidence must be all complete or all empty" });
+  }
+  if (client.smokeCopy && client.smokeCopy.reopenedSha256 !== client.smokeCopy.initialSha256) {
+    context.addIssue({
+      code: "custom",
+      path: ["smokeCopy", "reopenedSha256"],
+      message: "reopened smoke copy must match its initial hash after discard",
+    });
+  }
+});
 
 export const AcceptanceSchema = z.object({
   schemaVersion: z.literal(1),
@@ -178,13 +243,13 @@ export const AcceptanceSchema = z.object({
     });
   }
   const complete = value.clientAcceptance.application !== null
+    && value.clientAcceptance.observation !== null
     && value.clientAcceptance.smokeCopy !== null
-    && value.clientAcceptance.opened
-    && value.clientAcceptance.edited
-    && value.clientAcceptance.saved
-    && value.clientAcceptance.closed
-    && value.clientAcceptance.reopened
-    && value.clientAcceptance.result === "passed"
+    && value.clientAcceptance.selectedObject !== null
+    && value.clientAcceptance.temporaryEditObserved
+    && value.clientAcceptance.undoObserved
+    && value.clientAcceptance.saveDecision === "discarded"
+    && value.clientAcceptance.reopenObserved
     && value.clientAcceptance.observedResult !== null
     && value.clientAcceptance.confirmedAt !== null;
   if (value.deliveryComplete !== complete) {
@@ -194,10 +259,21 @@ export const AcceptanceSchema = z.object({
       message: "deliveryComplete must exactly match explicit client acceptance",
     });
   }
+  if (
+    value.clientAcceptance.observation
+    && value.clientAcceptance.observation.revisionId !== value.revisionId
+  ) {
+    context.addIssue({
+      code: "custom",
+      path: ["clientAcceptance", "observation", "revisionId"],
+      message: "client observation must bind the acceptance revision",
+    });
+  }
 });
 
 export type Acceptance = z.infer<typeof AcceptanceSchema>;
 export type ClientAcceptance = z.infer<typeof ClientAcceptanceSchema>;
+export type ClientAcceptanceObservation = z.infer<typeof ClientAcceptanceObservationSchema>;
 export type DeckReviewDescriptor = z.infer<typeof DeckReviewDescriptorSchema>;
 export type DeckReviewAction = z.infer<typeof DeckReviewActionSchema>;
 export type DeckReviewActionRequest = z.infer<typeof DeckReviewActionRequestSchema>;

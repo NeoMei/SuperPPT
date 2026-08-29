@@ -7,8 +7,10 @@ import { validateAcceptanceManifestBinding } from "../acceptance/current.js";
 import {
   AcceptanceSchema,
   ClientAcceptanceInputSchema,
+  ClientAcceptanceObservationSchema,
   ClientAcceptanceSchema,
   type Acceptance,
+  type ClientAcceptanceObservation,
 } from "../acceptance/schema.js";
 import { assertCompleteEditablePreview } from "../editable/preview-image.js";
 import { syncDirectory, writeDurableExclusive } from "./durable.js";
@@ -710,7 +712,8 @@ async function beginClientSmokeCopyAnchor(
     if (
       !current.manifest.exports.acceptance
       || anchor.state !== "pending"
-      || anchor.savedCopySha256 !== null
+      || anchor.observation !== null
+      || anchor.reopenedCopySha256 !== null
       || anchor.acceptanceRecord !== null
       || anchor.completedAt !== null
       || !anchorTargetsCurrentDeck(current.manifest, anchor)
@@ -778,7 +781,8 @@ export async function createClientSmokeCopyAnchor(
       initialCopy: { path: fixed.copy, sha256: canonical.sha256, revisionId: manifest.currentRevision.id },
       createdAt: new Date().toISOString(),
       state: "pending",
-      savedCopySha256: null,
+      observation: null,
+      reopenedCopySha256: null,
       acceptanceRecord: null,
       completedAt: null,
     };
@@ -801,7 +805,8 @@ async function completeClientSmokeCopyAcceptance(options: {
   root: string;
   expectedManifest: ProjectManifest;
   anchorId: string;
-  savedCopySha256: string;
+  observation: Artifact;
+  reopenedCopySha256: string;
   acceptanceRecord: Artifact;
   completedAt: string;
 }): Promise<ProjectManifest> {
@@ -820,7 +825,9 @@ async function completeClientSmokeCopyAcceptance(options: {
     }
     if (
       anchor.state !== "ready"
-      || options.savedCopySha256 === anchor.initialCopy.sha256
+      || options.reopenedCopySha256 !== anchor.initialCopy.sha256
+      || options.observation.revisionId !== current.manifest.currentRevision.id
+      || options.observation.path !== `output/revisions/${currentDeckRevision(current.manifest)}/acceptance-observation.json`
       || options.acceptanceRecord.revisionId !== current.manifest.currentRevision.id
       || options.acceptanceRecord.path !== `output/revisions/${currentDeckRevision(current.manifest)}/acceptance-record.json`
     ) throw new Error("client smoke copy completion does not match its trusted anchor");
@@ -831,14 +838,44 @@ async function completeClientSmokeCopyAcceptance(options: {
       sha256(descriptorBytes) !== anchor.descriptor.sha256
       || !sameJson(JSON.parse(descriptorBytes.toString("utf8")), smokeDescriptor(anchor))
     ) throw new Error("client smoke copy descriptor does not match its trusted anchor");
-    const savedCopyBytes = await readOwnedRegularFile(canonicalRoot, anchor.initialCopy.path);
-    if (sha256(savedCopyBytes) !== options.savedCopySha256) throw new Error("saved client smoke copy hash does not match the observed file");
+    const reopenedCopyBytes = await readOwnedRegularFile(canonicalRoot, anchor.initialCopy.path);
+    if (sha256(reopenedCopyBytes) !== options.reopenedCopySha256) {
+      throw new Error("reopened client smoke copy hash does not match the initial discarded copy");
+    }
+    const observationBytes = await readOwnedRegularFile(canonicalRoot, options.observation.path);
+    if (sha256(observationBytes) !== options.observation.sha256) throw new Error("client observation hash does not match the observed file");
+    const observation = ClientAcceptanceObservationSchema.parse(JSON.parse(observationBytes.toString("utf8")));
+    if (
+      observation.anchorId !== anchor.anchorId
+      || observation.projectId !== current.manifest.projectId
+      || observation.revisionId !== current.manifest.currentRevision.id
+      || observation.deckRevision !== currentDeckRevision(current.manifest)
+      || !sameJson(observation.descriptor, anchor.descriptor)
+      || !sameJson(observation.source, anchor.source)
+      || !sameJson(observation.initialCopy, anchor.initialCopy)
+      || observation.reopenedCopySha256 !== options.reopenedCopySha256
+    ) throw new Error("client observation does not match its trusted anchor");
     const acceptanceBytes = await readOwnedRegularFile(canonicalRoot, options.acceptanceRecord.path);
     if (sha256(acceptanceBytes) !== options.acceptanceRecord.sha256) throw new Error("acceptance record hash does not match the observed file");
+    const acceptance = AcceptanceSchema.parse(JSON.parse(acceptanceBytes.toString("utf8")));
+    if (
+      !acceptance.deliveryComplete
+      || !sameJson(acceptance.clientAcceptance.observation, options.observation)
+      || acceptance.clientAcceptance.application !== observation.application
+      || acceptance.clientAcceptance.selectedObject !== observation.selectedObject
+      || acceptance.clientAcceptance.temporaryEditObserved !== observation.temporaryEditObserved
+      || acceptance.clientAcceptance.undoObserved !== observation.undoObserved
+      || acceptance.clientAcceptance.saveDecision !== observation.saveDecision
+      || acceptance.clientAcceptance.reopenObserved !== observation.reopenObserved
+      || acceptance.clientAcceptance.smokeCopy?.reopenedSha256 !== observation.reopenedCopySha256
+      || acceptance.clientAcceptance.observedResult !== observation.observedResult
+      || acceptance.clientAcceptance.confirmedAt !== observation.confirmedAt
+    ) throw new Error("acceptance record does not bind the client observation result");
     const completed: ClientSmokeCopyAnchor = {
       ...anchor,
       state: "completed",
-      savedCopySha256: options.savedCopySha256,
+      observation: options.observation,
+      reopenedCopySha256: options.reopenedCopySha256,
       acceptanceRecord: options.acceptanceRecord,
       completedAt: options.completedAt,
     };
@@ -879,6 +916,64 @@ function acceptancePath(manifest: ProjectManifest, delivered: boolean): string {
   return delivered ? `${base}/acceptance-record.json` : `${base}/acceptance.json`;
 }
 
+function acceptanceObservationPath(manifest: ProjectManifest): string {
+  return `output/revisions/${currentDeckRevision(manifest)}/acceptance-observation.json`;
+}
+
+function observationFromSubmission(
+  manifest: ProjectManifest,
+  anchor: ClientSmokeCopyAnchor,
+  submitted: ReturnType<typeof ClientAcceptanceInputSchema.parse>,
+): ClientAcceptanceObservation {
+  return ClientAcceptanceObservationSchema.parse({
+    schemaVersion: 1,
+    kind: "client-acceptance-observation",
+    anchorId: anchor.anchorId,
+    projectId: manifest.projectId,
+    revisionId: manifest.currentRevision.id,
+    deckRevision: currentDeckRevision(manifest),
+    application: submitted.application,
+    selectedObject: submitted.selectedObject,
+    descriptor: anchor.descriptor,
+    source: anchor.source,
+    initialCopy: anchor.initialCopy,
+    temporaryEditObserved: submitted.temporaryEditObserved,
+    undoObserved: submitted.undoObserved,
+    saveDecision: submitted.saveDecision,
+    reopenObserved: submitted.reopenObserved,
+    reopenedCopySha256: submitted.reopenedCopySha256,
+    observedResult: submitted.observedResult,
+    confirmedAt: submitted.confirmedAt,
+  });
+}
+
+async function readBoundClientObservation(
+  root: string,
+  manifest: ProjectManifest,
+  anchor: ClientSmokeCopyAnchor,
+  artifact: Artifact,
+): Promise<ClientAcceptanceObservation> {
+  if (
+    artifact.path !== acceptanceObservationPath(manifest)
+    || artifact.revisionId !== manifest.currentRevision.id
+    || !sameJson(anchor.observation, artifact)
+  ) throw new Error("client observation evidence is not current");
+  const bytes = await readOwnedRegularFile(root, artifact.path);
+  if (sha256(bytes) !== artifact.sha256) throw new Error("client observation evidence is not current");
+  const observation = ClientAcceptanceObservationSchema.parse(JSON.parse(bytes.toString("utf8")));
+  if (
+    observation.anchorId !== anchor.anchorId
+    || observation.projectId !== manifest.projectId
+    || observation.revisionId !== manifest.currentRevision.id
+    || observation.deckRevision !== currentDeckRevision(manifest)
+    || !sameJson(observation.descriptor, anchor.descriptor)
+    || !sameJson(observation.source, anchor.source)
+    || !sameJson(observation.initialCopy, anchor.initialCopy)
+    || observation.reopenedCopySha256 !== anchor.reopenedCopySha256
+  ) throw new Error("client observation does not match its trusted anchor");
+  return observation;
+}
+
 async function readBoundAcceptance(root: string, manifest: ProjectManifest): Promise<Acceptance> {
   const artifact = manifest.exports.acceptance;
   if (
@@ -893,27 +988,39 @@ async function readBoundAcceptance(root: string, manifest: ProjectManifest): Pro
   if (manifest.stage === "delivered") {
     const anchor = manifest.clientSmokeCopyAnchor;
     const smoke = acceptance.clientAcceptance.smokeCopy;
+    const observationArtifact = acceptance.clientAcceptance.observation;
     if (
       !anchor
       || anchor.state !== "completed"
       || !smoke
-      || anchor.savedCopySha256 !== smoke.savedSha256
+      || !observationArtifact
+      || !sameJson(anchor.observation, observationArtifact)
+      || anchor.reopenedCopySha256 !== smoke.reopenedSha256
       || !sameJson(anchor.acceptanceRecord, artifact)
     ) throw new Error("client smoke copy completion anchor is not current");
     const current = await validateCurrentSmokeCopyFiles(root, manifest, anchor);
+    const observation = await readBoundClientObservation(root, manifest, anchor, observationArtifact);
     if (
       smoke.descriptorPath !== anchor.descriptor.path
       || smoke.descriptorSha256 !== current.descriptorSha256
       || smoke.path !== anchor.initialCopy.path
       || smoke.initialSha256 !== anchor.initialCopy.sha256
-      || smoke.savedSha256 !== current.copySha256
-      || smoke.savedSha256 === smoke.initialSha256
+      || smoke.reopenedSha256 !== current.copySha256
+      || smoke.reopenedSha256 !== smoke.initialSha256
+      || acceptance.clientAcceptance.application !== observation.application
+      || acceptance.clientAcceptance.selectedObject !== observation.selectedObject
+      || acceptance.clientAcceptance.temporaryEditObserved !== observation.temporaryEditObserved
+      || acceptance.clientAcceptance.undoObserved !== observation.undoObserved
+      || acceptance.clientAcceptance.saveDecision !== observation.saveDecision
+      || acceptance.clientAcceptance.reopenObserved !== observation.reopenObserved
+      || acceptance.clientAcceptance.observedResult !== observation.observedResult
+      || acceptance.clientAcceptance.confirmedAt !== observation.confirmedAt
     ) throw new Error("client smoke copy evidence is not current");
   }
   return acceptance;
 }
 
-export type AcceptanceRecordCheckpoint = "record-promoted" | "manifest-updated";
+export type AcceptanceRecordCheckpoint = "observation-promoted" | "record-promoted" | "manifest-updated";
 export type AcceptanceRecordOperations = {
   checkpoint?: (step: AcceptanceRecordCheckpoint) => Promise<void> | void;
   inputRead?: SafeReadOperations;
@@ -942,15 +1049,6 @@ export async function recordClientAcceptance(
   } catch (error: unknown) {
     throw new Error("client acceptance input is invalid", { cause: error });
   }
-  if (
-    !submitted.opened
-    || !submitted.edited
-    || !submitted.saved
-    || !submitted.closed
-    || !submitted.reopened
-    || submitted.result !== "passed"
-  ) throw new Error("all six client acceptance checks must be explicitly complete");
-
   return withProjectLease(root, "acceptance", async (canonicalRoot) => {
     const manifest = await readProject(canonicalRoot);
     const current = await readBoundAcceptance(canonicalRoot, manifest);
@@ -959,13 +1057,12 @@ export async function recordClientAcceptance(
       if (
         recorded.application !== submitted.application
         || recorded.smokeCopy?.descriptorPath !== submitted.smokeCopyDescriptorPath
-        || recorded.smokeCopy?.savedSha256 !== submitted.savedCopySha256
-        || recorded.opened !== submitted.opened
-        || recorded.edited !== submitted.edited
-        || recorded.saved !== submitted.saved
-        || recorded.closed !== submitted.closed
-        || recorded.reopened !== submitted.reopened
-        || recorded.result !== submitted.result
+        || recorded.smokeCopy?.reopenedSha256 !== submitted.reopenedCopySha256
+        || recorded.selectedObject !== submitted.selectedObject
+        || recorded.temporaryEditObserved !== submitted.temporaryEditObserved
+        || recorded.undoObserved !== submitted.undoObserved
+        || recorded.saveDecision !== submitted.saveDecision
+        || recorded.reopenObserved !== submitted.reopenObserved
         || recorded.observedResult !== submitted.observedResult
         || recorded.confirmedAt !== submitted.confirmedAt
       ) throw new Error("immutable client acceptance replay does not match the recorded evidence");
@@ -976,30 +1073,54 @@ export async function recordClientAcceptance(
       throw new Error("trusted client smoke copy anchor is missing or stale");
     }
     const smoke = await validateCurrentSmokeCopyFiles(canonicalRoot, manifest, anchor);
-    if (smoke.copySha256 !== submitted.savedCopySha256) {
-      throw new Error("saved client smoke copy hash does not match the observed file");
+    if (smoke.copySha256 !== submitted.reopenedCopySha256) {
+      throw new Error("reopened client smoke copy hash does not match the observed file");
     }
-    if (smoke.copySha256 === anchor.initialCopy.sha256) throw new Error("smoke copy must change after the client edit");
+    if (smoke.copySha256 !== anchor.initialCopy.sha256) {
+      throw new Error("client smoke copy must remain unchanged after undo, discard, and reopen");
+    }
+    const observation = observationFromSubmission(manifest, anchor, submitted);
+    const observationBytes = Buffer.from(`${JSON.stringify(observation, null, 2)}\n`);
+    const observationRef = acceptanceObservationPath(manifest);
+    const observationArtifact: Artifact = {
+      path: observationRef,
+      sha256: sha256(observationBytes),
+      revisionId: manifest.currentRevision.id,
+    };
     const client = ClientAcceptanceSchema.parse({
       application: submitted.application,
+      observation: observationArtifact,
       smokeCopy: {
         descriptorPath: anchor.descriptor.path,
         descriptorSha256: smoke.descriptorSha256,
         path: anchor.initialCopy.path,
         initialSha256: anchor.initialCopy.sha256,
-        savedSha256: smoke.copySha256,
+        reopenedSha256: smoke.copySha256,
       },
-      opened: submitted.opened,
-      edited: submitted.edited,
-      saved: submitted.saved,
-      closed: submitted.closed,
-      reopened: submitted.reopened,
-      result: submitted.result,
+      selectedObject: submitted.selectedObject,
+      temporaryEditObserved: submitted.temporaryEditObserved,
+      undoObserved: submitted.undoObserved,
+      saveDecision: submitted.saveDecision,
+      reopenObserved: submitted.reopenObserved,
       observedResult: submitted.observedResult,
       confirmedAt: submitted.confirmedAt,
     });
     const completed = AcceptanceSchema.parse({ ...current, deliveryComplete: true, clientAcceptance: client });
     await publishRevisionSnapshot(canonicalRoot, manifest);
+    const directory = join(canonicalRoot, "output", "revisions", String(currentDeckRevision(manifest)));
+    const observationPath = join(canonicalRoot, ...observationRef.split("/"));
+    try {
+      await lstat(observationPath);
+      const existing = await readRegularFileNoFollow(observationPath);
+      if (!existing.equals(observationBytes)) throw new Error("immutable client observation does not match current discard evidence");
+    } catch (error: unknown) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+      const staging = join(directory, `.acceptance-observation-${randomUUID()}.staging.json`);
+      await writeDurableExclusive(staging, observationBytes);
+      await promoteExclusive(staging, observationPath);
+      await syncDirectory(directory);
+    }
+    await operations.checkpoint?.("observation-promoted");
     const bytes = Buffer.from(`${JSON.stringify(completed, null, 2)}\n`);
     const recordRef = acceptancePath(manifest, true);
     const recordPath = join(canonicalRoot, ...recordRef.split("/"));
@@ -1014,7 +1135,6 @@ export async function recordClientAcceptance(
       if (!existing.equals(bytes)) throw new Error("immutable acceptance record does not match current client evidence");
     } catch (error: unknown) {
       if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
-      const directory = join(canonicalRoot, "output", "revisions", String(currentDeckRevision(manifest)));
       const staging = join(directory, `.acceptance-record-${randomUUID()}.staging.json`);
       await writeDurableExclusive(staging, bytes);
       await promoteExclusive(staging, recordPath);
@@ -1025,7 +1145,8 @@ export async function recordClientAcceptance(
       root: canonicalRoot,
       expectedManifest: manifest,
       anchorId: anchor.anchorId,
-      savedCopySha256: smoke.copySha256,
+      observation: observationArtifact,
+      reopenedCopySha256: smoke.copySha256,
       acceptanceRecord: nextAcceptance,
       completedAt: submitted.confirmedAt,
     });

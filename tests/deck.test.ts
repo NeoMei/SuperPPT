@@ -237,20 +237,17 @@ async function writeCompletedClientEvidence(
   application: "WPS" | "PowerPoint" = "WPS",
 ): Promise<string> {
   const smoke = await createClientSmokeCopy(root);
-  const copy = join(root, smoke.copy.path);
-  await writeFile(copy, Buffer.concat([await readFile(copy), Buffer.from("saved client edit")]));
   const evidence = join(root, name);
   await writeFile(evidence, `${JSON.stringify({
     application,
     smokeCopyDescriptorPath: smoke.descriptorPath,
-    savedCopySha256: createHash("sha256").update(await readFile(copy)).digest("hex"),
-    opened: true,
-    edited: true,
-    saved: true,
-    closed: true,
-    reopened: true,
-    result: "passed",
-    observedResult: "代表文本对象在重新打开后仍可编辑",
+    selectedObject: "slide-2:title",
+    temporaryEditObserved: true,
+    undoObserved: true,
+    saveDecision: "discarded",
+    reopenObserved: true,
+    reopenedCopySha256: smoke.copy.initialSha256,
+    observedResult: "临时标题修改可见；撤销并丢弃后重开，原始标题保持不变",
     confirmedAt: new Date().toISOString(),
   })}\n`, { mode: 0o600 });
   return evidence;
@@ -404,13 +401,13 @@ test("builds revision-bound initial acceptance with physical artifact hashes", a
   assert.equal(AcceptanceSchema.parse(acceptance).deliveryComplete, false);
   assert.deepEqual(acceptance.clientAcceptance, {
     application: null,
+    observation: null,
     smokeCopy: null,
-    opened: false,
-    edited: false,
-    saved: false,
-    closed: false,
-    reopened: false,
-    result: null,
+    selectedObject: null,
+    temporaryEditObserved: false,
+    undoObserved: false,
+    saveDecision: null,
+    reopenObserved: false,
     observedResult: null,
     confirmedAt: null,
   });
@@ -693,7 +690,7 @@ test("aborts promotion when the current revision changes during assembly", async
   await assert.rejects(access(join(fixture.root, "output", "revisions", "1")));
 });
 
-test("records delivery only from an edited owned smoke copy while preserving the canonical deck", async (t) => {
+test("records undo discard reopen evidence while preserving the canonical deck and owned smoke copy", async (t) => {
   const fixture = await readyProject(t);
   await deliverReviewedCandidate({
     root: fixture.root,
@@ -704,86 +701,115 @@ test("records delivery only from an edited owned smoke copy while preserving the
   const canonicalBytes = await readFile(canonicalPptx);
   const smoke = await createClientSmokeCopy(fixture.root);
   const smokeCopy = join(fixture.root, smoke.copy.path);
-  assert.deepEqual(await readFile(smokeCopy), canonicalBytes);
-  assert.equal(smoke.source.path, manifest.exports.pptx!.path);
-  assert.equal(smoke.source.sha256, manifest.exports.pptx!.sha256);
-  assert.equal(smoke.copy.initialSha256, manifest.exports.pptx!.sha256);
-  assert.equal(smoke.descriptorPath, `output/revisions/${manifest.deckRevision ?? manifest.currentRevision.number}/client-smoke/descriptor.json`);
-  const anchored = (await readProject(fixture.root)).clientSmokeCopyAnchor!;
-  assert.equal(anchored.state, "ready");
-  assert.equal(anchored.anchorId, smoke.anchorId);
-  assert.equal(anchored.descriptor.path, smoke.descriptorPath);
-  assert.equal(anchored.descriptor.sha256, smoke.descriptorSha256);
-  assert.equal(anchored.initialCopy.path, smoke.copy.path);
-  assert.equal(anchored.initialCopy.sha256, smoke.copy.initialSha256);
-  await writeFile(smokeCopy, Buffer.concat([await readFile(smokeCopy), Buffer.from("saved client edit")]));
-  const savedCopySha256 = createHash("sha256").update(await readFile(smokeCopy)).digest("hex");
-  assert.deepEqual(await createClientSmokeCopy(fixture.root), smoke);
-  assert.equal(createHash("sha256").update(await readFile(smokeCopy)).digest("hex"), savedCopySha256);
-  const incomplete = join(fixture.root, "incomplete.json");
-  await writeFile(incomplete, `${JSON.stringify({
-    application: "WPS",
-    smokeCopyDescriptorPath: smoke.descriptorPath,
-    savedCopySha256,
-    opened: true,
-    edited: true,
-    saved: false,
-    closed: true,
-    reopened: true,
-    result: "passed",
-    observedResult: "代表文本对象在重新打开后仍可编辑",
-    confirmedAt: new Date().toISOString(),
-  })}\n`, { mode: 0o600 });
-  await assert.rejects(recordClientAcceptance(fixture.root, incomplete), /all six client acceptance checks/);
+  const initialCopyBytes = await readFile(smokeCopy);
+  const evidence = await writeCompletedClientEvidence(fixture.root, "discarded-evidence.json");
 
-  const evidence = join(fixture.root, "accepted.json");
-  await writeFile(evidence, `${JSON.stringify({
-    application: "WPS",
-    smokeCopyDescriptorPath: smoke.descriptorPath,
-    savedCopySha256,
-    opened: true,
-    edited: true,
-    saved: true,
-    closed: true,
-    reopened: true,
-    result: "passed",
-    observedResult: "代表文本对象在重新打开后仍可编辑",
-    confirmedAt: new Date().toISOString(),
-  })}\n`, { mode: 0o600 });
   const accepted = await recordClientAcceptance(fixture.root, evidence);
-  assert.equal(accepted.deliveryComplete, true);
-  assert.equal(accepted.clientAcceptance.smokeCopy?.path, smoke.copy.path);
-  assert.equal(accepted.clientAcceptance.smokeCopy?.savedSha256, savedCopySha256);
-  assert.equal(accepted.clientAcceptance.closed, true);
-  assert.equal(accepted.clientAcceptance.result, "passed");
-  assert.deepEqual(await readFile(canonicalPptx), canonicalBytes);
-  const delivered = await readProject(fixture.root);
-  assert.equal(delivered.stage, "delivered");
-  assert.equal(delivered.clientSmokeCopyAnchor?.state, "completed");
-  assert.equal(delivered.clientSmokeCopyAnchor?.savedCopySha256, savedCopySha256);
-  assert.deepEqual(delivered.clientSmokeCopyAnchor?.acceptanceRecord, delivered.exports.acceptance);
 
-  const conflictingReplay = join(fixture.root, "conflicting-replay.json");
+  assert.equal(accepted.deliveryComplete, true);
+  assert.equal(accepted.clientAcceptance.application, "WPS");
+  assert.equal(accepted.clientAcceptance.selectedObject, "slide-2:title");
+  assert.equal(accepted.clientAcceptance.temporaryEditObserved, true);
+  assert.equal(accepted.clientAcceptance.undoObserved, true);
+  assert.equal(accepted.clientAcceptance.saveDecision, "discarded");
+  assert.equal(accepted.clientAcceptance.reopenObserved, true);
+  assert.equal(accepted.clientAcceptance.smokeCopy?.reopenedSha256, smoke.copy.initialSha256);
+  assert.deepEqual(await readFile(smokeCopy), initialCopyBytes);
+  assert.deepEqual(await readFile(canonicalPptx), canonicalBytes);
+
+  const delivered = await readProject(fixture.root);
+  const anchor = delivered.clientSmokeCopyAnchor!;
+  assert.equal(delivered.stage, "delivered");
+  assert.equal(anchor.state, "completed");
+  assert.equal(anchor.reopenedCopySha256, smoke.copy.initialSha256);
+  assert.ok(anchor.observation);
+  assert.deepEqual(anchor.acceptanceRecord, delivered.exports.acceptance);
+  const observation = JSON.parse(await readFile(join(fixture.root, anchor.observation!.path), "utf8"));
+  assert.equal(observation.projectId, delivered.projectId);
+  assert.equal(observation.revisionId, delivered.currentRevision.id);
+  assert.deepEqual(observation.source, anchor.source);
+  assert.deepEqual(observation.initialCopy, anchor.initialCopy);
+  assert.equal(observation.descriptor.path, anchor.descriptor.path);
+  assert.equal(observation.descriptor.sha256, anchor.descriptor.sha256);
+  assert.equal(observation.reopenedCopySha256, anchor.initialCopy.sha256);
+  assert.equal(observation.saveDecision, "discarded");
+
+  assert.deepEqual(await recordClientAcceptance(fixture.root, evidence), accepted);
+  const conflictingReplay = join(fixture.root, "conflicting-discard-replay.json");
+  const submitted = JSON.parse(await readFile(evidence, "utf8"));
   await writeFile(conflictingReplay, `${JSON.stringify({
-    application: "WPS",
-    smokeCopyDescriptorPath: smoke.descriptorPath,
-    savedCopySha256,
-    opened: true,
-    edited: true,
-    saved: true,
-    closed: true,
-    reopened: true,
-    result: "passed",
+    ...submitted,
     observedResult: "different observation that was never recorded",
-    confirmedAt: new Date().toISOString(),
   })}\n`, { mode: 0o600 });
-  await assert.rejects(recordClientAcceptance(fixture.root, conflictingReplay), /immutable client acceptance replay does not match/);
+  await assert.rejects(
+    recordClientAcceptance(fixture.root, conflictingReplay),
+    /immutable client acceptance replay does not match/,
+  );
 
   await writeFile(canonicalPptx, "tampered after acceptance");
   await assert.rejects(recordClientAcceptance(fixture.root, evidence), /acceptance evidence is not current/);
 });
 
-test("rejects unchanged smoke copies, forged source evidence, and post-acceptance copy tampering", async (t) => {
+test("rejects missing undo or reopen and a saved smoke modification without changing the canonical deck", async (t) => {
+  for (const failure of ["undo", "reopen", "saved-copy", "reported-hash"] as const) {
+    const fixture = await readyProject(t);
+    await deliverReviewedCandidate({ root: fixture.root, operations: { buildOutputs: fakeOutputs } });
+    const manifest = await readProject(fixture.root);
+    const canonicalPptx = join(fixture.root, manifest.exports.pptx!.path);
+    const canonicalBytes = await readFile(canonicalPptx);
+    const smoke = await createClientSmokeCopy(fixture.root);
+    const copy = join(fixture.root, smoke.copy.path);
+    const evidence = join(fixture.root, `${failure}.json`);
+    const submitted: Record<string, unknown> = {
+      application: "WPS",
+      smokeCopyDescriptorPath: smoke.descriptorPath,
+      selectedObject: "slide-2:title",
+      temporaryEditObserved: true,
+      undoObserved: true,
+      saveDecision: "discarded",
+      reopenObserved: true,
+      reopenedCopySha256: smoke.copy.initialSha256,
+      observedResult: "撤销并丢弃后重开，原始标题保持不变",
+      confirmedAt: new Date().toISOString(),
+    };
+    if (failure === "undo") submitted.undoObserved = false;
+    if (failure === "reopen") submitted.reopenObserved = false;
+    if (failure === "saved-copy") await writeFile(copy, Buffer.concat([await readFile(copy), Buffer.from("saved modification")]));
+    if (failure === "reported-hash") submitted.reopenedCopySha256 = "f".repeat(64);
+    await writeFile(evidence, `${JSON.stringify(submitted)}\n`, { mode: 0o600 });
+
+    await assert.rejects(recordClientAcceptance(fixture.root, evidence), /invalid|undo|reopen|discard|hash|unchanged/i);
+    assert.equal((await readProject(fixture.root)).stage, "assembling");
+    assert.deepEqual(await readFile(canonicalPptx), canonicalBytes);
+  }
+});
+
+test("manual discard reopen helper creates only the owned copy and prints the human checklist", async (t) => {
+  const fixture = await readyProject(t);
+  await deliverReviewedCandidate({ root: fixture.root, operations: { buildOutputs: fakeOutputs } });
+  const before = await readProject(fixture.root);
+  const canonical = join(fixture.root, before.exports.pptx!.path);
+  const canonicalBytes = await readFile(canonical);
+
+  const { stdout } = await execFileAsync(join(process.cwd(), "scripts", "acceptance-smoke.sh"), [fixture.root], {
+    cwd: process.cwd(),
+    env: process.env,
+  });
+
+  for (const item of ["选定对象", "临时修改", "观察", "撤销", "丢弃/不保存", "关闭", "重开", "核验原内容"]) {
+    assert.match(stdout, new RegExp(item));
+  }
+  assert.match(stdout, /不操作 WPS\/PowerPoint，也不声明验收通过/);
+  assert.match(stdout, /禁止.*canonical.*deck\.pptx/is);
+  const after = await readProject(fixture.root);
+  assert.equal(after.stage, "assembling");
+  assert.equal(after.clientSmokeCopyAnchor?.state, "ready");
+  await access(join(fixture.root, after.clientSmokeCopyAnchor!.initialCopy.path));
+  await assert.rejects(access(join(fixture.root, "output", "revisions", "1", "acceptance-record.json")));
+  assert.deepEqual(await readFile(canonical), canonicalBytes);
+});
+
+test("rejects forged discard evidence and post-acceptance smoke-copy tampering", async (t) => {
   const fixture = await readyProject(t);
   await deliverReviewedCandidate({ root: fixture.root, operations: { buildOutputs: fakeOutputs } });
   const smoke = await createClientSmokeCopy(fixture.root);
@@ -791,44 +817,43 @@ test("rejects unchanged smoke copies, forged source evidence, and post-acceptanc
   const base = {
     application: "PowerPoint",
     smokeCopyDescriptorPath: smoke.descriptorPath,
-    savedCopySha256: smoke.copy.initialSha256,
-    opened: true,
-    edited: true,
-    saved: true,
-    closed: true,
-    reopened: true,
-    result: "passed",
-    observedResult: "文本保存并重新打开成功",
+    selectedObject: "slide-1:title",
+    temporaryEditObserved: true,
+    undoObserved: true,
+    saveDecision: "discarded",
+    reopenObserved: true,
+    reopenedCopySha256: smoke.copy.initialSha256,
+    observedResult: "临时编辑已撤销，丢弃后重开仍为原内容",
     confirmedAt: new Date().toISOString(),
   };
-  await writeFile(evidence, `${JSON.stringify(base)}\n`, { mode: 0o600 });
-  await assert.rejects(recordClientAcceptance(fixture.root, evidence), /smoke copy must change after the client edit/);
 
   const copy = join(fixture.root, smoke.copy.path);
-  await writeFile(copy, Buffer.concat([await readFile(copy), Buffer.from("edited")]));
-  const savedCopySha256 = createHash("sha256").update(await readFile(copy)).digest("hex");
   const descriptorPath = join(fixture.root, smoke.descriptorPath);
   const descriptorBytes = await readFile(descriptorPath);
   const forgedDescriptor = JSON.parse(descriptorBytes.toString("utf8"));
   forgedDescriptor.source.path = "output/revisions/1/forged.pptx";
   const forgedDescriptorBytes = Buffer.from(`${JSON.stringify(forgedDescriptor, null, 2)}\n`);
   await writeFile(descriptorPath, forgedDescriptorBytes);
-  await writeFile(evidence, `${JSON.stringify({
-    ...base,
-    savedCopySha256,
-  })}\n`, { mode: 0o600 });
+  await writeFile(evidence, `${JSON.stringify(base)}\n`, { mode: 0o600 });
   await assert.rejects(recordClientAcceptance(fixture.root, evidence), /descriptor hash mismatch/);
   await writeFile(descriptorPath, descriptorBytes);
-  await writeFile(evidence, `${JSON.stringify({ ...base, savedCopySha256, source: { path: "forged", sha256: "0".repeat(64) } })}\n`, { mode: 0o600 });
+  await writeFile(evidence, `${JSON.stringify({ ...base, source: { path: "forged", sha256: "0".repeat(64) } })}\n`, { mode: 0o600 });
   await assert.rejects(recordClientAcceptance(fixture.root, evidence), /client acceptance input is invalid/);
   await writeFile(evidence, `${JSON.stringify({
     ...base,
-    savedCopySha256,
     smokeCopyDescriptorSha256: smoke.descriptorSha256,
   })}\n`, { mode: 0o600 });
   await assert.rejects(recordClientAcceptance(fixture.root, evidence), /client acceptance input is invalid/);
-  await writeFile(evidence, `${JSON.stringify({ ...base, savedCopySha256 })}\n`, { mode: 0o600 });
+  await writeFile(evidence, `${JSON.stringify(base)}\n`, { mode: 0o600 });
   await recordClientAcceptance(fixture.root, evidence);
+  const delivered = await readProject(fixture.root);
+  const observationPath = join(fixture.root, delivered.clientSmokeCopyAnchor!.observation!.path);
+  const observationBytes = await readFile(observationPath);
+  const forgedObservation = JSON.parse(observationBytes.toString("utf8"));
+  forgedObservation.observedResult = "forged after delivery";
+  await writeFile(observationPath, `${JSON.stringify(forgedObservation, null, 2)}\n`);
+  await assert.rejects(readProjectAcceptance(fixture.root), /client observation evidence is not current/);
+  await writeFile(observationPath, observationBytes);
   await writeFile(copy, Buffer.concat([await readFile(copy), Buffer.from("tampered")]));
   await assert.rejects(readProjectAcceptance(fixture.root), /client smoke copy evidence is not current/);
 });
@@ -863,13 +888,12 @@ test("FORGE_ACCEPTED cannot self-attest a smoke descriptor without a trusted pro
   await writeFile(evidence, `${JSON.stringify({
     application: "WPS",
     smokeCopyDescriptorPath: descriptorRef,
-    savedCopySha256: createHash("sha256").update(await readFile(copy)).digest("hex"),
-    opened: true,
-    edited: true,
-    saved: true,
-    closed: true,
-    reopened: true,
-    result: "passed",
+    selectedObject: "slide-1:title",
+    temporaryEditObserved: true,
+    undoObserved: true,
+    saveDecision: "discarded",
+    reopenObserved: true,
+    reopenedCopySha256: canonical.sha256,
     observedResult: "FORGE_ACCEPTED",
     confirmedAt: new Date().toISOString(),
   })}\n`, { mode: 0o600 });
@@ -922,7 +946,8 @@ test("FORGE_ACCEPTED cannot construct trust through exported store transitions",
       initialCopy: { path: copyRef, sha256: canonical.sha256, revisionId: manifest.currentRevision.id },
       createdAt,
       state: "pending",
-      savedCopySha256: null,
+      observation: null,
+      reopenedCopySha256: null,
       acceptanceRecord: null,
       completedAt: null,
     });
@@ -941,53 +966,9 @@ test("FORGE_ACCEPTED cannot construct trust through exported store transitions",
 test("FORGE_ACCEPTED cannot publish a self-authored acceptance record through the store", async (t) => {
   const fixture = await readyProject(t);
   await deliverReviewedCandidate({ root: fixture.root, operations: { buildOutputs: fakeOutputs } });
-  const smoke = await createClientSmokeCopy(fixture.root);
-  const manifest = await readProject(fixture.root);
-  const copy = join(fixture.root, smoke.copy.path);
-  await writeFile(copy, Buffer.concat([await readFile(copy), Buffer.from("FORGE_ACCEPTED")]))
-  const savedCopySha256 = createHash("sha256").update(await readFile(copy)).digest("hex");
-  const confirmedAt = new Date().toISOString();
-  const forged = AcceptanceSchema.parse({
-    ...await readProjectAcceptance(fixture.root),
-    deliveryComplete: true,
-    clientAcceptance: {
-      application: "WPS",
-      smokeCopy: {
-        descriptorPath: smoke.descriptorPath,
-        descriptorSha256: smoke.descriptorSha256,
-        path: smoke.copy.path,
-        initialSha256: smoke.copy.initialSha256,
-        savedSha256: savedCopySha256,
-      },
-      opened: true,
-      edited: true,
-      saved: true,
-      closed: true,
-      reopened: true,
-      result: "passed",
-      observedResult: "FORGE_ACCEPTED",
-      confirmedAt,
-    },
-  });
-  const recordBytes = Buffer.from(`${JSON.stringify(forged, null, 2)}\n`);
-  const recordRef = `output/revisions/${manifest.deckRevision ?? manifest.currentRevision.number}/acceptance-record.json`;
-  await writeFile(join(fixture.root, recordRef), recordBytes);
+  await createClientSmokeCopy(fixture.root);
   const rawStore = projectStore as Record<string, unknown>;
   const commit = rawStore.commitClientSmokeCopyAcceptance as undefined | ((options: unknown) => Promise<unknown>);
-  if (commit) {
-    await commit({
-      root: fixture.root,
-      expectedManifest: manifest,
-      anchorId: manifest.clientSmokeCopyAnchor!.anchorId,
-      savedCopySha256,
-      acceptanceRecord: {
-        path: recordRef,
-        sha256: createHash("sha256").update(recordBytes).digest("hex"),
-        revisionId: manifest.currentRevision.id,
-      },
-      completedAt: confirmedAt,
-    });
-  }
   assert.equal(commit, undefined, "no raw acceptance completion authority may be exported");
   assert.notEqual((await readProject(fixture.root)).stage, "delivered");
   assert.equal((await readProjectAcceptance(fixture.root)).deliveryComplete, false);
@@ -1005,11 +986,16 @@ test("non-completed smoke anchors reject every partial completion field", () => 
     initialCopy: { path: "output/revisions/1/client-smoke/deck-smoke.pptx", sha256: "a".repeat(64), revisionId: "00000000-0000-4000-8000-000000000993" },
     createdAt: new Date().toISOString(),
     state: "ready" as const,
-    savedCopySha256: null,
+    observation: null,
+    reopenedCopySha256: null,
     acceptanceRecord: null,
     completedAt: null,
   };
-  assert.throws(() => ClientSmokeCopyAnchorSchema.parse({ ...base, savedCopySha256: "c".repeat(64) }));
+  assert.throws(() => ClientSmokeCopyAnchorSchema.parse({
+    ...base,
+    observation: { path: "output/revisions/1/acceptance-observation.json", sha256: "c".repeat(64), revisionId: base.revisionId },
+  }));
+  assert.throws(() => ClientSmokeCopyAnchorSchema.parse({ ...base, reopenedCopySha256: "a".repeat(64) }));
   assert.throws(() => ClientSmokeCopyAnchorSchema.parse({
     ...base,
     acceptanceRecord: { path: "output/revisions/1/acceptance-record.json", sha256: "d".repeat(64), revisionId: base.revisionId },
@@ -1070,13 +1056,12 @@ test("rejects ordinary anchor forgery plus linked or stale anchored smoke eviden
   await writeFile(linkedEvidence, `${JSON.stringify({
     application: "WPS",
     smokeCopyDescriptorPath: smoke.descriptorPath,
-    savedCopySha256: createHash("sha256").update("linked edit").digest("hex"),
-    opened: true,
-    edited: true,
-    saved: true,
-    closed: true,
-    reopened: true,
-    result: "passed",
+    selectedObject: "slide-1:title",
+    temporaryEditObserved: true,
+    undoObserved: true,
+    saveDecision: "discarded",
+    reopenObserved: true,
+    reopenedCopySha256: createHash("sha256").update("linked edit").digest("hex"),
     observedResult: "linked copy",
     confirmedAt: new Date().toISOString(),
   })}\n`, { mode: 0o600 });
@@ -1203,26 +1188,31 @@ test("derives provider identity from every accepted attempt ledger", async (t) =
   );
 });
 
-test("recovers acceptance after a hard crash following immutable record promotion", async (t) => {
-  const fixture = await readyProject(t);
-  await deliverReviewedCandidate({
-    root: fixture.root,
-    operations: { buildOutputs: fakeOutputs },
-  });
-  const evidence = await writeCompletedClientEvidence(fixture.root, "accepted-crash.json");
-  const recordWithOperations = recordClientAcceptance as unknown as (
-    root: string,
-    input: string,
-    operations: { checkpoint: (step: string) => Promise<void> | void },
-  ) => Promise<unknown>;
-  await assert.rejects(recordWithOperations(fixture.root, evidence, {
-    checkpoint: (step) => {
-      if (step === "record-promoted") throw new Error("simulated hard crash");
-    },
-  }), /simulated hard crash/);
-  const recovered = await recordClientAcceptance(fixture.root, evidence);
-  assert.equal(recovered.deliveryComplete, true);
-  assert.equal((await readProject(fixture.root)).stage, "delivered");
+test("recovers discard acceptance across observation, record, and manifest publication crashes", async (t) => {
+  for (const checkpoint of ["observation-promoted", "record-promoted", "manifest-updated"] as const) {
+    const fixture = await readyProject(t);
+    await deliverReviewedCandidate({
+      root: fixture.root,
+      operations: { buildOutputs: fakeOutputs },
+    });
+    const evidence = await writeCompletedClientEvidence(fixture.root, `accepted-${checkpoint}.json`);
+    await assert.rejects(recordClientAcceptance(fixture.root, evidence, {
+      checkpoint: (step) => {
+        if (step === checkpoint) throw new Error(`simulated crash at ${checkpoint}`);
+      },
+    }), new RegExp(`simulated crash at ${checkpoint}`));
+    const crashed = await readProject(fixture.root);
+    assert.equal(crashed.stage, checkpoint === "manifest-updated" ? "delivered" : "assembling");
+    await access(join(fixture.root, "output", "revisions", "1", "acceptance-observation.json"));
+    if (checkpoint === "observation-promoted") {
+      await assert.rejects(access(join(fixture.root, "output", "revisions", "1", "acceptance-record.json")));
+    } else {
+      await access(join(fixture.root, "output", "revisions", "1", "acceptance-record.json"));
+    }
+    const recovered = await recordClientAcceptance(fixture.root, evidence);
+    assert.equal(recovered.deliveryComplete, true);
+    assert.equal((await readProject(fixture.root)).stage, "delivered");
+  }
 });
 
 test("client acceptance input rejects a pathname swap through its anchored CLI reader", async (t) => {

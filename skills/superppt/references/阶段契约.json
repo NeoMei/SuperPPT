@@ -123,9 +123,9 @@
     },
     "smoke": {
       "copyDisposition": "discard-no-save",
-      "runtimeState": "task-11-save-based-incompatible",
-      "acceptanceRecordAction": "blocked-until-task-12",
-      "intermediateEvidence": "human-pending-acceptance-report"
+      "runtimeState": "discard-reopen-supported",
+      "acceptanceRecordAction": "invoke-after-authenticated-discard-reopen-evidence",
+      "intermediateEvidence": "immutable-acceptance-observation"
     },
     "jobInputs": {
       "styleSample": {

@@ -13,6 +13,7 @@ import {
   sha256,
 } from "../project/store.js";
 import {
+  ClientAcceptanceObservationSchema,
   ClientSmokeCopyDescriptorSchema,
   type ClientAcceptance,
 } from "./schema.js";
@@ -238,7 +239,9 @@ export async function validateRecordedClientSmokeCopy(
   const anchor = requireCurrentAnchor(manifest, false);
   if (
     anchor.state !== "completed"
-    || anchor.savedCopySha256 !== client.smokeCopy.savedSha256
+    || !client.observation
+    || JSON.stringify(anchor.observation) !== JSON.stringify(client.observation)
+    || anchor.reopenedCopySha256 !== client.smokeCopy.reopenedSha256
     || !anchor.acceptanceRecord
     || JSON.stringify(anchor.acceptanceRecord) !== JSON.stringify(manifest.exports.acceptance)
   ) throw new Error("client smoke copy completion anchor is not current");
@@ -251,7 +254,31 @@ export async function validateRecordedClientSmokeCopy(
     client.smokeCopy.path !== validated.copy.path
     || client.smokeCopy.descriptorSha256 !== anchor.descriptor.sha256
     || client.smokeCopy.initialSha256 !== validated.copy.initialSha256
-    || client.smokeCopy.savedSha256 !== validated.currentCopySha256
-    || client.smokeCopy.savedSha256 === client.smokeCopy.initialSha256
+    || client.smokeCopy.reopenedSha256 !== validated.currentCopySha256
+    || client.smokeCopy.reopenedSha256 !== client.smokeCopy.initialSha256
   ) throw new Error("client smoke copy evidence is not current");
+  const observationBytes = await readOwnedRegularFile(root, client.observation.path);
+  if (sha256(observationBytes) !== client.observation.sha256) {
+    throw new Error("client observation evidence is not current");
+  }
+  const observation = ClientAcceptanceObservationSchema.parse(JSON.parse(observationBytes.toString("utf8")));
+  if (
+    client.observation.revisionId !== manifest.currentRevision.id
+    || observation.anchorId !== anchor.anchorId
+    || observation.projectId !== manifest.projectId
+    || observation.revisionId !== manifest.currentRevision.id
+    || observation.deckRevision !== anchor.deckRevision
+    || JSON.stringify(observation.descriptor) !== JSON.stringify(anchor.descriptor)
+    || JSON.stringify(observation.source) !== JSON.stringify(anchor.source)
+    || JSON.stringify(observation.initialCopy) !== JSON.stringify(anchor.initialCopy)
+    || observation.reopenedCopySha256 !== anchor.reopenedCopySha256
+    || observation.application !== client.application
+    || observation.selectedObject !== client.selectedObject
+    || observation.temporaryEditObserved !== client.temporaryEditObserved
+    || observation.undoObserved !== client.undoObserved
+    || observation.saveDecision !== client.saveDecision
+    || observation.reopenObserved !== client.reopenObserved
+    || observation.observedResult !== client.observedResult
+    || observation.confirmedAt !== client.confirmedAt
+  ) throw new Error("client observation does not bind the current acceptance result");
 }

@@ -131,9 +131,9 @@ function validateStageContract(contract: StageContract): void {
   assert.equal(policy.delivery.genericApprovalAllowed, false);
   assert.deepEqual(policy.delivery.reviewActions, ["edit-page", "return-upstream", "confirm-delivery"]);
   assert.equal(policy.smoke.copyDisposition, "discard-no-save");
-  assert.equal(policy.smoke.runtimeState, "task-11-save-based-incompatible");
-  assert.equal(policy.smoke.acceptanceRecordAction, "blocked-until-task-12");
-  assert.equal(policy.smoke.intermediateEvidence, "human-pending-acceptance-report");
+  assert.equal(policy.smoke.runtimeState, "discard-reopen-supported");
+  assert.equal(policy.smoke.acceptanceRecordAction, "invoke-after-authenticated-discard-reopen-evidence");
+  assert.equal(policy.smoke.intermediateEvidence, "immutable-acceptance-observation");
   assert.equal(policy.jobInputs.styleSample.styleLockState, "provisional");
   assert.equal(policy.jobInputs.styleSample.approvedSample, "must-be-null");
   assert.deepEqual(policy.jobInputs.styleSample.required, [
@@ -175,7 +175,7 @@ test("machine contract encodes all user decisions and rejects unsafe workflow va
     ["pre-review delivery", (fixture) => { fixture.workflowPolicy.delivery.reviewRequired = false; }],
     ["saved smoke mutation", (fixture) => { fixture.workflowPolicy.smoke.copyDisposition = "save"; }],
     ["machine auto-advance", (fixture) => { fixture.stages[0]!.mustWaitForUser = false; }],
-    ["discard sent to save runtime", (fixture) => { fixture.workflowPolicy.smoke.acceptanceRecordAction = "invoke-now"; }],
+    ["unauthenticated discard invocation", (fixture) => { fixture.workflowPolicy.smoke.acceptanceRecordAction = "invoke-now"; }],
     ["sample requires approved sample", (fixture) => { fixture.workflowPolicy.jobInputs.styleSample.approvedSample = "authenticated-non-null"; }],
     ["deck lacks approved sample", (fixture) => { fixture.workflowPolicy.jobInputs.deckAndPageRegeneration.approvedSample = "must-be-null"; }],
     ["style change skips sample authorization", (fixture) => { fixture.workflowPolicy.changeInvalidation.style.shift(); }],
@@ -320,12 +320,11 @@ test("controlled WPS smoke edits, undoes, discards, and reopens without saving c
   assert.match(workflow, /deck-smoke\.pptx/);
   assert.match(workflow, /绝不.*canonical.*deck\.pptx|禁止.*canonical.*deck\.pptx/is);
   assert.doesNotMatch(workflow, /客户端编辑、保存、关闭|保存、关闭、重新打开|edit representative text.*then save/i);
-  assert.match(workflow, /Task 11.*saved:true.*changed copy hash.*不.*acceptance-record|Task 11.*acceptance-record.*blocked.*Task 12/is);
-  assert.match(workflow, /pending-acceptance|验收待完成/);
-  const unsafeAcceptanceLines = workflow.split("\n").filter((line) => (
-    /discard/i.test(line)
-    && /acceptance-record/i.test(line)
-    && !/blocked|不得|do not|不兼容/i.test(line)
-  ));
-  assert.deepEqual(unsafeAcceptanceLines, []);
+  assert.match(workflow, /temporaryEditObserved:true/);
+  assert.match(workflow, /undoObserved:true/);
+  assert.match(workflow, /saveDecision:"discarded"/);
+  assert.match(workflow, /reopenObserved:true/);
+  assert.match(workflow, /成功.*记录.*正式交付|successful authenticated record.*formal delivery/is);
+  assert.match(workflow, /不得虚构|never fabricate/i);
+  assert.doesNotMatch(workflow, /blocked until Task 12|blocked-until-task-12|task-11-save-based-incompatible/i);
 });
