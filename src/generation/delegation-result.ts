@@ -28,7 +28,10 @@ import {
 } from "./schemas.js";
 import { DelegatedPresentationQaSchema, delegatedStyleConsistency } from "./quality.js";
 import { readOwnedRegularFile } from "../project/safe-file.js";
-import { readProject, updateProject } from "../project/store.js";
+import {
+  readProject,
+  updateProjectWithDelegatedGenerationAttachment,
+} from "../project/store.js";
 import { Sha256Schema, type Artifact, type ProjectManifest } from "../project/schemas.js";
 
 const MAX_IMAGE_BYTES = 100 * 1024 * 1024;
@@ -482,6 +485,7 @@ async function reauthenticateAggregate(
 export type ReauthenticatedDelegatedResult = {
   job: ImageGenerationJob;
   result: ImageGenerationResult;
+  authorizationSequence: number | null;
 };
 
 export async function readAndReauthenticateDelegatedResult(
@@ -489,7 +493,7 @@ export async function readAndReauthenticateDelegatedResult(
   jobId: string,
 ): Promise<ReauthenticatedDelegatedResult> {
   const job = await readImageGenerationJob(root, jobId);
-  await assertAuthorizedJobBinding(root, job);
+  const authorizationSequence = await assertAuthorizedJobBinding(root, job);
   const result = await readAggregate(root, jobId);
   if (!result) throw new Error("delegated aggregate result is unavailable");
   const ledger = await readCallLedger(root);
@@ -498,7 +502,7 @@ export async function readAndReauthenticateDelegatedResult(
   if (!sameJson(storedPages, result.pages)) {
     throw new Error("delegated aggregate pages do not match immutable page results");
   }
-  return { job, result };
+  return { job, result, authorizationSequence };
 }
 
 function aggregateOutcome(job: ImageGenerationJob, pages: ImagePageResult[], report: SerialStickyReport): ImageGenerationResult["outcome"] {
@@ -514,7 +518,61 @@ function aggregateOutcome(job: ImageGenerationJob, pages: ImagePageResult[], rep
   return "partial";
 }
 
-function attachAcceptedPage(manifest: ProjectManifest, page: ImagePageResult, job: ImageGenerationJob): ProjectManifest {
+type AttachmentPrecedence = {
+  authorizationSequence: number;
+  attempt: number;
+  jobId: string;
+};
+
+type AttachmentDecision = {
+  page: ImagePageResult;
+  action: "attach" | "keep";
+  prior: AttachmentPrecedence | null;
+};
+
+function authenticatedAttachmentPrecedence(
+  job: ImageGenerationJob,
+  page: ImagePageResult,
+  authorizationSequence: number | null,
+): AttachmentPrecedence {
+  if (authorizationSequence === null) throw new Error("deck attachment requires trusted generation authorization");
+  return { authorizationSequence, attempt: page.attempt, jobId: job.jobId };
+}
+
+async function currentAttachmentPrecedence(
+  root: string,
+  manifest: ProjectManifest,
+  slideId: string,
+  cache: Map<string, ReauthenticatedDelegatedResult>,
+): Promise<AttachmentPrecedence | null> {
+  const slide = manifest.slides.find(({ id }) => id === slideId);
+  if (!slide?.image) return null;
+  const escapedSlideId = slideId.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const match = new RegExp(`^generation/jobs/([0-9a-f-]{36})/normalized/${escapedSlideId}\\.png$`).exec(slide.image.path);
+  if (!match) return null;
+  const authenticated = cache.get(match[1]!) ?? await readAndReauthenticateDelegatedResult(root, match[1]!);
+  cache.set(match[1]!, authenticated);
+  const page = authenticated.result.pages.find(({ slideId: candidate }) => candidate === slideId);
+  if (
+    !page
+    || !page.artifacts
+    || page.styleConsistency !== "accepted"
+    || page.status !== "success"
+    || !sameJson(page.artifacts.normalized, slide.image)
+  ) throw new Error("current delegated attachment is not authenticated");
+  return authenticatedAttachmentPrecedence(authenticated.job, page, authenticated.authorizationSequence);
+}
+
+function compareAttachmentPrecedence(left: AttachmentPrecedence, right: AttachmentPrecedence): number {
+  return left.authorizationSequence - right.authorizationSequence || left.attempt - right.attempt;
+}
+
+function attachAcceptedPage(
+  manifest: ProjectManifest,
+  page: ImagePageResult,
+  job: ImageGenerationJob,
+  prior: AttachmentPrecedence | null,
+): ProjectManifest {
   if (
     manifest.currentRevision.id !== page.projectRevisionId
     || page.status !== "success"
@@ -542,8 +600,19 @@ function attachAcceptedPage(manifest: ProjectManifest, page: ImagePageResult, jo
     return { ...manifest, stage: "generating", slides };
   }
   const slides = [...manifest.slides];
+  const previous = slides[index]!;
+  const generationHistory = prior && previous.image && previous.finalRender
+    ? [...(previous.generationHistory ?? []), {
+      jobId: prior.jobId,
+      authorizationSequence: prior.authorizationSequence,
+      attempt: prior.attempt,
+      image: previous.image,
+      finalRender: previous.finalRender,
+    }]
+    : previous.generationHistory;
   slides[index] = {
-    ...slides[index]!,
+    ...previous,
+    ...(generationHistory ? { generationHistory } : {}),
     promptRevisionId: page.projectRevisionId,
     styleRevisionId: page.projectRevisionId,
     status: "ready",
@@ -553,10 +622,78 @@ function attachAcceptedPage(manifest: ProjectManifest, page: ImagePageResult, jo
   return { ...manifest, stage: "generating", slides };
 }
 
-function attachAcceptedPages(manifest: ProjectManifest, pages: ImagePageResult[], job: ImageGenerationJob): ProjectManifest {
+function attachAcceptedPages(
+  manifest: ProjectManifest,
+  decisions: AttachmentDecision[],
+  job: ImageGenerationJob,
+): ProjectManifest {
   let attached = manifest;
-  for (const page of pages) attached = attachAcceptedPage(attached, page, job);
+  for (const decision of decisions) {
+    if (decision.action === "attach") attached = attachAcceptedPage(attached, decision.page, job, decision.prior);
+  }
   return attached;
+}
+
+class AttachmentRaceError extends Error {}
+
+async function attachAcceptedPagesMonotonically(
+  root: string,
+  pages: ImagePageResult[],
+  job: ImageGenerationJob,
+): Promise<void> {
+  const accepted = pages.filter((page) =>
+    page.status === "success" && page.styleConsistency === "accepted" && page.artifacts
+  );
+  if (accepted.length === 0) return;
+  const authenticatedIncoming = await readAndReauthenticateDelegatedResult(root, job.jobId);
+  const incoming = new Map<string, AttachmentPrecedence>();
+  for (const page of accepted) incoming.set(
+    page.slideId,
+    authenticatedAttachmentPrecedence(job, page, authenticatedIncoming.authorizationSequence),
+  );
+
+  for (let retry = 0; retry < 3; retry += 1) {
+    const before = await readProject(root);
+    const cache = new Map<string, ReauthenticatedDelegatedResult>([[job.jobId, authenticatedIncoming]]);
+    const decisions: AttachmentDecision[] = [];
+    for (const page of accepted) {
+      const prior = await currentAttachmentPrecedence(root, before, page.slideId, cache);
+      if (!prior) {
+        decisions.push({ page, action: "attach", prior: null });
+        continue;
+      }
+      const next = incoming.get(page.slideId)!;
+      const comparison = compareAttachmentPrecedence(next, prior);
+      if (comparison < 0) {
+        decisions.push({ page, action: "keep", prior });
+      } else if (comparison > 0) {
+        decisions.push({ page, action: "attach", prior });
+      } else {
+        const current = before.slides.find(({ id }) => id === page.slideId)!;
+        if (next.jobId !== prior.jobId || !sameJson(current.image, page.artifacts!.normalized)) {
+          throw new Error("conflicting delegated attachment at the same authenticated precedence");
+        }
+        decisions.push({ page, action: "keep", prior });
+      }
+    }
+    if (decisions.every(({ action }) => action === "keep")) return;
+    try {
+      await updateProjectWithDelegatedGenerationAttachment(root, (current) => {
+        for (const decision of decisions) {
+          const priorSlide = before.slides.find(({ id }) => id === decision.page.slideId);
+          const currentSlide = current.slides.find(({ id }) => id === decision.page.slideId);
+          if (!sameJson(priorSlide?.image ?? null, currentSlide?.image ?? null)
+            || !sameJson(priorSlide?.finalRender ?? null, currentSlide?.finalRender ?? null)) {
+            throw new AttachmentRaceError("delegated attachment changed while authenticating");
+          }
+        }
+        return attachAcceptedPages(current, decisions, job);
+      });
+      return;
+    } catch (error: unknown) {
+      if (!(error instanceof AttachmentRaceError) || retry === 2) throw error;
+    }
+  }
 }
 
 export async function recordDelegatedResult(
@@ -694,13 +831,7 @@ export async function recordDelegatedResult(
   });
 
   await operations.checkpoint?.("before-manifest-attach");
-  if (publication.pages.some((page) => page.styleConsistency === "accepted")) {
-    const manifest = await readProject(root);
-    const attached = attachAcceptedPages(manifest, publication.pages, preflight.job);
-    if (!sameJson(attached, manifest)) {
-      await updateProject(root, (current) => attachAcceptedPages(current, publication.pages, preflight.job));
-    }
-  }
+  await attachAcceptedPagesMonotonically(root, publication.pages, preflight.job);
   await operations.checkpoint?.("after-manifest-attach");
   return publication;
 }

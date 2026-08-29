@@ -22,7 +22,12 @@ import {
 import { withProjectLease } from "./lock.js";
 import { validateProjectRoot } from "./paths.js";
 import { assertNoPendingRollbackTransaction } from "./rollback-guard.js";
-import { readOwnedRegularFile, readRegularFileNoFollow } from "./safe-file.js";
+import {
+  readAnchoredRegularFile,
+  readOwnedRegularFile,
+  readRegularFileNoFollow,
+  type SafeReadOperations,
+} from "./safe-file.js";
 import {
   ProjectManifestSchema,
   type Artifact,
@@ -153,6 +158,7 @@ function assertRevisionEvolution(
 
 type ProjectPersistMode =
   | "ordinary"
+  | "delegated-generation-attach"
   | "revision-append"
   | "rollback-begin"
   | "rollback-abort"
@@ -170,7 +176,7 @@ async function assertControlledRevisionTrust(
   const appended = next.revisions.slice(previous.revisions.length);
   const markerChanged = !sameJson(previous.rollbackTransaction, next.rollbackTransaction);
   const smokeAnchorChanged = !sameJson(previous.clientSmokeCopyAnchor, next.clientSmokeCopyAnchor);
-  if (mode === "ordinary") {
+  if (mode === "ordinary" || mode === "delegated-generation-attach") {
     if (appended.length > 0 || markerChanged || smokeAnchorChanged) {
       throw new Error("revision, rollback, and client smoke copy trust fields require a controlled store transition");
     }
@@ -239,6 +245,7 @@ function artifactEvidence(manifest: ProjectManifest): string[] {
       slide.image,
       slide.editable,
       slide.finalRender,
+      ...(slide.generationHistory ?? []).flatMap((entry) => [entry.image, entry.finalRender]),
     ]),
     ...(manifest.outputRevisions ?? []).flatMap((revision) => [
       ...revision.slides.flatMap((slide) => [slide.finalRender, slide.editable]),
@@ -264,6 +271,75 @@ function preservesArtifactEvidence(
     remaining.splice(index, 1);
   }
   return true;
+}
+
+async function assertGenerationHistoryEvolution(
+  root: string,
+  previous: ProjectManifest,
+  next: ProjectManifest,
+): Promise<void> {
+  const delegatedPath = (path: string, slideId: string): string | null => {
+    const escapedSlideId = slideId.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    return new RegExp(`^generation/jobs/([0-9a-f-]{36})/normalized/${escapedSlideId}\\.png$`).exec(path)?.[1] ?? null;
+  };
+  let delegatedModule: typeof import("../generation/delegation-result.js") | undefined;
+  for (const slide of next.slides) {
+    const prior = previous.slides.find(({ id }) => id === slide.id);
+    const before = prior?.generationHistory ?? [];
+    const after = slide.generationHistory ?? [];
+    if (after.length < before.length || !before.every((entry, index) => sameJson(entry, after[index]))) {
+      throw new Error("delegated generation history must remain an exact prefix");
+    }
+    if (after.length === before.length) continue;
+    const appended = after.slice(before.length);
+    const entry = appended[0];
+    if (
+      !prior
+      || appended.length !== 1
+      || !entry
+      || !prior.image
+      || !prior.finalRender
+      || !slide.image
+      || !slide.finalRender
+      || !sameJson(entry.image, prior.image)
+      || !sameJson(entry.finalRender, prior.finalRender)
+      || !sameJson(prior.image, prior.finalRender)
+      || !sameJson(slide.image, slide.finalRender)
+    ) throw new Error("delegated generation history transition is invalid");
+    const oldJobId = delegatedPath(prior.image.path, slide.id);
+    const newJobId = delegatedPath(slide.image.path, slide.id);
+    if (!oldJobId || !newJobId || entry.jobId !== oldJobId) {
+      throw new Error("delegated generation history does not bind immutable jobs");
+    }
+    delegatedModule ??= await import("../generation/delegation-result.js");
+    const { readAndReauthenticateDelegatedResult } = delegatedModule;
+    const [oldResult, newResult] = await Promise.all([
+      readAndReauthenticateDelegatedResult(root, oldJobId),
+      readAndReauthenticateDelegatedResult(root, newJobId),
+    ]);
+    const oldPage = oldResult.result.pages.find(({ slideId }) => slideId === slide.id);
+    const newPage = newResult.result.pages.find(({ slideId }) => slideId === slide.id);
+    if (
+      oldResult.authorizationSequence === null
+      || newResult.authorizationSequence === null
+      || !oldPage?.artifacts
+      || !newPage?.artifacts
+      || !sameJson(oldPage.artifacts.normalized, prior.image)
+      || !sameJson(newPage.artifacts.normalized, slide.image)
+      || entry.authorizationSequence !== oldResult.authorizationSequence
+      || entry.attempt !== oldPage.attempt
+      || (newResult.authorizationSequence - oldResult.authorizationSequence || newPage.attempt - oldPage.attempt) <= 0
+    ) throw new Error("delegated generation history precedence is not authenticated");
+  }
+}
+
+function assertGenerationHistoryUnchanged(previous: ProjectManifest, next: ProjectManifest): void {
+  for (const slide of next.slides) {
+    const prior = previous.slides.find(({ id }) => id === slide.id);
+    if (!sameJson(prior?.generationHistory ?? [], slide.generationHistory ?? [])) {
+      throw new Error("delegated generation history requires an authenticated attachment transition");
+    }
+  }
 }
 
 async function validateSlidePreviewGateEvidence(
@@ -376,6 +452,7 @@ async function persistProject(
     throw new Error("project directory is not owned by SuperPPT");
   }
   assertRevisionEvolution(owned.manifest, valid);
+  if (mode !== "delegated-generation-attach") assertGenerationHistoryUnchanged(owned.manifest, valid);
   await assertControlledRevisionTrust(owned.root, owned.manifest, valid, mode);
   const snapshotBase = mode === "rollback-finish" && owned.manifest.rollbackTransaction
     ? ProjectManifestSchema.parse((({ rollbackTransaction: _marker, ...base }) => base)(owned.manifest))
@@ -515,6 +592,22 @@ export async function updateProject(
     result = valid;
   });
   return result!;
+}
+
+export async function updateProjectWithDelegatedGenerationAttachment(
+  root: string,
+  updater: (current: ProjectManifest) => ProjectManifest,
+): Promise<void> {
+  const before = await readProject(root);
+  const planned = ProjectManifestSchema.parse(updater(before));
+  await assertGenerationHistoryEvolution(root, before, planned);
+  await withProjectLease(root, "generation-attachment", async (canonicalRoot) => {
+    const owned = await ownedProject(canonicalRoot);
+    if (!sameJson(owned.manifest, before)) throw new Error("project changed during delegated attachment authentication");
+    const valid = ProjectManifestSchema.parse(updater(owned.manifest));
+    if (!sameJson(valid, planned)) throw new Error("delegated attachment updater is not deterministic");
+    await persistProject(owned, valid, {}, "delegated-generation-attach");
+  });
 }
 
 function currentDeckRevision(manifest: ProjectManifest): number {
@@ -820,6 +913,7 @@ async function readBoundAcceptance(root: string, manifest: ProjectManifest): Pro
 export type AcceptanceRecordCheckpoint = "record-promoted" | "manifest-updated";
 export type AcceptanceRecordOperations = {
   checkpoint?: (step: AcceptanceRecordCheckpoint) => Promise<void> | void;
+  inputRead?: SafeReadOperations;
 };
 
 export async function recordClientAcceptance(
@@ -827,20 +921,18 @@ export async function recordClientAcceptance(
   input: string,
   operations: AcceptanceRecordOperations = {},
 ): Promise<Acceptance> {
-  const before = await lstat(input, { bigint: true });
-  if (before.isSymbolicLink() || !before.isFile() || (before.mode & 0o777n) !== 0o600n) {
-    throw new Error("client acceptance input must be a regular 0600 file");
+  let inputBytes: Buffer;
+  try {
+    inputBytes = await readAnchoredRegularFile(input, {
+      label: "client acceptance input",
+      maxBytes: 1024 * 1024,
+      privateInput: true,
+      operations: operations.inputRead,
+    });
+  } catch (error: unknown) {
+    if (error instanceof Error && error.message.includes("must be private")) throw error;
+    throw new Error("client acceptance input must be a regular 0600 file", { cause: error });
   }
-  const inputBytes = await readRegularFileNoFollow(input);
-  const after = await lstat(input, { bigint: true });
-  if (
-    before.dev !== after.dev
-    || before.ino !== after.ino
-    || before.size !== after.size
-    || before.mtimeNs !== after.mtimeNs
-    || before.ctimeNs !== after.ctimeNs
-    || (after.mode & 0o777n) !== 0o600n
-  ) throw new Error("client acceptance input changed while reading");
   let submitted;
   try {
     submitted = ClientAcceptanceInputSchema.parse(JSON.parse(inputBytes.toString("utf8")));

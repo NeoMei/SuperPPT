@@ -28,6 +28,12 @@ const RejectedResultPathSchema = z.string().regex(
   "rejected result path must name an immutable delegated page result",
 );
 
+export const PageRegenerationRequestSchema = z.object({
+  slideId: z.string().uuid(),
+  rejectedResultPath: RejectedResultPathSchema,
+  correction: QualityCorrectionSchema,
+}).strict();
+
 export type QualityCorrection = z.infer<typeof QualityCorrectionSchema>;
 
 export type GenerationProgress = {
@@ -235,18 +241,10 @@ async function describeProjectGenerationUnderLease(root: string): Promise<Genera
  */
 export async function preparePageRegenerationJob(
   root: string,
-  rawRequest: {
-    slideId: string;
-    rejectedResultPath: string;
-    correction: QualityCorrection;
-  },
+  rawRequest: z.input<typeof PageRegenerationRequestSchema>,
 ): Promise<ImageGenerationJob> {
   await assertCurrentDeckGates(root);
-  const request = z.object({
-    slideId: z.string().uuid(),
-    rejectedResultPath: RejectedResultPathSchema,
-    correction: QualityCorrectionSchema,
-  }).strict().parse(rawRequest);
+  const request = PageRegenerationRequestSchema.parse(rawRequest);
   const path = RejectedResultPathSchema.parse(request.rejectedResultPath);
   const match = /^generation\/jobs\/([^/]+)\/results\/([^/]+)-(\d+)\.json$/.exec(path)!;
   const [jobId, resultSlideId, attemptText] = [match[1]!, match[2]!, match[3]!];

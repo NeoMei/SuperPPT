@@ -675,6 +675,37 @@ test("requires an exact planned revision snapshot before dropping old artifact e
   assert.equal((await readProject(root)).brief, null);
 });
 
+test("ordinary project updates cannot forge delegated generation history", async (t) => {
+  const parent = await temporaryParent(t, "superppt-generation-history-forge-");
+  const root = join(parent, "demo");
+  await initializeProject({ root, title: "Demo" });
+  await assert.rejects(updateProject(root, (current) => ({
+    ...current,
+    slides: [{
+      id: "00000000-0000-4000-8000-000000000311",
+      order: 0,
+      title: "Forged",
+      role: "cover",
+      specRevisionId: current.currentRevision.id,
+      promptRevisionId: current.currentRevision.id,
+      styleRevisionId: current.currentRevision.id,
+      status: "ready",
+      image: null,
+      generationHistory: [{
+        jobId: "00000000-0000-4000-8000-000000000312",
+        authorizationSequence: 1,
+        attempt: 1,
+        image: { path: "forged.png", sha256: "a".repeat(64), revisionId: current.currentRevision.id },
+        finalRender: { path: "forged.png", sha256: "a".repeat(64), revisionId: current.currentRevision.id },
+      }],
+      editable: null,
+      finalRender: null,
+      staleReasons: [],
+    }],
+  })), /generation history requires an authenticated attachment/i);
+  assert.deepEqual((await readProject(root)).slides, []);
+});
+
 test("CLI initializes and reports project status without changing preflight routing", async (t) => {
   const parent = await temporaryParent(t, "superppt-cli-");
   const root = join(parent, "demo");

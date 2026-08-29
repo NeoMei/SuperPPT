@@ -60,7 +60,7 @@ const fixtureRoot = resolve("tests/fixtures/editable");
 const sha256 = (value: Buffer): string => createHash("sha256").update(value).digest("hex");
 
 async function temporary(t: TestContext, prefix: string): Promise<string> {
-  const root = await mkdtemp(join(tmpdir(), prefix));
+  const root = await realpath(await mkdtemp(join(tmpdir(), prefix)));
   t.after(async () => rm(root, { recursive: true, force: true }));
   return root;
 }

@@ -1,6 +1,10 @@
 import assert from "node:assert/strict";
+import { execFile } from "node:child_process";
 import { access, readFile } from "node:fs/promises";
 import test from "node:test";
+import { promisify } from "node:util";
+
+const execFileAsync = promisify(execFile);
 
 async function json(path: string): Promise<Record<string, any>> {
   return JSON.parse(await readFile(path, "utf8")) as Record<string, any>;
@@ -51,4 +55,42 @@ test("the shipped module surface contains no executable provider bridge or direc
   ]) {
     await assert.rejects(access(path), { code: "ENOENT" }, path);
   }
+});
+
+test("package allowlist and dry-run exclude build leftovers and removed provider paths", async () => {
+  const [pkg, dependencies] = await Promise.all([
+    json("package.json"),
+    json("references/dependencies.json"),
+  ]);
+  assert.deepEqual(pkg.files, [
+    ".codex-plugin/",
+    "skills/",
+    "src/",
+    "scripts/",
+    "references/",
+    "README.md",
+    "SECURITY.md",
+    "LICENSE",
+    "package-lock.json",
+    "tsconfig.json",
+  ]);
+  const { stdout } = await execFileAsync("npm", ["pack", "--dry-run", "--json"], {
+    cwd: process.cwd(),
+    maxBuffer: 4 * 1024 * 1024,
+  });
+  const packed = JSON.parse(stdout) as Array<{ files: Array<{ path: string }> }>;
+  const paths = packed[0]!.files.map(({ path }) => path);
+  assert.ok(paths.includes("src/cli.ts"));
+  assert.ok(paths.includes("skills/superppt/SKILL.md"));
+  assert.ok(paths.every((path) => !path.startsWith("dist/")));
+  assert.ok(paths.every((path) => !/(?:provider|bridge-process|run_ai_image_provider|fake_ai_provider)/i.test(path)));
+  assert.deepEqual(dependencies.dependencies.map((dependency: Record<string, unknown>) => ({
+    skill: dependency.skill,
+    cliFlag: dependency.cliFlag,
+    resolution: dependency.resolution,
+  })), [
+    { skill: "ai-image-to-ppt", cliFlag: "--ai-skill", resolution: "explicit-only" },
+    { skill: "image-to-editable-pptx", cliFlag: "--editable-skill", resolution: "explicit-only" },
+  ]);
+  assert.doesNotMatch(JSON.stringify(dependencies), /SUPERPPT_.*_SOURCE|"override"/);
 });

@@ -3,13 +3,15 @@
   "dependencies": [
     {
       "skill": "ai-image-to-ppt",
-      "override": "SUPERPPT_AI_IMAGE_TO_PPT_SOURCE",
+      "cliFlag": "--ai-skill",
+      "resolution": "explicit-only",
       "required": ["SKILL.md", "scripts"],
       "capabilityManifest": "references/capabilities.json"
     },
     {
       "skill": "image-to-editable-pptx",
-      "override": "SUPERPPT_IMAGE_TO_EDITABLE_PPTX_SOURCE",
+      "cliFlag": "--editable-skill",
+      "resolution": "explicit-only",
       "minimumVersion": "0.1.0",
       "required": ["package.json", "skills/image-to-editable-pptx/SKILL.md"]
     }

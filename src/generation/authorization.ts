@@ -436,7 +436,7 @@ export async function assertPreviousPromptPublished(
   }
 }
 
-export async function assertAuthorizedJobBinding(root: string, job: ImageGenerationJob): Promise<void> {
+export async function assertAuthorizedJobBinding(root: string, job: ImageGenerationJob): Promise<number | null> {
   const current = await readJob(root, job.jobId);
   if (!sameJson(current, job)) throw new Error("immutable image generation job changed after publication");
   await assertAiSkillBindingCurrent(job.aiSkill);
@@ -462,7 +462,7 @@ export async function assertAuthorizedJobBinding(root: string, job: ImageGenerat
   const plan = GenerationAuthorizationPlanSchema.parse(job.authorizationPlan);
   const digest = sha256(canonicalContractFile(plan));
   if (job.authorizationDigest !== digest) throw new Error("image generation job authorization snapshot is invalid");
-  await assertJobAuthorizationGate(root, job, plan, digest, manifest);
+  const authorizationSequence = await assertJobAuthorizationGate(root, job, plan, digest, manifest);
   if (
     job.projectId !== plan.projectId
     || job.projectRevisionId !== plan.projectRevisionId
@@ -493,6 +493,7 @@ export async function assertAuthorizedJobBinding(root: string, job: ImageGenerat
       await assertPreviousPromptPublished(root, page.slideId, original.promptSha256, digest);
     }
   }
+  return authorizationSequence;
 }
 
 async function assertJobAuthorizationGate(
@@ -501,7 +502,7 @@ async function assertJobAuthorizationGate(
   plan: GenerationAuthorizationPlan,
   digest: string,
   manifest: Awaited<ReturnType<typeof readProject>>,
-): Promise<void> {
+): Promise<number | null> {
   const expectedGate = job.kind === "style-sample" ? "style-sample-generation" : "generation-authorization";
   const binding = job.authorizationGate;
   if (binding.gate !== expectedGate || binding.authorizationPlanSha256 !== digest) {
@@ -528,10 +529,11 @@ async function assertJobAuthorizationGate(
   if (expectedGate === "generation-authorization") {
     if (!job.authorizationTrust) throw new Error("image generation job has no trusted authorization record");
     if (!("presentation" in evidence.descriptor)) throw new Error("generation authorization gate evidence is not ordinary approval evidence");
-    await assertTrustedGenerationAuthorizationRecord(root, job.authorizationTrust, plan, binding, evidence.descriptor);
+    return assertTrustedGenerationAuthorizationRecord(root, job.authorizationTrust, plan, binding, evidence.descriptor);
   } else if (job.authorizationTrust !== null) {
     throw new Error("style-sample image generation job cannot carry deck authorization trust");
   }
+  return null;
 }
 
 export async function assertSealedJobInputs(root: string, job: ImageGenerationJob): Promise<void> {

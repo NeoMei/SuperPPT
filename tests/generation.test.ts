@@ -7,6 +7,7 @@ import { join } from "node:path";
 import test, { type TestContext } from "node:test";
 import { promisify } from "node:util";
 import sharp from "sharp";
+import JSZip from "jszip";
 
 import {
   describeProjectGeneration,
@@ -41,6 +42,9 @@ import {
 } from "../src/generation/schemas.js";
 import { resolveSkillDependencies } from "../src/dependencies/resolve.js";
 import type { AiImageSkillDependency } from "../src/dependencies/schemas.js";
+import { assembleProjectCandidate, type FinalRender } from "../src/deck/assemble.js";
+import { buildMontage } from "../src/deck/montage.js";
+import { exportPdf } from "../src/deck/pdf.js";
 import { approveExecutionGate, approveGate, assertGateCurrent } from "../src/planning/confirm.js";
 import { loadValidatedPlan } from "../src/planning/load.js";
 import { publishPlanViews, publishStyleSample } from "../src/planning/views.js";
@@ -365,6 +369,111 @@ async function authorizedDeckProject(t: TestContext, prefix: string) {
   await approveGate(fixture.root, "generation-authorization");
   return fixture;
 }
+
+async function fakeCandidateOutputs(
+  renders: FinalRender[],
+  paths: { pptx: string; pdf: string; montage: string },
+): Promise<void> {
+  const zip = new JSZip();
+  zip.file("[Content_Types].xml", "<Types/>");
+  for (const [index, render] of renders.entries()) {
+    zip.file(`ppt/slides/slide${index + 1}.xml`, `<p:sld><p:pic><p:cNvPr name=\"page-${render.id}\"/><a:blip r:embed=\"rIdImage\"/></p:pic></p:sld>`);
+    zip.file(`ppt/slides/_rels/slide${index + 1}.xml.rels`, `<Relationships><Relationship Id=\"rIdImage\" Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/image\" Target=\"../media/image${index + 1}.png\"/></Relationships>`);
+    zip.file(`ppt/media/image${index + 1}.png`, render.bytes);
+  }
+  await writeFile(paths.pptx, await zip.generateAsync({ type: "nodebuffer" }), { flag: "wx" });
+  await exportPdf(renders, paths.pdf);
+  await buildMontage(renders, paths.montage);
+}
+
+test("older delegated replay cannot replace a newer authenticated regeneration in manifest or candidate", async (t) => {
+  const fixture = await approvedProject(t, "superppt-monotonic-attachment-", lockedStyle);
+  await approveStyleLock(fixture.root);
+  await publishGenerationAuthorizationPlan(fixture.root, {
+    aiDependency: fixture.aiDependency,
+    callBudget: 4,
+  });
+  await approveGate(fixture.root, "generation-authorization");
+  const deck = await prepareDeckJob(fixture.root, fixture.aiDependency);
+  const reports: SerialStickyReport[] = deck.pages.map((_page, index) => ({
+    batch_mode: "serial-sticky-monotonic",
+    stopped: false,
+    search_candidate: "api-openai",
+    sticky_candidate: "api-openai",
+    pages: deck.pages.slice(0, index + 1).map((_candidate, pageIndex) => ({
+      page: pageIndex + 1,
+      outcome: "success" as const,
+      candidate: "api-openai" as const,
+      summary: "",
+    })),
+    switches: [],
+  }));
+  const oldIntakes: Awaited<ReturnType<typeof admittedApiSuccessIntake>>[] = [];
+  for (const [index, page] of deck.pages.entries()) {
+    const intake = await admittedApiSuccessIntake(
+      fixture.root,
+      deck,
+      page,
+      index + 1,
+      reports[index]!,
+      ["#102030", "#203040", "#304050"][index]!,
+    );
+    oldIntakes.push(intake);
+    await recordDelegatedResult(fixture.root, intake);
+  }
+  const oldReplay = { ...oldIntakes[0]!, batchReport: reports.at(-1)! };
+  const manifestPath = join(fixture.root, "superppt.json");
+  const beforeHistoricalReplay = await lstat(manifestPath, { bigint: true });
+  await recordDelegatedResult(fixture.root, oldReplay);
+  const afterHistoricalReplay = await lstat(manifestPath, { bigint: true });
+  assert.equal(afterHistoricalReplay.ino, beforeHistoricalReplay.ino, "historical replay is read-only before a newer attachment");
+
+  const original = deck.pages[0]!;
+  const correctedPrompt = `${original.finalPrompt}\n\nCorrection: strengthen the focal hierarchy.`;
+  const regeneration = await prepareImageGenerationJob(fixture.root, {
+    kind: "page-regeneration",
+    aiDependency: fixture.aiDependency,
+    slideId: original.slideId,
+    previousPromptSha256: original.promptSha256,
+    finalPrompt: correctedPrompt,
+  });
+  const regenerationReport: SerialStickyReport = {
+    batch_mode: "serial-sticky-monotonic",
+    stopped: false,
+    search_candidate: "api-openai",
+    sticky_candidate: "api-openai",
+    pages: [{ page: 1, outcome: "success", candidate: "api-openai", summary: "" }],
+    switches: [],
+  };
+  const newer = await recordDelegatedResult(fixture.root, await admittedApiSuccessIntake(
+    fixture.root,
+    regeneration,
+    regeneration.pages[0]!,
+    4,
+    regenerationReport,
+    "#abcdef",
+  ));
+  const newerArtifact = newer.pages[0]!.artifacts!.normalized;
+  const beforeOlderReplay = await lstat(manifestPath, { bigint: true });
+  const historical = await recordDelegatedResult(fixture.root, oldReplay);
+  const afterOlderReplay = await lstat(manifestPath, { bigint: true });
+  assert.equal(historical.jobId, deck.jobId, "exact replay still returns its immutable historical aggregate");
+  assert.equal(afterOlderReplay.ino, beforeOlderReplay.ino, "older replay must not rewrite the manifest");
+  const manifest = await readProject(fixture.root);
+  assert.deepEqual(manifest.slides.find(({ id }) => id === original.slideId)!.image, newerArtifact);
+
+  const candidate = await assembleProjectCandidate(fixture.root, { buildOutputs: fakeCandidateOutputs });
+  const marker = JSON.parse(await readFile(join(candidate.destination, ".superppt-candidate.json"), "utf8")) as {
+    slides: Array<{ id: string; order: number; mode: string; path: string; sha256: string }>;
+  };
+  assert.deepEqual(marker.slides.find(({ id }) => id === original.slideId), {
+    id: original.slideId,
+    order: original.order,
+    mode: "image",
+    path: newerArtifact.path,
+    sha256: newerArtifact.sha256,
+  });
+});
 
 test("serial delegated deck preparation requires every current approval gate", async (t) => {
   for (const gate of ["outline", "slide-specs", "style-sample", "generation-authorization"] as const) {

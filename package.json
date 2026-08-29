@@ -7,6 +7,18 @@
   "engines": {
     "node": ">=22.6"
   },
+  "files": [
+    ".codex-plugin/",
+    "skills/",
+    "src/",
+    "scripts/",
+    "references/",
+    "README.md",
+    "SECURITY.md",
+    "LICENSE",
+    "package-lock.json",
+    "tsconfig.json"
+  ],
   "scripts": {
     "test": "node --import tsx --test \"tests/*.test.ts\"",
     "lint:types": "tsc -p tsconfig.json --noEmit",

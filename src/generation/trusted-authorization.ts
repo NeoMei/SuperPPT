@@ -1274,7 +1274,7 @@ export async function assertTrustedGenerationAuthorizationRecord(
   rawPlan: GenerationAuthorizationPlan,
   gate: AuthorizationGateBinding,
   descriptor?: GateSnapshotDescriptor,
-): Promise<void> {
+): Promise<number> {
   return withGenerationLease(projectRoot, (canonicalRoot) =>
     assertTrustedGenerationAuthorizationRecordUnderLease(canonicalRoot, rawBinding, rawPlan, gate, descriptor));
 }
@@ -1285,7 +1285,7 @@ async function assertTrustedGenerationAuthorizationRecordUnderLease(
   rawPlan: GenerationAuthorizationPlan,
   gate: AuthorizationGateBinding,
   descriptor?: GateSnapshotDescriptor,
-): Promise<void> {
+): Promise<number> {
   assertGenerationLeaseHeld(projectRoot);
   const plan = GenerationAuthorizationPlanSchema.parse(rawPlan);
   const project = await readProject(projectRoot);
@@ -1305,6 +1305,7 @@ async function assertTrustedGenerationAuthorizationRecordUnderLease(
   );
   if (!trusted) throw new Error("trusted authorization record is not in the external approval history");
   exactRecordForPlan(plan, gate, trusted.record, descriptor);
+  return trusted.record.sequence;
 }
 
 export async function trustedGenerationAuthorizationForGate(

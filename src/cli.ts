@@ -1,5 +1,4 @@
-import { lstat, realpath } from "node:fs/promises";
-import { dirname, resolve } from "node:path";
+import { resolve } from "node:path";
 
 import { preflightDependencies } from "./dependencies/preflight.js";
 import { resolveAiImageSkillDependency, resolveSkillDependencies } from "./dependencies/resolve.js";
@@ -12,6 +11,7 @@ import {
 import { createClientSmokeCopy } from "./acceptance/smoke-copy.js";
 import {
   describeProjectGeneration,
+  PageRegenerationRequestSchema,
   prepareDeckJob,
   preparePageRegenerationJob,
 } from "./generation/batch.js";
@@ -40,6 +40,7 @@ import { publishOutlineViews, publishPlanViews, publishStyleSample } from "./pla
 import { initializeProject } from "./project/initialize.js";
 import { readRegularFileNoFollow } from "./project/safe-file.js";
 import { readProject } from "./project/store.js";
+import { readCliJsonInput } from "./cli-input.js";
 import { applyDeckReviewAction, publishDeckReview } from "./project/promotion.js";
 import {
   applyRevision,
@@ -126,43 +127,10 @@ function integerFlag(value: string, label: string, minimum: number): number {
   return parsed;
 }
 
-const MAX_CLI_JSON_BYTES = 16 * 1024 * 1024;
-
-async function readCliJson(path: string, label: string, privateInput: boolean): Promise<unknown> {
-  const requested = resolve(path);
-  let info;
-  try {
-    info = await lstat(requested);
-  } catch (error: unknown) {
-    throw new Error(`${label} file is unsafe or invalid`, { cause: error });
-  }
-  if (info.isSymbolicLink() || !info.isFile() || info.size <= 0 || info.size > MAX_CLI_JSON_BYTES) {
-    throw new Error(`${label} file is unsafe or invalid`);
-  }
-  if (process.platform !== "win32" && privateInput && (info.mode & 0o777) !== 0o600) {
-    throw new Error(`${label} file must be private (mode 0600)`);
-  }
-  if (await realpath(requested) !== requested || await realpath(dirname(requested)) !== dirname(requested)) {
-    throw new Error(`${label} file is unsafe or invalid`);
-  }
-  let bytes: Buffer;
-  try {
-    bytes = await readRegularFileNoFollow(requested);
-  } catch (error: unknown) {
-    throw new Error(`${label} file is unsafe or invalid`, { cause: error });
-  }
-  if (bytes.length > MAX_CLI_JSON_BYTES) throw new Error(`${label} file is unsafe or invalid`);
-  try {
-    return JSON.parse(bytes.toString("utf8"));
-  } catch (error: unknown) {
-    throw new Error(`${label} file is unsafe or invalid`, { cause: error });
-  }
-}
-
 async function verifiedJob(root: string, path: string) {
   let supplied;
   try {
-    supplied = ImageGenerationJobSchema.parse(await readCliJson(path, "job", false));
+    supplied = await readCliJsonInput(path, "job", ImageGenerationJobSchema);
   } catch (error: unknown) {
     throw new Error("job file is unsafe or invalid", { cause: error });
   }
@@ -176,17 +144,7 @@ async function verifiedJob(root: string, path: string) {
 }
 
 async function editPlan(path: string): Promise<EditPlan> {
-  try {
-    const info = await lstat(path);
-    if (info.isSymbolicLink() || !info.isFile()) throw new Error("unsafe file type");
-    if (process.platform !== "win32" && (info.mode & 0o777) !== 0o600) {
-      throw new Error("edit plan file must be private (mode 0600)");
-    }
-    return EditPlanSchema.parse(JSON.parse((await readRegularFileNoFollow(path)).toString("utf8")));
-  } catch (error: unknown) {
-    if (error instanceof Error && error.message.startsWith("edit plan file must be private")) throw error;
-    throw new Error("edit plan file is unsafe or invalid", { cause: error });
-  }
+  return readCliJsonInput(path, "edit plan", EditPlanSchema, { privateInput: true });
 }
 
 function editPlanSummary(plan: EditPlan): Record<string, unknown> {
@@ -368,11 +326,17 @@ async function main(argv: string[]): Promise<void> {
     const options = exactFlags(argv.slice(1), ["--project", "--job", "--result", "--route-report"]);
     const root = options.get("--project")!;
     const job = await verifiedJob(root, options.get("--job")!);
-    const resultBase = DelegatedResultIntakeSchema.omit({ batchReport: true }).parse(
-      await readCliJson(options.get("--result")!, "result", true),
+    const resultBase = await readCliJsonInput(
+      options.get("--result")!,
+      "result",
+      DelegatedResultIntakeSchema.omit({ batchReport: true }),
+      { privateInput: true },
     );
-    const batchReport = SerialStickyReportSchema.parse(
-      await readCliJson(options.get("--route-report")!, "route report", true),
+    const batchReport = await readCliJsonInput(
+      options.get("--route-report")!,
+      "route report",
+      SerialStickyReportSchema,
+      { privateInput: true },
     );
     if (resultBase.jobId !== job.jobId) throw new Error("result does not bind the supplied immutable job");
     const result = await recordDelegatedResult(root, { ...resultBase, batchReport });
@@ -384,7 +348,12 @@ async function main(argv: string[]): Promise<void> {
     const options = exactFlags(argv.slice(1), ["--project", "--request"]);
     const job = await preparePageRegenerationJob(
       options.get("--project")!,
-      await readCliJson(options.get("--request")!, "page-regeneration request", true) as Parameters<typeof preparePageRegenerationJob>[1],
+      await readCliJsonInput(
+        options.get("--request")!,
+        "page-regeneration request",
+        PageRegenerationRequestSchema,
+        { privateInput: true },
+      ),
     );
     outputJson({ job, nextRequiredAction: "publish and approve a new incremental generation authorization when required" });
     return;
@@ -400,15 +369,9 @@ async function main(argv: string[]): Promise<void> {
   if (command === "impact") {
     const options = exactFlags(argv.slice(1), ["--project", "--change"]);
     const changePath = options.get("--change")!;
-    let change: unknown;
-    try {
-      change = JSON.parse((await readRegularFileNoFollow(changePath)).toString("utf8"));
-    } catch (error: unknown) {
-      throw new Error("impact change file is invalid", { cause: error });
-    }
     outputJson(await publishImpactPlan(
       options.get("--project")!,
-      ChangeRequestSchema.parse(change),
+      await readCliJsonInput(changePath, "impact change", ChangeRequestSchema),
     ));
     return;
   }

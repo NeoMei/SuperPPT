@@ -108,6 +108,13 @@ export const SlideSchema = z.object({
     "editable",
   ]),
   image: ArtifactSchema.nullable(),
+  generationHistory: z.array(z.object({
+    jobId: z.string().uuid(),
+    authorizationSequence: z.number().int().positive(),
+    attempt: z.number().int().positive(),
+    image: ArtifactSchema,
+    finalRender: ArtifactSchema,
+  }).strict()).optional(),
   editable: ArtifactSchema.nullable(),
   editableRevision: EditableRevisionBindingSchema.nullable().optional(),
   finalRender: ArtifactSchema.nullable(),

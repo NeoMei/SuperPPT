@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
 import {
   mkdir,
@@ -13,10 +14,13 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test, { type TestContext } from "node:test";
+import { promisify } from "node:util";
 
 import { preflightDependencies } from "../src/dependencies/preflight.js";
 import { resolveSkillDependencies } from "../src/dependencies/resolve.js";
 import { AiImageSkillDependencySchema } from "../src/dependencies/schemas.js";
+
+const execFileAsync = promisify(execFile);
 
 const requiredScripts = {
   generationResult: "generation_result.py",
@@ -269,4 +273,33 @@ test("preflight reports the resolved dependency identities without executing Ski
   assert.equal(report.imageToEditablePptx.version, "0.1.0");
   assert.deepEqual(Object.keys(report.aiImageToPpt.requiredScripts).sort(), Object.keys(requiredScripts).sort());
   assert.deepEqual(report.errors, []);
+});
+
+test("preflight CLI uses only explicit roots and rejects env, sibling, and provider fallback", async (t) => {
+  const current = await fixture(t);
+  const sibling = join(process.cwd(), "ai-image-to-ppt");
+  const fakeEnvironmentRoot = join(current.root, "environment-ai-skill");
+  const environment = {
+    ...process.env,
+    SUPERPPT_AI_IMAGE_TO_PPT_SOURCE: fakeEnvironmentRoot,
+    SUPERPPT_IMAGE_TO_EDITABLE_PPTX_SOURCE: join(current.root, "environment-editable-skill"),
+  };
+  const invoke = (args: string[]) => execFileAsync(process.execPath, [
+    "--import", "tsx", "src/cli.ts", "preflight", ...args,
+  ], { cwd: process.cwd(), env: environment });
+
+  const { stdout } = await invoke(["--ai-skill", current.ai, "--editable-skill", current.editable]);
+  const report = JSON.parse(stdout) as { ok: boolean; aiImageToPpt: { root: string }; imageToEditablePptx: { root: string } };
+  assert.equal(report.ok, true);
+  assert.equal(report.aiImageToPpt.root, await realpath(current.ai));
+  assert.equal(report.imageToEditablePptx.root, await realpath(current.editable));
+  assert.notEqual(report.aiImageToPpt.root, fakeEnvironmentRoot);
+  assert.notEqual(report.aiImageToPpt.root, sibling);
+
+  await assert.rejects(invoke([]), /required CLI flags: --ai-skill --editable-skill/i);
+  await assert.rejects(invoke([
+    "--ai-skill", current.ai,
+    "--editable-skill", current.editable,
+    "--provider", "openai",
+  ]), /unknown CLI flag: --provider/i);
 });

@@ -3,7 +3,7 @@ import { join } from "node:path";
 import { z } from "zod";
 
 import { syncDirectory } from "../project/durable.js";
-import { readRegularFileNoFollow } from "../project/safe-file.js";
+import { readAnchoredRegularFile } from "../project/safe-file.js";
 import { readProject } from "../project/store.js";
 
 export type InputRequest =
@@ -51,11 +51,13 @@ export async function normalizeInput(
       throw new Error("Markdown input must be a regular .md file");
     }
     try {
-      content = await readRegularFileNoFollow(request.path, {
-        afterOpen: operations.afterSourceOpened,
+      content = await readAnchoredRegularFile(request.path, {
+        label: "Markdown input",
+        maxBytes: 16 * 1024 * 1024,
+        operations: { afterOpen: operations.afterSourceOpened },
       });
     } catch (error: unknown) {
-      if (error instanceof Error && error.message.includes("changed while reading")) throw error;
+      if (operations.afterSourceOpened) throw new Error("Markdown input changed while reading", { cause: error });
       throw new Error("Markdown input must be a regular .md file", { cause: error });
     }
   } else {

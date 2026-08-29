@@ -1,11 +1,13 @@
 import { constants, type BigIntStats } from "node:fs";
 import { lstat, open, realpath } from "node:fs/promises";
-import { isAbsolute, relative, resolve, sep } from "node:path";
+import { dirname, isAbsolute, relative, resolve, sep } from "node:path";
 
 export type SafeReadOperations = {
+  afterParentOpen?: (path: string) => Promise<void> | void;
   afterPathStat?: (path: string) => Promise<void> | void;
   afterFileOpen?: (path: string) => Promise<void> | void;
   afterOpen?: (path: string) => Promise<void> | void;
+  afterRead?: (path: string) => Promise<void> | void;
 };
 
 function sameFile(left: BigIntStats, right: BigIntStats): boolean {
@@ -30,6 +32,121 @@ function sameOpenedSnapshot(left: BigIntStats, right: BigIntStats): boolean {
 }
 
 const SNAPSHOT_OPEN_ATTEMPTS = 3;
+
+export type AnchoredReadOptions = {
+  label: string;
+  maxBytes: number;
+  privateInput?: boolean;
+  operations?: SafeReadOperations;
+};
+
+function safeReadError(label: string, cause?: unknown): Error {
+  return new Error(`${label} file is unsafe or invalid`, cause === undefined ? undefined : { cause });
+}
+
+async function boundedDescriptorRead(
+  handle: Awaited<ReturnType<typeof open>>,
+  maximum: number,
+): Promise<Buffer> {
+  const chunks: Buffer[] = [];
+  let offset = 0;
+  while (offset <= maximum) {
+    const chunk = Buffer.alloc(Math.min(64 * 1024, maximum + 1 - offset));
+    const { bytesRead } = await handle.read(chunk, 0, chunk.length, offset);
+    if (bytesRead === 0) break;
+    chunks.push(chunk.subarray(0, bytesRead));
+    offset += bytesRead;
+  }
+  if (offset === 0 || offset > maximum) throw new Error("bounded input size is invalid");
+  return Buffer.concat(chunks, offset);
+}
+
+/**
+ * Reads an external pathname through one anchored parent/final descriptor
+ * sequence. Bytes are not returned until both descriptor and pathname
+ * identities have been rechecked, so file and ancestor swaps fail closed.
+ */
+export async function readAnchoredRegularFile(
+  path: string,
+  options: AnchoredReadOptions,
+): Promise<Buffer> {
+  const requested = resolve(path);
+  const requestedParent = dirname(requested);
+  const { label, maxBytes, privateInput = false, operations = {} } = options;
+  if (!Number.isSafeInteger(maxBytes) || maxBytes <= 0) throw safeReadError(label);
+  try {
+    const canonicalParent = await realpath(requestedParent);
+    if (canonicalParent !== requestedParent) throw new Error("linked ancestor");
+    const parentBefore = await lstat(requestedParent, { bigint: true });
+    if (parentBefore.isSymbolicLink() || !parentBefore.isDirectory()) throw new Error("unsafe parent");
+    const noFollow = process.platform === "win32" ? 0 : (constants.O_NOFOLLOW ?? 0);
+    const directoryOnly = process.platform === "win32" ? 0 : (constants.O_DIRECTORY ?? 0);
+    const parent = await open(requestedParent, constants.O_RDONLY | noFollow | directoryOnly);
+    try {
+      const parentOpened = await parent.stat({ bigint: true });
+      if (!parentOpened.isDirectory() || !sameContentVersion(parentBefore, parentOpened)) {
+        throw new Error("parent identity changed");
+      }
+      await operations.afterParentOpen?.(requestedParent);
+      const before = await lstat(requested, { bigint: true });
+      if (
+        before.isSymbolicLink()
+        || !before.isFile()
+        || before.nlink !== 1n
+        || before.size <= 0n
+        || before.size > BigInt(maxBytes)
+      ) throw new Error("unsafe file");
+      if (process.platform !== "win32" && privateInput && (before.mode & 0o777n) !== 0o600n) {
+        throw new Error("private mode");
+      }
+      await operations.afterPathStat?.(requested);
+      const file = await open(requested, constants.O_RDONLY | noFollow);
+      try {
+        await operations.afterFileOpen?.(requested);
+        const opened = await file.stat({ bigint: true });
+        if (
+          !opened.isFile()
+          || opened.nlink !== 1n
+          || !sameContentVersion(before, opened)
+          || (process.platform !== "win32" && privateInput && (opened.mode & 0o777n) !== 0o600n)
+        ) throw new Error("file identity changed");
+        await operations.afterOpen?.(requested);
+        const value = await boundedDescriptorRead(file, maxBytes);
+        await operations.afterRead?.(requested);
+        const fileAfter = await file.stat({ bigint: true });
+        const pathAfter = await lstat(requested, { bigint: true });
+        const parentAfter = await parent.stat({ bigint: true });
+        const parentPathAfter = await lstat(requestedParent, { bigint: true });
+        if (
+          pathAfter.isSymbolicLink()
+          || !pathAfter.isFile()
+          || pathAfter.nlink !== 1n
+          || !sameContentVersion(opened, fileAfter)
+          || !sameContentVersion(fileAfter, pathAfter)
+          || parentPathAfter.isSymbolicLink()
+          || !parentPathAfter.isDirectory()
+          || !sameContentVersion(parentOpened, parentAfter)
+          || !sameContentVersion(parentAfter, parentPathAfter)
+          || await realpath(requestedParent) !== canonicalParent
+          || await realpath(requested) !== requested
+        ) throw new Error("path identity changed");
+        return value;
+      } finally {
+        await file.close();
+      }
+    } finally {
+      await parent.close();
+    }
+  } catch (error: unknown) {
+    if (
+      process.platform !== "win32"
+      && privateInput
+      && error instanceof Error
+      && error.message === "private mode"
+    ) throw new Error(`${label} file must be private (mode 0600)`);
+    throw safeReadError(label, error);
+  }
+}
 
 export async function readRegularFileNoFollow(
   path: string,

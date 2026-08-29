@@ -1173,7 +1173,7 @@ test("exposes candidate assembly and acceptance as strict CLI routes without leg
     "--input",
     join(root, "missing.json"),
   ]);
-  assert.match(recordError, /ENOENT/);
+  assert.match(recordError, /client acceptance input must be a regular 0600 file/);
   assert.doesNotMatch(recordError, /unknown command/);
 });
 
@@ -1223,6 +1223,22 @@ test("recovers acceptance after a hard crash following immutable record promotio
   const recovered = await recordClientAcceptance(fixture.root, evidence);
   assert.equal(recovered.deliveryComplete, true);
   assert.equal((await readProject(fixture.root)).stage, "delivered");
+});
+
+test("client acceptance input rejects a pathname swap through its anchored CLI reader", async (t) => {
+  const fixture = await readyProject(t);
+  await deliverReviewedCandidate({ root: fixture.root, operations: { buildOutputs: fakeOutputs } });
+  const evidence = await writeCompletedClientEvidence(fixture.root, "accepted-swap.json");
+  const retained = join(fixture.root, "accepted-swap-retained.json");
+  await assert.rejects(recordClientAcceptance(fixture.root, evidence, {
+    inputRead: {
+      async afterPathStat() {
+        await rename(evidence, retained);
+        await writeFile(evidence, '{"application":"WPS"}\n', { mode: 0o600 });
+      },
+    },
+  }), /client acceptance input must be a regular 0600 file/i);
+  assert.equal((await readProject(fixture.root)).stage, "assembling");
 });
 
 test("rejects a coordinated rewrite of an orphaned immutable acceptance record", async (t) => {
