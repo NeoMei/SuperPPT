@@ -41,6 +41,7 @@ import {
 import {
   ChangeRequestSchema,
   ImpactPlanSchema,
+  PENDING_IMPACT_PATH,
   manifestIdentity,
   readPendingImpactEvidence,
   validateImpactGateEvidence,
@@ -107,13 +108,34 @@ function sameJson(left: unknown, right: unknown): boolean {
   return JSON.stringify(left) === JSON.stringify(right);
 }
 
-export async function assertProjectMutationNotFrozen(root: string): Promise<void> {
+async function assertProjectMutationAllowed(
+  root: string,
+  allowCompletedRevisionTransition = false,
+): Promise<void> {
   const current = await ownedProject(root);
   if (current.manifest.clientAcceptanceTransaction) {
     throw new Error("project mutations are frozen while client acceptance is pending");
   }
-  const { assertNoPendingTrustedClientAcceptanceForProject } = await import("../generation/trusted-authorization.js");
-  await assertNoPendingTrustedClientAcceptanceForProject(current.root, current.manifest.projectId);
+  const trust = await import("../generation/trusted-authorization.js");
+  if (allowCompletedRevisionTransition) {
+    await trust.assertTrustedClientAcceptanceAllowsRevisionTransition(
+      current.root,
+      current.manifest.projectId,
+    );
+  } else {
+    await trust.assertNoPendingTrustedClientAcceptanceForProject(
+      current.root,
+      current.manifest.projectId,
+    );
+  }
+}
+
+export async function assertProjectMutationNotFrozen(root: string): Promise<void> {
+  await assertProjectMutationAllowed(root);
+}
+
+export async function assertProjectRevisionTransitionNotFrozen(root: string): Promise<void> {
+  await assertProjectMutationAllowed(root, true);
 }
 
 function assertRevisionEvolution(
@@ -502,6 +524,7 @@ async function persistProject(
   valid: ProjectManifest,
   operations: WriteProjectOperations = {},
   mode: ProjectPersistMode = "ordinary",
+  allowCompletedRevisionTransition = false,
 ): Promise<void> {
   if (
     mode !== "acceptance-transaction-begin"
@@ -511,8 +534,18 @@ async function persistProject(
     if (owned.manifest.clientAcceptanceTransaction) {
       throw new Error("project mutations are frozen while client acceptance is pending");
     }
-    const { assertNoPendingTrustedClientAcceptanceForProject } = await import("../generation/trusted-authorization.js");
-    await assertNoPendingTrustedClientAcceptanceForProject(owned.root, owned.manifest.projectId);
+    const trust = await import("../generation/trusted-authorization.js");
+    if (allowCompletedRevisionTransition || mode === "revision-append") {
+      await trust.assertTrustedClientAcceptanceAllowsRevisionTransition(
+        owned.root,
+        owned.manifest.projectId,
+      );
+    } else {
+      await trust.assertNoPendingTrustedClientAcceptanceForProject(
+        owned.root,
+        owned.manifest.projectId,
+      );
+    }
   }
   if (valid.projectId !== owned.manifest.projectId) {
     throw new Error("project directory is not owned by SuperPPT");
@@ -529,6 +562,9 @@ async function persistProject(
       : owned.manifest;
   if (
     !preservesArtifactEvidence(owned.manifest, valid)
+    && !(mode === "revision-append"
+      && owned.manifest.stage === "delivered"
+      && owned.manifest.clientSmokeCopyAnchor?.state === "completed")
     && !await hasExactRevisionSnapshot(owned.root, snapshotBase)
   ) {
     throw new Error(
@@ -666,8 +702,9 @@ async function updateProjectUnderTrustedLease(
   root: string,
   updater: ProjectUpdater,
   operations: WriteProjectOperations = {},
+  allowCompletedRevisionTransition = false,
 ): Promise<ProjectManifest> {
-  await assertProjectMutationNotFrozen(root);
+  await assertProjectMutationAllowed(root, allowCompletedRevisionTransition);
   let result: ProjectManifest | undefined;
   const owned = await ownedProject(root);
   await assertNoPendingRollbackTransaction(owned.root);
@@ -676,10 +713,58 @@ async function updateProjectUnderTrustedLease(
     await assertNoPendingRollbackTransaction(current.root);
     const proposed = await updater(structuredClone(current.manifest));
     const valid = ProjectManifestSchema.parse(proposed);
-    await persistProject(current, valid, operations);
+    await persistProject(current, valid, operations, "ordinary", allowCompletedRevisionTransition);
     result = valid;
   });
   return result!;
+}
+
+export async function appendApprovedImpactGate(
+  root: string,
+  rawPlan: ImpactPlan,
+  approval: {
+    approvalId: string;
+    confirmedAt: string;
+    snapshotPath: string;
+  },
+): Promise<ProjectManifest> {
+  const plan = ImpactPlanSchema.parse(rawPlan);
+  return withGenerationLease(root, (trustedRoot) => updateProjectUnderTrustedLease(
+    trustedRoot,
+    async (manifest) => {
+      const pending = await readPendingImpactEvidence(trustedRoot);
+      if (!sameJson(pending.plan, plan)) {
+        throw new Error("pending impact evidence does not match approved revision transition");
+      }
+      if (
+        plan.projectId !== manifest.projectId
+        || plan.baseRevisionId !== manifest.currentRevision.id
+        || plan.baseRevisionNumber !== manifest.currentRevision.number
+        || plan.baseManifestSha256 !== manifestIdentity(manifest)
+      ) throw new Error("impact plan has a stale base manifest identity");
+      await assertCurrentRevisionPlanningEvidence(trustedRoot, manifest);
+      await assertManifestArtifactReferences(trustedRoot, manifest);
+      const latestGate = manifest.gates.at(-1);
+      if (
+        latestGate?.gate === "revision-impact"
+        && latestGate.revisionId === manifest.currentRevision.id
+      ) throw new Error("pending impact is already approved");
+      return {
+        ...manifest,
+        gates: [...manifest.gates, {
+          gate: "revision-impact" as const,
+          revisionId: manifest.currentRevision.id,
+          approvalId: approval.approvalId,
+          artifactHashes: { [PENDING_IMPACT_PATH]: pending.fileSha256 },
+          snapshotPath: approval.snapshotPath,
+          snapshotManifestSha256: plan.baseManifestSha256,
+          confirmedAt: approval.confirmedAt,
+        }],
+      };
+    },
+    {},
+    true,
+  ));
 }
 
 export async function updateProjectWithDelegatedGenerationAttachment(
@@ -1464,11 +1549,33 @@ async function commitApprovedImpactRevisionLocked(
     }
     await assertCurrentRevisionPlanningEvidence(canonicalRoot, current.manifest);
     await assertManifestArtifactReferences(canonicalRoot, current.manifest);
-    const snapshot = await publishRevisionSnapshot(
-      canonicalRoot,
-      current.manifest,
-      evidenceOperations,
-    );
+    let snapshot: Awaited<ReturnType<typeof publishRevisionSnapshot>>;
+    if (base.stage === "delivered" && base.clientSmokeCopyAnchor?.state === "completed") {
+      const existing = await readRevisionSnapshot(
+        canonicalRoot,
+        base.currentRevision.id,
+        evidenceOperations,
+      );
+      const reconstructedDelivered = ProjectManifestSchema.parse({
+        ...existing.manifest,
+        stage: "delivered",
+        clientSmokeCopyAnchor: base.clientSmokeCopyAnchor,
+        exports: {
+          ...existing.manifest.exports,
+          acceptance: base.exports.acceptance,
+        },
+      });
+      if (!sameJson(reconstructedDelivered, base)) {
+        throw new Error("completed client acceptance does not descend from its immutable ready snapshot");
+      }
+      snapshot = existing.descriptor;
+    } else {
+      snapshot = await publishRevisionSnapshot(
+        canonicalRoot,
+        current.manifest,
+        evidenceOperations,
+      );
+    }
     const revision = {
       id: randomUUID(),
       number: current.manifest.currentRevision.number + 1,
@@ -1512,7 +1619,7 @@ export async function commitApprovedImpactRevision(
 ): Promise<void> {
   await withGenerationLease(root, (trustedRoot) =>
     withProjectLease(trustedRoot, "revision-impact", async (canonicalRoot) => {
-      await assertProjectMutationNotFrozen(canonicalRoot);
+      await assertProjectRevisionTransitionNotFrozen(canonicalRoot);
       return (
       commitApprovedImpactRevisionLocked(
         canonicalRoot,

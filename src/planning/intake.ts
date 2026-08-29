@@ -4,7 +4,8 @@ import { z } from "zod";
 
 import { syncDirectory } from "../project/durable.js";
 import { readAnchoredRegularFile } from "../project/safe-file.js";
-import { readProject } from "../project/store.js";
+import { assertProjectMutationNotFrozen, readProject } from "../project/store.js";
+import { withGenerationLease } from "../generation/lease.js";
 
 export type InputRequest =
   | { kind: "description" | "text"; value: string }
@@ -37,14 +38,6 @@ export async function normalizeInput(
   const parsed = InputRequestSchema.safeParse(request);
   if (!parsed.success) throw new Error("invalid input request", { cause: parsed.error });
   request = parsed.data;
-  await readProject(projectRoot);
-  const root = await realpath(projectRoot);
-  const sourceDirectory = join(root, "source");
-  const sourceDirectoryInfo = await lstat(sourceDirectory);
-  if (sourceDirectoryInfo.isSymbolicLink() || !sourceDirectoryInfo.isDirectory()) {
-    throw new Error("project directory is not owned by SuperPPT");
-  }
-
   let content: Buffer;
   if (request.kind === "markdown") {
     if (!request.path.toLowerCase().endsWith(".md")) {
@@ -67,8 +60,19 @@ export async function normalizeInput(
     throw new Error("input content must not be empty");
   }
 
-  const destination = join(sourceDirectory, "original.md");
-  await writeBytesExclusive(destination, content);
-  await syncDirectory(sourceDirectory);
-  return destination;
+  return withGenerationLease(projectRoot, async (root) => {
+    await assertProjectMutationNotFrozen(root);
+    await readProject(root);
+    const sourceDirectory = join(root, "source");
+    const sourceDirectoryInfo = await lstat(sourceDirectory);
+    if (
+      sourceDirectoryInfo.isSymbolicLink()
+      || !sourceDirectoryInfo.isDirectory()
+      || await realpath(sourceDirectory) !== sourceDirectory
+    ) throw new Error("project directory is not owned by SuperPPT");
+    const destination = join(sourceDirectory, "original.md");
+    await writeBytesExclusive(destination, content);
+    await syncDirectory(sourceDirectory);
+    return destination;
+  });
 }

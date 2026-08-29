@@ -6,17 +6,17 @@ import { withGenerationLease } from "../generation/lease.js";
 import { ProjectManifestSchema, type ProjectManifest } from "../project/schemas.js";
 import {
   beginProjectRollbackTransaction,
+  appendApprovedImpactGate,
   commitApprovedImpactRevision,
   finishProjectRollbackTransaction,
   assertProjectMutationNotFrozen,
+  assertProjectRevisionTransitionNotFrozen,
   readProject,
-  updateProject,
 } from "../project/store.js";
 import {
   ChangeRequestSchema,
   createImpactApprovalDescriptor,
   ImpactPlanSchema,
-  PENDING_IMPACT_PATH,
   manifestIdentity,
   planImpact,
   readPendingImpactEvidence,
@@ -129,7 +129,7 @@ export async function publishImpactPlan(
 ): Promise<ImpactPlan> {
   const validChange = ChangeRequestSchema.parse(change);
   return withGenerationLease(root, (generationRoot) => withProjectLease(generationRoot, "revision-impact", async (canonicalRoot) => {
-    await assertProjectMutationNotFrozen(canonicalRoot);
+    await assertProjectRevisionTransitionNotFrozen(canonicalRoot);
     const plan = planImpact(await readProject(canonicalRoot), validChange);
     await replacePendingImpact(canonicalRoot, serializeImpactPlan(plan), options.operations);
     return plan;
@@ -143,7 +143,7 @@ export async function approveImpact(
 ): Promise<void> {
   const expected = z.string().regex(/^[a-f0-9]{64}$/).parse(sha256);
   await withGenerationLease(root, (generationRoot) => withProjectLease(generationRoot, "revision-impact", async (canonicalRoot) => {
-    await assertProjectMutationNotFrozen(canonicalRoot);
+    await assertProjectRevisionTransitionNotFrozen(canonicalRoot);
     const evidence = await readPendingImpactEvidence(canonicalRoot);
     if (evidence.plan.sha256 !== expected) {
       throw new Error("pending impact hash does not match the requested approval");
@@ -162,29 +162,10 @@ export async function approveImpact(
       confirmedAt,
       options.operations,
     );
-    await updateProject(canonicalRoot, async (manifest) => {
-      assertExactPlanBase(manifest, evidence.plan);
-      await assertCurrentRevisionPlanningEvidence(canonicalRoot, manifest);
-      await assertManifestArtifactReferences(canonicalRoot, manifest);
-      const latestGate = manifest.gates.at(-1);
-      if (
-        latestGate?.gate === "revision-impact"
-        && latestGate.revisionId === manifest.currentRevision.id
-      ) {
-        throw new Error("pending impact is already approved");
-      }
-      return {
-        ...manifest,
-        gates: [...manifest.gates, {
-          gate: "revision-impact" as const,
-          revisionId: manifest.currentRevision.id,
-          approvalId,
-          artifactHashes: { [PENDING_IMPACT_PATH]: evidence.fileSha256 },
-          snapshotPath,
-          snapshotManifestSha256: evidence.plan.baseManifestSha256,
-          confirmedAt,
-        }],
-      };
+    await appendApprovedImpactGate(canonicalRoot, evidence.plan, {
+      approvalId,
+      confirmedAt,
+      snapshotPath,
     });
   }));
 }

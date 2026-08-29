@@ -9,6 +9,7 @@ import { z } from "zod";
 import type { GateSnapshotDescriptor } from "../project/evidence.js";
 import { syncDirectory } from "../project/durable.js";
 import { promoteExclusive } from "../project/exclusive.js";
+import { readOwnedRegularFile } from "../project/safe-file.js";
 import { readProject } from "../project/store.js";
 import {
   ClientAcceptanceTransactionSchema,
@@ -26,6 +27,7 @@ import {
 } from "./job-schemas.js";
 import { appendPrivateInputLine } from "./private-input.js";
 import { assertGenerationLeaseHeld, withGenerationLease } from "./lease.js";
+import { readRevisionSnapshot } from "../revisions/snapshot.js";
 
 const SHA256 = /^[a-f0-9]{64}$/;
 const KEY_BYTES = 32;
@@ -51,6 +53,8 @@ const ACCEPTANCE_HEADS_DIRECTORY = "heads";
 const MAX_ACCEPTANCE_EVENT_BYTES = 32 * 1024;
 const MAX_ACCEPTANCE_HEAD_BYTES = 16 * 1024;
 const MAX_ACCEPTANCE_EVENTS = 10_000;
+const MAX_ACCEPTANCE_REGISTRATION_BYTES = 64 * 1024;
+const MAX_ACCEPTANCE_REGISTRATIONS = 10_000;
 const MAX_REGISTRATION_BYTES = 16 * 1024;
 const MAX_REGISTRY_STATE_BYTES = 16 * 1024;
 const MAX_REGISTRY_STATES = MAX_AUTHORIZATION_HEADS + MAX_CALL_EVENTS + MAX_ACCEPTANCE_EVENTS;
@@ -67,6 +71,8 @@ export type GenerationAuthorizationTrustCheckpoint =
   | "call-head-temp-synced"
   | "call-head-published"
   | "registration-temp-synced"
+  | "acceptance-registration-temp-synced"
+  | "acceptance-registration-published"
   | "registry-state-temp-synced"
   | "registry-before-authorization-advance"
   | "registry-before-call-advance"
@@ -232,8 +238,7 @@ const ProjectRegistryStateSchema = z.union([
 
 const ClientAcceptanceCommitmentSchema = ClientAcceptanceTransactionSchema;
 
-const ClientAcceptanceEventBaseSchema = z.object({
-  schemaVersion: z.literal(1),
+const ClientAcceptanceEventCommonShape = {
   kind: z.literal("client-acceptance-event"),
   eventId: z.string().uuid(),
   projectId: z.string().uuid(),
@@ -242,16 +247,65 @@ const ClientAcceptanceEventBaseSchema = z.object({
   state: z.enum(["pending", "completed"]),
   commitment: ClientAcceptanceCommitmentSchema,
   completedAnchorSha256: z.string().regex(SHA256).nullable(),
+};
+
+const ClientAcceptanceEventV1BaseSchema = z.object({
+  schemaVersion: z.literal(1),
+  ...ClientAcceptanceEventCommonShape,
 }).strict();
 
-const ClientAcceptanceEventSchema = z.object({
-  ...ClientAcceptanceEventBaseSchema.shape,
-  signature: z.string().regex(SHA256),
-}).strict().superRefine((event, context) => {
+const ClientAcceptanceEventV2BaseSchema = z.object({
+  schemaVersion: z.literal(2),
+  ...ClientAcceptanceEventCommonShape,
+  acceptanceRegistrationSha256: z.string().regex(SHA256),
+}).strict();
+
+const ClientAcceptanceEventBaseSchema = z.discriminatedUnion("schemaVersion", [
+  ClientAcceptanceEventV1BaseSchema,
+  ClientAcceptanceEventV2BaseSchema,
+]);
+
+const ClientAcceptanceEventSchema = z.discriminatedUnion("schemaVersion", [
+  ClientAcceptanceEventV1BaseSchema.extend({ signature: z.string().regex(SHA256) }).strict(),
+  ClientAcceptanceEventV2BaseSchema.extend({ signature: z.string().regex(SHA256) }).strict(),
+]).superRefine((event, context) => {
   if ((event.state === "completed") !== (event.completedAnchorSha256 !== null)) {
     context.addIssue({ code: "custom", path: ["completedAnchorSha256"], message: "completed acceptance events require the completed anchor digest" });
   }
 });
+
+const AcceptanceRegistrationPredecessorSchema = z.object({
+  sequence: z.number().int().positive(),
+  headSha256: z.string().regex(SHA256),
+  eventId: z.string().uuid(),
+  eventSha256: z.string().regex(SHA256),
+  state: z.enum(["pending", "completed"]),
+  revisionId: z.string().uuid(),
+  anchorId: z.string().uuid(),
+}).strict();
+
+const AcceptanceRegistrationBaseSchema = z.object({
+  schemaVersion: z.literal(1),
+  kind: z.literal("client-acceptance-registration"),
+  projectId: z.string().uuid(),
+  projectRegistrationSha256: z.string().regex(SHA256),
+  revisionId: z.string().uuid(),
+  deckRevision: z.number().int().positive(),
+  anchorId: z.string().uuid(),
+  transactionId: z.string().uuid(),
+  pendingEventId: z.string().uuid(),
+  commitment: ClientAcceptanceCommitmentSchema,
+  predecessor: AcceptanceRegistrationPredecessorSchema.nullable(),
+  registryPredecessor: z.object({
+    version: z.number().int().positive(),
+    stateSha256: z.string().regex(SHA256),
+  }).strict().nullable(),
+  registeredAt: z.string().datetime(),
+}).strict();
+
+const AcceptanceRegistrationSchema = AcceptanceRegistrationBaseSchema.extend({
+  signature: z.string().regex(SHA256),
+}).strict();
 
 const ClientAcceptanceHeadBaseSchema = z.object({
   schemaVersion: z.literal(1),
@@ -284,6 +338,8 @@ type ProjectRegistryStateV2Base = z.infer<typeof ProjectRegistryStateV2BaseSchem
 type ProjectRegistryState = z.infer<typeof ProjectRegistryStateSchema>;
 type ClientAcceptanceEventBase = z.infer<typeof ClientAcceptanceEventBaseSchema>;
 type ClientAcceptanceEvent = z.infer<typeof ClientAcceptanceEventSchema>;
+type AcceptanceRegistrationBase = z.infer<typeof AcceptanceRegistrationBaseSchema>;
+type AcceptanceRegistration = z.infer<typeof AcceptanceRegistrationSchema>;
 type ClientAcceptanceHeadBase = z.infer<typeof ClientAcceptanceHeadBaseSchema>;
 type ClientAcceptanceHead = z.infer<typeof ClientAcceptanceHeadSchema>;
 export type GenerationAuthorizationTrustBinding = z.infer<typeof AuthorizationTrustBindingSchema>;
@@ -307,6 +363,7 @@ type TestTrustConfiguration = {
       callEvents?: number;
       acceptanceHeads?: number;
       acceptanceEvents?: number;
+      acceptanceRegistrations?: number;
       registryStates?: number;
       projectLedgerBytes?: number;
       projectLedgerEntries?: number;
@@ -352,6 +409,10 @@ function canonicalAcceptanceHead(value: ClientAcceptanceHead): string {
   return `${JSON.stringify(value, null, 2)}\n`;
 }
 
+function canonicalAcceptanceRegistration(value: AcceptanceRegistration): string {
+  return `${JSON.stringify(value, null, 2)}\n`;
+}
+
 function signaturePayload(value: SignedRecordBase): string {
   return JSON.stringify(value);
 }
@@ -378,6 +439,10 @@ function acceptanceEventFilename(sequence: number, eventId: string): string {
 
 function acceptanceHeadFilename(sequence: number): string {
   return `${String(sequence).padStart(16, "0")}.json`;
+}
+
+function acceptanceRegistrationFilename(revisionId: string, anchorId: string): string {
+  return `${revisionId}-${anchorId}.json`;
 }
 
 function defaultTrustRoot(): string {
@@ -484,11 +549,13 @@ async function ensurePrivateDirectory(path: string): Promise<string> {
   return absolute;
 }
 
-async function trustRoot(projectRoot: string): Promise<{
+type TrustRoot = {
   root: string;
   deterministicKeySeed: string;
   operations: TestTrustConfiguration["operations"];
-}> {
+};
+
+async function trustRootLocation(projectRoot: string): Promise<TrustRoot> {
   const canonicalProject = await canonicalProjectRoot(projectRoot);
   const configuration = await trustConfiguration(canonicalProject);
   const configuredRoot = resolve(configuration.root);
@@ -496,12 +563,42 @@ async function trustRoot(projectRoot: string): Promise<{
   if (!difference || (!difference.startsWith(`..${sep}`) && difference !== ".." && !isAbsolute(difference))) {
     throw new Error("trusted authorization store must be outside the project root");
   }
-  const root = await ensurePrivateDirectory(configuredRoot);
+  return {
+    root: configuredRoot,
+    deterministicKeySeed: configuration.deterministicKeySeed,
+    operations: configuration.operations,
+  };
+}
+
+async function assertExistingPrivateDirectory(path: string, label: string): Promise<string> {
+  const absolute = resolve(path);
+  await assertNoSymlinkComponents(absolute);
+  const info = await lstat(absolute);
+  if (info.isSymbolicLink() || !info.isDirectory() || await realpath(absolute) !== absolute) {
+    throw new Error(`${label} is unsafe`);
+  }
+  if (process.platform !== "win32" && (info.mode & 0o777) !== 0o700) {
+    throw new Error(`${label} must have mode 0700`);
+  }
+  return absolute;
+}
+
+async function existingTrustRoot(projectRoot: string): Promise<TrustRoot | null> {
+  const location = await trustRootLocation(projectRoot);
+  const kind = await pathKind(location.root);
+  if (kind === "missing") return null;
+  if (kind !== "directory") throw new Error("trusted authorization directory is unsafe");
+  return { ...location, root: await assertExistingPrivateDirectory(location.root, "trusted authorization directory") };
+}
+
+async function trustRoot(projectRoot: string): Promise<TrustRoot> {
+  const location = await trustRootLocation(projectRoot);
+  const root = await ensurePrivateDirectory(location.root);
   await ensurePrivateDirectory(join(root, RECORDS_DIRECTORY));
   return {
     root,
-    deterministicKeySeed: configuration.deterministicKeySeed,
-    operations: configuration.operations,
+    deterministicKeySeed: location.deterministicKeySeed,
+    operations: location.operations,
   };
 }
 
@@ -699,7 +796,8 @@ async function createOrReadKey(projectRoot: string): Promise<{ storeRoot: string
 }
 
 async function readKey(projectRoot: string): Promise<{ storeRoot: string; key: Buffer }> {
-  const store = await trustRoot(projectRoot);
+  const store = await existingTrustRoot(projectRoot);
+  if (!store) throw new Error("trusted authorization store is missing");
   const key = await readPrivateRegularFile(join(store.root, KEY_FILE), "trusted authorization HMAC key", KEY_BYTES);
   if (key.length !== KEY_BYTES) throw new Error("trusted authorization HMAC key has invalid length");
   return { storeRoot: store.root, key };
@@ -855,6 +953,25 @@ function signedAcceptanceEvent(key: Buffer, base: ClientAcceptanceEventBase): Cl
   });
 }
 
+function signedAcceptanceRegistration(key: Buffer, base: AcceptanceRegistrationBase): AcceptanceRegistration {
+  const parsed = AcceptanceRegistrationBaseSchema.parse(base);
+  return AcceptanceRegistrationSchema.parse({
+    ...parsed,
+    signature: createHmac("sha256", key).update(JSON.stringify(parsed)).digest("hex"),
+  });
+}
+
+function assertAcceptanceRegistrationSignature(key: Buffer, registration: AcceptanceRegistration): void {
+  const { signature, ...base } = registration;
+  const actual = Buffer.from(signature, "hex");
+  const expected = createHmac("sha256", key)
+    .update(JSON.stringify(AcceptanceRegistrationBaseSchema.parse(base)))
+    .digest();
+  if (actual.length !== expected.length || !timingSafeEqual(actual, expected)) {
+    throw new Error("trusted client acceptance registration signature is invalid");
+  }
+}
+
 function assertAcceptanceEventSignature(key: Buffer, event: ClientAcceptanceEvent): void {
   const { signature, ...base } = event;
   const actual = Buffer.from(signature, "hex");
@@ -904,6 +1021,10 @@ function registrationPath(storeRoot: string, projectId: string): string {
   return join(storeRoot, PROJECT_REGISTRATIONS_DIRECTORY, `${projectId}.json`);
 }
 
+function acceptanceRegistrationRoot(storeRoot: string, projectId: string): string {
+  return join(storeRoot, PROJECT_REGISTRATIONS_DIRECTORY, projectId, "acceptances");
+}
+
 function registryRoots(storeRoot: string, projectId: string): { root: string; states: string } {
   const root = join(storeRoot, PROJECT_REGISTRY_DIRECTORY, projectId);
   return { root, states: join(root, REGISTRY_STATES_DIRECTORY) };
@@ -924,6 +1045,84 @@ async function parseRegistrationFile(path: string, key: Buffer, projectId: strin
   assertRegistrationSignature(key, registration);
   if (registration.projectId !== projectId) throw new Error("trusted project registration belongs to a different project");
   return { registration, sha256: sha256(bytes) };
+}
+
+async function parseAcceptanceRegistrationFile(
+  path: string,
+  key: Buffer,
+  projectId: string,
+  projectRegistrationSha256: string,
+): Promise<{ registration: AcceptanceRegistration; sha256: string }> {
+  const bytes = await readPrivateRegularFile(
+    path,
+    "trusted client acceptance registration",
+    MAX_ACCEPTANCE_REGISTRATION_BYTES,
+  );
+  let registration: AcceptanceRegistration;
+  try {
+    registration = AcceptanceRegistrationSchema.parse(JSON.parse(bytes.toString("utf8")));
+    if (canonicalAcceptanceRegistration(registration) !== bytes.toString("utf8")) {
+      throw new Error("acceptance registration is not canonical");
+    }
+  } catch (error: unknown) {
+    throw new Error("trusted client acceptance registration is invalid or tampered", { cause: error });
+  }
+  assertAcceptanceRegistrationSignature(key, registration);
+  if (
+    registration.projectId !== projectId
+    || registration.projectRegistrationSha256 !== projectRegistrationSha256
+    || basename(path) !== acceptanceRegistrationFilename(registration.revisionId, registration.anchorId)
+    || registration.commitment.projectId !== projectId
+    || registration.commitment.revisionId !== registration.revisionId
+    || registration.commitment.deckRevision !== registration.deckRevision
+    || registration.commitment.anchorId !== registration.anchorId
+    || registration.commitment.transactionId !== registration.transactionId
+  ) throw new Error("trusted client acceptance registration binding is invalid or forked");
+  return { registration, sha256: sha256(bytes) };
+}
+
+type AcceptanceRegistrationEntry = {
+  registration: AcceptanceRegistration;
+  sha256: string;
+};
+
+async function readAcceptanceRegistrations(
+  projectRoot: string,
+  projectId: string,
+  storeRoot: string,
+  key: Buffer,
+): Promise<AcceptanceRegistrationEntry[]> {
+  assertGenerationLeaseHeld(projectRoot);
+  const root = acceptanceRegistrationRoot(storeRoot, projectId);
+  const kind = await pathKind(root);
+  if (kind === "missing") return [];
+  if (kind !== "directory") throw new Error("trusted client acceptance registration directory is unsafe");
+  await assertExistingPrivateDirectory(root, "trusted client acceptance registration directory");
+  const base = await parseRegistrationFile(registrationPath(storeRoot, projectId), key, projectId);
+  const store = await existingTrustRoot(projectRoot);
+  if (!store) throw new Error("trusted authorization store is missing");
+  const names = await readBoundedPrivateDirectory(
+    root,
+    "trusted client acceptance registration directory",
+    store.operations?.limits?.acceptanceRegistrations ?? MAX_ACCEPTANCE_REGISTRATIONS,
+    (name) => /^[0-9a-f-]{36}-[0-9a-f-]{36}\.json$/i.test(name) ? "include" : "reject",
+  );
+  const entries = await Promise.all(names.sort().map((name) =>
+    parseAcceptanceRegistrationFile(join(root, name), key, projectId, base.sha256)));
+  const transactionIds = new Set<string>();
+  const revisionIds = new Set<string>();
+  const anchorIds = new Set<string>();
+  for (const { registration } of entries) {
+    if (
+      transactionIds.has(registration.transactionId)
+      || revisionIds.has(registration.revisionId)
+      || anchorIds.has(registration.anchorId)
+    ) throw new Error("trusted client acceptance registrations are duplicated or forked");
+    transactionIds.add(registration.transactionId);
+    revisionIds.add(registration.revisionId);
+    anchorIds.add(registration.anchorId);
+  }
+  return entries;
 }
 
 async function parseRegistryStateFile(path: string, key: Buffer, projectId: string): Promise<{
@@ -948,6 +1147,7 @@ async function hasObservableTrustedState(storeRoot: string, projectId: string): 
     join(storeRoot, AUTHORIZATION_HEADS_DIRECTORY, projectId),
     join(storeRoot, CALL_LEDGERS_DIRECTORY, projectId),
     join(storeRoot, CLIENT_ACCEPTANCE_DIRECTORY, projectId),
+    acceptanceRegistrationRoot(storeRoot, projectId),
     registryRoots(storeRoot, projectId).root,
   ];
   for (const path of paths) {
@@ -980,6 +1180,7 @@ async function readProjectRegistry(
   const rootKind = await pathKind(roots.root);
   if (rootKind === "missing") throw new Error("registered project registry is missing");
   if (rootKind !== "directory") throw new Error("trusted project registry is unsafe");
+  await assertExistingPrivateDirectory(roots.root, "trusted project registry");
   const statesKind = await pathKind(roots.states);
   if (statesKind === "unsafe" || statesKind === "file") throw new Error("trusted project registry state directory is unsafe");
   if (statesKind === "missing") {
@@ -1181,12 +1382,204 @@ function sameCommitment(left: ClientAcceptanceTransaction, right: ClientAcceptan
     === JSON.stringify(ClientAcceptanceCommitmentSchema.parse(right));
 }
 
+function acceptanceRegistrationPredecessor(
+  current: ClientAcceptanceChainEntry | undefined,
+): AcceptanceRegistration["predecessor"] {
+  return current ? {
+    sequence: current.head.sequence,
+    headSha256: current.headSha256,
+    eventId: current.event.eventId,
+    eventSha256: current.eventSha256,
+    state: current.event.state,
+    revisionId: current.event.commitment.revisionId,
+    anchorId: current.event.commitment.anchorId,
+  } : null;
+}
+
+function registryPredecessor(
+  registry: ProjectRegistrySnapshot,
+): AcceptanceRegistration["registryPredecessor"] {
+  return registry.state && registry.stateSha256
+    ? { version: registry.state.version, stateSha256: registry.stateSha256 }
+    : null;
+}
+
+async function assertStrictRevisionDescent(
+  projectRoot: string,
+  manifest: ProjectManifest,
+  ancestorRevisionId: string,
+): Promise<ProjectManifest> {
+  const ancestorIndex = manifest.revisions.findIndex(({ id }) => id === ancestorRevisionId);
+  const currentIndex = manifest.revisions.findIndex(({ id }) => id === manifest.currentRevision.id);
+  if (ancestorIndex < 0 || currentIndex !== manifest.revisions.length - 1 || currentIndex <= ancestorIndex) {
+    throw new Error("new client acceptance requires a strictly newer descendant revision");
+  }
+  let ancestorManifest: ProjectManifest | null = null;
+  for (let index = ancestorIndex + 1; index <= currentIndex; index += 1) {
+    const parent = manifest.revisions[index - 1]!;
+    const revision = manifest.revisions[index]!;
+    const snapshot = await readRevisionSnapshot(projectRoot, parent.id);
+    if (
+      revision.parentId !== parent.id
+      || revision.number !== parent.number + 1
+      || revision.parentSnapshotDescriptorSha256 !== snapshot.descriptor.descriptorSha256
+      || snapshot.manifest.currentRevision.id !== parent.id
+      || JSON.stringify(snapshot.manifest.revisions) !== JSON.stringify(manifest.revisions.slice(0, index))
+    ) {
+      throw new Error("new client acceptance revision ancestry is invalid or reordered");
+    }
+    if (index === ancestorIndex + 1) ancestorManifest = snapshot.manifest;
+  }
+  if (!ancestorManifest) throw new Error("new client acceptance ancestor snapshot is missing");
+  return ancestorManifest;
+}
+
+async function assertCompletedAcceptanceManifest(
+  projectRoot: string,
+  manifest: ProjectManifest,
+  completed: ClientAcceptanceChainEntry,
+): Promise<void> {
+  const transaction = completed.event.commitment;
+  const sameRevision = manifest.currentRevision.id === transaction.revisionId;
+  const acceptanceBase = sameRevision
+    ? manifest
+    : await assertStrictRevisionDescent(projectRoot, manifest, transaction.revisionId);
+  const anchor = acceptanceBase.clientSmokeCopyAnchor;
+  const completedAnchor = sameRevision ? anchor : anchor ? {
+    ...anchor,
+    state: "completed" as const,
+    observation: transaction.observation,
+    reopenedCopySha256: transaction.reopenedCopySha256,
+    acceptanceRecord: transaction.acceptanceRecord,
+    completedAt: transaction.confirmedAt,
+  } : undefined;
+  if (
+    completed.event.state !== "completed"
+    || !completed.event.completedAnchorSha256
+    || acceptanceBase.currentRevision.id !== transaction.revisionId
+    || acceptanceBase.clientAcceptanceTransaction !== undefined
+    || !anchor
+    || !completedAnchor
+    || (sameRevision ? acceptanceBase.stage !== "delivered" : anchor.state !== "ready")
+    || (sameRevision && JSON.stringify(acceptanceBase.exports.acceptance) !== JSON.stringify(transaction.acceptanceRecord))
+    || completedAnchor.projectId !== transaction.projectId
+    || completedAnchor.revisionId !== transaction.revisionId
+    || completedAnchor.deckRevision !== transaction.deckRevision
+    || completedAnchor.anchorId !== transaction.anchorId
+    || JSON.stringify(completedAnchor.descriptor) !== JSON.stringify(transaction.descriptor)
+    || JSON.stringify(completedAnchor.source) !== JSON.stringify(transaction.source)
+    || JSON.stringify(completedAnchor.initialCopy) !== JSON.stringify(transaction.initialCopy)
+    || JSON.stringify(completedAnchor.observation) !== JSON.stringify(transaction.observation)
+    || completedAnchor.reopenedCopySha256 !== transaction.reopenedCopySha256
+    || JSON.stringify(completedAnchor.acceptanceRecord) !== JSON.stringify(transaction.acceptanceRecord)
+    || completedAnchor.completedAt !== transaction.confirmedAt
+    || sha256(Buffer.from(JSON.stringify(completedAnchor))) !== completed.event.completedAnchorSha256
+  ) throw new Error("project mutations are frozen because completed client acceptance is not current");
+  for (const artifact of [transaction.observation, transaction.acceptanceRecord]) {
+    const bytes = await readOwnedRegularFile(projectRoot, artifact.path);
+    if (sha256(bytes) !== artifact.sha256) {
+      throw new Error("project mutations are frozen because completed client acceptance evidence changed");
+    }
+  }
+}
+
+async function ensurePendingAcceptanceRegistration(
+  projectRoot: string,
+  manifest: ProjectManifest,
+  storeRoot: string,
+  key: Buffer,
+  registry: ProjectRegistrySnapshot,
+  current: ClientAcceptanceChainEntry | undefined,
+  transaction: ClientAcceptanceTransaction,
+): Promise<AcceptanceRegistrationEntry> {
+  assertGenerationLeaseHeld(projectRoot);
+  const registrations = await readAcceptanceRegistrations(projectRoot, manifest.projectId, storeRoot, key);
+  const expectedPredecessor = acceptanceRegistrationPredecessor(current);
+  const existing = registrations.find(({ registration }) =>
+    registration.revisionId === transaction.revisionId
+    || registration.anchorId === transaction.anchorId
+    || registration.transactionId === transaction.transactionId);
+  if (existing) {
+    const represented = current?.event.schemaVersion === 2
+      && current.event.acceptanceRegistrationSha256 === existing.sha256;
+    if (
+      !sameCommitment(existing.registration.commitment, transaction)
+      || (!represented
+        && JSON.stringify(existing.registration.predecessor) !== JSON.stringify(expectedPredecessor))
+    ) throw new Error("trusted client acceptance registration conflicts with immutable first write");
+    if (
+      !represented
+      && JSON.stringify(existing.registration.registryPredecessor) !== JSON.stringify(registryPredecessor(registry))
+    ) throw new Error("trusted client acceptance registration exposes a truncated registry predecessor");
+    return existing;
+  }
+  if (current?.event.state === "pending") {
+    throw new Error("trusted client acceptance commitment does not match immutable first write");
+  }
+  if (current?.event.state === "completed") {
+    if (transaction.anchorId === current.event.commitment.anchorId) {
+      throw new Error("completed client acceptance anchor cannot be superseded");
+    }
+    await assertStrictRevisionDescent(projectRoot, manifest, current.event.commitment.revisionId);
+  }
+  if (manifest.currentRevision.id !== transaction.revisionId) {
+    throw new Error("trusted client acceptance registration does not bind the current revision");
+  }
+  const baseRegistration = await parseRegistrationFile(
+    registrationPath(storeRoot, manifest.projectId),
+    key,
+    manifest.projectId,
+  );
+  const registration = signedAcceptanceRegistration(key, {
+    schemaVersion: 1,
+    kind: "client-acceptance-registration",
+    projectId: manifest.projectId,
+    projectRegistrationSha256: baseRegistration.sha256,
+    revisionId: transaction.revisionId,
+    deckRevision: transaction.deckRevision,
+    anchorId: transaction.anchorId,
+    transactionId: transaction.transactionId,
+    pendingEventId: randomUUID(),
+    commitment: ClientAcceptanceCommitmentSchema.parse(transaction),
+    predecessor: expectedPredecessor,
+    registryPredecessor: registryPredecessor(registry),
+    registeredAt: transaction.createdAt,
+  });
+  const bytes = canonicalAcceptanceRegistration(registration);
+  const root = await ensurePrivateDirectory(acceptanceRegistrationRoot(storeRoot, manifest.projectId));
+  const path = join(root, acceptanceRegistrationFilename(transaction.revisionId, transaction.anchorId));
+  const store = await trustRoot(projectRoot);
+  if (!await writePrivateExclusive(
+    path,
+    bytes,
+    "acceptance-registration-temp-synced",
+    store.operations,
+  )) {
+    const concurrent = await readWithConcurrentCreateRetry(
+      path,
+      "trusted client acceptance registration",
+      MAX_ACCEPTANCE_REGISTRATION_BYTES,
+    );
+    if (!concurrent.equals(Buffer.from(bytes))) {
+      throw new Error("trusted client acceptance registration conflicts with immutable first write");
+    }
+  }
+  await store.operations?.checkpoint?.("acceptance-registration-published");
+  return parseAcceptanceRegistrationFile(
+    path,
+    key,
+    manifest.projectId,
+    baseRegistration.sha256,
+  );
+}
+
 async function readClientAcceptanceChain(
   projectRoot: string,
   projectId: string,
   storeRoot: string,
   key: Buffer,
   allowOneUnheadedEvent = false,
+  allowOneUnpublishedRegistration = false,
 ): Promise<ClientAcceptanceChainEntry[]> {
   assertGenerationLeaseHeld(projectRoot);
   const store = await trustRoot(projectRoot);
@@ -1194,6 +1587,7 @@ async function readClientAcceptanceChain(
   const rootKind = await pathKind(roots.root);
   if (rootKind === "missing") return [];
   if (rootKind !== "directory") throw new Error("trusted client acceptance directory is unsafe");
+  await assertExistingPrivateDirectory(roots.root, "trusted client acceptance directory");
   const eventsKind = await pathKind(roots.events);
   const headsKind = await pathKind(roots.heads);
   if (eventsKind !== "directory" || headsKind !== "directory") {
@@ -1287,6 +1681,41 @@ async function readClientAcceptanceChain(
   ) {
     throw new Error("trusted client acceptance event history is missing, truncated, or forked");
   }
+  const registrations = await readAcceptanceRegistrations(projectRoot, projectId, storeRoot, key);
+  const represented = new Set<string>();
+  for (const [index, entry] of chain.entries()) {
+    if (entry.event.schemaVersion === 1) continue;
+    const registrationSha256 = entry.event.acceptanceRegistrationSha256;
+    const registration = registrations.find(({ sha256: digest }) =>
+      digest === registrationSha256);
+    if (
+      !registration
+      || !sameCommitment(registration.registration.commitment, entry.event.commitment)
+      || registration.registration.transactionId !== entry.event.commitment.transactionId
+    ) throw new Error("trusted client acceptance event has no exact immutable registration");
+    represented.add(registration.sha256);
+    if (entry.event.state === "pending") {
+      const previous = chain[index - 1];
+      const expectedPredecessor = previous ? {
+        sequence: previous.head.sequence,
+        headSha256: previous.headSha256,
+        eventId: previous.event.eventId,
+        eventSha256: previous.eventSha256,
+        state: previous.event.state,
+        revisionId: previous.event.commitment.revisionId,
+        anchorId: previous.event.commitment.anchorId,
+      } : null;
+      if (
+        registration.registration.pendingEventId !== entry.event.eventId
+        || JSON.stringify(registration.registration.predecessor) !== JSON.stringify(expectedPredecessor)
+      ) throw new Error("trusted client acceptance registration predecessor is invalid or forked");
+    }
+  }
+  const unrepresented = registrations.filter(({ sha256: digest }) => !represented.has(digest));
+  if (
+    unrepresented.length > 1
+    || (!allowOneUnpublishedRegistration && unrepresented.length > 0)
+  ) throw new Error("trusted client acceptance registration has no exact chain state");
   return chain;
 }
 
@@ -1303,7 +1732,7 @@ async function recoverExactUnheadedAcceptanceEvent(
   const store = await trustRoot(projectRoot);
   const roots = acceptanceRoots(storeRoot, projectId);
   if (await pathKind(roots.root) === "missing") return null;
-  const chain = await readClientAcceptanceChain(projectRoot, projectId, storeRoot, key, true);
+  const chain = await readClientAcceptanceChain(projectRoot, projectId, storeRoot, key, true, true);
   const expected = new Set(chain.map(({ event }) => acceptanceEventFilename(event.sequence, event.eventId)));
   const names = await readBoundedPrivateDirectory(
     roots.events,
@@ -1374,19 +1803,31 @@ async function readSynchronizedClientAcceptanceChain(
   recoverHighWater = true,
 ): Promise<ClientAcceptanceChainEntry[]> {
   assertGenerationLeaseHeld(projectRoot);
-  const store = await trustRoot(projectRoot);
+  const store = await existingTrustRoot(projectRoot);
+  if (!store) return [];
   const keyKind = await pathKind(join(store.root, KEY_FILE));
   const acceptanceKind = await pathKind(join(store.root, CLIENT_ACCEPTANCE_DIRECTORY, projectId));
   const registrationKind = await pathKind(registrationPath(store.root, projectId));
+  const acceptanceRegistrationKind = await pathKind(acceptanceRegistrationRoot(store.root, projectId));
   if (keyKind === "unsafe" || keyKind === "directory") throw new Error("trusted authorization HMAC key is unsafe");
   if (keyKind === "missing") {
-    if (acceptanceKind !== "missing" || registrationKind !== "missing") {
+    if (
+      acceptanceKind !== "missing"
+      || registrationKind !== "missing"
+      || acceptanceRegistrationKind !== "missing"
+    ) {
       throw new Error("trusted authorization HMAC key is missing for observable state");
     }
     return [];
   }
   const { storeRoot, key } = await readKey(projectRoot);
   if (acceptanceKind === "missing") {
+    const registrations = acceptanceRegistrationKind === "missing"
+      ? []
+      : await readAcceptanceRegistrations(projectRoot, projectId, storeRoot, key);
+    if (registrations.length > 0) {
+      throw new Error("trusted client acceptance registration has no exact chain state; recovery is required");
+    }
     if (
       registrationKind === "missing"
       && await pathKind(registryRoots(storeRoot, projectId).root) === "missing"
@@ -1423,8 +1864,29 @@ async function appendClientAcceptanceEvent(
   if (project.projectId !== transaction.projectId) throw new Error("trusted client acceptance belongs to a different project");
   const store = await trustRoot(projectRoot);
   const { storeRoot, key } = await createOrReadKey(projectRoot);
-  await ensureProjectRegistryForTransition(projectRoot, project.projectId, storeRoot, key);
+  let registry = await ensureProjectRegistryForTransition(projectRoot, project.projectId, storeRoot, key);
   const roots = acceptanceRoots(storeRoot, project.projectId);
+  let chain = await readClientAcceptanceChain(
+    projectRoot,
+    project.projectId,
+    storeRoot,
+    key,
+    true,
+    true,
+  );
+  let current = chain.at(-1);
+  let acceptanceRegistration: AcceptanceRegistrationEntry | null = null;
+  if (state === "pending") {
+    acceptanceRegistration = await ensurePendingAcceptanceRegistration(
+      projectRoot,
+      project,
+      storeRoot,
+      key,
+      registry,
+      current,
+      transaction,
+    );
+  }
   await ensurePrivateDirectory(roots.root);
   await ensurePrivateDirectory(roots.events);
   await ensurePrivateDirectory(roots.heads);
@@ -1438,36 +1900,67 @@ async function appendClientAcceptanceEvent(
     completedAnchorSha256,
   );
   if (recovered) return recovered;
-  const chain = await readSynchronizedClientAcceptanceChain(projectRoot, project.projectId);
-  const current = chain.at(-1);
+  chain = await readClientAcceptanceChain(
+    projectRoot,
+    project.projectId,
+    storeRoot,
+    key,
+    false,
+    state === "pending",
+  );
+  current = chain.at(-1);
   if (current?.event.state === state && sameCommitment(current.event.commitment, transaction)) {
     if (current.event.completedAnchorSha256 !== completedAnchorSha256) {
       throw new Error("trusted client acceptance completion conflicts with immutable first write");
     }
+    registry = await readProjectRegistry(projectRoot, project.projectId, storeRoot, key)
+      ?? (() => { throw new Error("trusted project registry is missing after client acceptance publication"); })();
+    await synchronizeRegistryHighWater(projectRoot, registry, "clientAcceptance", {
+      sequence: current.head.sequence,
+      headSha256: current.headSha256,
+    });
     return current;
   }
   if (state === "pending" && current?.event.state === "completed" && sameCommitment(current.event.commitment, transaction)) {
-    return current;
+    throw new Error("completed client acceptance cannot receive another pending commitment");
   }
   if (state === "completed") {
     if (!current || current.event.state !== "pending" || !sameCommitment(current.event.commitment, transaction)) {
       throw new Error("trusted client acceptance completion has no exact pending commitment");
     }
+    if (current.event.schemaVersion === 2) {
+      const registrationSha256 = current.event.acceptanceRegistrationSha256;
+      acceptanceRegistration = (await readAcceptanceRegistrations(
+        projectRoot,
+        project.projectId,
+        storeRoot,
+        key,
+      )).find(({ sha256: digest }) => digest === registrationSha256) ?? null;
+      if (!acceptanceRegistration) {
+        throw new Error("trusted client acceptance completion has no immutable registration");
+      }
+    }
   } else if (current?.event.state === "pending") {
     throw new Error("trusted client acceptance commitment does not match immutable first write");
   }
   const sequence = (current?.head.sequence ?? 0) + 1;
-  const event = signedAcceptanceEvent(key, {
-    schemaVersion: 1,
+  const commonEvent = {
     kind: "client-acceptance-event",
-    eventId: randomUUID(),
+    eventId: state === "pending" ? acceptanceRegistration!.registration.pendingEventId : randomUUID(),
     projectId: project.projectId,
     sequence,
     predecessor: current ? { eventId: current.event.eventId, eventSha256: current.eventSha256 } : null,
     state,
     commitment: ClientAcceptanceCommitmentSchema.parse(transaction),
     completedAnchorSha256,
-  });
+  } as const;
+  const event = acceptanceRegistration
+    ? signedAcceptanceEvent(key, {
+      schemaVersion: 2,
+      ...commonEvent,
+      acceptanceRegistrationSha256: acceptanceRegistration.sha256,
+    })
+    : signedAcceptanceEvent(key, { schemaVersion: 1, ...commonEvent });
   const eventBytes = canonicalAcceptanceEvent(event);
   const eventPath = join(roots.events, acceptanceEventFilename(sequence, event.eventId));
   if (!await writePrivateExclusive(eventPath, eventBytes, "acceptance-event-temp-synced", store.operations)) {
@@ -1493,8 +1986,8 @@ async function appendClientAcceptanceEvent(
     if (!existing.equals(Buffer.from(headBytes))) throw new Error("trusted client acceptance head conflicts");
   }
   await store.operations?.checkpoint?.("acceptance-head-published");
-  const registry = await readProjectRegistry(projectRoot, project.projectId, storeRoot, key);
-  if (!registry) throw new Error("trusted project registry is missing after client acceptance publication");
+  registry = await readProjectRegistry(projectRoot, project.projectId, storeRoot, key)
+    ?? (() => { throw new Error("trusted project registry is missing after client acceptance publication"); })();
   await synchronizeRegistryHighWater(projectRoot, registry, "clientAcceptance", {
     sequence,
     headSha256: sha256(headBytes),
@@ -1553,12 +2046,18 @@ export async function readTrustedClientAcceptanceCommitment(
 ): Promise<{ transaction: ClientAcceptanceTransaction; state: "pending" | "completed" } | null> {
   return withGenerationLease(projectRoot, async (canonicalRoot) => {
     const project = await readProject(canonicalRoot);
-    const store = await trustRoot(canonicalRoot);
+    const store = await existingTrustRoot(canonicalRoot);
+    if (!store) return null;
     const keyKind = await pathKind(join(store.root, KEY_FILE));
     if (keyKind === "missing") {
       const acceptanceKind = await pathKind(join(store.root, CLIENT_ACCEPTANCE_DIRECTORY, project.projectId));
       const registrationKind = await pathKind(registrationPath(store.root, project.projectId));
-      if (acceptanceKind !== "missing" || registrationKind !== "missing") {
+      const acceptanceRegistrationKind = await pathKind(acceptanceRegistrationRoot(store.root, project.projectId));
+      if (
+        acceptanceKind !== "missing"
+        || registrationKind !== "missing"
+        || acceptanceRegistrationKind !== "missing"
+      ) {
         throw new Error("trusted authorization HMAC key is missing for observable state");
       }
       return null;
@@ -1566,7 +2065,28 @@ export async function readTrustedClientAcceptanceCommitment(
     if (keyKind !== "file") throw new Error("trusted authorization HMAC key is unsafe");
     const { storeRoot, key } = await readKey(canonicalRoot);
     const acceptanceKind = await pathKind(join(storeRoot, CLIENT_ACCEPTANCE_DIRECTORY, project.projectId));
+    const registrations = await readAcceptanceRegistrations(
+      canonicalRoot,
+      project.projectId,
+      storeRoot,
+      key,
+    );
     if (acceptanceKind === "missing") {
+      if (registrations.length > 0) {
+        if (registrations.length !== 1) {
+          throw new Error("trusted client acceptance registration recovery is ambiguous or forked");
+        }
+        const registry = await readProjectRegistry(canonicalRoot, project.projectId, storeRoot, key);
+        if (
+          !registry
+          || JSON.stringify(registryPredecessor(registry))
+            !== JSON.stringify(registrations[0]!.registration.registryPredecessor)
+        ) throw new Error("trusted client acceptance registration exposes deleted or truncated chain state");
+        return {
+          transaction: ClientAcceptanceCommitmentSchema.parse(registrations[0]!.registration.commitment),
+          state: "pending",
+        };
+      }
       if (
         await pathKind(registrationPath(storeRoot, project.projectId)) === "missing"
         && await pathKind(registryRoots(storeRoot, project.projectId).root) === "missing"
@@ -1578,7 +2098,7 @@ export async function readTrustedClientAcceptanceCommitment(
       return null;
     }
     const roots = acceptanceRoots(storeRoot, project.projectId);
-    const chain = await readClientAcceptanceChain(canonicalRoot, project.projectId, storeRoot, key, true);
+    const chain = await readClientAcceptanceChain(canonicalRoot, project.projectId, storeRoot, key, true, true);
     const expected = new Set(chain.map(({ event }) => acceptanceEventFilename(event.sequence, event.eventId)));
     const eventNames = await readBoundedPrivateDirectory(
       roots.events,
@@ -1604,6 +2124,17 @@ export async function readTrustedClientAcceptanceCommitment(
         throw new Error("trusted client acceptance orphan event is invalid or tampered", { cause: error });
       }
       assertAcceptanceEventSignature(key, event);
+      if (event.schemaVersion === 2) {
+        const registration = registrations.find(({ sha256: digest }) =>
+          digest === event.acceptanceRegistrationSha256);
+        if (
+          !registration
+          || registration.registration.pendingEventId !== (event.state === "pending"
+            ? event.eventId
+            : registration.registration.pendingEventId)
+          || !sameCommitment(registration.registration.commitment, event.commitment)
+        ) throw new Error("trusted client acceptance orphan event has no exact immutable registration");
+      }
       const previous = chain.at(-1);
       if (
         event.projectId !== project.projectId
@@ -1621,6 +2152,25 @@ export async function readTrustedClientAcceptanceCommitment(
       return {
         transaction: ClientAcceptanceCommitmentSchema.parse(event.commitment),
         state: event.state,
+      };
+    }
+    const representedRegistrationDigests = new Set(chain.flatMap(({ event }) =>
+      event.schemaVersion === 2 ? [event.acceptanceRegistrationSha256] : []));
+    const unrepresentedRegistrations = registrations.filter(({ sha256: digest }) =>
+      !representedRegistrationDigests.has(digest));
+    if (unrepresentedRegistrations.length > 0) {
+      if (unrepresentedRegistrations.length !== 1) {
+        throw new Error("trusted client acceptance registration recovery is ambiguous or forked");
+      }
+      const registry = await readProjectRegistry(canonicalRoot, project.projectId, storeRoot, key);
+      if (
+        !registry
+        || JSON.stringify(registryPredecessor(registry))
+          !== JSON.stringify(unrepresentedRegistrations[0]!.registration.registryPredecessor)
+      ) throw new Error("trusted client acceptance registration exposes deleted or truncated chain state");
+      return {
+        transaction: ClientAcceptanceCommitmentSchema.parse(unrepresentedRegistrations[0]!.registration.commitment),
+        state: "pending",
       };
     }
     const registry = await readProjectRegistry(canonicalRoot, project.projectId, storeRoot, key);
@@ -1646,12 +2196,28 @@ export async function assertNoPendingTrustedClientAcceptance(projectRoot: string
 async function assertNoPendingTrustedClientAcceptanceForProjectUnderLease(
   projectRoot: string,
   projectId: string,
+  allowCompletedRevisionTransition = false,
 ): Promise<void> {
   assertGenerationLeaseHeld(projectRoot);
   const validProjectId = z.string().uuid().parse(projectId);
   const current = (await readSynchronizedClientAcceptanceChain(projectRoot, validProjectId, false)).at(-1);
   if (current?.event.state === "pending") {
     throw new Error("project mutations are frozen while trusted client acceptance is pending");
+  }
+  if (current?.event.state === "completed") {
+    const manifest = await readProject(projectRoot);
+    if (manifest.projectId !== validProjectId) {
+      throw new Error("trusted client acceptance belongs to a different project");
+    }
+    await assertCompletedAcceptanceManifest(projectRoot, manifest, current);
+    if (
+      manifest.currentRevision.id === current.event.commitment.revisionId
+      && !allowCompletedRevisionTransition
+    ) {
+      throw new Error(
+        "project mutations are frozen after completed client acceptance; begin an explicit controlled revision transition",
+      );
+    }
   }
 }
 
@@ -1660,7 +2226,23 @@ export async function assertNoPendingTrustedClientAcceptanceForProject(
   projectId: string,
 ): Promise<void> {
   await withGenerationLease(projectRoot, async (canonicalRoot) => {
-    await assertNoPendingTrustedClientAcceptanceForProjectUnderLease(canonicalRoot, projectId);
+    await assertNoPendingTrustedClientAcceptanceForProjectUnderLease(
+      canonicalRoot,
+      projectId,
+    );
+  });
+}
+
+export async function assertTrustedClientAcceptanceAllowsRevisionTransition(
+  projectRoot: string,
+  projectId: string,
+): Promise<void> {
+  await withGenerationLease(projectRoot, async (canonicalRoot) => {
+    await assertNoPendingTrustedClientAcceptanceForProjectUnderLease(
+      canonicalRoot,
+      projectId,
+      true,
+    );
   });
 }
 
@@ -2429,10 +3011,7 @@ async function appendTrustedGenerationCallLedgerEntryUnderLease(
   assertGenerationLeaseHeld(projectRoot);
   const entry = CallLedgerEntrySchema.parse(rawEntry);
   const project = await readProject(projectRoot);
-  const pendingAcceptance = (await readSynchronizedClientAcceptanceChain(projectRoot, project.projectId)).at(-1);
-  if (pendingAcceptance?.event.state === "pending") {
-    throw new Error("generation calls are frozen while trusted client acceptance is pending");
-  }
+  await assertNoPendingTrustedClientAcceptanceForProjectUnderLease(projectRoot, project.projectId);
   if (rawJob.projectId !== project.projectId || entry.jobId !== rawJob.jobId) {
     throw new Error("trusted call ledger event does not bind the project job");
   }

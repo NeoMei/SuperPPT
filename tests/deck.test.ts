@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
 import { createHash, createHmac } from "node:crypto";
-import { access, chmod, copyFile, mkdir, mkdtemp, readFile, readdir, realpath, rename, symlink, unlink, writeFile } from "node:fs/promises";
+import { access, chmod, copyFile, mkdir, mkdtemp, readFile, readdir, realpath, rename, rm, symlink, unlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test, { type TestContext } from "node:test";
@@ -14,7 +14,10 @@ import sharp from "sharp";
 import { buildAcceptance } from "../src/acceptance/build.js";
 import { createClientSmokeCopy } from "../src/acceptance/smoke-copy.js";
 import { AcceptanceSchema } from "../src/acceptance/schema.js";
-import { configureGenerationAuthorizationTrustForTests } from "../src/generation/trusted-authorization.js";
+import {
+  appendTrustedGenerationCallLedgerEntry,
+  configureGenerationAuthorizationTrustForTests,
+} from "../src/generation/trusted-authorization.js";
 import {
   assembleDeck,
   assembleProjectCandidate,
@@ -27,6 +30,7 @@ import { exportPdf } from "../src/deck/pdf.js";
 import { buildMontage } from "../src/deck/montage.js";
 import { approveGate, assertGateCurrent } from "../src/planning/confirm.js";
 import { publishPlanViews } from "../src/planning/views.js";
+import { normalizeInput } from "../src/planning/intake.js";
 import { initializeProject } from "../src/project/initialize.js";
 import {
   applyDeckReviewAction,
@@ -1168,7 +1172,7 @@ test("rejects ordinary anchor forgery plus linked or stale anchored smoke eviden
   await assert.rejects(recordClientAcceptance(fixture.root, linkedEvidence), /trusted client smoke copy anchor is stale/);
 });
 
-test("invalidates completed acceptance when a same-revision slide becomes editable", async (t) => {
+test("completed acceptance blocks ordinary same-revision mutation and permits a controlled descendant revision", async (t) => {
   const fixture = await readyProject(t);
   await deliverReviewedCandidate({
     root: fixture.root,
@@ -1178,16 +1182,55 @@ test("invalidates completed acceptance when a same-revision slide becomes editab
   const completed = await recordClientAcceptance(fixture.root, evidence);
   assert.equal(completed.deliveryComplete, true);
   assert.deepEqual(completed.editablePageIds, []);
+  const delivered = await readProject(fixture.root);
+  const deliveredBytes = await readFile(join(fixture.root, "superppt.json"));
 
-  await updateProject(fixture.root, (manifest) => ({
+  await assert.rejects(updateProject(fixture.root, (manifest) => ({
     ...manifest,
     slides: manifest.slides.map((slide, index) => index === 0 ? {
       ...slide,
       status: "editable" as const,
     } : slide),
-  }));
+  })), /completed client acceptance|explicit.*revision|frozen/i);
+  assert.deepEqual(await readFile(join(fixture.root, "superppt.json")), deliveredBytes);
 
-  await assert.rejects(readProjectAcceptance(fixture.root), /acceptance slide mode is not current/);
+  const plan = await publishImpactPlan(fixture.root, { kind: "brief", title: "Controlled revision" });
+  await approveImpact(fixture.root, plan.sha256);
+  await applyRevision(fixture.root, plan, plan.change);
+  const revised = await readProject(fixture.root);
+  assert.equal(revised.currentRevision.number, 2);
+  assert.equal(revised.currentRevision.parentId, delivered.currentRevision.id);
+  assert.equal(revised.stage, plan.restartStage);
+  assert.equal((await updateProject(fixture.root, (manifest) => ({
+    ...manifest,
+    title: "Ordinary work after authenticated descent",
+  }))).title, "Ordinary work after authenticated descent");
+});
+
+test("completed acceptance rejects a forged or reordered descendant manifest", async (t) => {
+  const fixture = await readyProject(t);
+  await deliverReviewedCandidate({ root: fixture.root, operations: { buildOutputs: fakeOutputs } });
+  const evidence = await writeCompletedClientEvidence(fixture.root, "forged-descendant.json");
+  assert.equal((await recordClientAcceptance(fixture.root, evidence)).deliveryComplete, true);
+  const delivered = await readProject(fixture.root);
+  const forgedRevision = {
+    id: "00000000-0000-4000-8000-000000000997",
+    number: delivered.currentRevision.number + 1,
+    createdAt: new Date().toISOString(),
+    parentId: delivered.currentRevision.id,
+    parentSnapshotDescriptorSha256: "f".repeat(64),
+  };
+  await writeFile(join(fixture.root, "superppt.json"), `${JSON.stringify({
+    ...delivered,
+    stage: "outline",
+    currentRevision: forgedRevision,
+    revisions: [...delivered.revisions, forgedRevision],
+  }, null, 2)}\n`);
+
+  await assert.rejects(
+    updateProject(fixture.root, (manifest) => ({ ...manifest, title: "forged mutation" })),
+    /revision ancestry|strictly newer descendant|snapshot|reordered|frozen/i,
+  );
 });
 
 test("rejects delivery when immutable gate snapshots or presentation pointers are tampered", async (t) => {
@@ -1336,7 +1379,7 @@ test("first discard commitment rejects coordinated observation and record rewrit
 
     await assert.rejects(
       recordClientAcceptance(fixture.root, conflicting),
-      /first-write|commitment|immutable client acceptance transaction/i,
+      /first-write|commitment|immutable client acceptance transaction|acceptance registration/i,
     );
     assert.equal((await readProject(fixture.root)).stage, "assembling");
 
@@ -1400,6 +1443,153 @@ test("external acceptance commitment freezes mutations before the local marker a
   assert.equal(recovered.deliveryComplete, true);
 });
 
+test("independent acceptance registration survives acceptance and registry-tail deletion", async (t) => {
+  await t.test("pending first write", async (t) => {
+    const fixture = await readyProject(t);
+    await deliverReviewedCandidate({ root: fixture.root, operations: { buildOutputs: fakeOutputs } });
+    const original = await writeCompletedClientEvidence(fixture.root, "registration-pending-original.json");
+    await assert.rejects(recordClientAcceptance(fixture.root, original, {
+      checkpoint(step) {
+        if (step === "record-promoted") throw new Error("retain local pending evidence");
+      },
+    }), /retain local pending evidence/);
+    const projectId = (await readProject(fixture.root)).projectId;
+    const trustRoot = join(fixture.root, "..", "authorization-trust");
+    await rm(join(trustRoot, "client-acceptance", projectId), { recursive: true, force: true });
+    const statesRoot = join(trustRoot, "project-registry", projectId, "states");
+    for (const name of await readdir(statesRoot)) await unlink(join(statesRoot, name));
+    const conflicting = await rewriteAcceptanceTransactionForConflictingInput(
+      fixture.root,
+      original,
+      "registration-pending-conflict.json",
+    );
+
+    await assert.rejects(
+      recordClientAcceptance(fixture.root, conflicting),
+      /acceptance registration|immutable first write|trusted client acceptance/i,
+    );
+    assert.equal((await readdir(join(
+      trustRoot,
+      "project-registrations",
+      projectId,
+      "acceptances",
+    ))).length, 1);
+  });
+
+  await t.test("completed first write", async (t) => {
+    const fixture = await readyProject(t);
+    await deliverReviewedCandidate({ root: fixture.root, operations: { buildOutputs: fakeOutputs } });
+    const original = await writeCompletedClientEvidence(fixture.root, "registration-completed-original.json");
+    const readyManifest = await readFile(join(fixture.root, "superppt.json"));
+    assert.equal((await recordClientAcceptance(fixture.root, original)).deliveryComplete, true);
+    const delivered = await readProject(fixture.root);
+    const trustRoot = join(fixture.root, "..", "authorization-trust");
+    await rm(join(trustRoot, "client-acceptance", delivered.projectId), { recursive: true, force: true });
+    const statesRoot = join(trustRoot, "project-registry", delivered.projectId, "states");
+    for (const name of await readdir(statesRoot)) await unlink(join(statesRoot, name));
+    await writeFile(join(fixture.root, "superppt.json"), readyManifest);
+    await unlink(join(fixture.root, "output", "revisions", "1", "acceptance-observation.json"));
+    await unlink(join(fixture.root, "output", "revisions", "1", "acceptance-record.json"));
+    const submitted = JSON.parse(await readFile(original, "utf8"));
+    const conflicting = join(fixture.root, "registration-completed-conflict.json");
+    await writeFile(conflicting, `${JSON.stringify({
+      ...submitted,
+      selectedObject: "slide-3:conflicting-title",
+      confirmedAt: new Date(Date.parse(submitted.confirmedAt) + 1000).toISOString(),
+    })}\n`, { mode: 0o600 });
+
+    await assert.rejects(
+      recordClientAcceptance(fixture.root, conflicting),
+      /acceptance registration|completed|immutable first write|trusted client acceptance/i,
+    );
+    assert.equal((await readdir(join(
+      trustRoot,
+      "project-registrations",
+      delivered.projectId,
+      "acceptances",
+    ))).length, 1);
+  });
+});
+
+test("normalizeInput leaves source untouched while trusted acceptance is pending", async (t) => {
+  const fixture = await readyProject(t);
+  await deliverReviewedCandidate({ root: fixture.root, operations: { buildOutputs: fakeOutputs } });
+  const original = await writeCompletedClientEvidence(fixture.root, "normalize-pending-original.json");
+  await assert.rejects(recordClientAcceptance(fixture.root, original, {
+    checkpoint(step) {
+      if (step === "external-pending-committed") throw new Error("retain external pending state");
+    },
+  }), /retain external pending state/);
+  const markdown = join(fixture.root, "pending-input.md");
+  await writeFile(markdown, "# external Markdown");
+  const sourceBefore = await readdir(join(fixture.root, "source"));
+  let sourceOpened = 0;
+  for (const request of [
+    { kind: "description" as const, value: "description" },
+    { kind: "text" as const, value: "plain text" },
+    { kind: "markdown" as const, path: markdown },
+  ]) {
+    await assert.rejects(normalizeInput(fixture.root, request, {
+      afterSourceOpened() { sourceOpened += 1; },
+    }), /client acceptance.*pending|frozen/i);
+    assert.deepEqual(await readdir(join(fixture.root, "source")), sourceBefore);
+  }
+  assert.equal(sourceOpened, 1, "the external Markdown is anchored before the mutation lease guard");
+});
+
+test("blocked generation ledger append never repairs acceptance crash gaps", async (t) => {
+  for (const checkpoint of ["acceptance-event-published", "registry-before-acceptance-advance"] as const) {
+    await t.test(checkpoint, async (t) => {
+      const fixture = await readyProject(t);
+      await deliverReviewedCandidate({ root: fixture.root, operations: { buildOutputs: fakeOutputs } });
+      const original = await writeCompletedClientEvidence(fixture.root, `blocked-call-${checkpoint}.json`);
+      const trustRoot = join(fixture.root, "..", "authorization-trust");
+      await configureGenerationAuthorizationTrustForTests(fixture.root, {
+        root: trustRoot,
+        deterministicKeySeed: `superppt-deck-test:${fixture.root}`,
+        operations: {
+          checkpoint(step) {
+            if (step === checkpoint) throw new Error(`injected ${checkpoint}`);
+          },
+        },
+      });
+      await assert.rejects(recordClientAcceptance(fixture.root, original), new RegExp(`injected ${checkpoint}`));
+      await configureGenerationAuthorizationTrustForTests(fixture.root, {
+        root: trustRoot,
+        deterministicKeySeed: `superppt-deck-test:${fixture.root}`,
+      });
+      const project = await readProject(fixture.root);
+      const acceptanceRoot = join(trustRoot, "client-acceptance", project.projectId);
+      const statesRoot = join(trustRoot, "project-registry", project.projectId, "states");
+      const before = {
+        events: await readdir(join(acceptanceRoot, "events")),
+        heads: await readdir(join(acceptanceRoot, "heads")),
+        states: await readdir(statesRoot),
+      };
+      const jobId = "00000000-0000-4000-8000-000000000991";
+      await assert.rejects(appendTrustedGenerationCallLedgerEntry(fixture.root, {
+        projectId: project.projectId,
+        jobId,
+      } as never, {
+        jobId,
+        slideId: PROJECT_SLIDES[0],
+        attempt: 1,
+        requestOrdinal: 1,
+        entryKind: "admission",
+        outcome: "in-flight",
+        admissionTokenSha256: null,
+        recordedAt: new Date().toISOString(),
+      }), /client acceptance.*pending|frozen|recovery is required|event history is missing, truncated, or forked/i);
+      assert.deepEqual({
+        events: await readdir(join(acceptanceRoot, "events")),
+        heads: await readdir(join(acceptanceRoot, "heads")),
+        states: await readdir(statesRoot),
+      }, before);
+      assert.equal((await recordClientAcceptance(fixture.root, original)).deliveryComplete, true);
+    });
+  }
+});
+
 test("trusted client acceptance rejects registry, chain, subtree, mode, symlink, truncation, and fork tamper", async (t) => {
   const fixture = await readyProject(t);
   await deliverReviewedCandidate({ root: fixture.root, operations: { buildOutputs: fakeOutputs } });
@@ -1417,12 +1607,55 @@ test("trusted client acceptance rejects registry, chain, subtree, mode, symlink,
   const headPath = join(headsRoot, (await readdir(headsRoot)).sort().at(-1)!);
   const eventPath = join(eventsRoot, (await readdir(eventsRoot)).sort().at(-1)!);
   const statesRoot = join(trustRoot, "project-registry", projectId, "states");
+  const registryRoot = join(trustRoot, "project-registry", projectId);
+  const registrationRoot = join(trustRoot, "project-registrations", projectId, "acceptances");
+  const registrationName = (await readdir(registrationRoot)).at(0)!;
+  const registrationPath = join(registrationRoot, registrationName);
   const registryPath = join(statesRoot, (await readdir(statesRoot)).sort().at(-1)!);
-  const [headBytes, eventBytes, registryBytes] = await Promise.all([
+  const [headBytes, eventBytes, registryBytes, registrationBytes] = await Promise.all([
     readFile(headPath),
     readFile(eventPath),
     readFile(registryPath),
+    readFile(registrationPath),
   ]);
+
+  await chmod(registrationPath, 0o644);
+  await assert.rejects(recordClientAcceptance(fixture.root, original), /mode 0600|acceptance registration/i);
+  await chmod(registrationPath, 0o600);
+
+  const tamperedRegistration = JSON.parse(registrationBytes.toString("utf8"));
+  tamperedRegistration.commitment.confirmedAt = "2039-01-01T00:00:00.000Z";
+  await writeFile(registrationPath, `${JSON.stringify(tamperedRegistration, null, 2)}\n`, { mode: 0o600 });
+  await assert.rejects(recordClientAcceptance(fixture.root, original), /signature|acceptance registration/i);
+  await writeFile(registrationPath, registrationBytes, { mode: 0o600 });
+
+  await unlink(registrationPath);
+  await assert.rejects(recordClientAcceptance(fixture.root, original), /registration|immutable/i);
+  await writeFile(registrationPath, registrationBytes, { mode: 0o600 });
+
+  const forkRegistrationPath = join(registrationRoot, `fork-${registrationName}`);
+  await copyFile(registrationPath, forkRegistrationPath);
+  await assert.rejects(recordClientAcceptance(fixture.root, original), /registration.*(?:filename|fork|invalid|unsafe)|unexpected/i);
+  await unlink(forkRegistrationPath);
+
+  await chmod(registrationRoot, 0o755);
+  await assert.rejects(recordClientAcceptance(fixture.root, original), /mode 0700|acceptance registration directory/i);
+  await chmod(registrationRoot, 0o700);
+
+  const detachedRegistration = `${registrationRoot}.detached`;
+  await rename(registrationRoot, detachedRegistration);
+  await symlink(detachedRegistration, registrationRoot);
+  await assert.rejects(recordClientAcceptance(fixture.root, original), /acceptance registration directory.*(?:unsafe|symbolic link)/i);
+  await unlink(registrationRoot);
+  await rename(detachedRegistration, registrationRoot);
+
+  await chmod(registryRoot, 0o755);
+  await assert.rejects(recordClientAcceptance(fixture.root, original), /mode 0700|project registry directory/i);
+  await chmod(registryRoot, 0o700);
+
+  await chmod(acceptanceRoot, 0o755);
+  await assert.rejects(recordClientAcceptance(fixture.root, original), /mode 0700|client acceptance directory/i);
+  await chmod(acceptanceRoot, 0o700);
 
   await chmod(headPath, 0o644);
   await assert.rejects(recordClientAcceptance(fixture.root, original), /mode 0600|trusted client acceptance head/i);
@@ -1471,7 +1704,7 @@ test("trusted client acceptance rejects registry, chain, subtree, mode, symlink,
   await rename(detached, acceptanceRoot);
 
   await rename(acceptanceRoot, detached);
-  await assert.rejects(recordClientAcceptance(fixture.root, original), /high-water|missing/i);
+  await assert.rejects(recordClientAcceptance(fixture.root, original), /high-water|missing|deleted|truncated/i);
   await rename(detached, acceptanceRoot);
 
   await configureGenerationAuthorizationTrustForTests(fixture.root, {
@@ -1480,6 +1713,12 @@ test("trusted client acceptance rejects registry, chain, subtree, mode, symlink,
     operations: { limits: { acceptanceHeads: 0 } },
   });
   await assert.rejects(recordClientAcceptance(fixture.root, original), /client acceptance head (?:directory|history) is too large/i);
+  await configureGenerationAuthorizationTrustForTests(fixture.root, {
+    root: trustRoot,
+    deterministicKeySeed: `superppt-deck-test:${fixture.root}`,
+    operations: { limits: { acceptanceRegistrations: 0 } },
+  });
+  await assert.rejects(recordClientAcceptance(fixture.root, original), /acceptance registration (?:directory|history) is too large/i);
   await configureGenerationAuthorizationTrustForTests(fixture.root, {
     root: trustRoot,
     deterministicKeySeed: `superppt-deck-test:${fixture.root}`,
@@ -1514,6 +1753,8 @@ test("registry V1 generation trust migrates to V2 without invalidating authoriza
 
 test("trusted client acceptance recovers every external pending publication checkpoint", async (t) => {
   for (const checkpoint of [
+    "acceptance-registration-temp-synced",
+    "acceptance-registration-published",
     "acceptance-event-temp-synced",
     "acceptance-event-published",
     "acceptance-head-temp-synced",
@@ -1540,13 +1781,16 @@ test("trusted client acceptance recovers every external pending publication chec
         root: trustRoot,
         deterministicKeySeed: `superppt-deck-test:${fixture.root}`,
       });
-      if (checkpoint === "registry-before-acceptance-advance") {
+      if (
+        checkpoint === "acceptance-registration-published"
+        || checkpoint === "registry-before-acceptance-advance"
+      ) {
         const projectId = (await readProject(fixture.root)).projectId;
         const statesRoot = join(trustRoot, "project-registry", projectId, "states");
         const statesBeforeBlockedMutation = await readdir(statesRoot);
         await assert.rejects(
           updateProject(fixture.root, (manifest) => ({ ...manifest, title: "must stay frozen" })),
-          /client acceptance recovery is required|client acceptance.*pending|frozen/i,
+          /client acceptance recovery is required|client acceptance.*pending|frozen|registration.*recovery is required/i,
         );
         assert.deepEqual(await readdir(statesRoot), statesBeforeBlockedMutation);
       }
