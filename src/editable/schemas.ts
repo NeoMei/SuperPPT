@@ -254,7 +254,7 @@ export const RunLedgerV2Schema = z.object({
       recomposition: Sha256Schema,
       layerReview: Sha256Schema,
       exploded: Sha256Schema,
-    }).strict().optional(),
+    }).strict(),
     sceneGraph: Sha256Schema.optional(),
   }).strict(),
   outputs: z.object({
@@ -271,10 +271,14 @@ export const RunLedgerV2Schema = z.object({
       recomposition: z.string().min(1),
       layerReview: z.string().min(1),
       exploded: z.string().min(1),
-    }).strict().optional(),
+    }).strict(),
     sceneGraph: z.string().min(1).optional(),
   }).strict(),
-}).strict();
+}).strict().superRefine((ledger, context) => {
+  if ((ledger.hashes.sceneGraph === undefined) !== (ledger.outputs.sceneGraph === undefined)) {
+    context.addIssue({ code: "custom", path: ["outputs", "sceneGraph"], message: "scene graph output and hash must be present together" });
+  }
+});
 
 export const AuthenticatedEditableConversionSchema = z.object({
   converterVersion: z.string().regex(/^0\.2\.[0-9]+(?:[-+].*)?$/),

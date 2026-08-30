@@ -401,8 +401,8 @@ async function validateModifiedRevisionAt(
     if (record.value.parentRevisionId !== record.value.sourceRevisionId) {
       throw new Error("promote-editable must derive directly from its authenticated conversion revision");
     }
-    validatePromotionTarget(authenticatedSource.manifest, record.value.intent);
-    if (JSON.stringify(manifest.value.manifest) !== JSON.stringify(authenticatedSource.manifest)) {
+    validatePromotionTarget(authenticatedSource.legacyManifest, record.value.intent);
+    if (JSON.stringify(manifest.value.manifest) !== JSON.stringify(authenticatedSource.legacyManifest)) {
       throw new Error("promote-editable modified content instead of preserving the conversion manifest");
     }
   }
@@ -552,7 +552,7 @@ async function createProjectModifiedRevision(
     if (JSON.stringify(conversionRecord.value.artifacts) !== JSON.stringify(source.artifactHashes)) {
       throw new Error("editable conversion record no longer authenticates converter output");
     }
-    sourceManifest = source.manifest;
+    sourceManifest = source.legacyManifest;
     originalSourceManifestSha256 = source.artifactHashes.manifest;
     sourceConversionRecordSha256 = sha256(conversionRecord.bytes);
     sourceProjectRevisionId = conversionRecord.value.projectRevisionId;

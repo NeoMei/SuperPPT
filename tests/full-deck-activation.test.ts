@@ -9,11 +9,21 @@ import JSZip from "jszip";
 import sharp from "sharp";
 
 import { activateEditableSlideInDeck } from "../src/deck-revisions/activate-slide.js";
+import { bootstrapInitialDeckRevision, createDeckCandidate } from "../src/deck-revisions/store.js";
 import { inspectLocalPptx } from "../src/deck-revisions/inspect.js";
 import { scanOoxmlRanges } from "../src/deck-revisions/ooxml.js";
+import { finalizeSlideTopology } from "../src/deck-revisions/topology.js";
+import { assembleProjectCandidate, type FinalRender } from "../src/deck/assemble.js";
+import { buildMontage } from "../src/deck/montage.js";
+import { exportPdf } from "../src/deck/pdf.js";
 import { ConversionRecordSchema, RunLedgerV2Schema } from "../src/editable/schemas.js";
+import { configureGenerationAuthorizationTrustForTests } from "../src/generation/trusted-authorization.js";
+import { approveGate } from "../src/planning/confirm.js";
+import { publishPlanViews } from "../src/planning/views.js";
 import { initializeProject } from "../src/project/initialize.js";
+import { applyDeckReviewAction, publishDeckReview } from "../src/project/promotion.js";
 import { readProject, updateProject } from "../src/project/store.js";
+import { finalizeDelegatedStyleSampleForTest } from "./helpers/delegated-style-sample.js";
 
 const P = "http://schemas.openxmlformats.org/presentationml/2006/main";
 const A = "http://schemas.openxmlformats.org/drawingml/2006/main";
@@ -59,30 +69,33 @@ async function targetDeckBytes(slideCount = 3): Promise<Buffer> {
   return zip.generateAsync({ type: "nodebuffer", compression: "DEFLATE" });
 }
 
-function donorSlideXml(options: { linked?: boolean; duplicateName?: boolean; wrongName?: boolean } = {}): string {
+function donorSlideXml(options: { linked?: boolean; duplicateName?: boolean; duplicateId?: boolean; wrongName?: boolean; localRedeclaration?: boolean } = {}): string {
   const iconName = options.duplicateName ? "text-title" : options.wrongName ? "asset-wrong" : "asset-icon";
+  const iconId = options.duplicateId ? "4" : "5";
   const link = options.linked ? ` rel:link="rId3"` : "";
+  const localRedeclaration = options.localRedeclaration ? ` xmlns:unused="urn:local-override"` : "";
   return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
-<slide:sld xmlns:slide="${P}" xmlns:art="${A}" xmlns:rel="${R}"><slide:cSld><slide:spTree><slide:nvGrpSpPr><slide:cNvPr id="1" name="Group 1"/><slide:cNvGrpSpPr/><slide:nvPr/></slide:nvGrpSpPr><slide:grpSpPr/><slide:pic><slide:nvPicPr><slide:cNvPr id="2" name="asset-background"/></slide:nvPicPr><slide:blipFill><art:blip rel:embed="rId2"/></slide:blipFill></slide:pic><slide:sp><slide:nvSpPr><slide:cNvPr id="3" name="shape-panel-Panel"/></slide:nvSpPr><slide:spPr><art:solidFill><art:srgbClr val="E6E1D6"/></art:solidFill></slide:spPr></slide:sp><slide:sp><slide:nvSpPr><slide:cNvPr id="4" name="text-title"/></slide:nvSpPr><slide:txBody><art:p><art:r><art:t>Editable title</art:t></art:r></art:p></slide:txBody></slide:sp><slide:pic><slide:nvPicPr><slide:cNvPr id="5" name="${iconName}"/></slide:nvPicPr><slide:blipFill><art:blip rel:embed="rId3"${link}/></slide:blipFill></slide:pic></slide:spTree></slide:cSld></slide:sld>`;
+<slide:sld xmlns:slide="${P}" xmlns:art="${A}" xmlns:rel="${R}" xmlns:unused="urn:root"><slide:cSld><slide:spTree${localRedeclaration}><slide:nvGrpSpPr><slide:cNvPr id="1" name="Group 1"/><slide:cNvGrpSpPr/><slide:nvPr/></slide:nvGrpSpPr><slide:grpSpPr/><slide:pic><slide:nvPicPr><slide:cNvPr id="2" name="asset-background"/></slide:nvPicPr><slide:blipFill><art:blip rel:embed="rId2"/></slide:blipFill></slide:pic><slide:sp><slide:nvSpPr><slide:cNvPr id="3" name="shape-panel-Panel"/></slide:nvSpPr><slide:spPr><art:solidFill><art:srgbClr val="E6E1D6"/></art:solidFill></slide:spPr></slide:sp><slide:sp><slide:nvSpPr><slide:cNvPr id="4" name="text-title"/></slide:nvSpPr><slide:txBody><art:p><art:r><art:t>Editable title</art:t></art:r></art:p></slide:txBody></slide:sp><slide:pic><slide:nvPicPr><slide:cNvPr id="${iconId}" name="${iconName}"/></slide:nvPicPr><slide:blipFill><art:blip rel:embed="rId3"${link}/></slide:blipFill></slide:pic></slide:spTree></slide:cSld></slide:sld>`;
 }
 
-async function donorPptx(options: { relType?: string; external?: boolean; linked?: boolean; duplicateName?: boolean; wrongName?: boolean; pageSize?: [number, number]; extraEntry?: { path: string; bytes?: Buffer | string }; extraSlide?: boolean } = {}): Promise<Buffer> {
+async function donorPptx(options: { relType?: string; external?: boolean; linked?: boolean; duplicateName?: boolean; duplicateId?: boolean; wrongName?: boolean; localRedeclaration?: boolean; wrongBackground?: boolean; wrongAsset?: boolean; invalidPng?: boolean; extraImageRelationship?: boolean; pageSize?: [number, number]; extraEntry?: { path: string; bytes?: Buffer | string }; extraSlide?: boolean } = {}): Promise<Buffer> {
   const zip = new JSZip();
   const [cx, cy] = options.pageSize ?? [12192000, 6858000];
   zip.file("[Content_Types].xml", `<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="xml" ContentType="application/xml"/><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="png" ContentType="image/png"/></Types>`);
   zip.file("ppt/presentation.xml", `<slide:presentation xmlns:slide="${P}" xmlns:rel="${R}"><slide:sldIdLst><slide:sldId id="256" rel:id="rId1"/></slide:sldIdLst><slide:sldSz cx="${cx}" cy="${cy}"/></slide:presentation>`);
   zip.file("ppt/_rels/presentation.xml.rels", `<pkg:Relationships xmlns:pkg="${REL}"><pkg:Relationship Id="rId1" Type="${R}/slide" Target="slides/slide1.xml"/></pkg:Relationships>`);
   zip.file("ppt/slides/slide1.xml", donorSlideXml(options));
-  zip.file("ppt/slides/_rels/slide1.xml.rels", `<pkg:Relationships xmlns:pkg="${REL}"><pkg:Relationship Id="rId1" Type="${LAYOUT_REL}" Target="../slideLayouts/slideLayout1.xml"/><pkg:Relationship Id="rId2" Type="${IMAGE_REL}" Target="../media/image1.png"/><pkg:Relationship Id="rId3" Type="${options.relType ?? IMAGE_REL}" Target="${options.external ? "https://example.invalid/icon.png" : "../media/image2.png"}"${options.external ? ` TargetMode="External"` : ""}/></pkg:Relationships>`);
+  zip.file("ppt/slides/_rels/slide1.xml.rels", `<pkg:Relationships xmlns:pkg="${REL}"><pkg:Relationship Id="rId1" Type="${LAYOUT_REL}" Target="../slideLayouts/slideLayout1.xml"/><pkg:Relationship Id="rId2" Type="${IMAGE_REL}" Target="../media/image1.png"/><pkg:Relationship Id="rId3" Type="${options.relType ?? IMAGE_REL}" Target="${options.external ? "https://example.invalid/icon.png" : "../media/image2.png"}"${options.external ? ` TargetMode="External"` : ""}/>${options.extraImageRelationship ? `<pkg:Relationship Id="rId4" Type="${IMAGE_REL}" Target="../media/image3.png"/>` : ""}</pkg:Relationships>`);
   zip.file("ppt/slideLayouts/slideLayout1.xml", `<slide:sldLayout xmlns:slide="${P}"/>`);
-  zip.file("ppt/media/image1.png", await png(1280, 720));
-  zip.file("ppt/media/image2.png", await png(48, 48, true));
+  zip.file("ppt/media/image1.png", options.invalidPng ? Buffer.from("not-png") : await png(1280, 720, options.wrongBackground));
+  zip.file("ppt/media/image2.png", await png(options.wrongAsset ? 49 : 48, 48, true));
+  if (options.extraImageRelationship) zip.file("ppt/media/image3.png", await png(12, 12, true));
   if (options.extraEntry) zip.file(options.extraEntry.path, options.extraEntry.bytes ?? "unsafe-active-content");
   if (options.extraSlide) zip.file("ppt/slides/slide2.xml", donorSlideXml());
   return zip.generateAsync({ type: "nodebuffer", compression: "DEFLATE" });
 }
 
-async function writeConversionEvidence(options: { root: string; slideId: string; projectId: string; projectRevisionId: string }) {
+async function writeConversionEvidence(options: { root: string; slideId: string; projectId: string; projectRevisionId: string; finalRender: { path: string; sha256: string }; selection: { candidateId: string; reviewDescriptorSha256: string; actionEvidenceSha256: string } }) {
   const revisionId = randomUUID();
   const conversionRoot = join(options.root, "editable", options.slideId, revisionId);
   const outputRoot = join(conversionRoot, "converter-output");
@@ -104,6 +117,7 @@ async function writeConversionEvidence(options: { root: string; slideId: string;
     "ocr.json": Buffer.from('{"lines":[]}\n'), "scene-graph.json": Buffer.from('{"graphVersion":1}\n'), "analysis-ledger.json": Buffer.from('{"analysisVersion":2}\n'),
     "manifest.json": Buffer.from(`${JSON.stringify(manifest, null, 2)}\n`), "removal-mask.png": await png(1280, 720, true), "clean-background.png": await png(1280, 720),
     "assets/icon.png": icon, "slide-editable.pptx": await donorPptx(),
+    "recomposition-preview.png": await png(1280, 720), "layer-review.png": await png(1280, 720), "exploded-preview.png": await png(1280, 720),
   };
   for (const [name, bytes] of Object.entries(files)) await writeFile(join(outputRoot, ...name.split("/")), bytes);
   const output = (name: string) => join(outputRoot, name);
@@ -113,8 +127,8 @@ async function writeConversionEvidence(options: { root: string; slideId: string;
       { candidateId: "icon", kind: "foreground-object", decision: "accepted", bbox: manifest.elements[1]!.bbox, sourceElementIndexes: [1], repairMethod: "local_nearest_surface", extraction: "transparent", output: { state: "editable_layer", manifestElementId: "icon", assetPath: "assets/icon.png" } },
       { candidateId: "title", kind: "text", decision: "accepted", bbox: manifest.elements[2]!.bbox, sourceElementIndexes: [2], repairMethod: "none", extraction: "none", output: { state: "editable_layer", manifestElementId: "title" } },
     ],
-    hashes: { sourceImage: digest(await readFile(sourcePng)), ocr: digest(files["ocr.json"]!), vision: digest(files["scene-graph.json"]!), analysisLedger: digest(files["analysis-ledger.json"]!), manifest: digest(files["manifest.json"]!), removalMask: digest(files["removal-mask.png"]!), cleanBackground: digest(files["clean-background.png"]!), assets: { "assets/icon.png": iconHash }, pptx: digest(files["slide-editable.pptx"]!), sceneGraph: digest(files["scene-graph.json"]!) },
-    outputs: { directory: outputRoot, ocr: output("ocr.json"), vision: output("scene-graph.json"), analysisLedger: output("analysis-ledger.json"), manifest: output("manifest.json"), removalMask: output("removal-mask.png"), cleanBackground: output("clean-background.png"), assets: output("assets"), pptx: output("slide-editable.pptx"), sceneGraph: output("scene-graph.json") },
+    hashes: { sourceImage: digest(await readFile(sourcePng)), ocr: digest(files["ocr.json"]!), vision: digest(files["scene-graph.json"]!), analysisLedger: digest(files["analysis-ledger.json"]!), manifest: digest(files["manifest.json"]!), removalMask: digest(files["removal-mask.png"]!), cleanBackground: digest(files["clean-background.png"]!), assets: { "assets/icon.png": iconHash }, pptx: digest(files["slide-editable.pptx"]!), qaPreviews: { recomposition: digest(files["recomposition-preview.png"]!), layerReview: digest(files["layer-review.png"]!), exploded: digest(files["exploded-preview.png"]!) }, sceneGraph: digest(files["scene-graph.json"]!) },
+    outputs: { directory: outputRoot, ocr: output("ocr.json"), vision: output("scene-graph.json"), analysisLedger: output("analysis-ledger.json"), manifest: output("manifest.json"), removalMask: output("removal-mask.png"), cleanBackground: output("clean-background.png"), assets: output("assets"), pptx: output("slide-editable.pptx"), qaPreviews: { recomposition: output("recomposition-preview.png"), layerReview: output("layer-review.png"), exploded: output("exploded-preview.png") }, sceneGraph: output("scene-graph.json") },
   });
   const ledgerBytes = Buffer.from(`${JSON.stringify(ledger, null, 2)}\n`);
   await writeFile(join(outputRoot, "run-ledger.json"), ledgerBytes);
@@ -122,33 +136,74 @@ async function writeConversionEvidence(options: { root: string; slideId: string;
   const recordPath = join(conversionRoot, "conversion-record.json");
   const record = ConversionRecordSchema.parse({
     conversionRecordVersion: 1, projectId: options.projectId, slideId: options.slideId, revisionId, projectRevisionId: options.projectRevisionId,
-    finalRender: { path: `images/${options.slideId}/attempt-1/slide.png`, sha256: "2".repeat(64) },
-    prepareEditableInput: { scriptPath: "/installed/ai-image-to-ppt/scripts/prepare_editable_input.py", scriptSha256: "3".repeat(64), sourceMaster: { path: `images/${options.slideId}/attempt-1/slide.png`, sha256: "2".repeat(64), revisionId: options.projectRevisionId }, output1280x720: { path: `editable/${options.slideId}/${revisionId}/source-1280x720.png`, sha256: digest(await readFile(sourcePng)), revisionId: options.projectRevisionId } },
-    deckReviewSelection: { candidateId: randomUUID(), reviewDescriptorSha256: "4".repeat(64), actionEvidenceSha256: "5".repeat(64) }, converterVersion: "0.2.0",
-    artifacts: { sourceImage: digest(await readFile(sourcePng)), manifest: digest(files["manifest.json"]!), runLedger: digest(ledgerBytes), cleanBackground: digest(files["clean-background.png"]!), donorPptx: digest(files["slide-editable.pptx"]!), assets: { "assets/icon.png": iconHash }, outputs: { "ocr.json": digest(files["ocr.json"]!), "scene-graph.json": digest(files["scene-graph.json"]!), "analysis-ledger.json": digest(files["analysis-ledger.json"]!), "removal-mask.png": digest(files["removal-mask.png"]!), "clean-background.png": digest(files["clean-background.png"]!), "slide-editable.pptx": digest(files["slide-editable.pptx"]!) } },
+    finalRender: options.finalRender,
+    prepareEditableInput: { scriptPath: "/installed/ai-image-to-ppt/scripts/prepare_editable_input.py", scriptSha256: "3".repeat(64), sourceMaster: { ...options.finalRender, revisionId: options.projectRevisionId }, output1280x720: { path: `editable/${options.slideId}/${revisionId}/source-1280x720.png`, sha256: digest(await readFile(sourcePng)), revisionId: options.projectRevisionId } },
+    deckReviewSelection: options.selection, converterVersion: "0.2.0",
+    artifacts: { sourceImage: digest(await readFile(sourcePng)), manifest: digest(files["manifest.json"]!), runLedger: digest(ledgerBytes), cleanBackground: digest(files["clean-background.png"]!), donorPptx: digest(files["slide-editable.pptx"]!), assets: { "assets/icon.png": iconHash }, outputs: { "ocr.json": digest(files["ocr.json"]!), "scene-graph.json": digest(files["scene-graph.json"]!), "analysis-ledger.json": digest(files["analysis-ledger.json"]!), "manifest.json": digest(files["manifest.json"]!), "removal-mask.png": digest(files["removal-mask.png"]!), "clean-background.png": digest(files["clean-background.png"]!), "slide-editable.pptx": digest(files["slide-editable.pptx"]!), "recomposition-preview.png": digest(files["recomposition-preview.png"]!), "layer-review.png": digest(files["layer-review.png"]!), "exploded-preview.png": digest(files["exploded-preview.png"]!) } },
   });
   await writeFile(recordPath, `${JSON.stringify(record, null, 2)}\n`);
   await writeFile(join(conversionRoot, ".superppt-editable-revision.json"), `${JSON.stringify({ markerVersion: 1, appId: "superppt", artifactKind: "editable-slide-revision", projectId: options.projectId, slideId: options.slideId, revisionId, revisionKind: "conversion" }, null, 2)}\n`);
   return { conversionRoot, outputRoot, sourcePng, recordPath };
 }
 
+async function fixtureCandidateOutputs(renders: FinalRender[], paths: { pptx: string; pdf: string; montage: string }): Promise<void> {
+  const zip = new JSZip();
+  zip.file("[Content_Types].xml", "<Types/>");
+  for (const [index, render] of renders.entries()) {
+    zip.file(`ppt/slides/slide${index + 1}.xml`, `<p:sld><p:pic><p:cNvPr name="page-${render.id}"/><a:blip r:embed="rIdImage"/></p:pic></p:sld>`);
+    zip.file(`ppt/slides/_rels/slide${index + 1}.xml.rels`, `<Relationships><Relationship Id="rIdImage" Type="${R}/image" Target="../media/image${index + 1}.png"/></Relationships>`);
+    zip.file(`ppt/media/image${index + 1}.png`, render.bytes);
+  }
+  await writeFile(paths.pptx, await zip.generateAsync({ type: "nodebuffer" }), { flag: "wx" });
+  await exportPdf(renders, paths.pdf);
+  await buildMontage(renders, paths.montage);
+}
+
+async function prepareReviewedSelection(root: string, slideIds: string[]): Promise<{ finalRender: { path: string; sha256: string }; selection: { candidateId: string; reviewDescriptorSha256: string; actionEvidenceSha256: string } }> {
+  await configureGenerationAuthorizationTrustForTests(root, { root: join(dirname(root), "authorization-trust"), deterministicKeySeed: `activation:${root}` });
+  await writeFile(join(root, "brief.json"), `${JSON.stringify({ schemaVersion: 1, title: "Full-deck activation", purpose: "Test", audience: "Testers", language: "zh-CN", targetSlides: 3, mustCover: ["Page 1", "Page 2", "Page 3"], constraints: ["16:9"] })}\n`);
+  const outlineSlides = slideIds.map((id, order) => ({ id, order, title: `Page ${order + 1}`, role: order === 0 ? "cover" : order === 2 ? "summary" : "content", purpose: "Test", sourceRefs: [`L${order + 1}`] }));
+  await writeFile(join(root, "outline.json"), `${JSON.stringify({ schemaVersion: 1, slides: outlineSlides })}\n`);
+  for (const slide of outlineSlides) {
+    await mkdir(join(root, "slides", slide.id));
+    await writeFile(join(root, "slides", slide.id, "spec.json"), `${JSON.stringify({ schemaVersion: 1, slideId: slide.id, title: slide.title, role: slide.role, coreMessage: "Test", requiredText: [slide.title], visualSubject: "subject", composition: "full", relationships: [], forbidden: ["watermark"], sourceRefs: slide.sourceRefs })}\n`);
+  }
+  await writeFile(join(root, "style", "selection.json"), `${JSON.stringify({ schemaVersion: 1, styleId: "cinematic-tech", representativeSlideId: slideIds[0] })}\n`);
+  await publishPlanViews(root); await approveGate(root, "outline"); await approveGate(root, "slide-specs"); await finalizeDelegatedStyleSampleForTest(root);
+  const manifest = await readProject(root);
+  const generated = await Promise.all(outlineSlides.map(async (slide, order) => {
+    const attempt = join(root, "images", slide.id, "attempt-1"); await mkdir(attempt, { recursive: true });
+    const render = await sharp({ create: { width: 1920, height: 1080, channels: 3, background: order === 1 ? "#23384d" : "#3d4d23" } }).png().toBuffer();
+    await writeFile(join(attempt, "slide.png"), render);
+    const renderDigest = digest(render);
+    await writeFile(join(attempt, "ledger.json"), `${JSON.stringify({ ledgerVersion: 1, slideId: slide.id, revisionId: manifest.currentRevision.id, attempt: 1, providerId: "fixture", promptSha256: "a".repeat(64), promptPurged: true, output: `images/${slide.id}/attempt-1/slide.png`, outputSha256: renderDigest, outputBytes: render.length, durationMs: 1, quality: { ok: true, issueCount: 0, issueHashes: [], issueCodes: [], requiredText: [{ textSha256: digest(Buffer.from(slide.title)), present: true, exact: true }], styleConsistent: true, hierarchyClear: true, richDetail: true, noForbiddenContent: true }, outcome: "accepted", errorCode: null }, null, 2)}\n`);
+    return { render, digest: renderDigest };
+  }));
+  await updateProject(root, (current) => ({ ...current, stage: "generating", slides: outlineSlides.map((slide, order) => ({ id: slide.id, order, title: slide.title, role: slide.role as "cover" | "content" | "summary", specRevisionId: current.currentRevision.id, promptRevisionId: current.currentRevision.id, styleRevisionId: current.currentRevision.id, status: "ready" as const, image: { path: `images/${slide.id}/attempt-1/slide.png`, sha256: generated[order]!.digest, revisionId: current.currentRevision.id }, editable: null, finalRender: null, staleReasons: [] })) }));
+  await mkdir(join(root, "generation"), { recursive: true });
+  await writeFile(join(root, "generation", "authorization-plan.json"), `${JSON.stringify({ styleLockSha256: "a".repeat(64), pageIds: slideIds, callBudget: 3, outboundDisclosure: { sendsText: true, references: [] }, dependency: { kind: "ai-image-to-ppt", sha256: "b".repeat(64) }, revisionId: manifest.currentRevision.id })}\n`);
+  await approveGate(root, "generation-authorization");
+  const candidate = await assembleProjectCandidate(root, { buildOutputs: fixtureCandidateOutputs });
+  const review = await publishDeckReview(root, candidate.candidateId);
+  await applyDeckReviewAction(root, { action: "edit-page", slideId: slideIds[1]!, candidateId: candidate.candidateId, descriptorSha256: review.descriptorSha256 });
+  const action = JSON.parse(await readFile(join(root, "output", "candidates", "current", "action.json"), "utf8"));
+  return { finalRender: { path: `images/${slideIds[1]}/attempt-1/slide.png`, sha256: generated[1]!.digest }, selection: { candidateId: candidate.candidateId, reviewDescriptorSha256: review.descriptorSha256, actionEvidenceSha256: action.actionEvidenceSha256 } };
+}
+
 async function activationFixture(t: TestContext) {
   const root = await temporaryProject(t);
-  const project = await readProject(root);
   const slideIds = [randomUUID(), randomUUID(), randomUUID()];
-  const candidateRevisionId = randomUUID();
-  const sessionId = randomUUID();
-  const candidatePath = join(root, "output", "deck-revisions", candidateRevisionId, "deck.pptx");
-  await mkdir(dirname(candidatePath), { recursive: true });
+  const reviewed = await prepareReviewedSelection(root, slideIds);
+  const project = await readProject(root);
   const candidateBytes = await targetDeckBytes();
-  await writeFile(candidatePath, candidateBytes);
-  const sessionRoot = join(root, "output", "deck-edit-sessions", sessionId);
-  await mkdir(sessionRoot, { recursive: true });
-  await writeFile(join(sessionRoot, "session.json"), `${JSON.stringify({ schemaVersion: 1, sessionId, candidateRevisionId, parentRevisionId: randomUUID(), mode: "agent", targetSlideId: slideIds[1], state: "prepared", candidateRelativePath: `output/deck-revisions/${candidateRevisionId}/deck.pptx`, preparedSha256: digest(candidateBytes), presentedSha256: null, createdAt: new Date().toISOString(), completedAt: null }, null, 2)}\n`);
-  await writeFile(join(sessionRoot, "journal.json"), `${JSON.stringify({ schemaVersion: 1, sessionId, reason: "agent-edit", changedSlideIds: [slideIds[1]], editableSlideIds: [], adoption: null, entries: [{ phase: "prepared", at: new Date().toISOString() }] }, null, 2)}\n`);
-  await updateProject(root, (value) => ({ ...value, activeDeckEditSessionId: sessionId }));
-  const conversion = await writeConversionEvidence({ root, slideId: slideIds[1]!, projectId: project.projectId, projectRevisionId: project.currentRevision.id });
-  return { root, slideIds, candidatePath, sessionId, ...conversion };
+  const source = join(root, "output", "deck-revisions", randomUUID(), "deck.pptx"); await mkdir(dirname(source), { recursive: true }); await writeFile(source, candidateBytes);
+  const inspection = await inspectLocalPptx(source);
+  const topology = finalizeSlideTopology(inspection.slides.map((slide, position) => ({ stableSlideId: slideIds[position]!, slidePart: slide.slidePart, position, management: "managed" as const, presentationSlideId: slide.presentationSlideId, creationId: slide.creationId! })), []);
+  const parentRevisionId = randomUUID();
+  await bootstrapInitialDeckRevision(root, { revisionId: parentRevisionId, projectRevisionId: project.currentRevision.id, sourceAbsolutePath: source, slideTopology: topology, changedSlideIds: slideIds });
+  const session = await createDeckCandidate(root, { sourceRevisionId: parentRevisionId, reason: "agent-edit", changedSlideIds: [slideIds[1]!], editableSlideIds: [], targetSlideId: slideIds[1]!, mode: "agent" });
+  const conversion = await writeConversionEvidence({ root, slideId: slideIds[1]!, projectId: project.projectId, projectRevisionId: project.currentRevision.id, ...reviewed });
+  return { root, slideIds, candidatePath: session.absolutePath, sessionId: session.sessionId, ...conversion };
 }
 
 type Fixture = Awaited<ReturnType<typeof activationFixture>>;
@@ -164,6 +219,16 @@ async function refreshConversionEvidence(fixture: Fixture): Promise<void> {
   record.artifacts.sourceImage = digest(await readFile(fixture.sourcePng)); record.artifacts.manifest = ledger.hashes.manifest; record.artifacts.runLedger = digest(ledgerBytes); record.artifacts.cleanBackground = ledger.hashes.cleanBackground; record.artifacts.donorPptx = ledger.hashes.pptx; record.artifacts.assets = ledger.hashes.assets;
   record.artifacts.outputs["clean-background.png"] = ledger.hashes.cleanBackground; record.artifacts.outputs["slide-editable.pptx"] = ledger.hashes.pptx;
   await writeFile(fixture.recordPath, `${JSON.stringify(record, null, 2)}\n`);
+}
+
+async function replaceCandidateFixture(fixture: Fixture, mutate: (zip: JSZip) => Promise<void> | void): Promise<void> {
+  const zip = await JSZip.loadAsync(await readFile(fixture.candidatePath));
+  await mutate(zip);
+  const bytes = await zip.generateAsync({ type: "nodebuffer", compression: "DEFLATE" });
+  await writeFile(fixture.candidatePath, bytes);
+  const sessionPath = join(fixture.root, "output", "deck-edit-sessions", fixture.sessionId, "session.json");
+  const session = JSON.parse(await readFile(sessionPath, "utf8")); session.preparedSha256 = digest(bytes);
+  await writeFile(sessionPath, `${JSON.stringify(session, null, 2)}\n`);
 }
 
 async function zipMemberHashes(path: string): Promise<Map<string, string>> {
@@ -220,7 +285,8 @@ test("rejects unsafe donor packages, relationships, object names, page sizes, an
   const scenarios: Array<[string, Parameters<typeof donorPptx>[0], RegExp]> = [
     ["external", { external: true }, /external/i], ["r:link", { linked: true }, /link/i], ["unsupported relationship", { relType: `${R}/hyperlink` }, /relationship|image/i],
     ["macro", { extraEntry: { path: "ppt/vbaProject.bin" } }, /macro|active content/i], ["OLE", { extraEntry: { path: "ppt/embeddings/oleObject1.bin" } }, /OLE|active content/i], ["media", { extraEntry: { path: "ppt/media/audio1.mp3" } }, /media|audio|video|active content/i], ["ActiveX", { extraEntry: { path: "ppt/activeX/activeX1.xml" } }, /ActiveX|active content/i], ["chart", { extraEntry: { path: "ppt/charts/chart1.xml" } }, /chart|active content/i], ["diagram", { extraEntry: { path: "ppt/diagrams/data1.xml" } }, /diagram|active content/i],
-    ["duplicate object name", { duplicateName: true }, /duplicate object name/i], ["object mismatch", { wrongName: true }, /object name|manifest/i], ["wrong page size", { pageSize: [9144000, 6858000] }, /16:9|page size/i], ["extra slide", { extraSlide: true }, /exactly one slide/i],
+    ["duplicate object name", { duplicateName: true }, /duplicate object name/i], ["duplicate object id", { duplicateId: true }, /duplicate object id|numeric object/i], ["object mismatch", { wrongName: true }, /object name|manifest/i], ["wrong page size", { pageSize: [9144000, 6858000] }, /16:9|page size/i], ["extra slide", { extraSlide: true }, /exactly one slide/i],
+    ["wrong background bytes", { wrongBackground: true }, /media|artifact bytes|background/i], ["wrong asset bytes", { wrongAsset: true }, /media|artifact bytes|asset/i], ["invalid PNG", { invalidPng: true }, /PNG|decodable/i], ["extra image relationship", { extraImageRelationship: true }, /extra visual image|unbound media/i],
   ];
   for (const [name, donorOptions, pattern] of scenarios) await t.test(name, async (subtest) => { const fixture = await activationFixture(subtest); await writeFile(join(fixture.outputRoot, "slide-editable.pptx"), await donorPptx(donorOptions)); await refreshConversionEvidence(fixture); await assert.rejects(activateEditableSlideInDeck({ projectRoot: fixture.root, candidatePath: fixture.candidatePath, slideIndex: 1, slideId: fixture.slideIds[1]!, conversionRoot: fixture.conversionRoot }), pattern); });
 });
@@ -229,9 +295,101 @@ test("rejects target identity, index, output-path, and staging races without rep
   const fixture = await activationFixture(t);
   const before = await readFile(fixture.candidatePath);
   await assert.rejects(activateEditableSlideInDeck({ projectRoot: fixture.root, candidatePath: fixture.candidatePath, slideIndex: 3, slideId: fixture.slideIds[1]!, conversionRoot: fixture.conversionRoot }), /slide index|range/i);
+  await assert.rejects(activateEditableSlideInDeck({ projectRoot: fixture.root, candidatePath: fixture.candidatePath, slideIndex: 0, slideId: fixture.slideIds[1]!, conversionRoot: fixture.conversionRoot }), /slide index|topology|position/i);
   await assert.rejects(activateEditableSlideInDeck({ projectRoot: fixture.root, candidatePath: fixture.candidatePath, slideIndex: 1, slideId: fixture.slideIds[0]!, conversionRoot: fixture.conversionRoot }), /slide identity|target/i);
   const outside = join(dirname(dirname(dirname(fixture.candidatePath))), "outside.pptx"); await writeFile(outside, before);
   await assert.rejects(activateEditableSlideInDeck({ projectRoot: fixture.root, candidatePath: outside, slideIndex: 1, slideId: fixture.slideIds[1]!, conversionRoot: fixture.conversionRoot }), /deck-revisions|owned|candidate path/i);
   assert.deepEqual(await readFile(fixture.candidatePath), before);
   await assert.rejects(activateEditableSlideInDeck({ projectRoot: fixture.root, candidatePath: fixture.candidatePath, slideIndex: 1, slideId: fixture.slideIds[1]!, conversionRoot: fixture.conversionRoot, operations: { beforeAtomicReplace: async () => writeFile(fixture.candidatePath, await targetDeckBytes(4)) } }), /changed during staging|race/i);
+});
+
+test("requires a sealed current conversion before mutating candidate bytes", async (t) => {
+  await t.test("missing sealed marker", async (subtest) => {
+    const fixture = await activationFixture(subtest);
+    const before = await readFile(fixture.candidatePath);
+    await unlink(join(fixture.conversionRoot, ".superppt-editable-revision.json"));
+    await assert.rejects(activateEditableSlideInDeck({ projectRoot: fixture.root, candidatePath: fixture.candidatePath, slideIndex: 1, slideId: fixture.slideIds[1]!, conversionRoot: fixture.conversionRoot }), /sealed|revision marker|ownership/i);
+    assert.deepEqual(await readFile(fixture.candidatePath), before);
+  });
+  await t.test("staging marker", async (subtest) => {
+    const fixture = await activationFixture(subtest);
+    await writeFile(join(fixture.conversionRoot, ".superppt-editable-conversion-staging.json"), "{}\n");
+    await assert.rejects(activateEditableSlideInDeck({ projectRoot: fixture.root, candidatePath: fixture.candidatePath, slideIndex: 1, slideId: fixture.slideIds[1]!, conversionRoot: fixture.conversionRoot }), /staging|sealed/i);
+  });
+  await t.test("stale project revision", async (subtest) => {
+    const fixture = await activationFixture(subtest);
+    const record = JSON.parse(await readFile(fixture.recordPath, "utf8")); record.projectRevisionId = randomUUID();
+    record.prepareEditableInput.sourceMaster.revisionId = record.projectRevisionId; record.prepareEditableInput.output1280x720.revisionId = record.projectRevisionId;
+    await writeFile(fixture.recordPath, `${JSON.stringify(record, null, 2)}\n`);
+    await assert.rejects(activateEditableSlideInDeck({ projectRoot: fixture.root, candidatePath: fixture.candidatePath, slideIndex: 1, slideId: fixture.slideIds[1]!, conversionRoot: fixture.conversionRoot }), /stale|project page|revision/i);
+  });
+  await t.test("stale reviewed candidate selection", async (subtest) => {
+    const fixture = await activationFixture(subtest);
+    const record = JSON.parse(await readFile(fixture.recordPath, "utf8")); record.deckReviewSelection.candidateId = randomUUID();
+    await writeFile(fixture.recordPath, `${JSON.stringify(record, null, 2)}\n`);
+    await assert.rejects(activateEditableSlideInDeck({ projectRoot: fixture.root, candidatePath: fixture.candidatePath, slideIndex: 1, slideId: fixture.slideIds[1]!, conversionRoot: fixture.conversionRoot }), /stale|candidate selection/i);
+  });
+});
+
+test("recovers idempotently after every activation persistence checkpoint", async (t) => {
+  for (const phase of ["candidate-replaced", "session-updated", "journal-updated"] as const) await t.test(phase, async (subtest) => {
+    const fixture = await activationFixture(subtest);
+    await assert.rejects(activateEditableSlideInDeck({ projectRoot: fixture.root, candidatePath: fixture.candidatePath, slideIndex: 1, slideId: fixture.slideIds[1]!, conversionRoot: fixture.conversionRoot, operations: { checkpoint: async (actual) => { if (actual === phase) throw new Error("simulated crash"); } } }), /simulated crash/);
+    const recovered = await activateEditableSlideInDeck({ projectRoot: fixture.root, candidatePath: fixture.candidatePath, slideIndex: 1, slideId: fixture.slideIds[1]!, conversionRoot: fixture.conversionRoot });
+    assert.deepEqual(recovered.editableSlideIds, [fixture.slideIds[1]!]);
+  });
+});
+
+test("fails closed when durable activation residue no longer matches its intent", async (t) => {
+  const fixture = await activationFixture(t);
+  await assert.rejects(activateEditableSlideInDeck({ projectRoot: fixture.root, candidatePath: fixture.candidatePath, slideIndex: 1, slideId: fixture.slideIds[1]!, conversionRoot: fixture.conversionRoot, operations: { checkpoint: (phase) => { if (phase === "candidate-replaced") throw new Error("simulated crash"); } } }), /simulated crash/);
+  const intentPath = join(fixture.root, "output", "deck-edit-sessions", fixture.sessionId, "activation.json");
+  const intent = JSON.parse(await readFile(intentPath, "utf8")); intent.newCandidateSha256 = "0".repeat(64); await writeFile(intentPath, `${JSON.stringify(intent, null, 2)}\n`);
+  await assert.rejects(activateEditableSlideInDeck({ projectRoot: fixture.root, candidatePath: fixture.candidatePath, slideIndex: 1, slideId: fixture.slideIds[1]!, conversionRoot: fixture.conversionRoot }), /residue|durable|hash/i);
+});
+
+test("merges only namespaces used by the donor shape tree and accepts a local override", async (t) => {
+  const fixture = await activationFixture(t);
+  await writeFile(join(fixture.outputRoot, "slide-editable.pptx"), await donorPptx({ localRedeclaration: true }));
+  await refreshConversionEvidence(fixture);
+  await activateEditableSlideInDeck({ projectRoot: fixture.root, candidatePath: fixture.candidatePath, slideIndex: 1, slideId: fixture.slideIds[1]!, conversionRoot: fixture.conversionRoot });
+  const zip = await JSZip.loadAsync(await readFile(fixture.candidatePath));
+  const xml = await zip.file("ppt/slides/slide2.xml")!.async("string");
+  assert.equal((xml.match(/xmlns:unused=/g) ?? []).length, 1);
+  assert.match(xml, /xmlns:unused="urn:local-override"/);
+});
+
+test("authenticates all official QA previews and scene-graph pair evidence", async (t) => {
+  await t.test("tampered QA preview", async (subtest) => {
+    const fixture = await activationFixture(subtest); await writeFile(join(fixture.outputRoot, "layer-review.png"), await png(1280, 720, true));
+    await assert.rejects(activateEditableSlideInDeck({ projectRoot: fixture.root, candidatePath: fixture.candidatePath, slideIndex: 1, slideId: fixture.slideIds[1]!, conversionRoot: fixture.conversionRoot }), /QA preview|hash mismatch/i);
+  });
+  await t.test("scene graph output without hash", async (subtest) => {
+    const fixture = await activationFixture(subtest); const ledgerPath = join(fixture.outputRoot, "run-ledger.json"); const ledger = JSON.parse(await readFile(ledgerPath, "utf8")); delete ledger.hashes.sceneGraph;
+    const bytes = Buffer.from(`${JSON.stringify(ledger, null, 2)}\n`); await writeFile(ledgerPath, bytes); const record = JSON.parse(await readFile(fixture.recordPath, "utf8")); record.artifacts.runLedger = digest(bytes); await writeFile(fixture.recordPath, `${JSON.stringify(record, null, 2)}\n`);
+    await assert.rejects(activateEditableSlideInDeck({ projectRoot: fixture.root, candidatePath: fixture.candidatePath, slideIndex: 1, slideId: fixture.slideIds[1]!, conversionRoot: fixture.conversionRoot }), /scene graph|run ledger/i);
+  });
+});
+
+test("validates staged target relationships, media paths, and PNG content types", async (t) => {
+  await t.test("duplicate existing relationship ID", async (subtest) => {
+    const fixture = await activationFixture(subtest); await replaceCandidateFixture(fixture, async (zip) => { const part = "ppt/slides/_rels/slide2.xml.rels"; const xml = await zip.file(part)!.async("string"); zip.file(part, xml.replace('Id="rId7"', 'Id="rId1"')); });
+    await assert.rejects(activateEditableSlideInDeck({ projectRoot: fixture.root, candidatePath: fixture.candidatePath, slideIndex: 1, slideId: fixture.slideIds[1]!, conversionRoot: fixture.conversionRoot }), /duplicate or missing IDs/i);
+  });
+  await t.test("missing relationship target", async (subtest) => {
+    const fixture = await activationFixture(subtest); await replaceCandidateFixture(fixture, async (zip) => { const part = "ppt/slides/_rels/slide2.xml.rels"; const xml = await zip.file(part)!.async("string"); zip.file(part, xml.replace(' Target="../comments/comment2.xml"', "")); });
+    await assert.rejects(activateEditableSlideInDeck({ projectRoot: fixture.root, candidatePath: fixture.candidatePath, slideIndex: 1, slideId: fixture.slideIds[1]!, conversionRoot: fixture.conversionRoot }), /duplicate or missing IDs/i);
+  });
+  await t.test("missing existing relationship target", async (subtest) => {
+    const fixture = await activationFixture(subtest); await replaceCandidateFixture(fixture, (zip) => { zip.remove("ppt/slideLayouts/slideLayout1.xml"); });
+    await assert.rejects(activateEditableSlideInDeck({ projectRoot: fixture.root, candidatePath: fixture.candidatePath, slideIndex: 1, slideId: fixture.slideIds[1]!, conversionRoot: fixture.conversionRoot }), /relationship target is missing/i);
+  });
+  await t.test("missing PNG content type", async (subtest) => {
+    const fixture = await activationFixture(subtest); await replaceCandidateFixture(fixture, async (zip) => { const xml = await zip.file("[Content_Types].xml")!.async("string"); zip.file("[Content_Types].xml", xml.replace(/<Default Extension="png"[^>]*\/>/, "")); });
+    await assert.rejects(activateEditableSlideInDeck({ projectRoot: fixture.root, candidatePath: fixture.candidatePath, slideIndex: 1, slideId: fixture.slideIds[1]!, conversionRoot: fixture.conversionRoot }), /PNG media content types/i);
+  });
+  await t.test("generated media collision", async (subtest) => {
+    const fixture = await activationFixture(subtest);
+    await assert.rejects(activateEditableSlideInDeck({ projectRoot: fixture.root, candidatePath: fixture.candidatePath, slideIndex: 1, slideId: fixture.slideIds[1]!, conversionRoot: fixture.conversionRoot, operations: { mediaNameFactory: () => "superppt-collision.png" } }), /media path collides/i);
+  });
 });

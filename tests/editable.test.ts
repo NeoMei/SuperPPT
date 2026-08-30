@@ -192,7 +192,7 @@ const PACKAGE_RELATIONSHIPS = "http://schemas.openxmlformats.org/package/2006/re
 
 async function officialDonorPptx(manifest: {
   elements: Array<{ kind: string; id: string; label?: string }>;
-}): Promise<Buffer> {
+}, media?: { background: Buffer; icon: Buffer }): Promise<Buffer> {
   const zip = new JSZip();
   const objectXml: string[] = [
     `<slide:pic><slide:nvPicPr><slide:cNvPr id="2" name="asset-background"/></slide:nvPicPr><slide:blipFill><art:blip rel:embed="rId2"/></slide:blipFill></slide:pic>`,
@@ -208,7 +208,7 @@ async function officialDonorPptx(manifest: {
     } else {
       objectXml.push(`<slide:pic><slide:nvPicPr><slide:cNvPr id="${id}" name="asset-${element.id}"/></slide:nvPicPr><slide:blipFill><art:blip rel:embed="rId${imageRelationshipId}"/></slide:blipFill></slide:pic>`);
       imageRelationships.push(`<pkg:Relationship Id="rId${imageRelationshipId}" Type="${DOCUMENT_RELATIONSHIPS}/image" Target="../media/asset-${element.id}.png"/>`);
-      zip.file(`ppt/media/asset-${element.id}.png`, await png(48, 48, true));
+      zip.file(`ppt/media/asset-${element.id}.png`, media?.icon ?? await png(48, 48, true));
       imageRelationshipId += 1;
     }
     id += 1;
@@ -219,7 +219,7 @@ async function officialDonorPptx(manifest: {
   zip.file("ppt/slides/slide1.xml", `<slide:sld xmlns:slide="${PRESENTATION}" xmlns:art="${DRAWING}" xmlns:rel="${DOCUMENT_RELATIONSHIPS}"><slide:cSld><slide:spTree><slide:nvGrpSpPr><slide:cNvPr id="1" name="Group 1"/></slide:nvGrpSpPr><slide:grpSpPr/>${objectXml.join("")}</slide:spTree></slide:cSld></slide:sld>`);
   zip.file("ppt/slides/_rels/slide1.xml.rels", `<pkg:Relationships xmlns:pkg="${PACKAGE_RELATIONSHIPS}"><pkg:Relationship Id="rId1" Type="${DOCUMENT_RELATIONSHIPS}/slideLayout" Target="../slideLayouts/slideLayout1.xml"/><pkg:Relationship Id="rId2" Type="${DOCUMENT_RELATIONSHIPS}/image" Target="../media/background.png"/>${imageRelationships.join("")}</pkg:Relationships>`);
   zip.file("ppt/slideLayouts/slideLayout1.xml", `<slide:sldLayout xmlns:slide="${PRESENTATION}"/>`);
-  zip.file("ppt/media/background.png", await png(1280, 720));
+  zip.file("ppt/media/background.png", media?.background ?? await png(1280, 720));
   return zip.generateAsync({ type: "nodebuffer", compression: "DEFLATE" });
 }
 
@@ -254,8 +254,11 @@ async function writeFakeConverterOutput(outDir: string, sourcePng: string): Prom
     "manifest.json": manifest,
     "removal-mask.png": await png(1280, 720, true),
     "clean-background.png": background,
+    "recomposition-preview.png": background,
+    "layer-review.png": background,
+    "exploded-preview.png": background,
     "assets/icon.png": icon,
-    "slide-editable.pptx": await officialDonorPptx(manifestValue),
+    "slide-editable.pptx": await officialDonorPptx(manifestValue, { background, icon }),
   } as const;
   for (const [name, bytes] of Object.entries(files)) {
     await writeFile(join(outDir, name), bytes);
@@ -301,6 +304,7 @@ async function writeFakeConverterOutput(outDir: string, sourcePng: string): Prom
       cleanBackground: sha256(files["clean-background.png"]),
       assets: { "assets/icon.png": sha256(files["assets/icon.png"]) },
       pptx: sha256(files["slide-editable.pptx"]),
+      qaPreviews: { recomposition: sha256(files["recomposition-preview.png"]), layerReview: sha256(files["layer-review.png"]), exploded: sha256(files["exploded-preview.png"]) },
     },
     outputs: {
       directory: outDir,
@@ -312,6 +316,7 @@ async function writeFakeConverterOutput(outDir: string, sourcePng: string): Prom
       cleanBackground: output("clean-background.png"),
       assets: output("assets"),
       pptx: output("slide-editable.pptx"),
+      qaPreviews: { recomposition: output("recomposition-preview.png"), layerReview: output("layer-review.png"), exploded: output("exploded-preview.png") },
     },
   };
   RunLedgerV2Schema.parse(ledger);
@@ -334,7 +339,10 @@ async function makeConverterOutputTextOnly(outDir: string): Promise<void> {
   ledger.hashes.manifest = sha256(manifestBytes);
   ledger.hashes.assets = {};
   ledger.decisions = ledger.decisions.filter((decision: { kind: string }) => decision.kind === "text");
-  const donor = await officialDonorPptx(manifest);
+  const donor = await officialDonorPptx(manifest, {
+    background: await readFile(join(fixtureRoot, "clean-background.png")),
+    icon: await readFile(join(fixtureRoot, "assets", "icon.png")),
+  });
   await writeFile(join(outDir, "slide-editable.pptx"), donor);
   ledger.hashes.pptx = sha256(donor);
   await writeFile(ledgerPath, `${JSON.stringify(ledger, null, 2)}\n`);
@@ -416,6 +424,8 @@ test("runs the injected npm CLI without putting credentials in command arguments
   });
   assert.equal(invoked, true);
   assert.equal(result.manifest.elements.length, 2);
+  assert.equal(result.manifest.manifestVersion, 2);
+  assert.equal(result.legacyManifest.manifestVersion, 1);
   assert.equal(result.ledger.ledgerVersion, 2);
   assert.equal(result.artifactHashes.sourceImage, sha256(await readFile(sourcePng)));
 });
@@ -1053,9 +1063,9 @@ test("promotes one authenticated extracted target without changing content or re
   });
 
   assert.equal(conversionCalls, 1);
-  assert.deepEqual(promoted.manifest, source.manifest);
+  assert.deepEqual(promoted.manifest, source.legacyManifest);
   const validated = await validateModifiedRevision(promoted.revisionRoot);
-  assert.deepEqual(validated.manifest, source.manifest);
+  assert.deepEqual(validated.manifest, source.legacyManifest);
   assert.deepEqual(validated.record.intent, {
     kind: "promote-editable",
     elementId: "ocr-title",

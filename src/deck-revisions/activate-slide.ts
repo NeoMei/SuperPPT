@@ -1,8 +1,9 @@
 import { createHash, randomUUID } from "node:crypto";
-import { lstat, readFile, realpath, rename, unlink } from "node:fs/promises";
+import { lstat, realpath, rename } from "node:fs/promises";
 import { basename, dirname, join, relative, resolve, sep } from "node:path";
 
 import JSZip from "jszip";
+import sharp from "sharp";
 import { z } from "zod";
 
 import {
@@ -17,10 +18,12 @@ import { readProject } from "../project/store.js";
 import { inspectLocalPptx, type InspectedLocalPptx } from "./inspect.js";
 import { extractElementRange, scanOoxmlRanges, type OoxmlElementRange } from "./ooxml.js";
 import { DeckEditSessionSchema } from "./schemas.js";
+import { readLocalDeckRevision } from "./store.js";
 
 const P = "http://schemas.openxmlformats.org/presentationml/2006/main";
 const R = "http://schemas.openxmlformats.org/officeDocument/2006/relationships";
 const REL = "http://schemas.openxmlformats.org/package/2006/relationships";
+const CONTENT_TYPES = "http://schemas.openxmlformats.org/package/2006/content-types";
 const Sha256Schema = z.string().regex(/^[a-f0-9]{64}$/);
 const ActivationJournalSchema = z.object({
   schemaVersion: z.literal(1),
@@ -31,6 +34,26 @@ const ActivationJournalSchema = z.object({
   adoption: z.unknown().nullable(),
   entries: z.array(z.object({ phase: z.string().min(1), at: z.string().datetime() }).strict()),
 }).strict();
+const ActivationIntentSchema = z.object({
+  schemaVersion: z.literal(1),
+  activationId: z.string().uuid(),
+  sessionId: z.string().uuid(),
+  candidateRevisionId: z.string().uuid(),
+  parentRevisionId: z.string().uuid(),
+  slideId: z.string().uuid(),
+  slideIndex: z.number().int().nonnegative(),
+  targetSlidePart: z.string().regex(/^ppt\/slides\/slide[0-9]+\.xml$/),
+  conversionRevisionId: z.string().uuid(),
+  conversionDonorSha256: Sha256Schema,
+  oldCandidateSha256: Sha256Schema,
+  newCandidateSha256: Sha256Schema,
+  stagedRelativePath: z.string().regex(/^output\/deck-revisions\/[0-9a-f-]{36}\/\.deck-identity-[0-9a-f-]{36}\.staging\.pptx$/),
+  editableSlideIds: z.array(z.string().uuid()),
+  createdAt: z.string().datetime(),
+  phases: z.array(z.enum(["intent-written", "candidate-replaced", "session-updated", "journal-updated", "complete"])),
+}).strict();
+type ActivationIntent = z.infer<typeof ActivationIntentSchema>;
+export type EditableActivationCheckpoint = "candidate-replaced" | "session-updated" | "journal-updated";
 
 const digest = (value: Buffer | string): string => createHash("sha256").update(value).digest("hex");
 
@@ -53,11 +76,14 @@ function replaceRanges(source: string, replacements: Array<{ start: number; end:
   return result;
 }
 
-function namespaceDeclarations(xml: string): string[] {
-  const root = scanOoxmlRanges(xml).elements.find((element) => element.parentStart === null);
-  if (!root) throw new Error("donor slide root is missing");
-  const opening = xml.slice(root.start, root.openEnd);
-  return [...opening.matchAll(/\s+xmlns(?::[A-Za-z_][\w.-]*)?\s*=\s*(?:"[^"]*"|'[^']*')/g)].map((match) => match[0]!.trim());
+function namespaceDeclarations(opening: string): Map<string, string> {
+  const declarations = new Map<string, string>();
+  for (const match of opening.matchAll(/\s+xmlns(?::([A-Za-z_][\w.-]*))?\s*=\s*(?:"([^"]*)"|'([^']*)')/g)) {
+    const prefix = match[1] ?? "";
+    if (declarations.has(prefix)) throw new Error(`duplicate namespace declaration for prefix ${prefix || "<default>"}`);
+    declarations.set(prefix, match[0]!.trim());
+  }
+  return declarations;
 }
 
 function transplantedShapeTree(
@@ -74,7 +100,16 @@ function transplantedShapeTree(
     return [{ start: attribute.valueStart - range.start, end: attribute.valueEnd - range.start, value: next }];
   }));
   let shapeTree = replaceRanges(donorXml.slice(range.start, range.end), replacements);
-  const declarations = namespaceDeclarations(donorXml).filter((declaration) => !shapeTree.slice(0, shapeTree.indexOf(">") + 1).includes(declaration));
+  const root = scanOoxmlRanges(donorXml).elements.find((element) => element.parentStart === null);
+  if (!root) throw new Error("donor slide root is missing");
+  const rootDeclarations = namespaceDeclarations(donorXml.slice(root.start, root.openEnd));
+  const shapeOpening = shapeTree.slice(0, shapeTree.indexOf(">") + 1);
+  const localDeclarations = namespaceDeclarations(shapeOpening);
+  const usedPrefixes = new Set([...shapeTree.matchAll(/(?:<\/?|\s)([A-Za-z_][\w.-]*):[A-Za-z_][\w.-]*(?=[\s=/>])/g)]
+    .map((match) => match[1]!).filter((prefix) => prefix !== "xmlns"));
+  const declarations = [...usedPrefixes]
+    .filter((prefix) => !localDeclarations.has(prefix))
+    .map((prefix) => rootDeclarations.get(prefix) ?? (() => { throw new Error(`donor shape tree uses undeclared namespace prefix ${prefix}`); })());
   if (declarations.length > 0) {
     const openEnd = shapeTree.indexOf(">");
     if (openEnd < 0) throw new Error("donor shape tree opening tag is invalid");
@@ -110,6 +145,22 @@ async function readJson(path: string): Promise<unknown> {
   return JSON.parse((await readRegularFileNoFollow(path)).toString("utf8"));
 }
 
+async function optionalIntent(path: string): Promise<ActivationIntent | null> {
+  try {
+    return ActivationIntentSchema.parse(await readJson(path));
+  } catch (error: unknown) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT" || (error as Error).cause && ((error as Error).cause as NodeJS.ErrnoException).code === "ENOENT") return null;
+    throw error;
+  }
+}
+
+async function appendIntentPhase(path: string, intent: ActivationIntent, phase: ActivationIntent["phases"][number]): Promise<ActivationIntent> {
+  if (intent.phases.includes(phase)) return intent;
+  const next = ActivationIntentSchema.parse({ ...intent, phases: [...intent.phases, phase] });
+  await replaceJson(path, next);
+  return next;
+}
+
 function candidateRevisionId(projectRoot: string, candidatePath: string): string {
   const local = relative(projectRoot, candidatePath).split(sep).join("/");
   const match = /^output\/deck-revisions\/([0-9a-f-]{36})\/deck\.pptx$/.exec(local);
@@ -117,7 +168,7 @@ function candidateRevisionId(projectRoot: string, candidatePath: string): string
   return z.string().uuid().parse(match[1]);
 }
 
-async function readCandidateMetadata(root: string, candidatePath: string, slideId: string) {
+async function readCandidateMetadata(root: string, candidatePath: string, slideId: string, slideIndex: number, inspected: InspectedLocalPptx) {
   const project = await readProject(root);
   if (!project.activeDeckEditSessionId) throw new Error("editable activation requires an active deck edit session");
   const sessionRoot = join(root, "output", "deck-edit-sessions", project.activeDeckEditSessionId);
@@ -132,7 +183,19 @@ async function readCandidateMetadata(root: string, candidatePath: string, slideI
   ) throw new Error("candidate metadata does not bind the owned complete deck path");
   if (session.targetSlideId !== slideId) throw new Error("requested slide identity does not match the active candidate target");
   if (session.state !== "prepared") throw new Error("editable activation requires a prepared candidate");
-  return { sessionRoot, session, journal };
+  const parent = await readLocalDeckRevision(root, session.parentRevisionId);
+  if (project.currentDeck?.revisionId !== parent.revisionId) throw new Error("active candidate parent is not the authoritative current deck revision");
+  const topology = parent.slideTopology.entries.find((entry) => entry.stableSlideId === slideId);
+  const actual = inspected.slides[slideIndex];
+  if (
+    !topology
+    || topology.position !== slideIndex
+    || !actual
+    || topology.slidePart !== actual.slidePart
+    || topology.presentationSlideId !== actual.presentationSlideId
+    || topology.creationId !== actual.creationId
+  ) throw new Error("slide identity and supplied index do not match authoritative deck topology");
+  return { sessionRoot, session, journal, parent, targetTopology: topology };
 }
 
 function assertStableTopology(before: InspectedLocalPptx, after: InspectedLocalPptx): void {
@@ -177,6 +240,67 @@ async function memberHashes(zip: JSZip, pattern: RegExp): Promise<Map<string, st
   return new Map(await Promise.all(names.map(async (name) => [name, digest(await zip.file(name)!.async("nodebuffer"))] as const)));
 }
 
+function resolveRelationshipPart(sourcePart: string, target: string): string {
+  if (!target || target.includes("\\") || target.split("/").some((part) => part === ".")) {
+    throw new Error("candidate target relationship has an unsafe target");
+  }
+  const base = sourcePart.startsWith("/") ? sourcePart.slice(1) : sourcePart;
+  const resolved = target.startsWith("/") ? target.slice(1) : join(dirname(base), target).split(sep).join("/");
+  const normalized = resolve("/", resolved).slice(1);
+  if (normalized.startsWith("../") || normalized === "") throw new Error("candidate target relationship escapes the package");
+  return normalized;
+}
+
+async function validateStagedTargetPackage(
+  zip: JSZip,
+  targetSlidePart: string,
+  relationshipsPart: string,
+  additions: Array<{ id: string; target: string; mediaPart: string; sha256: string }>,
+): Promise<void> {
+  const relationshipsFile = zip.file(relationshipsPart);
+  if (!relationshipsFile) throw new Error("staged target slide relationships are missing");
+  const xml = await relationshipsFile.async("string");
+  const relationships = scanOoxmlRanges(xml).elements.filter((element) => element.namespaceUri === REL && element.localName === "Relationship");
+  const ids = new Set<string>();
+  const targets = new Set<string>();
+  for (const relationship of relationships) {
+    const id = xmlAttribute(relationship, "", "Id");
+    const target = xmlAttribute(relationship, "", "Target");
+    if (!id || !target || ids.has(id)) throw new Error("staged target relationships contain duplicate or missing IDs");
+    if (targets.has(target)) throw new Error("staged target relationships contain duplicate targets");
+    if (xmlAttribute(relationship, "", "TargetMode") === "External") throw new Error("staged target relationships contain an external target");
+    ids.add(id); targets.add(target);
+    const resolved = resolveRelationshipPart(targetSlidePart, target);
+    if (!zip.file(resolved)) throw new Error(`staged relationship target is missing: ${resolved}`);
+  }
+  for (const addition of additions) {
+    const matches = relationships.filter((relationship) => xmlAttribute(relationship, "", "Id") === addition.id && xmlAttribute(relationship, "", "Target") === addition.target);
+    if (matches.length !== 1 || resolveRelationshipPart(targetSlidePart, addition.target) !== addition.mediaPart) {
+      throw new Error("staged image relationship does not resolve to its authenticated media");
+    }
+    const bytes = await zip.file(addition.mediaPart)?.async("nodebuffer");
+    if (!bytes || digest(bytes) !== addition.sha256) throw new Error("staged image media hash mismatch");
+    try { const metadata = await sharp(bytes).metadata(); await sharp(bytes).raw().toBuffer(); if (metadata.format !== "png") throw new Error("not PNG"); }
+    catch (error: unknown) { throw new Error("staged image media is not a decodable PNG", { cause: error }); }
+  }
+  const typesXml = await zip.file("[Content_Types].xml")?.async("string");
+  if (!typesXml) throw new Error("staged package content types are missing");
+  const typeElements = scanOoxmlRanges(typesXml).elements;
+  const pngDefault = typeElements.some((element) => element.namespaceUri === CONTENT_TYPES && element.localName === "Default"
+    && xmlAttribute(element, "", "Extension")?.toLowerCase() === "png" && xmlAttribute(element, "", "ContentType") === "image/png");
+  const overrides = new Set(typeElements.filter((element) => element.namespaceUri === CONTENT_TYPES && element.localName === "Override"
+    && xmlAttribute(element, "", "ContentType") === "image/png").map((element) => xmlAttribute(element, "", "PartName")));
+  if (!pngDefault && additions.some((addition) => !overrides.has(`/${addition.mediaPart}`))) {
+    throw new Error("staged package does not declare PNG media content types");
+  }
+  const slideXml = await zip.file(targetSlidePart)!.async("string");
+  const objectIds = scanOoxmlRanges(slideXml).elements.filter((element) => element.namespaceUri === P && element.localName === "cNvPr")
+    .map((element) => xmlAttribute(element, "", "id"));
+  if (objectIds.some((id) => !id || !/^[1-9][0-9]*$/.test(id)) || new Set(objectIds).size !== objectIds.length) {
+    throw new Error("staged slide has duplicate or invalid numeric object IDs");
+  }
+}
+
 export type ActivatedDeckResult = {
   absolutePath: string;
   editableSlideIds: string[];
@@ -196,17 +320,20 @@ export async function activateEditableSlideInDeck(options: {
   slideIndex: number;
   slideId: string;
   conversionRoot: string;
-  operations?: { beforeAtomicReplace?: (stagedPath: string) => Promise<void> | void };
+  operations?: {
+    beforeAtomicReplace?: (stagedPath: string) => Promise<void> | void;
+    checkpoint?: (phase: EditableActivationCheckpoint) => Promise<void> | void;
+    mediaNameFactory?: () => string;
+  };
 }): Promise<ActivatedDeckResult> {
   if (!Number.isInteger(options.slideIndex) || options.slideIndex < 0) throw new Error("slide index is outside the candidate range");
   z.string().uuid().parse(options.slideId);
   return withProjectLease(options.projectRoot, "deck-revisions", async (root) => {
     const candidatePath = resolve(options.candidatePath);
     if (await realpath(candidatePath) !== candidatePath) throw new Error("candidate path must be canonical and non-symlinked");
-    const metadata = await readCandidateMetadata(root, candidatePath, options.slideId);
     const before = await inspectLocalPptx(candidatePath);
     if (options.slideIndex >= before.slideCount) throw new Error("slide index is outside the candidate range");
-    if (metadata.session.preparedSha256 !== before.sha256) throw new Error("candidate prepared hash does not match current complete deck bytes");
+    const metadata = await readCandidateMetadata(root, candidatePath, options.slideId, options.slideIndex, before);
     const authenticated = await authenticateProjectEditableConversion({
       projectRoot: root,
       conversionRoot: options.conversionRoot,
@@ -214,47 +341,90 @@ export async function activateEditableSlideInDeck(options: {
     });
     const donorBytes = await readRegularFileNoFollow(join(root, ...authenticated.donorPptxPath.split("/")));
     if (digest(donorBytes) !== authenticated.donorPptxSha256) throw new Error("official donor hash changed after authentication");
-    const donor = await inspectOfficialEditableDonor(donorBytes, authenticated.manifest);
-    const candidateBytes = await readRegularFileNoFollow(candidatePath);
-    if (digest(candidateBytes) !== before.sha256) throw new Error("candidate changed before editable staging");
-    const candidateZip = await JSZip.loadAsync(candidateBytes);
     const target = before.slides[options.slideIndex]!;
-    const targetSlide = candidateZip.file(target.slidePart);
-    if (!targetSlide) throw new Error("candidate target slide part is missing");
-    const targetXml = await targetSlide.async("string");
-    const targetShapeTree = extractElementRange(targetXml, P, "spTree");
-    const targetRelationshipsPart = `ppt/slides/_rels/${basename(target.slidePart)}.rels`;
-    const targetRelationshipsFile = candidateZip.file(targetRelationshipsPart);
-    const targetRelationshipsXml = targetRelationshipsFile
-      ? await targetRelationshipsFile.async("string")
-      : `<Relationships xmlns="${REL}"/>`;
-    const targetRelationshipElements = scanOoxmlRanges(targetRelationshipsXml).elements.filter((element) =>
-      element.namespaceUri === REL && element.localName === "Relationship");
-    const usedRelationshipIds = new Set(targetRelationshipElements.map((element) => xmlAttribute(element, "", "Id")).filter((id): id is string => Boolean(id)));
-    const rewrittenIds = new Map<string, string>();
-    const relationshipAdditions: Array<{ id: string; target: string }> = [];
-    for (const image of donor.imageRelationships) {
-      let idNumber = 1;
-      while (usedRelationshipIds.has(`rId${idNumber}`)) idNumber += 1;
-      const id = `rId${idNumber}`;
-      usedRelationshipIds.add(id);
-      rewrittenIds.set(image.id, id);
-      const mediaName = `superppt-${randomUUID()}.png`;
-      const mediaPart = `ppt/media/${mediaName}`;
-      const mediaBytes = await donor.zip.file(image.targetPart)!.async("nodebuffer");
-      candidateZip.file(mediaPart, mediaBytes);
-      relationshipAdditions.push({ id, target: `../media/${mediaName}` });
-    }
-    const shapeTree = transplantedShapeTree(donor.slideXml, rewrittenIds);
-    const rewrittenSlide = `${targetXml.slice(0, targetShapeTree.start)}${shapeTree}${targetXml.slice(targetShapeTree.end)}`;
-    candidateZip.file(target.slidePart, rewrittenSlide);
-    candidateZip.file(targetRelationshipsPart, rewriteInternalImageRelationships(targetRelationshipsXml, relationshipAdditions));
-    const beforeProtected = await memberHashes(candidateZip, /^ppt\/(?:notesSlides|comments)\//);
-    const stagedPath = join(dirname(candidatePath), `.deck-identity-${randomUUID()}.staging.pptx`);
-    try {
+    const donor = await inspectOfficialEditableDonor(donorBytes, authenticated.manifest, {
+      cleanBackgroundSha256: authenticated.cleanBackgroundSha256,
+      assets: Object.fromEntries(authenticated.manifest.elements.flatMap((element) => element.kind === "asset"
+        ? [[element.assetPath, authenticated.assets[Object.keys(authenticated.assets).find((path) => path.endsWith(`/converter-output/${element.assetPath}`)) ?? ""]!]]
+        : [])),
+    });
+    const intentPath = join(metadata.sessionRoot, "activation.json");
+    let intent = await optionalIntent(intentPath);
+    let stagedPath: string;
+    let staged: InspectedLocalPptx;
+    let targetInspection: ActivatedDeckResult["targetInspection"];
+    const editableSlideIds = [...new Set([...metadata.journal.editableSlideIds, options.slideId])];
+    if (intent) {
+      const expectedStaged = join(root, ...intent.stagedRelativePath.split("/"));
+      if (
+        intent.sessionId !== metadata.session.sessionId
+        || intent.candidateRevisionId !== metadata.session.candidateRevisionId
+        || intent.parentRevisionId !== metadata.session.parentRevisionId
+        || intent.slideId !== options.slideId
+        || intent.slideIndex !== options.slideIndex
+        || intent.targetSlidePart !== metadata.targetTopology.slidePart
+        || intent.conversionRevisionId !== basename(resolve(options.conversionRoot))
+        || intent.conversionDonorSha256 !== authenticated.donorPptxSha256
+        || JSON.stringify(intent.editableSlideIds) !== JSON.stringify(editableSlideIds)
+      ) throw new Error("activation retry does not match durable activation intent");
+      stagedPath = expectedStaged;
+      if (![intent.oldCandidateSha256, intent.newCandidateSha256].includes(before.sha256)
+        || ![intent.oldCandidateSha256, intent.newCandidateSha256].includes(metadata.session.preparedSha256)) {
+        throw new Error("activation residue does not match durable candidate hashes");
+      }
+      const journalApplied = JSON.stringify(metadata.journal.editableSlideIds) === JSON.stringify(intent.editableSlideIds);
+      const journalOld = JSON.stringify(metadata.journal.editableSlideIds) === JSON.stringify(intent.editableSlideIds.filter((id) => id !== options.slideId));
+      if (!journalApplied && !journalOld) throw new Error("activation journal residue does not match durable intent");
+      if (before.sha256 === intent.oldCandidateSha256 && (metadata.session.preparedSha256 !== intent.oldCandidateSha256 || journalApplied)) {
+        throw new Error("activation metadata advanced ahead of candidate replacement");
+      }
+      if (metadata.session.preparedSha256 === intent.oldCandidateSha256 && journalApplied) {
+        throw new Error("activation journal advanced ahead of session metadata");
+      }
+      staged = before.sha256 === intent.newCandidateSha256 ? before : await inspectLocalPptx(stagedPath);
+      if (staged.sha256 !== intent.newCandidateSha256) throw new Error("activation staged residue hash does not match durable intent");
+      const recoveryZip = await JSZip.loadAsync(await readRegularFileNoFollow(before.sha256 === intent.newCandidateSha256 ? candidatePath : stagedPath));
+      targetInspection = targetObjectInspection(await recoveryZip.file(intent.targetSlidePart)!.async("string"), authenticated);
+    } else {
+      if (metadata.session.preparedSha256 !== before.sha256) throw new Error("candidate prepared hash does not match current complete deck bytes");
+      const candidateBytes = await readRegularFileNoFollow(candidatePath);
+      if (digest(candidateBytes) !== before.sha256) throw new Error("candidate changed before editable staging");
+      const candidateZip = await JSZip.loadAsync(candidateBytes);
+      const targetSlide = candidateZip.file(target.slidePart);
+      if (!targetSlide) throw new Error("candidate target slide part is missing");
+      const targetXml = await targetSlide.async("string");
+      const targetShapeTree = extractElementRange(targetXml, P, "spTree");
+      const targetRelationshipsPart = `ppt/slides/_rels/${basename(target.slidePart)}.rels`;
+      const targetRelationshipsFile = candidateZip.file(targetRelationshipsPart);
+      const targetRelationshipsXml = targetRelationshipsFile ? await targetRelationshipsFile.async("string") : `<Relationships xmlns="${REL}"/>`;
+      const targetRelationshipElements = scanOoxmlRanges(targetRelationshipsXml).elements.filter((element) => element.namespaceUri === REL && element.localName === "Relationship");
+      const usedRelationshipIds = new Set(targetRelationshipElements.map((element) => xmlAttribute(element, "", "Id")).filter((id): id is string => Boolean(id)));
+      if (usedRelationshipIds.size !== targetRelationshipElements.length) throw new Error("candidate target relationships contain duplicate or missing IDs");
+      const rewrittenIds = new Map<string, string>();
+      const relationshipAdditions: Array<{ id: string; target: string; mediaPart: string; sha256: string }> = [];
+      for (const image of donor.imageRelationships) {
+        let idNumber = 1;
+        while (usedRelationshipIds.has(`rId${idNumber}`)) idNumber += 1;
+        const id = `rId${idNumber}`;
+        usedRelationshipIds.add(id);
+        rewrittenIds.set(image.id, id);
+        const mediaName = options.operations?.mediaNameFactory?.() ?? `superppt-${randomUUID()}.png`;
+        if (!/^superppt-[A-Za-z0-9._-]+\.png$/.test(mediaName)) throw new Error("generated media name is invalid");
+        const mediaPart = `ppt/media/${mediaName}`;
+        if (candidateZip.file(mediaPart)) throw new Error("generated media path collides with existing package media");
+        const mediaBytes = await donor.zip.file(image.targetPart)!.async("nodebuffer");
+        candidateZip.file(mediaPart, mediaBytes);
+        relationshipAdditions.push({ id, target: `../media/${mediaName}`, mediaPart, sha256: image.sha256 });
+      }
+      const shapeTree = transplantedShapeTree(donor.slideXml, rewrittenIds);
+      candidateZip.file(target.slidePart, `${targetXml.slice(0, targetShapeTree.start)}${shapeTree}${targetXml.slice(targetShapeTree.end)}`);
+      candidateZip.file(targetRelationshipsPart, rewriteInternalImageRelationships(targetRelationshipsXml, relationshipAdditions));
+      const beforeProtected = await memberHashes(candidateZip, /^ppt\/(?:notesSlides|comments)\//);
+      const activationId = randomUUID();
+      stagedPath = join(dirname(candidatePath), `.deck-identity-${activationId}.staging.pptx`);
       await writeDurableExclusive(stagedPath, await candidateZip.generateAsync({ type: "nodebuffer", compression: "DEFLATE" }));
       await syncDirectory(dirname(candidatePath));
-      const staged = await inspectLocalPptx(stagedPath);
+      staged = await inspectLocalPptx(stagedPath);
       assertStableTopology(before, staged);
       for (const [index, previous] of before.slides.entries()) {
         if (index === options.slideIndex) continue;
@@ -264,42 +434,54 @@ export async function activateEditableSlideInDeck(options: {
         }
       }
       const stagedZip = await JSZip.loadAsync(await readRegularFileNoFollow(stagedPath));
+      await validateStagedTargetPackage(stagedZip, target.slidePart, targetRelationshipsPart, relationshipAdditions);
       const afterProtected = await memberHashes(stagedZip, /^ppt\/(?:notesSlides|comments)\//);
       if (JSON.stringify([...afterProtected]) !== JSON.stringify([...beforeProtected])) {
         throw new Error("editable activation changed notes or comments bytes");
       }
       const stagedTargetXml = await stagedZip.file(target.slidePart)!.async("string");
-      const targetInspection = targetObjectInspection(stagedTargetXml, authenticated);
+      targetInspection = targetObjectInspection(stagedTargetXml, authenticated);
+      intent = ActivationIntentSchema.parse({
+        schemaVersion: 1, activationId, sessionId: metadata.session.sessionId,
+        candidateRevisionId: metadata.session.candidateRevisionId, parentRevisionId: metadata.session.parentRevisionId,
+        slideId: options.slideId, slideIndex: options.slideIndex, targetSlidePart: target.slidePart,
+        conversionRevisionId: basename(resolve(options.conversionRoot)), conversionDonorSha256: authenticated.donorPptxSha256,
+        oldCandidateSha256: before.sha256, newCandidateSha256: staged.sha256,
+        stagedRelativePath: relative(root, stagedPath).split(sep).join("/"), editableSlideIds,
+        createdAt: new Date().toISOString(), phases: ["intent-written"],
+      });
+      await writeDurableExclusive(intentPath, `${JSON.stringify(intent, null, 2)}\n`);
+      await syncDirectory(metadata.sessionRoot);
+    }
+    if (before.sha256 === intent.oldCandidateSha256) {
       await options.operations?.beforeAtomicReplace?.(stagedPath);
       const candidateInfo = await lstat(candidatePath);
-      if (candidateInfo.isSymbolicLink() || !candidateInfo.isFile() || digest(await readRegularFileNoFollow(candidatePath)) !== before.sha256) {
+      if (candidateInfo.isSymbolicLink() || !candidateInfo.isFile() || digest(await readRegularFileNoFollow(candidatePath)) !== intent.oldCandidateSha256) {
         throw new Error("candidate changed during staging race check");
       }
       await rename(stagedPath, candidatePath);
       await syncDirectory(dirname(candidatePath));
-      const committed = await inspectLocalPptx(candidatePath);
-      if (committed.sha256 !== staged.sha256) throw new Error("atomic candidate replacement did not publish staged bytes");
-      const session = DeckEditSessionSchema.parse({ ...metadata.session, preparedSha256: committed.sha256 });
-      const editableSlideIds = [...new Set([...metadata.journal.editableSlideIds, options.slideId])];
+      if ((await inspectLocalPptx(candidatePath)).sha256 !== intent.newCandidateSha256) throw new Error("atomic candidate replacement did not publish staged bytes");
+      await options.operations?.checkpoint?.("candidate-replaced");
+    }
+    intent = await appendIntentPhase(intentPath, intent, "candidate-replaced");
+    if (metadata.session.preparedSha256 === intent.oldCandidateSha256) {
+      const session = DeckEditSessionSchema.parse({ ...metadata.session, preparedSha256: intent.newCandidateSha256 });
+      await replaceJson(join(metadata.sessionRoot, "session.json"), session);
+      await options.operations?.checkpoint?.("session-updated");
+    }
+    intent = await appendIntentPhase(intentPath, intent, "session-updated");
+    if (JSON.stringify(metadata.journal.editableSlideIds) !== JSON.stringify(editableSlideIds)) {
       const journal = ActivationJournalSchema.parse({
         ...metadata.journal,
         editableSlideIds,
         entries: [...metadata.journal.entries, { phase: "editable-slide-activated", at: new Date().toISOString() }],
       });
-      await replaceJson(join(metadata.sessionRoot, "session.json"), session);
       await replaceJson(join(metadata.sessionRoot, "journal.json"), journal);
-      return {
-        absolutePath: candidatePath,
-        editableSlideIds,
-        targetInspection,
-        reviewRequiredObjects: authenticated.reviewRequiredObjects,
-        authenticatedConversion: authenticated,
-      };
-    } catch (error: unknown) {
-      await unlink(stagedPath).catch((cleanupError: unknown) => {
-        if ((cleanupError as NodeJS.ErrnoException).code !== "ENOENT") throw cleanupError;
-      });
-      throw error;
+      await options.operations?.checkpoint?.("journal-updated");
     }
+    intent = await appendIntentPhase(intentPath, intent, "journal-updated");
+    await appendIntentPhase(intentPath, intent, "complete");
+    return { absolutePath: candidatePath, editableSlideIds, targetInspection, reviewRequiredObjects: authenticated.reviewRequiredObjects, authenticatedConversion: authenticated };
   });
 }

@@ -349,7 +349,7 @@ const DRAWING = "http://schemas.openxmlformats.org/drawingml/2006/main";
 const DOCUMENT_RELATIONSHIPS = "http://schemas.openxmlformats.org/officeDocument/2006/relationships";
 const PACKAGE_RELATIONSHIPS = "http://schemas.openxmlformats.org/package/2006/relationships";
 
-async function officialDonorPptx(): Promise<Buffer> {
+async function officialDonorPptx(background: Buffer, icon: Buffer): Promise<Buffer> {
   const zip = new JSZip();
   zip.file("[Content_Types].xml", `<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="xml" ContentType="application/xml"/><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="png" ContentType="image/png"/></Types>`);
   zip.file("ppt/presentation.xml", `<slide:presentation xmlns:slide="${PRESENTATION}" xmlns:rel="${DOCUMENT_RELATIONSHIPS}"><slide:sldIdLst><slide:sldId id="256" rel:id="rId1"/></slide:sldIdLst><slide:sldSz cx="12192000" cy="6858000"/></slide:presentation>`);
@@ -357,8 +357,8 @@ async function officialDonorPptx(): Promise<Buffer> {
   zip.file("ppt/slides/slide1.xml", `<slide:sld xmlns:slide="${PRESENTATION}" xmlns:art="${DRAWING}" xmlns:rel="${DOCUMENT_RELATIONSHIPS}"><slide:cSld><slide:spTree><slide:nvGrpSpPr><slide:cNvPr id="1" name="Group 1"/></slide:nvGrpSpPr><slide:grpSpPr/><slide:pic><slide:nvPicPr><slide:cNvPr id="2" name="asset-background"/></slide:nvPicPr><slide:blipFill><art:blip rel:embed="rId2"/></slide:blipFill></slide:pic><slide:sp><slide:nvSpPr><slide:cNvPr id="3" name="text-ocr-title"/></slide:nvSpPr><slide:txBody><art:p><art:r><art:t>Original title</art:t></art:r></art:p></slide:txBody></slide:sp><slide:pic><slide:nvPicPr><slide:cNvPr id="4" name="asset-icon-1"/></slide:nvPicPr><slide:blipFill><art:blip rel:embed="rId3"/></slide:blipFill></slide:pic></slide:spTree></slide:cSld></slide:sld>`);
   zip.file("ppt/slides/_rels/slide1.xml.rels", `<pkg:Relationships xmlns:pkg="${PACKAGE_RELATIONSHIPS}"><pkg:Relationship Id="rId1" Type="${DOCUMENT_RELATIONSHIPS}/slideLayout" Target="../slideLayouts/slideLayout1.xml"/><pkg:Relationship Id="rId2" Type="${DOCUMENT_RELATIONSHIPS}/image" Target="../media/background.png"/><pkg:Relationship Id="rId3" Type="${DOCUMENT_RELATIONSHIPS}/image" Target="../media/icon.png"/></pkg:Relationships>`);
   zip.file("ppt/slideLayouts/slideLayout1.xml", `<slide:sldLayout xmlns:slide="${PRESENTATION}"/>`);
-  zip.file("ppt/media/background.png", await sharp({ create: { width: 1280, height: 720, channels: 3, background: "#122a41" } }).png().toBuffer());
-  zip.file("ppt/media/icon.png", await transparentPng(48, 48));
+  zip.file("ppt/media/background.png", background);
+  zip.file("ppt/media/icon.png", icon);
   return zip.generateAsync({ type: "nodebuffer", compression: "DEFLATE" });
 }
 
@@ -391,8 +391,11 @@ async function writeFakeConverterOutput(outDir: string, sourcePng: string): Prom
     "manifest.json": Buffer.from(`${JSON.stringify(manifest, null, 2)}\n`),
     "removal-mask.png": await transparentPng(1280, 720),
     "clean-background.png": await readFile(join(fixtureRoot, "clean-background.png")),
+    "recomposition-preview.png": await readFile(join(fixtureRoot, "clean-background.png")),
+    "layer-review.png": await readFile(join(fixtureRoot, "clean-background.png")),
+    "exploded-preview.png": await readFile(join(fixtureRoot, "clean-background.png")),
     "assets/icon.png": icon,
-    "slide-editable.pptx": await officialDonorPptx(),
+    "slide-editable.pptx": await officialDonorPptx(await readFile(join(fixtureRoot, "clean-background.png")), icon),
   };
   for (const [name, bytes] of Object.entries(files)) await writeFile(join(outDir, name), bytes);
   const digest = (value: Buffer): string => createHash("sha256").update(value).digest("hex");
@@ -419,6 +422,7 @@ async function writeFakeConverterOutput(outDir: string, sourcePng: string): Prom
       cleanBackground: digest(files["clean-background.png"]),
       assets: { "assets/icon.png": digest(files["assets/icon.png"]) },
       pptx: digest(files["slide-editable.pptx"]),
+      qaPreviews: { recomposition: digest(files["recomposition-preview.png"]), layerReview: digest(files["layer-review.png"]), exploded: digest(files["exploded-preview.png"]) },
     },
     outputs: {
       directory: outDir,
@@ -430,6 +434,7 @@ async function writeFakeConverterOutput(outDir: string, sourcePng: string): Prom
       cleanBackground: output("clean-background.png"),
       assets: output("assets"),
       pptx: output("slide-editable.pptx"),
+      qaPreviews: { recomposition: output("recomposition-preview.png"), layerReview: output("layer-review.png"), exploded: output("exploded-preview.png") },
     },
   }, null, 2)}\n`);
   await writeFile(join(outDir, ".image-to-editable-pptx-output.json"), `${JSON.stringify({ markerVersion: 1, appId: "image-to-editable-pptx", artifactKind: "published-output" })}\n`);
