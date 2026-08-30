@@ -4,6 +4,7 @@ import { dirname, join, relative, sep } from "node:path";
 
 import { z } from "zod";
 
+import { withGenerationLease } from "../generation/lease.js";
 import { syncDirectory, writeDurableExclusive } from "../project/durable.js";
 import { withProjectLease } from "../project/lock.js";
 import { readRegularFileNoFollow } from "../project/safe-file.js";
@@ -253,7 +254,7 @@ export async function bootstrapInitialDeckRevision(
   const projectRevisionId = UuidSchema.parse(options.projectRevisionId);
   const slideTopology = SlideTopologySchema.parse(options.slideTopology);
   const changedSlideIds = z.array(UuidSchema).parse(options.changedSlideIds);
-  return withProjectLease(root, "deck-revisions", async (canonicalRoot) => {
+  return withGenerationLease(root, (generationRoot) => withProjectLease(generationRoot, "deck-revisions", async (canonicalRoot) => {
     await ensureDeckRoots(canonicalRoot);
     const manifest = await readProject(canonicalRoot);
     if (manifest.currentRevision.id !== projectRevisionId) throw new Error("initial deck revision does not bind the current project revision");
@@ -373,7 +374,7 @@ export async function bootstrapInitialDeckRevision(
     await options.operations?.checkpoint?.("manifest-updated");
     await appendBootstrapPhase(journalPath, journal, "complete");
     return pointer;
-  });
+  }));
 }
 
 async function writeCurrentPointerOnly(root: string, value: CurrentDeckPointer): Promise<ResolvedCurrentDeckPointer> {
@@ -387,7 +388,7 @@ export async function createDeckCandidate(
   options: CreateDeckCandidateOptions,
 ): Promise<ResolvedDeckEditSession> {
   const validOptions = CreateDeckCandidateOptionsSchema.parse(options);
-  return withProjectLease(root, "deck-revisions", async (canonicalRoot) => {
+  return withGenerationLease(root, (generationRoot) => withProjectLease(generationRoot, "deck-revisions", async (canonicalRoot) => {
     await ensureDeckRoots(canonicalRoot);
     const manifest = await readProject(canonicalRoot);
     if (manifest.activeDeckEditSessionId !== null) throw new Error("another deck edit session is active");
@@ -440,7 +441,7 @@ export async function createDeckCandidate(
     await syncDirectory(editSessionRoot);
     await updateProject(canonicalRoot, (project) => ({ ...project, activeDeckEditSessionId: sessionId }));
     return { ...session, absolutePath: join(canonicalRoot, ...candidateRelativePath.split("/")) };
-  });
+  }));
 }
 
 async function finalizeAdoption(
@@ -525,7 +526,7 @@ export async function adoptDeckCandidate(
   options: AdoptDeckCandidateOptions,
 ): Promise<ResolvedCurrentDeckPointer> {
   const validSessionId = UuidSchema.parse(options.sessionId);
-  return withProjectLease(root, "deck-revisions", async (canonicalRoot) => {
+  return withGenerationLease(root, (generationRoot) => withProjectLease(generationRoot, "deck-revisions", async (canonicalRoot) => {
     const session = await readSession(canonicalRoot, validSessionId);
     if (session.mode !== options.mode) throw new Error("deck adoption mode does not match its session");
     if (session.state === "adopted") {
@@ -575,7 +576,7 @@ export async function adoptDeckCandidate(
     });
     await writeSession(canonicalRoot, { ...session, state: "adopting" });
     return finalizeAdoption(canonicalRoot, session, revision, journal, options.operations);
-  });
+  }));
 }
 
 async function finishAdoptedSessionCleanup(
@@ -643,12 +644,12 @@ async function recoveryCandidate(root: string, sessionId: string): Promise<Resol
 }
 
 export async function recoverDeckAdoption(root: string): Promise<ResolvedCurrentDeckPointer | null> {
-  return withProjectLease(root, "deck-revisions", async (canonicalRoot) => {
+  return withGenerationLease(root, (generationRoot) => withProjectLease(generationRoot, "deck-revisions", async (canonicalRoot) => {
     await ensureDeckRoots(canonicalRoot);
     const manifest = await readProject(canonicalRoot);
     if (manifest.activeDeckEditSessionId === null) return null;
     return recoveryCandidate(canonicalRoot, manifest.activeDeckEditSessionId);
-  });
+  }));
 }
 
 export async function rollbackCurrentDeck(
@@ -656,7 +657,7 @@ export async function rollbackCurrentDeck(
   revisionId: string,
 ): Promise<ResolvedCurrentDeckPointer> {
   const validRevisionId = UuidSchema.parse(revisionId);
-  return withProjectLease(root, "deck-revisions", async (canonicalRoot) => {
+  return withGenerationLease(root, (generationRoot) => withProjectLease(generationRoot, "deck-revisions", async (canonicalRoot) => {
     const manifest = await readProject(canonicalRoot);
     if (manifest.activeDeckEditSessionId !== null) throw new Error("cannot roll back while a deck edit session is active");
     const revision = await readLocalDeckRevision(canonicalRoot, validRevisionId);
@@ -678,5 +679,5 @@ export async function rollbackCurrentDeck(
       }),
     }));
     return pointer;
-  });
+  }));
 }

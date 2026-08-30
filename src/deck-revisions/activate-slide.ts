@@ -11,6 +11,7 @@ import {
   inspectOfficialEditableDonor,
   type AuthenticatedEditableConversionResult,
 } from "../editable/adapter.js";
+import { withGenerationLease } from "../generation/lease.js";
 import { syncDirectory, writeDurableExclusive } from "../project/durable.js";
 import { withProjectLease } from "../project/lock.js";
 import { readRegularFileNoFollow } from "../project/safe-file.js";
@@ -107,6 +108,9 @@ function transplantedShapeTree(
   const localDeclarations = namespaceDeclarations(shapeOpening);
   const usedPrefixes = new Set([...shapeTree.matchAll(/(?:<\/?|\s)([A-Za-z_][\w.-]*):[A-Za-z_][\w.-]*(?=[\s=/>])/g)]
     .map((match) => match[1]!).filter((prefix) => prefix !== "xmlns"));
+  if (descendants.some((element) => !element.qualifiedName.includes(":") && element.namespaceUri !== "")) {
+    usedPrefixes.add("");
+  }
   const declarations = [...usedPrefixes]
     .filter((prefix) => !localDeclarations.has(prefix))
     .map((prefix) => rootDeclarations.get(prefix) ?? (() => { throw new Error(`donor shape tree uses undeclared namespace prefix ${prefix}`); })());
@@ -241,14 +245,24 @@ async function memberHashes(zip: JSZip, pattern: RegExp): Promise<Map<string, st
 }
 
 function resolveRelationshipPart(sourcePart: string, target: string): string {
-  if (!target || target.includes("\\") || target.split("/").some((part) => part === ".")) {
+  if (!target || target.includes("\\") || target.includes("\0") || target.includes("?") || target.includes("#")) {
     throw new Error("candidate target relationship has an unsafe target");
   }
-  const base = sourcePart.startsWith("/") ? sourcePart.slice(1) : sourcePart;
-  const resolved = target.startsWith("/") ? target.slice(1) : join(dirname(base), target).split(sep).join("/");
-  const normalized = resolve("/", resolved).slice(1);
-  if (normalized.startsWith("../") || normalized === "") throw new Error("candidate target relationship escapes the package");
-  return normalized;
+  const source = sourcePart.startsWith("/") ? sourcePart.slice(1) : sourcePart;
+  const segments = target.startsWith("/") ? [] : dirname(source).split("/").filter(Boolean);
+  for (const segment of target.split("/")) {
+    if (!segment) continue;
+    if (segment === ".") throw new Error("candidate target relationship has an unsafe target");
+    if (segment === "..") {
+      if (segments.length === 0) throw new Error("candidate target relationship escapes the package through above-root traversal");
+      segments.pop();
+      continue;
+    }
+    if (segment.includes(":")) throw new Error("candidate target relationship has an unsafe target");
+    segments.push(segment);
+  }
+  if (segments.length === 0) throw new Error("candidate target relationship escapes the package");
+  return segments.join("/");
 }
 
 async function validateStagedTargetPackage(
@@ -262,14 +276,14 @@ async function validateStagedTargetPackage(
   const xml = await relationshipsFile.async("string");
   const relationships = scanOoxmlRanges(xml).elements.filter((element) => element.namespaceUri === REL && element.localName === "Relationship");
   const ids = new Set<string>();
-  const targets = new Set<string>();
   for (const relationship of relationships) {
     const id = xmlAttribute(relationship, "", "Id");
+    const type = xmlAttribute(relationship, "", "Type");
     const target = xmlAttribute(relationship, "", "Target");
     if (!id || !target || ids.has(id)) throw new Error("staged target relationships contain duplicate or missing IDs");
-    if (targets.has(target)) throw new Error("staged target relationships contain duplicate targets");
+    if (!type?.trim()) throw new Error("staged target relationship is missing required Type");
     if (xmlAttribute(relationship, "", "TargetMode") === "External") throw new Error("staged target relationships contain an external target");
-    ids.add(id); targets.add(target);
+    ids.add(id);
     const resolved = resolveRelationshipPart(targetSlidePart, target);
     if (!zip.file(resolved)) throw new Error(`staged relationship target is missing: ${resolved}`);
   }
@@ -328,7 +342,7 @@ export async function activateEditableSlideInDeck(options: {
 }): Promise<ActivatedDeckResult> {
   if (!Number.isInteger(options.slideIndex) || options.slideIndex < 0) throw new Error("slide index is outside the candidate range");
   z.string().uuid().parse(options.slideId);
-  return withProjectLease(options.projectRoot, "deck-revisions", async (root) => {
+  return withGenerationLease(options.projectRoot, (generationRoot) => withProjectLease(generationRoot, "deck-revisions", async (root) => {
     const candidatePath = resolve(options.candidatePath);
     if (await realpath(candidatePath) !== candidatePath) throw new Error("candidate path must be canonical and non-symlinked");
     const before = await inspectLocalPptx(candidatePath);
@@ -483,5 +497,5 @@ export async function activateEditableSlideInDeck(options: {
     intent = await appendIntentPhase(intentPath, intent, "journal-updated");
     await appendIntentPhase(intentPath, intent, "complete");
     return { absolutePath: candidatePath, editableSlideIds, targetInspection, reviewRequiredObjects: authenticated.reviewRequiredObjects, authenticatedConversion: authenticated };
-  });
+  }));
 }

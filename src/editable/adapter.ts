@@ -42,6 +42,21 @@ const DOCUMENT_RELATIONSHIPS = "http://schemas.openxmlformats.org/officeDocument
 const PACKAGE_RELATIONSHIPS = "http://schemas.openxmlformats.org/package/2006/relationships";
 const IMAGE_RELATIONSHIP = `${DOCUMENT_RELATIONSHIPS}/image`;
 const LAYOUT_RELATIONSHIP = `${DOCUMENT_RELATIONSHIPS}/slideLayout`;
+const SLIDE_RELATIONSHIP = `${DOCUMENT_RELATIONSHIPS}/slide`;
+const SAFE_DONOR_RELATIONSHIP_TYPES = new Set([
+  "http://schemas.openxmlformats.org/package/2006/relationships/metadata/core-properties",
+  `${DOCUMENT_RELATIONSHIPS}/officeDocument`,
+  `${DOCUMENT_RELATIONSHIPS}/extended-properties`,
+  `${DOCUMENT_RELATIONSHIPS}/custom-properties`,
+  SLIDE_RELATIONSHIP,
+  `${DOCUMENT_RELATIONSHIPS}/slideMaster`,
+  LAYOUT_RELATIONSHIP,
+  `${DOCUMENT_RELATIONSHIPS}/theme`,
+  `${DOCUMENT_RELATIONSHIPS}/presProps`,
+  `${DOCUMENT_RELATIONSHIPS}/viewProps`,
+  `${DOCUMENT_RELATIONSHIPS}/tableStyles`,
+  IMAGE_RELATIONSHIP,
+]);
 export const CONVERTER_OUTPUT_DIRECTORY = "converter-output";
 
 export type EditableConverterExecutor = (
@@ -273,14 +288,72 @@ function xmlAttribute(element: OoxmlElementRange, namespaceUri: string, localNam
   return matches[0]?.value ?? null;
 }
 
-function relationshipTarget(slidePart: string, target: string): string {
-  if (!target || target.includes("\\") || target.split("/").some((part) => part === ".")) {
-    throw new Error("donor relationship target is unsafe");
+function resolveDonorRelationshipTarget(sourcePart: string, target: string): string {
+  if (!target || target.includes("\\") || target.includes("\0") || target.includes("?") || target.includes("#") || target.includes("%")) {
+    throw new Error("official editable donor relationship target is unsafe");
   }
-  const resolved = target.startsWith("/")
-    ? target.slice(1)
-    : posix.normalize(posix.join(posix.dirname(slidePart), target));
-  if (!/^ppt\/media\/[A-Za-z0-9._-]+\.png$/.test(resolved) || resolved.includes("../")) {
+  const rawSegments = (target.startsWith("/") ? target.slice(1) : target).split("/");
+  if (rawSegments.some((segment) => segment === "")) throw new Error("official editable donor relationship target is unsafe");
+  const segments = target.startsWith("/") ? [] : posix.dirname(sourcePart).split("/").filter((segment) => segment && segment !== ".");
+  for (const segment of rawSegments) {
+    if (segment === ".") throw new Error("official editable donor relationship target is unsafe");
+    if (segment === "..") {
+      if (segments.length === 0) throw new Error("official editable donor relationship target escapes the package");
+      segments.pop();
+      continue;
+    }
+    if (segment.includes(":")) throw new Error("official editable donor relationship target is unsafe");
+    segments.push(segment);
+  }
+  if (segments.length === 0) throw new Error("official editable donor relationship target is unsafe");
+  return segments.join("/");
+}
+
+function relationshipSourcePart(relationshipsPart: string): string {
+  if (relationshipsPart === "_rels/.rels") return "";
+  const match = /^(.*)\/_rels\/([^/]+)\.rels$/.exec(relationshipsPart);
+  if (!match) throw new Error(`official editable donor relationship part path is invalid: ${relationshipsPart}`);
+  return `${match[1]}/${match[2]}`;
+}
+
+async function validateDonorRelationships(zip: JSZip, names: string[]): Promise<Map<string, OoxmlElementRange[]>> {
+  const relationshipParts = names.filter((name) => name === "_rels/.rels" || /\/_rels\/[^/]+\.rels$/.test(name));
+  const validated = new Map<string, OoxmlElementRange[]>();
+  for (const relationshipsPart of relationshipParts) {
+    const xml = await zip.file(relationshipsPart)!.async("string");
+    const parsed = scanOoxmlRanges(xml).elements;
+    const roots = parsed.filter((element) => element.namespaceUri === PACKAGE_RELATIONSHIPS && element.localName === "Relationships");
+    if (roots.length !== 1) throw new Error(`official editable donor relationship part is malformed: ${relationshipsPart}`);
+    const relationships = parsed.filter((element) => element.namespaceUri === PACKAGE_RELATIONSHIPS && element.localName === "Relationship");
+    const relationshipLike = parsed.filter((element) => element.localName === "Relationship");
+    if (relationshipLike.length !== relationships.length || relationships.some((element) => element.parentStart !== roots[0]!.start)) {
+      throw new Error(`official editable donor relationship part is malformed: ${relationshipsPart}`);
+    }
+    const ids = new Set<string>();
+    const sourcePart = relationshipSourcePart(relationshipsPart);
+    for (const relationship of relationships) {
+      const id = xmlAttribute(relationship, "", "Id");
+      const type = xmlAttribute(relationship, "", "Type");
+      const target = xmlAttribute(relationship, "", "Target");
+      if (!id?.trim() || !type?.trim() || !target?.trim() || ids.has(id)) {
+        throw new Error(`official editable donor relationship is incomplete or duplicate: ${relationshipsPart}`);
+      }
+      ids.add(id);
+      if (xmlAttribute(relationship, "", "TargetMode")) throw new Error("official editable donor contains an external relationship");
+      if (!SAFE_DONOR_RELATIONSHIP_TYPES.has(type)) {
+        throw new Error(`official editable donor contains an unsupported relationship: ${type}`);
+      }
+      const targetPart = resolveDonorRelationshipTarget(sourcePart, target);
+      if (!zip.file(targetPart)) throw new Error(`official editable donor relationship target is missing: ${targetPart}`);
+    }
+    validated.set(relationshipsPart, relationships);
+  }
+  return validated;
+}
+
+function relationshipTarget(slidePart: string, target: string): string {
+  const resolved = resolveDonorRelationshipTarget(slidePart, target);
+  if (!/^ppt\/media\/[A-Za-z0-9._-]+\.png$/.test(resolved)) {
     throw new Error("donor image relationship target is unsafe or not PNG");
   }
   return resolved;
@@ -315,6 +388,7 @@ export async function inspectOfficialEditableDonor(
   for (const required of ["ppt/presentation.xml", "ppt/_rels/presentation.xml.rels"]) {
     if (!zip.file(required)) throw new Error(`official editable donor is missing ${required}`);
   }
+  const validatedRelationshipParts = await validateDonorRelationships(zip, names);
   const slideParts = names.filter((name) => /^ppt\/slides\/slide[0-9]+\.xml$/.test(name));
   if (slideParts.length !== 1) throw new Error("official editable donor must contain exactly one slide");
   const presentationXml = await zip.file("ppt/presentation.xml")!.async("string");
@@ -330,15 +404,15 @@ export async function inspectOfficialEditableDonor(
   if (!Number.isSafeInteger(width) || !Number.isSafeInteger(height) || width <= 0 || height <= 0 || width * 9 !== height * 16) {
     throw new Error("official editable donor page size must be 16:9");
   }
-  const presentationRels = scanOoxmlRanges(await zip.file("ppt/_rels/presentation.xml.rels")!.async("string")).elements
-    .filter((element) => element.namespaceUri === PACKAGE_RELATIONSHIPS && element.localName === "Relationship");
+  const presentationRels = validatedRelationshipParts.get("ppt/_rels/presentation.xml.rels") ?? [];
   const slideRelationshipId = xmlAttribute(slideIds[0]!, DOCUMENT_RELATIONSHIPS, "id");
-  const slideRelationship = presentationRels.find((element) => xmlAttribute(element, "", "Id") === slideRelationshipId);
+  const matchingSlideRelationships = presentationRels.filter((element) => xmlAttribute(element, "", "Id") === slideRelationshipId);
+  const slideRelationship = matchingSlideRelationships[0];
   const slideTarget = slideRelationship && xmlAttribute(slideRelationship, "", "Target");
-  if (!slideTarget || xmlAttribute(slideRelationship!, "", "TargetMode") === "External") {
+  if (matchingSlideRelationships.length !== 1 || !slideTarget || xmlAttribute(slideRelationship!, "", "Type") !== SLIDE_RELATIONSHIP) {
     throw new Error("official editable donor slide relationship is invalid");
   }
-  const slidePart = posix.normalize(posix.join("ppt", slideTarget));
+  const slidePart = resolveDonorRelationshipTarget("ppt/presentation.xml", slideTarget);
   if (slidePart !== slideParts[0] || !/^ppt\/slides\/slide[0-9]+\.xml$/.test(slidePart)) {
     throw new Error("official editable donor slide relationship is ambiguous");
   }
@@ -399,17 +473,13 @@ export async function inspectOfficialEditableDonor(
   const relationshipsFile = zip.file(relationshipsPart);
   if (!relationshipsFile) throw new Error("official editable donor slide relationships are missing");
   const relationshipsXml = await relationshipsFile.async("string");
-  const relationshipElements = scanOoxmlRanges(relationshipsXml).elements.filter((element) =>
-    element.namespaceUri === PACKAGE_RELATIONSHIPS && element.localName === "Relationship");
-  const ids = new Set<string>();
+  const relationshipElements = validatedRelationshipParts.get(relationshipsPart) ?? [];
   const imageRelationships: OfficialEditableDonorInspection["imageRelationships"] = [];
   for (const relationship of relationshipElements) {
     const id = xmlAttribute(relationship, "", "Id");
     const type = xmlAttribute(relationship, "", "Type");
     const target = xmlAttribute(relationship, "", "Target");
-    if (!id || !type || !target || ids.has(id)) throw new Error("official editable donor relationship is incomplete or duplicate");
-    ids.add(id);
-    if (xmlAttribute(relationship, "", "TargetMode") === "External") throw new Error("official editable donor contains an external relationship");
+    if (!id || !type || !target) throw new Error("official editable donor relationship is incomplete or duplicate");
     if (type !== IMAGE_RELATIONSHIP && type !== LAYOUT_RELATIONSHIP) {
       throw new Error(`official editable donor contains an unsupported relationship: ${type}`);
     }
@@ -445,11 +515,8 @@ export async function inspectOfficialEditableDonor(
   if (imageRelationships.length !== objectEmbeds.size || imageRelationships.length === 0) {
     throw new Error("official editable donor image relationship binding is incomplete");
   }
-  if (new Set(imageRelationships.map((relationship) => relationship.targetPart)).size !== imageRelationships.length) {
-    throw new Error("official editable donor image media targets must be one-to-one");
-  }
   const mediaParts = names.filter((name) => /^ppt\/media\//.test(name));
-  if (JSON.stringify(mediaParts.sort()) !== JSON.stringify(imageRelationships.map((relationship) => relationship.targetPart).sort())) {
+  if (JSON.stringify(mediaParts.sort()) !== JSON.stringify([...new Set(imageRelationships.map((relationship) => relationship.targetPart))].sort())) {
     throw new Error("official editable donor contains unbound media files");
   }
   return { zip, slidePart, slideXml, relationshipsPart, relationshipsXml, objectNames: expectedNames, imageRelationships };
