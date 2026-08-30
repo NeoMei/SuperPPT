@@ -5,6 +5,10 @@ import { z } from "zod";
 const Sha256Schema = z.string().regex(/^[a-f0-9]{64}$/);
 const RevisionDeckPathSchema = z.string().regex(/^output\/deck-revisions\/[0-9a-f-]{36}\/deck\.pptx$/);
 
+function pathRevisionId(path: string): string | undefined {
+  return path.split("/")[2];
+}
+
 export const SlideTopologyEntrySchema = z.object({
   stableSlideId: z.string().uuid(),
   slidePart: z.string().regex(/^ppt\/slides\/slide[0-9]+\.xml$/),
@@ -56,7 +60,11 @@ export const LocalDeckRevisionSchema = z.object({
   editableSlideIds: z.array(z.string().uuid()),
   changedSlideIds: z.array(z.string().uuid()),
   createdAt: z.string().datetime(),
-}).strict();
+}).strict().superRefine((revision, context) => {
+  if (pathRevisionId(revision.relativePath) !== revision.revisionId) {
+    context.addIssue({ code: "custom", path: ["relativePath"], message: "revision deck path must match revisionId" });
+  }
+});
 
 export const DeckEditSessionSchema = z.object({
   schemaVersion: z.literal(1),
@@ -71,7 +79,11 @@ export const DeckEditSessionSchema = z.object({
   presentedSha256: Sha256Schema.nullable(),
   createdAt: z.string().datetime(),
   completedAt: z.string().datetime().nullable(),
-}).strict();
+}).strict().superRefine((session, context) => {
+  if (pathRevisionId(session.candidateRelativePath) !== session.candidateRevisionId) {
+    context.addIssue({ code: "custom", path: ["candidateRelativePath"], message: "candidate deck path must match candidateRevisionId" });
+  }
+});
 
 export const CurrentDeckPointerSchema = z.object({
   schemaVersion: z.literal(1),
@@ -79,7 +91,11 @@ export const CurrentDeckPointerSchema = z.object({
   relativePath: RevisionDeckPathSchema,
   sha256: Sha256Schema,
   updatedAt: z.string().datetime(),
-}).strict();
+}).strict().superRefine((pointer, context) => {
+  if (pathRevisionId(pointer.relativePath) !== pointer.revisionId) {
+    context.addIssue({ code: "custom", path: ["relativePath"], message: "current deck path must match revisionId" });
+  }
+});
 
 export const DeckAdoptionEvidenceSchema = z.object({
   schemaVersion: z.literal(1),

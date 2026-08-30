@@ -6,6 +6,7 @@ import JSZip from "jszip";
 
 import { validateProjectRoot } from "../project/paths.js";
 import { readRegularFileNoFollow } from "../project/safe-file.js";
+import { readProject } from "../project/store.js";
 import { scanOoxmlRanges, type OoxmlElementRange } from "./ooxml.js";
 
 const PRESENTATION = "http://schemas.openxmlformats.org/presentationml/2006/main";
@@ -82,24 +83,33 @@ function safeSlideTarget(target: string): string {
   if (
     !target
     || target.includes("\\")
-    || target.startsWith("/")
-    || target.split("/").some((part) => part === "" || part === "." || part === "..")
-  ) throw new Error("PPTX slide target contains traversal or an unsafe path");
-  const resolved = posix.normalize(posix.join("ppt", target));
+    || target.split("/").some((part, index) => (part === "" && index !== 0) || part === "." || part === "..")
+  ) throw new Error(`PPTX slide target contains traversal or an unsafe path: ${target}`);
+  const resolved = target.startsWith("/")
+    ? target.slice(1)
+    : posix.normalize(posix.join("ppt", target));
   if (!/^ppt\/slides\/slide[0-9]+\.xml$/.test(resolved)) throw new Error("PPTX slide target is unsafe");
   return resolved;
 }
 
 function officialCreationId(xml: string): number | null {
   const elements = scanOoxmlRanges(xml).elements;
+  const commonSlides = elements.filter((element) =>
+    element.namespaceUri === PRESENTATION && element.localName === "cSld");
+  if (commonSlides.length !== 1) throw new Error("PPTX slide has ambiguous common slide data");
+  const extensionLists = elements.filter((element) =>
+    element.namespaceUri === PRESENTATION
+    && element.localName === "extLst"
+    && element.parentStart === commonSlides[0]!.start);
   const extensions = elements.filter((element) =>
     element.namespaceUri === PRESENTATION
     && element.localName === "ext"
+    && extensionLists.some((extensionList) => element.parentStart === extensionList.start)
     && attribute(element, "", "uri") === CREATION_ID_EXTENSION);
   const candidates = elements.filter((element) =>
     element.namespaceUri === POWERPOINT_2010
     && element.localName === "creationId"
-    && extensions.some((extension) => element.start >= extension.openEnd && element.end <= extension.closeStart));
+    && extensions.some((extension) => element.parentStart === extension.start));
   const allCreationIds = elements.filter((element) =>
     element.namespaceUri === POWERPOINT_2010 && element.localName === "creationId");
   if (allCreationIds.length !== candidates.length) {
@@ -113,10 +123,11 @@ function officialCreationId(xml: string): number | null {
 export async function inspectLocalPptx(path: string): Promise<InspectedLocalPptx> {
   if (!isAbsolute(path)) throw new Error("PPTX inspection requires an absolute project path");
   const projectRoot = await validateProjectRoot(projectRootForDeck(path));
+  await readProject(projectRoot);
   const canonical = await realpath(path);
   if (canonical !== path) throw new Error("PPTX path must be canonical and non-symlinked");
   const projectRelative = relative(projectRoot, canonical).split(sep).join("/");
-  if (!/^output\/(?:deck-revisions\/[0-9a-f-]{36}|candidates\/\.?[0-9a-f-]+(?:\.staging)?)\/deck\.pptx$/.test(projectRelative)) {
+  if (!/^output\/(?:deck-revisions\/[0-9a-f-]{36}|candidates\/\.?[0-9a-f-]+(?:\.staging)?)\/(?:deck\.pptx|\.deck-identity-[0-9a-f-]{36}\.staging\.pptx)$/.test(projectRelative)) {
     throw new Error("PPTX inspection path must be an owned complete-deck artifact");
   }
   const bytes = await stableDeckRead(canonical);

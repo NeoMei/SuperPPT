@@ -15,11 +15,13 @@ import {
   DeckAdoptionEvidenceSchema,
   DeckEditSessionSchema,
   LocalDeckRevisionSchema,
+  SlideTopologySchema,
   type CurrentDeckPointer,
   type DeckEditSession,
   type ResolvedCurrentDeckPointer,
   type ResolvedDeckEditSession,
   type ResolvedLocalDeckRevision,
+  type SlideTopology,
 } from "./schemas.js";
 
 const Sha256Schema = z.string().regex(/^[a-f0-9]{64}$/);
@@ -48,7 +50,7 @@ const AdoptionJournalSchema = z.object({
 }).strict();
 type AdoptionJournal = z.infer<typeof AdoptionJournalSchema>;
 
-export type DeckAdoptionCheckpoint = "revision-written" | "evidence-written" | "pointer-written";
+export type DeckAdoptionCheckpoint = "revision-written" | "evidence-written" | "pointer-written" | "session-adopted";
 export type DeckAdoptionOperations = {
   checkpoint?: (phase: DeckAdoptionCheckpoint) => Promise<void> | void;
 };
@@ -68,6 +70,14 @@ type AdoptDeckCandidateOptions = {
   userSignal?: "saved-and-closed";
   confirmedSha256?: string;
   operations?: DeckAdoptionOperations;
+};
+
+type BootstrapInitialDeckRevisionOptions = {
+  revisionId: string;
+  projectRevisionId: string;
+  sourceAbsolutePath: string;
+  slideTopology: SlideTopology;
+  changedSlideIds: string[];
 };
 
 function json(value: unknown): string {
@@ -103,6 +113,10 @@ async function readJson(path: string): Promise<unknown> {
 
 function revisionPath(root: string, revisionId: string): string {
   return join(root, "output", "deck-revisions", revisionId);
+}
+
+function revisionRelativePath(revisionId: string): string {
+  return `output/deck-revisions/${UuidSchema.parse(revisionId)}/deck.pptx`;
 }
 
 function sessionPath(root: string, sessionId: string): string {
@@ -158,7 +172,9 @@ export async function readLocalDeckRevision(root: string, revisionId: string): P
   if (record.revisionId !== validRevisionId || record.projectId !== manifest.projectId) {
     throw new Error("deck revision identity does not match the owned project");
   }
-  const absolutePath = join(root, ...record.relativePath.split("/"));
+  const canonicalRelativePath = revisionRelativePath(validRevisionId);
+  if (record.relativePath !== canonicalRelativePath) throw new Error("deck revision path does not match its identity");
+  const absolutePath = join(root, ...canonicalRelativePath.split("/"));
   const inspected = await inspectLocalPptx(absolutePath);
   if (inspected.sha256 !== record.sha256) throw new Error("immutable deck revision bytes changed");
   return { ...record, absolutePath };
@@ -175,6 +191,80 @@ async function readCurrentDeckPointerUnlocked(root: string): Promise<ResolvedCur
 
 export async function readCurrentDeckPointer(root: string): Promise<ResolvedCurrentDeckPointer> {
   return readCurrentDeckPointerUnlocked(root);
+}
+
+export async function bootstrapInitialDeckRevision(
+  root: string,
+  options: BootstrapInitialDeckRevisionOptions,
+): Promise<ResolvedCurrentDeckPointer> {
+  const revisionId = UuidSchema.parse(options.revisionId);
+  const projectRevisionId = UuidSchema.parse(options.projectRevisionId);
+  const slideTopology = SlideTopologySchema.parse(options.slideTopology);
+  const changedSlideIds = z.array(UuidSchema).parse(options.changedSlideIds);
+  return withProjectLease(root, "deck-revisions", async (canonicalRoot) => {
+    await ensureDeckRoots(canonicalRoot);
+    const manifest = await readProject(canonicalRoot);
+    if (manifest.currentDeck !== null) return readCurrentDeckPointerUnlocked(canonicalRoot);
+    if (manifest.currentRevision.id !== projectRevisionId) throw new Error("initial deck revision does not bind the current project revision");
+    const source = await inspectLocalPptx(options.sourceAbsolutePath);
+    if (source.projectRoot !== canonicalRoot) throw new Error("initial deck source escaped its owned project");
+    if (
+      slideTopology.entries.length !== source.slides.length
+      || slideTopology.entries.some((entry, position) => {
+        const slide = source.slides[position];
+        return !slide
+          || entry.position !== position
+          || entry.slidePart !== slide.slidePart
+          || entry.presentationSlideId !== slide.presentationSlideId
+          || entry.creationId !== slide.creationId;
+      })
+    ) throw new Error("initial deck topology does not bind the source PPTX");
+    const directory = revisionPath(canonicalRoot, revisionId);
+    await mkdir(directory, { mode: 0o700 });
+    const relativePath = revisionRelativePath(revisionId);
+    const absolutePath = join(canonicalRoot, ...relativePath.split("/"));
+    await writeDurableExclusive(absolutePath, await readRegularFileNoFollow(source.absolutePath));
+    await syncDirectory(directory);
+    const copied = await inspectLocalPptx(absolutePath);
+    if (copied.sha256 !== source.sha256) throw new Error("initial immutable revision copy changed bytes");
+    const createdAt = new Date().toISOString();
+    const revision = LocalDeckRevisionSchema.parse({
+      schemaVersion: 1,
+      revisionId,
+      parentRevisionId: null,
+      projectId: manifest.projectId,
+      projectRevisionId,
+      reason: "initial",
+      relativePath,
+      sha256: copied.sha256,
+      slideTopology,
+      editableSlideIds: [],
+      changedSlideIds,
+      createdAt,
+    });
+    await writeExclusiveJson(join(directory, "revision.json"), revision);
+    const pointer = await writeCurrentPointerOnly(canonicalRoot, {
+      schemaVersion: 1,
+      revisionId,
+      relativePath,
+      sha256: copied.sha256,
+      updatedAt: createdAt,
+    });
+    await updateProject(canonicalRoot, (project) => {
+      if (project.currentDeck !== null) throw new Error("initial deck pointer was concurrently created");
+      return {
+        ...project,
+        currentDeck: CurrentDeckPointerSchema.parse({
+          schemaVersion: pointer.schemaVersion,
+          revisionId: pointer.revisionId,
+          relativePath: pointer.relativePath,
+          sha256: pointer.sha256,
+          updatedAt: pointer.updatedAt,
+        }),
+      };
+    });
+    return pointer;
+  });
 }
 
 async function writeCurrentPointerOnly(root: string, value: CurrentDeckPointer): Promise<ResolvedCurrentDeckPointer> {
@@ -197,7 +287,7 @@ export async function createDeckCandidate(
     const parent = await readLocalDeckRevision(canonicalRoot, validOptions.sourceRevisionId);
     const candidateRevisionId = randomUUID();
     const sessionId = randomUUID();
-    const candidateRelativePath = `output/deck-revisions/${candidateRevisionId}/deck.pptx`;
+    const candidateRelativePath = revisionRelativePath(candidateRevisionId);
     const candidateRoot = revisionPath(canonicalRoot, candidateRevisionId);
     const editSessionRoot = sessionPath(canonicalRoot, sessionId);
     await mkdir(candidateRoot, { mode: 0o700 });
@@ -303,6 +393,7 @@ async function finalizeAdoption(
     presentedSha256: revisionRecord.sha256,
     completedAt: new Date().toISOString(),
   });
+  await operations.checkpoint?.("session-adopted");
   const currentDeck = CurrentDeckPointerSchema.parse({
     schemaVersion: pointer.schemaVersion,
     revisionId: pointer.revisionId,
@@ -334,7 +425,9 @@ export async function adoptDeckCandidate(
     if (options.mode === "manual" && options.userSignal !== "saved-and-closed") {
       throw new Error("manual adoption requires the explicit saved-and-closed signal");
     }
-    const absolutePath = join(canonicalRoot, ...session.candidateRelativePath.split("/"));
+    const candidateRelativePath = revisionRelativePath(session.candidateRevisionId);
+    if (session.candidateRelativePath !== candidateRelativePath) throw new Error("candidate deck path does not match its revision identity");
+    const absolutePath = join(canonicalRoot, ...candidateRelativePath.split("/"));
     const inspected = await inspectLocalPptx(absolutePath);
     if (options.mode === "agent" && options.confirmedSha256 !== inspected.sha256) {
       throw new Error("agent confirmation does not bind the current candidate bytes");
@@ -375,7 +468,26 @@ export async function adoptDeckCandidate(
 async function recoveryCandidate(root: string, sessionId: string): Promise<ResolvedCurrentDeckPointer | null> {
   const session = await readSession(root, sessionId);
   const journal = await readJournal(root, sessionId);
-  if (session.state === "adopted") return null;
+  if (session.state === "adopted") {
+    const pointer = await readCurrentDeckPointerUnlocked(root);
+    if (pointer.revisionId !== session.candidateRevisionId) {
+      throw new Error("adopted deck session does not match the current pointer");
+    }
+    const currentDeck = CurrentDeckPointerSchema.parse({
+      schemaVersion: pointer.schemaVersion,
+      revisionId: pointer.revisionId,
+      relativePath: pointer.relativePath,
+      sha256: pointer.sha256,
+      updatedAt: pointer.updatedAt,
+    });
+    await updateProject(root, (project) => {
+      if (project.activeDeckEditSessionId !== null && project.activeDeckEditSessionId !== session.sessionId) {
+        throw new Error("adopted deck cleanup conflicts with another active session");
+      }
+      return { ...project, currentDeck, activeDeckEditSessionId: null };
+    });
+    return pointer;
+  }
   if (!journal.adoption || !journal.entries.some((entry) => entry.phase === "validated")) return null;
   let revision: ReturnType<typeof LocalDeckRevisionSchema.parse> | ResolvedLocalDeckRevision;
   try {
@@ -384,7 +496,9 @@ async function recoveryCandidate(root: string, sessionId: string): Promise<Resol
     revision = await readLocalDeckRevision(root, session.candidateRevisionId);
   } catch (error: unknown) {
     if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
-    const inspected = await inspectLocalPptx(join(root, ...session.candidateRelativePath.split("/")));
+    const candidateRelativePath = revisionRelativePath(session.candidateRevisionId);
+    if (session.candidateRelativePath !== candidateRelativePath) throw new Error("candidate deck path does not match its revision identity");
+    const inspected = await inspectLocalPptx(join(root, ...candidateRelativePath.split("/")));
     if (session.mode === "agent" && journal.adoption.confirmedSha256 !== inspected.sha256) {
       throw new Error("recovered agent confirmation no longer binds the candidate bytes");
     }

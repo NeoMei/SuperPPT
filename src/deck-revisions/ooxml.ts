@@ -20,6 +20,7 @@ export type OoxmlElementRange = {
   closeStart: number;
   end: number;
   selfClosing: boolean;
+  parentStart: number | null;
   attributes: OoxmlAttributeRange[];
 };
 
@@ -141,6 +142,7 @@ export function scanOoxmlRanges(xml: string): OoxmlRangeIndex {
       closeStart: lexicalTag.openEnd,
       end: lexicalTag.openEnd,
       selfClosing: tag.isSelfClosing,
+      parentStart: stack.at(-1)?.start ?? null,
       attributes: attributeRanges(lexicalTag, tag.attributes),
     };
     elements.push(element);

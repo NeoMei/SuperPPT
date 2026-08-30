@@ -1,10 +1,11 @@
 import { randomBytes, randomUUID } from "node:crypto";
-import { lstat, realpath, rename } from "node:fs/promises";
+import { lstat, realpath, rename, unlink } from "node:fs/promises";
 import { dirname, join } from "node:path";
 
 import JSZip from "jszip";
 
 import { syncDirectory, writeDurableExclusive } from "../project/durable.js";
+import { withProjectLease } from "../project/lock.js";
 import { readRegularFileNoFollow } from "../project/safe-file.js";
 import { inspectLocalPptx } from "./inspect.js";
 import { scanOoxmlRanges, type OoxmlElementRange } from "./ooxml.js";
@@ -32,8 +33,16 @@ function containing(
   return elements.filter((element) =>
     element.namespaceUri === namespaceUri
     && element.localName === localName
-    && element.start >= parent.openEnd
-    && element.end <= parent.closeStart);
+    && element.parentStart === parent.start);
+}
+
+function expandSelfClosing(xml: string, element: OoxmlElementRange): string {
+  if (!element.selfClosing) return xml;
+  const raw = xml.slice(element.start, element.end);
+  const slash = raw.lastIndexOf("/");
+  if (slash < 0 || !/^\/\s*>$/.test(raw.slice(slash))) throw new Error("self-closing OOXML range is invalid");
+  const paired = `${raw.slice(0, slash)}></${element.qualifiedName}>`;
+  return `${xml.slice(0, element.start)}${paired}${xml.slice(element.end)}`;
 }
 
 function namespacePrefix(xml: string): { xml: string; prefix: string } {
@@ -68,10 +77,12 @@ function injectCreationId(source: string, creationId: number): string {
   const value = `<${namespaced.prefix}:creationId val="${creationId}"/>`;
   if (extensionLists.length === 1) {
     const extensionList = extensionLists[0]!;
+    if (extensionList.selfClosing) return injectCreationId(expandSelfClosing(namespaced.xml, extensionList), creationId);
     const official = containing(index.elements, extensionList, PRESENTATION, "ext").filter((element) =>
       attribute(element, "", "uri") === CREATION_ID_EXTENSION);
     if (official.length > 1) throw new Error("slide XML has ambiguous creation ID extensions");
     if (official.length === 1) {
+      if (official[0]!.selfClosing) return injectCreationId(expandSelfClosing(namespaced.xml, official[0]!), creationId);
       const insertion = official[0]!.closeStart;
       return `${namespaced.xml.slice(0, insertion)}${value}${namespaced.xml.slice(insertion)}`;
     }
@@ -105,7 +116,11 @@ export async function publishInitialSlideIdentities(
   pptxPath: string,
   slides: InitialSlideIdentity[],
 ): Promise<SlideTopology> {
+  let projectRoot = pptxPath;
+  for (let index = 0; index < 4; index += 1) projectRoot = dirname(projectRoot);
+  return withProjectLease(projectRoot, "deck-identity", async (root) => {
   const canonical = await realpath(pptxPath);
+  if (!canonical.startsWith(`${root}/`)) throw new Error("identity publication path escaped its owned project");
   if (canonical !== pptxPath) throw new Error("identity publication requires a canonical PPTX path");
   const info = await lstat(canonical);
   if (info.isSymbolicLink() || !info.isFile()) throw new Error("identity publication requires a regular PPTX file");
@@ -128,7 +143,13 @@ export async function publishInitialSlideIdentities(
     }
     const staged = join(dirname(canonical), `.deck-identity-${randomUUID()}.staging.pptx`);
     await writeDurableExclusive(staged, await zip.generateAsync({ type: "nodebuffer" }));
-    await rename(staged, canonical);
+    try {
+      await inspectLocalPptx(staged);
+      await rename(staged, canonical);
+    } catch (error: unknown) {
+      await unlink(staged).catch(() => undefined);
+      throw error;
+    }
     await syncDirectory(dirname(canonical));
   }
   const inspected = await inspectLocalPptx(canonical);
@@ -143,4 +164,5 @@ export async function publishInitialSlideIdentities(
     presentationSlideId: slide.presentationSlideId,
     creationId: slide.creationId!,
   })), []);
+  });
 }

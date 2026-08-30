@@ -15,6 +15,7 @@ import {
   recoverDeckAdoption,
   rollbackCurrentDeck,
 } from "../src/deck-revisions/store.js";
+import { DeckEditSessionSchema, LocalDeckRevisionSchema } from "../src/deck-revisions/schemas.js";
 import { initializeProject } from "../src/project/initialize.js";
 import { readProject, updateProject } from "../src/project/store.js";
 
@@ -106,6 +107,48 @@ test("project manifest tracks only the current deck pointer and active session i
   assert.equal("deckRevisionState" in manifest, false);
 });
 
+test("revision and session schemas bind deck path components to their own revision identities", async (t) => {
+  const value = await fixture(t);
+  assert.equal(LocalDeckRevisionSchema.safeParse({
+    ...value.revision,
+    revisionId: randomUUID(),
+  }).success, false);
+  const candidate = await createDeckCandidate(value.root, {
+    sourceRevisionId: value.current.revisionId,
+    reason: "manual-edit",
+    changedSlideIds: [value.slideIds[0]!],
+    editableSlideIds: [],
+    targetSlideId: value.slideIds[0]!,
+    mode: "manual",
+  });
+  const { absolutePath: _absolutePath, ...persistedCandidate } = candidate;
+  assert.equal(DeckEditSessionSchema.safeParse({
+    ...persistedCandidate,
+    candidateRelativePath: value.current.relativePath,
+  }).success, false);
+});
+
+test("adoption rejects a persisted candidate path alias instead of reading another revision", async (t) => {
+  const value = await fixture(t);
+  const candidate = await createDeckCandidate(value.root, {
+    sourceRevisionId: value.current.revisionId,
+    reason: "manual-edit",
+    changedSlideIds: [value.slideIds[0]!],
+    editableSlideIds: [],
+    targetSlideId: value.slideIds[0]!,
+    mode: "manual",
+  });
+  const path = join(value.root, "output", "deck-edit-sessions", candidate.sessionId, "session.json");
+  const persisted = JSON.parse(await readFile(path, "utf8")) as Record<string, unknown>;
+  await writeFile(path, `${JSON.stringify({ ...persisted, candidateRelativePath: value.current.relativePath }, null, 2)}\n`);
+  await assert.rejects(adoptDeckCandidate(value.root, {
+    sessionId: candidate.sessionId,
+    mode: "manual",
+    userSignal: "saved-and-closed",
+  }), /candidate.*path|revision.*path|identity/i);
+  assert.equal((await readCurrentDeckPointer(value.root)).revisionId, value.current.revisionId);
+});
+
 test("manual adoption moves only the current pointer and preserves saved bytes", async (t) => {
   const value = await fixture(t);
   const candidate = await createDeckCandidate(value.root, {
@@ -181,7 +224,7 @@ test("rollback changes the pointer without rewriting either deck", async (t) => 
 });
 
 test("interrupted adoption recovery keeps revision records immutable and finishes one pointer", async (t) => {
-  for (const checkpoint of ["revision-written", "evidence-written", "pointer-written"] as const) {
+  for (const checkpoint of ["revision-written", "evidence-written", "pointer-written", "session-adopted"] as const) {
     await t.test(checkpoint, async (st) => {
       const value = await fixture(st);
       const candidate = await createDeckCandidate(value.root, {
@@ -206,6 +249,9 @@ test("interrupted adoption recovery keeps revision records immutable and finishe
       assert.equal(pointer?.revisionId, candidate.candidateRevisionId);
       assert.deepEqual(await records(), before);
       assert.equal((await readCurrentDeckPointer(value.root)).revisionId, candidate.candidateRevisionId);
+      const manifest = await readProject(value.root);
+      assert.equal(manifest.activeDeckEditSessionId, null);
+      assert.equal(manifest.currentDeck?.revisionId, candidate.candidateRevisionId);
       assert.deepEqual((await readdir(join(value.root, "output"))).filter((name) => /^current.*\.json$/.test(name)), ["current.json"]);
     });
   }

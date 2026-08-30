@@ -35,6 +35,7 @@ async function writeDeck(root: string, revisionId: string, slides: Array<{
   relationshipId: string;
   partNumber: number;
   creationId?: number;
+  identityXml?: string;
 }>): Promise<string> {
   const revisionRoot = join(root, "output", "deck-revisions", revisionId);
   await mkdir(revisionRoot, { recursive: true });
@@ -46,9 +47,9 @@ async function writeDeck(root: string, revisionId: string, slides: Array<{
   zip.file("ppt/_rels/presentation.xml.rels", `<Relationships xmlns="${REL}">${slides.map((slide) =>
     `<Relationship Id="${slide.relationshipId}" Type="${R}/slide" Target="slides/slide${slide.partNumber}.xml"/>`).join("")}</Relationships>`);
   for (const slide of slides) {
-    const identity = slide.creationId === undefined
+    const identity = slide.identityXml ?? (slide.creationId === undefined
       ? `<deck:extLst><deck:ext uri="{UNKNOWN-EXTENSION}"><mystery:payload keep="yes"/></deck:ext></deck:extLst>`
-      : `<deck:extLst><deck:ext uri="{BB962C8B-B14F-4D97-AF65-F5344CB8AC3E}"><office14:creationId val="${slide.creationId}"/></deck:ext></deck:extLst>`;
+      : `<deck:extLst><deck:ext uri="{BB962C8B-B14F-4D97-AF65-F5344CB8AC3E}"><office14:creationId val="${slide.creationId}"/></deck:ext></deck:extLst>`);
     zip.file(`ppt/slides/slide${slide.partNumber}.xml`, `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <deck:sld xmlns:deck="${P}" xmlns:office14="${P14}" xmlns:mystery="urn:unknown"><deck:cSld name="中文 🌌"><deck:spTree/><mystery:data keep="yes"/>${identity}</deck:cSld></deck:sld>`);
     zip.file(`ppt/slides/_rels/slide${slide.partNumber}.xml.rels`, `<Relationships xmlns="${REL}"/>`);
@@ -67,6 +68,47 @@ test("namespace-aware OOXML ranges preserve original Unicode and self-closing re
   assert.equal(relationship.selfClosing, true);
   assert.equal(relationship.attributes.find((attribute) => attribute.localName === "Target")?.value, "slides/slide1.xml");
   assert.equal(index.elements.some((entry) => entry.namespaceUri === "urn:unknown" && entry.localName === "ext"), true);
+});
+
+test("identity publication expands self-closing official containers inside their selected raw ranges", async (t) => {
+  const root = await projectRoot(t);
+  for (const [name, identityXml] of [
+    ["extension-list", `<deck:extLst/>`],
+    ["official-extension", `<deck:extLst><deck:ext uri="{BB962C8B-B14F-4D97-AF65-F5344CB8AC3E}"/></deck:extLst>`],
+  ] as const) {
+    await t.test(name, async () => {
+      const path = await writeDeck(root, randomUUID(), [{
+        presentationId: 256,
+        relationshipId: "rId1",
+        partNumber: 1,
+        identityXml,
+      }]);
+      const stableSlideId = randomUUID();
+      await publishInitialSlideIdentities(path, [{ stableSlideId, position: 0 }]);
+      const zip = await JSZip.loadAsync(await readFile(path));
+      const xml = await zip.file("ppt/slides/slide1.xml")!.async("string");
+      assert.match(xml, /<deck:extLst[^>]*>.*<deck:ext uri="\{BB962C8B-B14F-4D97-AF65-F5344CB8AC3E\}">.*<office14:creationId val="[1-9][0-9]*"\/>.*<\/deck:ext>.*<\/deck:extLst>/s);
+      assert.equal((await inspectLocalPptx(path)).slides[0]!.creationId !== null, true);
+    });
+  }
+});
+
+test("public inspection and identity publication reject an unowned project-shaped directory without mutation", async (t) => {
+  const parent = await realpath(await mkdtemp(join(tmpdir(), "superppt-unowned-deck-")));
+  t.after(async () => rm(parent, { recursive: true, force: true }));
+  const root = join(parent, "not-a-project");
+  const path = await writeDeck(root, randomUUID(), [{
+    presentationId: 256,
+    relationshipId: "rId1",
+    partNumber: 1,
+  }]);
+  const before = await readFile(path);
+  await assert.rejects(inspectLocalPptx(path), /not owned by SuperPPT/i);
+  await assert.rejects(
+    publishInitialSlideIdentities(path, [{ stableSlideId: randomUUID(), position: 0 }]),
+    /not owned by SuperPPT/i,
+  );
+  assert.deepEqual(await readFile(path), before);
 });
 
 test("initial identity publication uses official creation IDs and preserves unrelated XML", async (t) => {
@@ -179,4 +221,50 @@ test("topology reconciliation fails closed on duplicate persistent identity", ()
 
   const reconciled = reconcileSlideTopology(previous, inspected);
   assert.match(reconciled.conflicts.join("\n"), /duplicate|ambiguous/i);
+});
+
+test("topology reconciliation rejects a known presentation ID with an uncorroborated creation ID", () => {
+  const previous = signedTopology({
+    schemaVersion: 1 as const,
+    entries: [{ stableSlideId: randomUUID(), slidePart: "ppt/slides/slide1.xml", position: 0, management: "managed" as const, presentationSlideId: 256, creationId: 1001 }],
+    deletedStableSlideIds: [],
+  });
+  const reconciled = reconcileSlideTopology(previous, { slides: [{
+    position: 0,
+    slidePart: "ppt/slides/slide1.xml",
+    presentationSlideId: 256,
+    relationshipId: "rId1",
+    relationshipTarget: "slides/slide1.xml",
+    creationId: 9999,
+    xmlSha256: "d".repeat(64),
+    relationshipsSha256: null,
+  }] });
+  assert.match(reconciled.conflicts.join("\n"), /conflicting|corroborate|identity/i);
+  assert.equal(reconciled.topology.entries[0]!.creationId, 1001);
+});
+
+test("topology carries deletion history across revisions and blocks unknown identity after a deletion", () => {
+  const deleted = randomUUID();
+  const survivor = randomUUID();
+  const first = signedTopology({
+    schemaVersion: 1 as const,
+    entries: [
+      { stableSlideId: deleted, slidePart: "ppt/slides/slide1.xml", position: 0, management: "managed" as const, presentationSlideId: 256, creationId: 1001 },
+      { stableSlideId: survivor, slidePart: "ppt/slides/slide2.xml", position: 1, management: "managed" as const, presentationSlideId: 257, creationId: 1002 },
+    ],
+    deletedStableSlideIds: [],
+  });
+  const onlySurvivor = { slides: [{ position: 0, slidePart: "ppt/slides/slide2.xml", presentationSlideId: 257, relationshipId: "rId2", relationshipTarget: "slides/slide2.xml", creationId: 1002, xmlSha256: "e".repeat(64), relationshipsSha256: null }] };
+  const second = reconcileSlideTopology(first, onlySurvivor);
+  assert.deepEqual(second.conflicts, []);
+  assert.deepEqual(second.topology.deletedStableSlideIds, [deleted]);
+  const third = reconcileSlideTopology(second.topology, onlySurvivor);
+  assert.deepEqual(third.topology.deletedStableSlideIds, [deleted]);
+
+  const reappeared = reconcileSlideTopology(third.topology, { slides: [
+    ...onlySurvivor.slides,
+    { position: 1, slidePart: "ppt/slides/slide9.xml", presentationSlideId: 256, relationshipId: "rId9", relationshipTarget: "slides/slide9.xml", creationId: 1001, xmlSha256: "f".repeat(64), relationshipsSha256: null },
+  ] });
+  assert.match(reappeared.conflicts.join("\n"), /deleted|identity|unknown/i);
+  assert.deepEqual(reappeared.topology, third.topology);
 });

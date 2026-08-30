@@ -27,6 +27,7 @@ import {
   type AssembleProjectOperations,
   type FinalRender,
 } from "../src/deck/assemble.js";
+import { createDeckCandidate, readCurrentDeckPointer } from "../src/deck-revisions/store.js";
 import { exportPdf } from "../src/deck/pdf.js";
 import { buildMontage } from "../src/deck/montage.js";
 import { approveGate, assertGateCurrent } from "../src/planning/confirm.js";
@@ -691,6 +692,23 @@ test("assembles a review-only candidate and promotes it only after exact deck re
   assert.equal(delivery.revisionNumber, 1);
   assert.match(delivery.destination, /output\/revisions\/1$/);
   assert.deepEqual((await readProject(fixture.root)).exports, delivery.artifacts);
+});
+
+test("production candidate assembly bootstraps the initial immutable deck revision and current pointer", async (t) => {
+  const fixture = await readyProject(t);
+  await authorizeDeckGeneration(fixture.root);
+  await assembleProjectCandidate(fixture.root);
+  const current = await readCurrentDeckPointer(fixture.root);
+  assert.match(current.relativePath, /^output\/deck-revisions\/[0-9a-f-]{36}\/deck\.pptx$/);
+  const edit = await createDeckCandidate(fixture.root, {
+    sourceRevisionId: current.revisionId,
+    reason: "manual-edit",
+    changedSlideIds: [PROJECT_SLIDES[0]],
+    editableSlideIds: [],
+    targetSlideId: PROJECT_SLIDES[0],
+    mode: "manual",
+  });
+  assert.equal(edit.parentRevisionId, current.revisionId);
 });
 
 test("deck review return and edit actions are real non-promotion transitions", async (t) => {

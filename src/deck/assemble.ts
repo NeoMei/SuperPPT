@@ -34,6 +34,7 @@ import { buildMontage, buildMontageBytes } from "./montage.js";
 import { buildPdfBytes, exportPdf } from "./pdf.js";
 import { createPresentation } from "./pptx.js";
 import { publishInitialSlideIdentities } from "../deck-revisions/identity.js";
+import { bootstrapInitialDeckRevision } from "../deck-revisions/store.js";
 
 export type ImagePage = {
   id: string;
@@ -600,10 +601,6 @@ async function defaultBuildOutputs(
   await createPresentation(await Promise.all(renders.map(async (page) => page.mode === "editable"
     ? { ...page, editable: await prepareEditableSlide(page) }
     : page)), paths.pptx, dirname(paths.pptx));
-  await publishInitialSlideIdentities(paths.pptx, renders.map((page, position) => ({
-    stableSlideId: page.id,
-    position,
-  })));
   await exportPdf(renders, paths.pdf);
   await buildMontage(renders, paths.montage);
 }
@@ -844,6 +841,12 @@ export async function assembleProjectCandidate(
       montage: join(staging, "montage.jpg"),
     };
     await (operations.buildOutputs ?? defaultBuildOutputs)(ordered, paths);
+    const initialTopology = operations.buildOutputs
+      ? null
+      : await publishInitialSlideIdentities(paths.pptx, ordered.map((page, position) => ({
+        stableSlideId: page.id,
+        position,
+      })));
     await verifyOutputs(ordered, paths);
     const markerBase = {
       markerVersion: 1 as const,
@@ -894,6 +897,15 @@ export async function assembleProjectCandidate(
     const destination = join(root, ...candidatePath.split("/"));
     await promoteExclusive(staging, destination);
     await syncDirectory(candidatesRoot);
+    if (initialTopology) {
+      await bootstrapInitialDeckRevision(root, {
+        revisionId: candidateId,
+        projectRevisionId: manifest.currentRevision.id,
+        sourceAbsolutePath: join(destination, "deck.pptx"),
+        slideTopology: initialTopology,
+        changedSlideIds: markerBase.slides.map((slide) => slide.id),
+      });
+    }
     return { candidateId, destination, artifacts: built.artifacts };
     });
   });
