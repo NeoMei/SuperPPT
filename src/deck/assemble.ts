@@ -33,6 +33,7 @@ import { SOURCE_HEIGHT_PX, SOURCE_WIDTH_PX } from "./geometry.js";
 import { buildMontage, buildMontageBytes } from "./montage.js";
 import { buildPdfBytes, exportPdf } from "./pdf.js";
 import { createPresentation } from "./pptx.js";
+import { publishInitialSlideIdentities } from "../deck-revisions/identity.js";
 
 export type ImagePage = {
   id: string;
@@ -599,6 +600,10 @@ async function defaultBuildOutputs(
   await createPresentation(await Promise.all(renders.map(async (page) => page.mode === "editable"
     ? { ...page, editable: await prepareEditableSlide(page) }
     : page)), paths.pptx, dirname(paths.pptx));
+  await publishInitialSlideIdentities(paths.pptx, renders.map((page, position) => ({
+    stableSlideId: page.id,
+    position,
+  })));
   await exportPdf(renders, paths.pdf);
   await buildMontage(renders, paths.montage);
 }

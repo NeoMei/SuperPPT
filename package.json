@@ -27,14 +27,15 @@
     "cli": "tsx src/cli.ts"
   },
   "dependencies": {
+    "jszip": "^3.10.1",
     "koffi": "3.1.6",
     "pdf-lib": "^1.17.1",
+    "saxes": "^6.0.0",
     "sharp": "^0.35.3",
     "zod": "^4.0.0"
   },
   "devDependencies": {
     "@types/node": "^24.0.0",
-    "jszip": "^3.10.1",
     "tsx": "^4.20.0",
     "typescript": "^5.9.0"
   }
