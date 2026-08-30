@@ -77,12 +77,14 @@ function replaceRanges(source: string, replacements: Array<{ start: number; end:
   return result;
 }
 
-function namespaceDeclarations(opening: string): Map<string, string> {
-  const declarations = new Map<string, string>();
+type NamespaceDeclaration = { raw: string; uri: string };
+
+function namespaceDeclarations(opening: string): Map<string, NamespaceDeclaration> {
+  const declarations = new Map<string, NamespaceDeclaration>();
   for (const match of opening.matchAll(/\s+xmlns(?::([A-Za-z_][\w.-]*))?\s*=\s*(?:"([^"]*)"|'([^']*)')/g)) {
     const prefix = match[1] ?? "";
     if (declarations.has(prefix)) throw new Error(`duplicate namespace declaration for prefix ${prefix || "<default>"}`);
-    declarations.set(prefix, match[0]!.trim());
+    declarations.set(prefix, { raw: match[0]!.trim(), uri: match[2] ?? match[3] ?? "" });
   }
   return declarations;
 }
@@ -92,7 +94,8 @@ function transplantedShapeTree(
   relationshipIds: Map<string, string>,
 ): string {
   const range = extractElementRange(donorXml, P, "spTree");
-  const descendants = scanOoxmlRanges(donorXml).elements.filter((element) =>
+  const donorElements = scanOoxmlRanges(donorXml).elements;
+  const descendants = donorElements.filter((element) =>
     element.start >= range.start && element.end <= range.end);
   const replacements = descendants.flatMap((element) => element.attributes.flatMap((attribute) => {
     if (attribute.namespaceUri !== R || attribute.localName !== "embed") return [];
@@ -101,19 +104,53 @@ function transplantedShapeTree(
     return [{ start: attribute.valueStart - range.start, end: attribute.valueEnd - range.start, value: next }];
   }));
   let shapeTree = replaceRanges(donorXml.slice(range.start, range.end), replacements);
-  const root = scanOoxmlRanges(donorXml).elements.find((element) => element.parentStart === null);
-  if (!root) throw new Error("donor slide root is missing");
-  const rootDeclarations = namespaceDeclarations(donorXml.slice(root.start, root.openEnd));
-  const shapeOpening = shapeTree.slice(0, shapeTree.indexOf(">") + 1);
-  const localDeclarations = namespaceDeclarations(shapeOpening);
-  const usedPrefixes = new Set([...shapeTree.matchAll(/(?:<\/?|\s)([A-Za-z_][\w.-]*):[A-Za-z_][\w.-]*(?=[\s=/>])/g)]
-    .map((match) => match[1]!).filter((prefix) => prefix !== "xmlns"));
-  if (descendants.some((element) => !element.qualifiedName.includes(":") && element.namespaceUri !== "")) {
-    usedPrefixes.add("");
+  const byStart = new Map(donorElements.map((element) => [element.start, element] as const));
+  const declarationAt = (element: OoxmlElementRange, prefix: string) =>
+    namespaceDeclarations(donorXml.slice(element.start, element.openEnd)).get(prefix);
+  const localDeclaration = (element: OoxmlElementRange, prefix: string): NamespaceDeclaration | undefined => {
+    let current: OoxmlElementRange | undefined = element;
+    while (current && current.start >= range.start) {
+      const declaration = declarationAt(current, prefix);
+      if (declaration) return declaration;
+      current = current.parentStart === null ? undefined : byStart.get(current.parentStart);
+    }
+    return undefined;
+  };
+  const inheritedDeclaration = (prefix: string): NamespaceDeclaration | undefined => {
+    let current = range.parentStart === null ? undefined : byStart.get(range.parentStart);
+    while (current) {
+      const declaration = declarationAt(current, prefix);
+      if (declaration) return declaration;
+      current = current.parentStart === null ? undefined : byStart.get(current.parentStart);
+    }
+    return undefined;
+  };
+  const requiredDeclarations = new Map<string, NamespaceDeclaration>();
+  const requireNamespace = (element: OoxmlElementRange, prefix: string, uri: string): void => {
+    const local = localDeclaration(element, prefix);
+    if (local) {
+      if (local.uri !== uri) throw new Error(`donor shape tree namespace binding disagrees for prefix ${prefix || "<default>"}`);
+      return;
+    }
+    const inherited = inheritedDeclaration(prefix);
+    if (!inherited || inherited.uri !== uri) throw new Error(`donor shape tree uses undeclared namespace prefix ${prefix}`);
+    const previous = requiredDeclarations.get(prefix);
+    if (previous && previous.uri !== inherited.uri) throw new Error(`donor shape tree has ambiguous namespace prefix ${prefix || "<default>"}`);
+    requiredDeclarations.set(prefix, inherited);
+  };
+  for (const element of descendants) {
+    if (element.namespaceUri) {
+      const separator = element.qualifiedName.indexOf(":");
+      requireNamespace(element, separator < 0 ? "" : element.qualifiedName.slice(0, separator), element.namespaceUri);
+    }
+    for (const attribute of element.attributes) {
+      const separator = attribute.qualifiedName.indexOf(":");
+      if (separator > 0 && attribute.qualifiedName.slice(0, separator) !== "xmlns" && attribute.namespaceUri) {
+        requireNamespace(element, attribute.qualifiedName.slice(0, separator), attribute.namespaceUri);
+      }
+    }
   }
-  const declarations = [...usedPrefixes]
-    .filter((prefix) => !localDeclarations.has(prefix))
-    .map((prefix) => rootDeclarations.get(prefix) ?? (() => { throw new Error(`donor shape tree uses undeclared namespace prefix ${prefix}`); })());
+  const declarations = [...requiredDeclarations.values()].map((declaration) => declaration.raw);
   if (declarations.length > 0) {
     const openEnd = shapeTree.indexOf(">");
     if (openEnd < 0) throw new Error("donor shape tree opening tag is invalid");
@@ -123,10 +160,37 @@ function transplantedShapeTree(
   return shapeTree;
 }
 
+function stagedRelationshipElements(xml: string): OoxmlElementRange[] {
+  const elements = scanOoxmlRanges(xml).elements;
+  const documentRoots = elements.filter((element) => element.parentStart === null);
+  const root = documentRoots[0];
+  if (documentRoots.length !== 1 || !root || root.namespaceUri !== REL || root.localName !== "Relationships") {
+    throw new Error("staged relationship document must have one strict package Relationships root");
+  }
+  const relationships = elements.filter((element) => element.parentStart === root.start);
+  if (
+    relationships.some((element) => element.namespaceUri !== REL || element.localName !== "Relationship")
+    || elements.length !== relationships.length + 1
+  ) throw new Error("staged relationship document contains a foreign or nested child");
+  const prefix = xml.slice(0, root.start).replace(/^\uFEFF?\s*<\?xml[\s\S]*?\?>/, "");
+  if (prefix.trim() || xml.slice(root.end).trim()) throw new Error("staged relationship document has ambiguous text outside its root");
+  let cursor = root.openEnd;
+  for (const relationship of [...relationships].sort((left, right) => left.start - right.start)) {
+    if (xml.slice(cursor, relationship.start).trim()) throw new Error("staged relationship document has ambiguous root content");
+    if (!relationship.selfClosing && xml.slice(relationship.openEnd, relationship.closeStart).trim()) {
+      throw new Error("staged relationship document has ambiguous relationship content");
+    }
+    cursor = relationship.end;
+  }
+  if (!root.selfClosing && xml.slice(cursor, root.closeStart).trim()) throw new Error("staged relationship document has ambiguous root content");
+  return relationships;
+}
+
 export function rewriteInternalImageRelationships(
   relationshipsXml: string,
   additions: Array<{ id: string; target: string }>,
 ): string {
+  stagedRelationshipElements(relationshipsXml);
   const root = extractElementRange(relationshipsXml, REL, "Relationships");
   const children = additions.map(({ id, target }) =>
     `<Relationship xmlns="${REL}" Id="${escapeAttribute(id)}" Type="${R}/image" Target="${escapeAttribute(target)}"/>`).join("");
@@ -274,7 +338,7 @@ async function validateStagedTargetPackage(
   const relationshipsFile = zip.file(relationshipsPart);
   if (!relationshipsFile) throw new Error("staged target slide relationships are missing");
   const xml = await relationshipsFile.async("string");
-  const relationships = scanOoxmlRanges(xml).elements.filter((element) => element.namespaceUri === REL && element.localName === "Relationship");
+  const relationships = stagedRelationshipElements(xml);
   const ids = new Set<string>();
   for (const relationship of relationships) {
     const id = xmlAttribute(relationship, "", "Id");

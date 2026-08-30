@@ -69,23 +69,25 @@ async function targetDeckBytes(slideCount = 3): Promise<Buffer> {
   return zip.generateAsync({ type: "nodebuffer", compression: "DEFLATE" });
 }
 
-function donorSlideXml(options: { linked?: boolean; duplicateName?: boolean; duplicateId?: boolean; wrongName?: boolean; localRedeclaration?: boolean; defaultNamespace?: boolean } = {}): string {
+function donorSlideXml(options: { linked?: boolean; duplicateName?: boolean; duplicateId?: boolean; wrongName?: boolean; localRedeclaration?: boolean; defaultNamespace?: boolean; localDefaultExtension?: boolean } = {}): string {
   const iconName = options.duplicateName ? "text-title" : options.wrongName ? "asset-wrong" : "asset-icon";
   const iconId = options.duplicateId ? "4" : "5";
   const link = options.linked ? ` rel:link="rId3"` : "";
   const localRedeclaration = options.localRedeclaration ? ` xmlns:unused="urn:local-override"` : "";
-  const p = options.defaultNamespace ? "" : "slide:";
-  const presentationDeclaration = options.defaultNamespace ? `xmlns="${P}"` : `xmlns:slide="${P}"`;
+  const p = options.defaultNamespace ? "" : options.localDefaultExtension ? "p:" : "slide:";
+  const presentationDeclaration = options.defaultNamespace ? `xmlns="${P}"` : options.localDefaultExtension ? `xmlns:p="${P}"` : `xmlns:slide="${P}"`;
+  const extension = options.localDefaultExtension ? `<${p}extLst><${p}ext uri="{LOCAL-DEFAULT}"><local xmlns="urn:extension"><child/></local></${p}ext></${p}extLst>` : "";
   return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
-<${p}sld ${presentationDeclaration} xmlns:art="${A}" xmlns:rel="${R}" xmlns:unused="urn:root"><${p}cSld><${p}spTree${localRedeclaration}><${p}nvGrpSpPr><${p}cNvPr id="1" name="Group 1"/><${p}cNvGrpSpPr/><${p}nvPr/></${p}nvGrpSpPr><${p}grpSpPr/><${p}pic><${p}nvPicPr><${p}cNvPr id="2" name="asset-background"/></${p}nvPicPr><${p}blipFill><art:blip rel:embed="rId2"/></${p}blipFill></${p}pic><${p}sp><${p}nvSpPr><${p}cNvPr id="3" name="shape-panel-Panel"/></${p}nvSpPr><${p}spPr><art:solidFill><art:srgbClr val="E6E1D6"/></art:solidFill></${p}spPr></${p}sp><${p}sp><${p}nvSpPr><${p}cNvPr id="4" name="text-title"/></${p}nvSpPr><${p}txBody><art:p><art:r><art:t>Editable title</art:t></art:r></art:p></${p}txBody></${p}sp><${p}pic><${p}nvPicPr><${p}cNvPr id="${iconId}" name="${iconName}"/></${p}nvPicPr><${p}blipFill><art:blip rel:embed="rId3"${link}/></${p}blipFill></${p}pic></${p}spTree></${p}cSld></${p}sld>`;
+<${p}sld ${presentationDeclaration} xmlns:art="${A}" xmlns:rel="${R}" xmlns:unused="urn:root"><${p}cSld><${p}spTree${localRedeclaration}><${p}nvGrpSpPr><${p}cNvPr id="1" name="Group 1"/><${p}cNvGrpSpPr/><${p}nvPr/></${p}nvGrpSpPr><${p}grpSpPr/><${p}pic><${p}nvPicPr><${p}cNvPr id="2" name="asset-background"/></${p}nvPicPr><${p}blipFill><art:blip rel:embed="rId2"/></${p}blipFill></${p}pic><${p}sp><${p}nvSpPr><${p}cNvPr id="3" name="shape-panel-Panel"/></${p}nvSpPr><${p}spPr><art:solidFill><art:srgbClr val="E6E1D6"/></art:solidFill></${p}spPr></${p}sp><${p}sp><${p}nvSpPr><${p}cNvPr id="4" name="text-title"/></${p}nvSpPr><${p}txBody><art:p><art:r><art:t>Editable title</art:t></art:r></art:p></${p}txBody></${p}sp><${p}pic><${p}nvPicPr><${p}cNvPr id="${iconId}" name="${iconName}"/></${p}nvPicPr><${p}blipFill><art:blip rel:embed="rId3"${link}/></${p}blipFill></${p}pic>${extension}</${p}spTree></${p}cSld></${p}sld>`;
 }
 
-async function donorPptx(options: { relType?: string; external?: boolean; linked?: boolean; duplicateName?: boolean; duplicateId?: boolean; wrongName?: boolean; localRedeclaration?: boolean; defaultNamespace?: boolean; wrongBackground?: boolean; wrongAsset?: boolean; invalidPng?: boolean; extraImageRelationship?: boolean; presentationRelType?: string; duplicatePresentationRelId?: boolean; extraPackageRelationship?: "external" | "unsupported"; pageSize?: [number, number]; extraEntry?: { path: string; bytes?: Buffer | string }; extraSlide?: boolean } = {}): Promise<Buffer> {
+async function donorPptx(options: { relType?: string; external?: boolean; linked?: boolean; duplicateName?: boolean; duplicateId?: boolean; wrongName?: boolean; localRedeclaration?: boolean; defaultNamespace?: boolean; localDefaultExtension?: boolean; wrongBackground?: boolean; wrongAsset?: boolean; invalidPng?: boolean; extraImageRelationship?: boolean; presentationRelType?: string; duplicatePresentationRelId?: boolean; extraPackageRelationship?: "external" | "unsupported"; malformedRelationships?: "wrapper" | "foreign-child"; pageSize?: [number, number]; extraEntry?: { path: string; bytes?: Buffer | string }; extraSlide?: boolean } = {}): Promise<Buffer> {
   const zip = new JSZip();
   const [cx, cy] = options.pageSize ?? [12192000, 6858000];
   zip.file("[Content_Types].xml", `<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="xml" ContentType="application/xml"/><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="png" ContentType="image/png"/></Types>`);
   zip.file("ppt/presentation.xml", `<slide:presentation xmlns:slide="${P}" xmlns:rel="${R}"><slide:sldIdLst><slide:sldId id="256" rel:id="rId1"/></slide:sldIdLst><slide:sldSz cx="${cx}" cy="${cy}"/></slide:presentation>`);
-  zip.file("ppt/_rels/presentation.xml.rels", `<pkg:Relationships xmlns:pkg="${REL}"><pkg:Relationship Id="rId1" Type="${options.presentationRelType ?? `${R}/slide`}" Target="slides/slide1.xml"/>${options.duplicatePresentationRelId ? `<pkg:Relationship Id="rId1" Type="${R}/slideLayout" Target="slideLayouts/slideLayout1.xml"/>` : ""}</pkg:Relationships>`);
+  const presentationRelationships = `<pkg:Relationships xmlns:pkg="${REL}"><pkg:Relationship Id="rId1" Type="${options.presentationRelType ?? `${R}/slide`}" Target="slides/slide1.xml"/>${options.duplicatePresentationRelId ? `<pkg:Relationship Id="rId1" Type="${R}/slideLayout" Target="slideLayouts/slideLayout1.xml"/>` : ""}${options.malformedRelationships === "foreign-child" ? `<foreign:Extra xmlns:foreign="urn:foreign"/>` : ""}</pkg:Relationships>`;
+  zip.file("ppt/_rels/presentation.xml.rels", options.malformedRelationships === "wrapper" ? `<Wrapper>${presentationRelationships}</Wrapper>` : presentationRelationships);
   zip.file("ppt/slides/slide1.xml", donorSlideXml(options));
   zip.file("ppt/slides/_rels/slide1.xml.rels", `<pkg:Relationships xmlns:pkg="${REL}"><pkg:Relationship Id="rId1" Type="${LAYOUT_REL}" Target="../slideLayouts/slideLayout1.xml"/><pkg:Relationship Id="rId2" Type="${IMAGE_REL}" Target="../media/image1.png"/><pkg:Relationship Id="rId3" Type="${options.relType ?? IMAGE_REL}" Target="${options.external ? "https://example.invalid/icon.png" : "../media/image2.png"}"${options.external ? ` TargetMode="External"` : ""}/>${options.extraImageRelationship ? `<pkg:Relationship Id="rId4" Type="${IMAGE_REL}" Target="../media/image3.png"/>` : ""}</pkg:Relationships>`);
   zip.file("ppt/slideLayouts/slideLayout1.xml", `<slide:sldLayout xmlns:slide="${P}"/>`);
@@ -224,6 +226,51 @@ async function refreshConversionEvidence(fixture: Fixture): Promise<void> {
   await writeFile(fixture.recordPath, `${JSON.stringify(record, null, 2)}\n`);
 }
 
+async function installSharedDonorMediaFixture(fixture: Fixture): Promise<void> {
+  const icon = await readFile(join(fixture.outputRoot, "assets", "icon.png"));
+  const iconHash = digest(icon);
+  await writeFile(join(fixture.outputRoot, "assets", "icon-copy.png"), icon);
+  const manifestPath = join(fixture.outputRoot, "manifest.json");
+  const manifest = JSON.parse(await readFile(manifestPath, "utf8"));
+  manifest.elements.splice(2, 0, {
+    kind: "asset", id: "icon-copy", label: "Review icon copy",
+    bbox: { x: 760, y: 260, width: 120, height: 120 }, extraction: "transparent",
+    assetPath: "assets/icon-copy.png", zIndex: 3, role: "foreground-object", groupId: "hero-copy",
+    provenance: { kind: "source-visible", sourceCropSha256: iconHash, visibleMaskSha256: "2".repeat(64), assetSha256: iconHash },
+    relations: [], reviewRequired: true,
+  });
+  await writeFile(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`);
+  const donorPath = join(fixture.outputRoot, "slide-editable.pptx");
+  const donor = await JSZip.loadAsync(await readFile(donorPath));
+  const slidePart = "ppt/slides/slide1.xml";
+  const slideXml = await donor.file(slidePart)!.async("string");
+  donor.file(slidePart, slideXml.replace(/<\/slide:spTree>/, `<slide:pic><slide:nvPicPr><slide:cNvPr id="6" name="asset-icon-copy"/></slide:nvPicPr><slide:blipFill><art:blip rel:embed="rId4"/></slide:blipFill></slide:pic></slide:spTree>`));
+  const relsPart = "ppt/slides/_rels/slide1.xml.rels";
+  const relsXml = await donor.file(relsPart)!.async("string");
+  donor.file(relsPart, relsXml.replace("</pkg:Relationships>", `<pkg:Relationship Id="rId4" Type="${IMAGE_REL}" Target="../media/image2.png"/></pkg:Relationships>`));
+  await writeFile(donorPath, await donor.generateAsync({ type: "nodebuffer", compression: "DEFLATE" }));
+  const ledgerPath = join(fixture.outputRoot, "run-ledger.json");
+  const ledger = JSON.parse(await readFile(ledgerPath, "utf8"));
+  ledger.decisions.splice(1, 0, {
+    candidateId: "icon-copy", kind: "foreground-object", decision: "accepted", bbox: manifest.elements[2].bbox,
+    sourceElementIndexes: [3], repairMethod: "local_nearest_surface", extraction: "transparent",
+    output: { state: "editable_layer", manifestElementId: "icon-copy", assetPath: "assets/icon-copy.png" },
+  });
+  ledger.hashes.manifest = digest(await readFile(manifestPath));
+  ledger.hashes.assets = { "assets/icon.png": iconHash, "assets/icon-copy.png": iconHash };
+  ledger.hashes.pptx = digest(await readFile(donorPath));
+  const ledgerBytes = Buffer.from(`${JSON.stringify(ledger, null, 2)}\n`);
+  await writeFile(ledgerPath, ledgerBytes);
+  const record = JSON.parse(await readFile(fixture.recordPath, "utf8"));
+  record.artifacts.manifest = ledger.hashes.manifest;
+  record.artifacts.runLedger = digest(ledgerBytes);
+  record.artifacts.donorPptx = ledger.hashes.pptx;
+  record.artifacts.assets = ledger.hashes.assets;
+  record.artifacts.outputs["manifest.json"] = ledger.hashes.manifest;
+  record.artifacts.outputs["slide-editable.pptx"] = ledger.hashes.pptx;
+  await writeFile(fixture.recordPath, `${JSON.stringify(record, null, 2)}\n`);
+}
+
 async function replaceCandidateFixture(fixture: Fixture, mutate: (zip: JSZip) => Promise<void> | void): Promise<void> {
   const zip = await JSZip.loadAsync(await readFile(fixture.candidatePath));
   await mutate(zip);
@@ -296,6 +343,27 @@ test("rejects unsafe donor packages, relationships, object names, page sizes, an
     ["extra package unsupported relationship", { extraPackageRelationship: "unsupported" }, /unsupported relationship/i],
   ];
   for (const [name, donorOptions, pattern] of scenarios) await t.test(name, async (subtest) => { const fixture = await activationFixture(subtest); await writeFile(join(fixture.outputRoot, "slide-editable.pptx"), await donorPptx(donorOptions)); await refreshConversionEvidence(fixture); await assert.rejects(activateEditableSlideInDeck({ projectRoot: fixture.root, candidatePath: fixture.candidatePath, slideIndex: 1, slideId: fixture.slideIds[1]!, conversionRoot: fixture.conversionRoot }), pattern); });
+});
+
+test("rejects shared donor media even when manifested assets have identical authenticated bytes", async (t) => {
+  const fixture = await activationFixture(t);
+  await installSharedDonorMediaFixture(fixture);
+  await assert.rejects(
+    activateEditableSlideInDeck({ projectRoot: fixture.root, candidatePath: fixture.candidatePath, slideIndex: 1, slideId: fixture.slideIds[1]!, conversionRoot: fixture.conversionRoot }),
+    /one-to-one|unique media|shared donor media/i,
+  );
+});
+
+test("rejects donor relationship documents without one strict package root", async (t) => {
+  for (const malformedRelationships of ["wrapper", "foreign-child"] as const) await t.test(malformedRelationships, async (subtest) => {
+    const fixture = await activationFixture(subtest);
+    await writeFile(join(fixture.outputRoot, "slide-editable.pptx"), await donorPptx({ malformedRelationships }));
+    await refreshConversionEvidence(fixture);
+    await assert.rejects(
+      activateEditableSlideInDeck({ projectRoot: fixture.root, candidatePath: fixture.candidatePath, slideIndex: 1, slideId: fixture.slideIds[1]!, conversionRoot: fixture.conversionRoot }),
+      /relationship document|relationship part|malformed|root|foreign/i,
+    );
+  });
 });
 
 test("rejects target identity, index, output-path, and staging races without replacing the candidate", async (t) => {
@@ -401,6 +469,16 @@ test("transplants an unprefixed shape tree that inherits the default Presentatio
   assert.equal(result.targetInspection.editableTextCount, 1);
 });
 
+test("keeps a locally scoped default extension namespace inside a prefixed donor shape tree", async (t) => {
+  const fixture = await activationFixture(t);
+  await writeFile(join(fixture.outputRoot, "slide-editable.pptx"), await donorPptx({ localDefaultExtension: true }));
+  await refreshConversionEvidence(fixture);
+  await activateEditableSlideInDeck({ projectRoot: fixture.root, candidatePath: fixture.candidatePath, slideIndex: 1, slideId: fixture.slideIds[1]!, conversionRoot: fixture.conversionRoot });
+  const zip = await JSZip.loadAsync(await readFile(fixture.candidatePath));
+  const xml = await zip.file("ppt/slides/slide2.xml")!.async("string");
+  assert.match(xml, /<local xmlns="urn:extension"><child\/><\/local>/);
+});
+
 test("authenticates all official QA previews and scene-graph pair evidence", async (t) => {
   await t.test("tampered QA preview", async (subtest) => {
     const fixture = await activationFixture(subtest); await writeFile(join(fixture.outputRoot, "layer-review.png"), await png(1280, 720, true));
@@ -445,5 +523,22 @@ test("validates staged target relationships, media paths, and PNG content types"
   await t.test("generated media collision", async (subtest) => {
     const fixture = await activationFixture(subtest);
     await assert.rejects(activateEditableSlideInDeck({ projectRoot: fixture.root, candidatePath: fixture.candidatePath, slideIndex: 1, slideId: fixture.slideIds[1]!, conversionRoot: fixture.conversionRoot, operations: { mediaNameFactory: () => "superppt-collision.png" } }), /media path collides/i);
+  });
+});
+
+test("rejects staged relationship documents without one strict package root", async (t) => {
+  for (const structure of ["wrapper", "foreign-child"] as const) await t.test(structure, async (subtest) => {
+    const fixture = await activationFixture(subtest);
+    await replaceCandidateFixture(fixture, async (zip) => {
+      const part = "ppt/slides/_rels/slide2.xml.rels";
+      const xml = await zip.file(part)!.async("string");
+      zip.file(part, structure === "wrapper"
+        ? `<Wrapper>${xml}</Wrapper>`
+        : xml.replace("</pkg:Relationships>", `<foreign:Extra xmlns:foreign="urn:foreign"/></pkg:Relationships>`));
+    });
+    await assert.rejects(
+      activateEditableSlideInDeck({ projectRoot: fixture.root, candidatePath: fixture.candidatePath, slideIndex: 1, slideId: fixture.slideIds[1]!, conversionRoot: fixture.conversionRoot }),
+      /relationship document|relationship part|malformed|root|foreign/i,
+    );
   });
 });

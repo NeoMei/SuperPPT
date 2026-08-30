@@ -322,12 +322,32 @@ async function validateDonorRelationships(zip: JSZip, names: string[]): Promise<
   for (const relationshipsPart of relationshipParts) {
     const xml = await zip.file(relationshipsPart)!.async("string");
     const parsed = scanOoxmlRanges(xml).elements;
-    const roots = parsed.filter((element) => element.namespaceUri === PACKAGE_RELATIONSHIPS && element.localName === "Relationships");
-    if (roots.length !== 1) throw new Error(`official editable donor relationship part is malformed: ${relationshipsPart}`);
-    const relationships = parsed.filter((element) => element.namespaceUri === PACKAGE_RELATIONSHIPS && element.localName === "Relationship");
-    const relationshipLike = parsed.filter((element) => element.localName === "Relationship");
-    if (relationshipLike.length !== relationships.length || relationships.some((element) => element.parentStart !== roots[0]!.start)) {
-      throw new Error(`official editable donor relationship part is malformed: ${relationshipsPart}`);
+    const documentRoots = parsed.filter((element) => element.parentStart === null);
+    const root = documentRoots[0];
+    if (documentRoots.length !== 1 || !root || root.namespaceUri !== PACKAGE_RELATIONSHIPS || root.localName !== "Relationships") {
+      throw new Error(`official editable donor relationship document has no strict package root: ${relationshipsPart}`);
+    }
+    const relationships = parsed.filter((element) => element.parentStart === root.start);
+    if (
+      relationships.some((element) => element.namespaceUri !== PACKAGE_RELATIONSHIPS || element.localName !== "Relationship")
+      || parsed.length !== relationships.length + 1
+    ) throw new Error(`official editable donor relationship document contains a foreign or nested child: ${relationshipsPart}`);
+    const prefix = xml.slice(0, root.start).replace(/^\uFEFF?\s*<\?xml[\s\S]*?\?>/, "");
+    if (prefix.trim() || xml.slice(root.end).trim()) {
+      throw new Error(`official editable donor relationship document has ambiguous text outside its root: ${relationshipsPart}`);
+    }
+    let cursor = root.openEnd;
+    for (const relationship of [...relationships].sort((left, right) => left.start - right.start)) {
+      if (xml.slice(cursor, relationship.start).trim()) {
+        throw new Error(`official editable donor relationship document has ambiguous root content: ${relationshipsPart}`);
+      }
+      if (!relationship.selfClosing && xml.slice(relationship.openEnd, relationship.closeStart).trim()) {
+        throw new Error(`official editable donor relationship document has ambiguous relationship content: ${relationshipsPart}`);
+      }
+      cursor = relationship.end;
+    }
+    if (!root.selfClosing && xml.slice(cursor, root.closeStart).trim()) {
+      throw new Error(`official editable donor relationship document has ambiguous root content: ${relationshipsPart}`);
     }
     const ids = new Set<string>();
     const sourcePart = relationshipSourcePart(relationshipsPart);
@@ -515,8 +535,11 @@ export async function inspectOfficialEditableDonor(
   if (imageRelationships.length !== objectEmbeds.size || imageRelationships.length === 0) {
     throw new Error("official editable donor image relationship binding is incomplete");
   }
+  if (new Set(imageRelationships.map((relationship) => relationship.targetPart)).size !== imageRelationships.length) {
+    throw new Error("official editable donor media parts must bind objects one-to-one");
+  }
   const mediaParts = names.filter((name) => /^ppt\/media\//.test(name));
-  if (JSON.stringify(mediaParts.sort()) !== JSON.stringify([...new Set(imageRelationships.map((relationship) => relationship.targetPart))].sort())) {
+  if (JSON.stringify(mediaParts.sort()) !== JSON.stringify(imageRelationships.map((relationship) => relationship.targetPart).sort())) {
     throw new Error("official editable donor contains unbound media files");
   }
   return { zip, slidePart, slideXml, relationshipsPart, relationshipsXml, objectNames: expectedNames, imageRelationships };
