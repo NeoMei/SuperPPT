@@ -30,8 +30,14 @@ const A = "http://schemas.openxmlformats.org/drawingml/2006/main";
 const R = "http://schemas.openxmlformats.org/officeDocument/2006/relationships";
 const REL = "http://schemas.openxmlformats.org/package/2006/relationships";
 const P14 = "http://schemas.microsoft.com/office/powerpoint/2010/main";
+const CONTENT_TYPES = "http://schemas.openxmlformats.org/package/2006/content-types";
 const IMAGE_REL = `${R}/image`;
 const LAYOUT_REL = `${R}/slideLayout`;
+const OFFICE_DOCUMENT_REL = `${R}/officeDocument`;
+const PRESENTATION_CONTENT_TYPE = "application/vnd.openxmlformats-officedocument.presentationml.presentation.main+xml";
+const SLIDE_CONTENT_TYPE = "application/vnd.openxmlformats-officedocument.presentationml.slide+xml";
+const SLIDE_LAYOUT_CONTENT_TYPE = "application/vnd.openxmlformats-officedocument.presentationml.slideLayout+xml";
+const RELATIONSHIPS_CONTENT_TYPE = "application/vnd.openxmlformats-package.relationships+xml";
 
 const digest = (value: Buffer | string): string => createHash("sha256").update(value).digest("hex");
 
@@ -69,7 +75,7 @@ async function targetDeckBytes(slideCount = 3): Promise<Buffer> {
   return zip.generateAsync({ type: "nodebuffer", compression: "DEFLATE" });
 }
 
-function donorSlideXml(options: { linked?: boolean; duplicateName?: boolean; duplicateId?: boolean; wrongName?: boolean; localRedeclaration?: boolean; defaultNamespace?: boolean; localDefaultExtension?: boolean } = {}): string {
+function donorSlideXml(options: { linked?: boolean; duplicateName?: boolean; duplicateId?: boolean; wrongName?: boolean; localRedeclaration?: boolean; defaultNamespace?: boolean; localDefaultExtension?: boolean; xmlSpace?: boolean; undeclaredPrefix?: boolean } = {}): string {
   const iconName = options.duplicateName ? "text-title" : options.wrongName ? "asset-wrong" : "asset-icon";
   const iconId = options.duplicateId ? "4" : "5";
   const link = options.linked ? ` rel:link="rId3"` : "";
@@ -77,14 +83,25 @@ function donorSlideXml(options: { linked?: boolean; duplicateName?: boolean; dup
   const p = options.defaultNamespace ? "" : options.localDefaultExtension ? "p:" : "slide:";
   const presentationDeclaration = options.defaultNamespace ? `xmlns="${P}"` : options.localDefaultExtension ? `xmlns:p="${P}"` : `xmlns:slide="${P}"`;
   const extension = options.localDefaultExtension ? `<${p}extLst><${p}ext uri="{LOCAL-DEFAULT}"><local xmlns="urn:extension"><child/></local></${p}ext></${p}extLst>` : "";
+  const titleSpace = options.xmlSpace ? ` xml:space="preserve"` : options.undeclaredPrefix ? ` ghost:space="preserve"` : "";
+  const title = options.xmlSpace ? " Editable title " : "Editable title";
   return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
-<${p}sld ${presentationDeclaration} xmlns:art="${A}" xmlns:rel="${R}" xmlns:unused="urn:root"><${p}cSld><${p}spTree${localRedeclaration}><${p}nvGrpSpPr><${p}cNvPr id="1" name="Group 1"/><${p}cNvGrpSpPr/><${p}nvPr/></${p}nvGrpSpPr><${p}grpSpPr/><${p}pic><${p}nvPicPr><${p}cNvPr id="2" name="asset-background"/></${p}nvPicPr><${p}blipFill><art:blip rel:embed="rId2"/></${p}blipFill></${p}pic><${p}sp><${p}nvSpPr><${p}cNvPr id="3" name="shape-panel-Panel"/></${p}nvSpPr><${p}spPr><art:solidFill><art:srgbClr val="E6E1D6"/></art:solidFill></${p}spPr></${p}sp><${p}sp><${p}nvSpPr><${p}cNvPr id="4" name="text-title"/></${p}nvSpPr><${p}txBody><art:p><art:r><art:t>Editable title</art:t></art:r></art:p></${p}txBody></${p}sp><${p}pic><${p}nvPicPr><${p}cNvPr id="${iconId}" name="${iconName}"/></${p}nvPicPr><${p}blipFill><art:blip rel:embed="rId3"${link}/></${p}blipFill></${p}pic>${extension}</${p}spTree></${p}cSld></${p}sld>`;
+<${p}sld ${presentationDeclaration} xmlns:art="${A}" xmlns:rel="${R}" xmlns:unused="urn:root"><${p}cSld><${p}spTree${localRedeclaration}><${p}nvGrpSpPr><${p}cNvPr id="1" name="Group 1"/><${p}cNvGrpSpPr/><${p}nvPr/></${p}nvGrpSpPr><${p}grpSpPr/><${p}pic><${p}nvPicPr><${p}cNvPr id="2" name="asset-background"/></${p}nvPicPr><${p}blipFill><art:blip rel:embed="rId2"/></${p}blipFill></${p}pic><${p}sp><${p}nvSpPr><${p}cNvPr id="3" name="shape-panel-Panel"/></${p}nvSpPr><${p}spPr><art:solidFill><art:srgbClr val="E6E1D6"/></art:solidFill></${p}spPr></${p}sp><${p}sp><${p}nvSpPr><${p}cNvPr id="4" name="text-title"/></${p}nvSpPr><${p}txBody><art:p><art:r><art:t${titleSpace}>${title}</art:t></art:r></art:p></${p}txBody></${p}sp><${p}pic><${p}nvPicPr><${p}cNvPr id="${iconId}" name="${iconName}"/></${p}nvPicPr><${p}blipFill><art:blip rel:embed="rId3"${link}/></${p}blipFill></${p}pic>${extension}</${p}spTree></${p}cSld></${p}sld>`;
 }
 
-async function donorPptx(options: { relType?: string; external?: boolean; linked?: boolean; duplicateName?: boolean; duplicateId?: boolean; wrongName?: boolean; localRedeclaration?: boolean; defaultNamespace?: boolean; localDefaultExtension?: boolean; wrongBackground?: boolean; wrongAsset?: boolean; invalidPng?: boolean; extraImageRelationship?: boolean; presentationRelType?: string; duplicatePresentationRelId?: boolean; extraPackageRelationship?: "external" | "unsupported"; malformedRelationships?: "wrapper" | "foreign-child"; pageSize?: [number, number]; extraEntry?: { path: string; bytes?: Buffer | string }; extraSlide?: boolean } = {}): Promise<Buffer> {
+function validDonorRootRelationships(): string {
+  return `<pkg:Relationships xmlns:pkg="${REL}"><pkg:Relationship Id="rId1" Type="${OFFICE_DOCUMENT_REL}" Target="ppt/presentation.xml"/></pkg:Relationships>`;
+}
+
+function validDonorContentTypes(): string {
+  return `<Types xmlns="${CONTENT_TYPES}"><Default Extension="rels" ContentType="${RELATIONSHIPS_CONTENT_TYPE}"/><Default Extension="png" ContentType="image/png"/><Override PartName="/ppt/presentation.xml" ContentType="${PRESENTATION_CONTENT_TYPE}"/><Override PartName="/ppt/slides/slide1.xml" ContentType="${SLIDE_CONTENT_TYPE}"/><Override PartName="/ppt/slideLayouts/slideLayout1.xml" ContentType="${SLIDE_LAYOUT_CONTENT_TYPE}"/></Types>`;
+}
+
+async function donorPptx(options: { relType?: string; external?: boolean; linked?: boolean; duplicateName?: boolean; duplicateId?: boolean; wrongName?: boolean; localRedeclaration?: boolean; defaultNamespace?: boolean; localDefaultExtension?: boolean; xmlSpace?: boolean; undeclaredPrefix?: boolean; wrongBackground?: boolean; wrongAsset?: boolean; invalidPng?: boolean; extraImageRelationship?: boolean; presentationRelType?: string; duplicatePresentationRelId?: boolean; extraPackageRelationship?: "external" | "unsupported"; malformedRelationships?: "wrapper" | "foreign-child"; rootRelationshipsXml?: string | null; contentTypesXml?: string | null; pageSize?: [number, number]; extraEntry?: { path: string; bytes?: Buffer | string }; extraSlide?: boolean } = {}): Promise<Buffer> {
   const zip = new JSZip();
   const [cx, cy] = options.pageSize ?? [12192000, 6858000];
-  zip.file("[Content_Types].xml", `<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="xml" ContentType="application/xml"/><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="png" ContentType="image/png"/></Types>`);
+  if (options.contentTypesXml !== null) zip.file("[Content_Types].xml", options.contentTypesXml ?? validDonorContentTypes());
+  if (options.rootRelationshipsXml !== null) zip.file("_rels/.rels", options.rootRelationshipsXml ?? validDonorRootRelationships());
   zip.file("ppt/presentation.xml", `<slide:presentation xmlns:slide="${P}" xmlns:rel="${R}"><slide:sldIdLst><slide:sldId id="256" rel:id="rId1"/></slide:sldIdLst><slide:sldSz cx="${cx}" cy="${cy}"/></slide:presentation>`);
   const presentationRelationships = `<pkg:Relationships xmlns:pkg="${REL}"><pkg:Relationship Id="rId1" Type="${options.presentationRelType ?? `${R}/slide`}" Target="slides/slide1.xml"/>${options.duplicatePresentationRelId ? `<pkg:Relationship Id="rId1" Type="${R}/slideLayout" Target="slideLayouts/slideLayout1.xml"/>` : ""}${options.malformedRelationships === "foreign-child" ? `<foreign:Extra xmlns:foreign="urn:foreign"/>` : ""}</pkg:Relationships>`;
   zip.file("ppt/_rels/presentation.xml.rels", options.malformedRelationships === "wrapper" ? `<Wrapper>${presentationRelationships}</Wrapper>` : presentationRelationships);
@@ -366,6 +383,62 @@ test("rejects donor relationship documents without one strict package root", asy
   });
 });
 
+test("requires one strict OPC package relationship bound to the presentation", async (t) => {
+  const scenarios: Array<[string, Parameters<typeof donorPptx>[0], RegExp]> = [
+    ["missing package relationships", { rootRelationshipsXml: null }, /package root|root relationship|_rels\/\.rels|officeDocument/i],
+    ["wrong officeDocument type", { rootRelationshipsXml: `<pkg:Relationships xmlns:pkg="${REL}"><pkg:Relationship Id="rId1" Type="${R}/slide" Target="ppt/presentation.xml"/></pkg:Relationships>` }, /officeDocument|root relationship/i],
+    ["wrong officeDocument target", { rootRelationshipsXml: `<pkg:Relationships xmlns:pkg="${REL}"><pkg:Relationship Id="rId1" Type="${OFFICE_DOCUMENT_REL}" Target="ppt/slides/slide1.xml"/></pkg:Relationships>` }, /presentation\.xml|officeDocument|root relationship/i],
+    ["duplicate officeDocument relationship", { rootRelationshipsXml: `<pkg:Relationships xmlns:pkg="${REL}"><pkg:Relationship Id="rId1" Type="${OFFICE_DOCUMENT_REL}" Target="ppt/presentation.xml"/><pkg:Relationship Id="rId2" Type="${OFFICE_DOCUMENT_REL}" Target="ppt/presentation.xml"/></pkg:Relationships>` }, /exactly one|duplicate|extra|root relationship/i],
+    ["extra package relationship", { rootRelationshipsXml: `<pkg:Relationships xmlns:pkg="${REL}"><pkg:Relationship Id="rId1" Type="${OFFICE_DOCUMENT_REL}" Target="ppt/presentation.xml"/><pkg:Relationship Id="rId2" Type="${R}/slide" Target="ppt/slides/slide1.xml"/></pkg:Relationships>` }, /unsupported|extra|root relationship/i],
+    ["external package relationship", { rootRelationshipsXml: `<pkg:Relationships xmlns:pkg="${REL}"><pkg:Relationship Id="rId1" Type="${OFFICE_DOCUMENT_REL}" Target="https://example.invalid/presentation.xml" TargetMode="External"/></pkg:Relationships>` }, /external|TargetMode|root relationship/i],
+  ];
+  for (const [name, donorOptions, pattern] of scenarios) await t.test(name, async (subtest) => {
+    const fixture = await activationFixture(subtest);
+    await writeFile(join(fixture.outputRoot, "slide-editable.pptx"), await donorPptx(donorOptions));
+    await refreshConversionEvidence(fixture);
+    await assert.rejects(
+      activateEditableSlideInDeck({ projectRoot: fixture.root, candidatePath: fixture.candidatePath, slideIndex: 1, slideId: fixture.slideIds[1]!, conversionRoot: fixture.conversionRoot }),
+      pattern,
+    );
+  });
+});
+
+test("requires one strict OPC content-types document with exact donor declarations", async (t) => {
+  const valid = validDonorContentTypes();
+  const relsDefault = `<Default Extension="rels" ContentType="${RELATIONSHIPS_CONTENT_TYPE}"/>`;
+  const pngDefault = `<Default Extension="png" ContentType="image/png"/>`;
+  const presentationOverride = `<Override PartName="/ppt/presentation.xml" ContentType="${PRESENTATION_CONTENT_TYPE}"/>`;
+  const slideOverride = `<Override PartName="/ppt/slides/slide1.xml" ContentType="${SLIDE_CONTENT_TYPE}"/>`;
+  const scenarios: Array<[string, string | null, RegExp]> = [
+    ["missing content types", null, /content types|\[Content_Types\]\.xml/i],
+    ["wrapper root", `<Wrapper>${valid}</Wrapper>`, /content types.*root|wrapper|strict/i],
+    ["foreign child", valid.replace("</Types>", `<foreign:Extra xmlns:foreign="urn:foreign"/></Types>`), /content types.*foreign|direct|child/i],
+    ["foreign root attribute", valid.replace(`<Types xmlns="${CONTENT_TYPES}">`, `<Types xmlns="${CONTENT_TYPES}" xmlns:foreign="urn:foreign" foreign:flag="1">`), /content types.*attribute|foreign.*attribute/i],
+    ["Default with Override attribute", valid.replace(`Extension="rels"`, `Extension="rels" PartName="/ppt/presentation.xml"`), /content types.*attribute|Default.*attribute/i],
+    ["Override with Default attribute", valid.replace(`PartName="/ppt/presentation.xml"`, `PartName="/ppt/presentation.xml" Extension="xml"`), /content types.*attribute|Override.*attribute/i],
+    ["duplicate Default", valid.replace(relsDefault, `${relsDefault}${relsDefault}`), /duplicate.*Default|duplicate.*extension|content types/i],
+    ["conflicting Default", valid.replace(relsDefault, `${relsDefault}<Default Extension="RELS" ContentType="application/xml"/>`), /conflict|duplicate.*extension|content types/i],
+    ["duplicate Override", valid.replace(presentationOverride, `${presentationOverride}${presentationOverride}`), /duplicate.*Override|duplicate.*part|content types/i],
+    ["missing presentation declaration", valid.replace(presentationOverride, ""), /presentation.*content type|content types.*presentation/i],
+    ["wrong presentation declaration", valid.replace(PRESENTATION_CONTENT_TYPE, "application/xml"), /presentation.*content type|content types.*presentation/i],
+    ["missing slide declaration", valid.replace(slideOverride, ""), /slide.*content type|content types.*slide/i],
+    ["wrong slide declaration", valid.replace(SLIDE_CONTENT_TYPE, "application/xml"), /slide.*content type|content types.*slide/i],
+    ["missing relationships declaration", valid.replace(relsDefault, ""), /relationship.*content type|content types.*relationship/i],
+    ["wrong relationships declaration", valid.replace(RELATIONSHIPS_CONTENT_TYPE, "application/xml"), /relationship.*content type|content types.*relationship/i],
+    ["missing PNG declaration", valid.replace(pngDefault, ""), /PNG.*content type|content types.*PNG/i],
+    ["wrong PNG declaration", valid.replace("image/png", "application/octet-stream"), /PNG.*content type|content types.*PNG/i],
+  ];
+  for (const [name, contentTypesXml, pattern] of scenarios) await t.test(name, async (subtest) => {
+    const fixture = await activationFixture(subtest);
+    await writeFile(join(fixture.outputRoot, "slide-editable.pptx"), await donorPptx({ contentTypesXml }));
+    await refreshConversionEvidence(fixture);
+    await assert.rejects(
+      activateEditableSlideInDeck({ projectRoot: fixture.root, candidatePath: fixture.candidatePath, slideIndex: 1, slideId: fixture.slideIds[1]!, conversionRoot: fixture.conversionRoot }),
+      pattern,
+    );
+  });
+});
+
 test("rejects target identity, index, output-path, and staging races without replacing the candidate", async (t) => {
   const fixture = await activationFixture(t);
   const before = await readFile(fixture.candidatePath);
@@ -477,6 +550,27 @@ test("keeps a locally scoped default extension namespace inside a prefixed donor
   const zip = await JSZip.loadAsync(await readFile(fixture.candidatePath));
   const xml = await zip.file("ppt/slides/slide2.xml")!.async("string");
   assert.match(xml, /<local xmlns="urn:extension"><child\/><\/local>/);
+});
+
+test("accepts the predefined xml namespace for xml:space without an explicit declaration", async (t) => {
+  const fixture = await activationFixture(t);
+  await writeFile(join(fixture.outputRoot, "slide-editable.pptx"), await donorPptx({ xmlSpace: true }));
+  await refreshConversionEvidence(fixture);
+  await activateEditableSlideInDeck({ projectRoot: fixture.root, candidatePath: fixture.candidatePath, slideIndex: 1, slideId: fixture.slideIds[1]!, conversionRoot: fixture.conversionRoot });
+  const zip = await JSZip.loadAsync(await readFile(fixture.candidatePath));
+  const xml = await zip.file("ppt/slides/slide2.xml")!.async("string");
+  assert.match(xml, /<art:t xml:space="preserve"> Editable title <\/art:t>/);
+  assert.doesNotMatch(xml, /xmlns:xml=/);
+});
+
+test("still rejects a genuinely undeclared namespace prefix in the donor shape tree", async (t) => {
+  const fixture = await activationFixture(t);
+  await writeFile(join(fixture.outputRoot, "slide-editable.pptx"), await donorPptx({ undeclaredPrefix: true }));
+  await refreshConversionEvidence(fixture);
+  await assert.rejects(
+    activateEditableSlideInDeck({ projectRoot: fixture.root, candidatePath: fixture.candidatePath, slideIndex: 1, slideId: fixture.slideIds[1]!, conversionRoot: fixture.conversionRoot }),
+    /invalid OOXML|undeclared namespace|unbound namespace|prefix.*ghost|ghost.*prefix/i,
+  );
 });
 
 test("authenticates all official QA previews and scene-graph pair evidence", async (t) => {

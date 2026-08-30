@@ -25,6 +25,7 @@ const P = "http://schemas.openxmlformats.org/presentationml/2006/main";
 const R = "http://schemas.openxmlformats.org/officeDocument/2006/relationships";
 const REL = "http://schemas.openxmlformats.org/package/2006/relationships";
 const CONTENT_TYPES = "http://schemas.openxmlformats.org/package/2006/content-types";
+const XML_NAMESPACE = "http://www.w3.org/XML/1998/namespace";
 const Sha256Schema = z.string().regex(/^[a-f0-9]{64}$/);
 const ActivationJournalSchema = z.object({
   schemaVersion: z.literal(1),
@@ -127,6 +128,7 @@ function transplantedShapeTree(
   };
   const requiredDeclarations = new Map<string, NamespaceDeclaration>();
   const requireNamespace = (element: OoxmlElementRange, prefix: string, uri: string): void => {
+    if (prefix === "xml" && uri === XML_NAMESPACE) return;
     const local = localDeclaration(element, prefix);
     if (local) {
       if (local.uri !== uri) throw new Error(`donor shape tree namespace binding disagrees for prefix ${prefix || "<default>"}`);

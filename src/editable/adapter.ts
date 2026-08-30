@@ -40,9 +40,22 @@ const MAX_OUTPUT = 512 * 1024 * 1024;
 const PRESENTATION = "http://schemas.openxmlformats.org/presentationml/2006/main";
 const DOCUMENT_RELATIONSHIPS = "http://schemas.openxmlformats.org/officeDocument/2006/relationships";
 const PACKAGE_RELATIONSHIPS = "http://schemas.openxmlformats.org/package/2006/relationships";
+const PACKAGE_CONTENT_TYPES = "http://schemas.openxmlformats.org/package/2006/content-types";
+const XMLNS_NAMESPACE = "http://www.w3.org/2000/xmlns/";
 const IMAGE_RELATIONSHIP = `${DOCUMENT_RELATIONSHIPS}/image`;
 const LAYOUT_RELATIONSHIP = `${DOCUMENT_RELATIONSHIPS}/slideLayout`;
 const SLIDE_RELATIONSHIP = `${DOCUMENT_RELATIONSHIPS}/slide`;
+const OFFICE_DOCUMENT_RELATIONSHIP = `${DOCUMENT_RELATIONSHIPS}/officeDocument`;
+const PRESENTATION_CONTENT_TYPE = "application/vnd.openxmlformats-officedocument.presentationml.presentation.main+xml";
+const SLIDE_CONTENT_TYPE = "application/vnd.openxmlformats-officedocument.presentationml.slide+xml";
+const SLIDE_LAYOUT_CONTENT_TYPE = "application/vnd.openxmlformats-officedocument.presentationml.slideLayout+xml";
+const RELATIONSHIPS_CONTENT_TYPE = "application/vnd.openxmlformats-package.relationships+xml";
+const SAFE_ROOT_RELATIONSHIP_TYPES = new Set([
+  "http://schemas.openxmlformats.org/package/2006/relationships/metadata/core-properties",
+  OFFICE_DOCUMENT_RELATIONSHIP,
+  `${DOCUMENT_RELATIONSHIPS}/extended-properties`,
+  `${DOCUMENT_RELATIONSHIPS}/custom-properties`,
+]);
 const SAFE_DONOR_RELATIONSHIP_TYPES = new Set([
   "http://schemas.openxmlformats.org/package/2006/relationships/metadata/core-properties",
   `${DOCUMENT_RELATIONSHIPS}/officeDocument`,
@@ -371,6 +384,141 @@ async function validateDonorRelationships(zip: JSZip, names: string[]): Promise<
   return validated;
 }
 
+type DonorContentTypes = {
+  defaults: Map<string, string>;
+  overrides: Map<string, string>;
+};
+
+function safeContentTypePartName(value: string): string {
+  if (
+    !value.startsWith("/")
+    || value.includes("\\")
+    || value.includes("\0")
+    || value.includes("?")
+    || value.includes("#")
+    || value.includes("%")
+    || value.includes(":")
+  ) throw new Error("official editable donor content types contain an unsafe Override part name");
+  const segments = value.slice(1).split("/");
+  if (segments.length === 0 || segments.some((segment) => !segment || segment === "." || segment === "..")) {
+    throw new Error("official editable donor content types contain an unsafe Override part name");
+  }
+  return segments.join("/");
+}
+
+async function validateDonorContentTypes(zip: JSZip, names: string[]): Promise<DonorContentTypes> {
+  const file = zip.file("[Content_Types].xml");
+  if (!file) throw new Error("official editable donor is missing [Content_Types].xml");
+  const xml = await file.async("string");
+  const parsed = scanOoxmlRanges(xml).elements;
+  const documentRoots = parsed.filter((element) => element.parentStart === null);
+  const root = documentRoots[0];
+  if (documentRoots.length !== 1 || !root || root.namespaceUri !== PACKAGE_CONTENT_TYPES || root.localName !== "Types") {
+    throw new Error("official editable donor content types document must have one strict package root");
+  }
+  if (root.attributes.some((attribute) => attribute.namespaceUri !== XMLNS_NAMESPACE)) {
+    throw new Error("official editable donor content types root contains a foreign attribute");
+  }
+  const declarations = parsed.filter((element) => element.parentStart === root.start);
+  if (
+    declarations.some((element) => element.namespaceUri !== PACKAGE_CONTENT_TYPES || !["Default", "Override"].includes(element.localName))
+    || parsed.length !== declarations.length + 1
+  ) throw new Error("official editable donor content types document contains a foreign or non-direct child");
+  const prefix = xml.slice(0, root.start).replace(/^\uFEFF?\s*<\?xml[\s\S]*?\?>/, "");
+  if (prefix.trim() || xml.slice(root.end).trim()) {
+    throw new Error("official editable donor content types document has ambiguous text outside its root");
+  }
+  let cursor = root.openEnd;
+  for (const declaration of [...declarations].sort((left, right) => left.start - right.start)) {
+    if (xml.slice(cursor, declaration.start).trim()) {
+      throw new Error("official editable donor content types document has ambiguous root content");
+    }
+    if (!declaration.selfClosing && xml.slice(declaration.openEnd, declaration.closeStart).trim()) {
+      throw new Error("official editable donor content types declaration contains ambiguous content");
+    }
+    cursor = declaration.end;
+  }
+  if (!root.selfClosing && xml.slice(cursor, root.closeStart).trim()) {
+    throw new Error("official editable donor content types document has ambiguous root content");
+  }
+
+  const defaults = new Map<string, string>();
+  const overrides = new Map<string, string>();
+  for (const declaration of declarations) {
+    const allowedAttributes = declaration.localName === "Default"
+      ? new Set(["Extension", "ContentType"])
+      : new Set(["PartName", "ContentType"]);
+    const dataAttributes = declaration.attributes.filter((attribute) => attribute.namespaceUri !== XMLNS_NAMESPACE);
+    if (
+      dataAttributes.length !== 2
+      || dataAttributes.some((attribute) => attribute.namespaceUri !== "" || !allowedAttributes.has(attribute.localName))
+    ) throw new Error(`official editable donor content types ${declaration.localName} contains invalid attributes`);
+    const contentType = xmlAttribute(declaration, "", "ContentType");
+    if (!contentType || contentType !== contentType.trim() || !/^[A-Za-z0-9!#$&^_.+-]+\/[A-Za-z0-9!#$&^_.+-]+$/.test(contentType)) {
+      throw new Error("official editable donor content types declaration has an invalid ContentType");
+    }
+    if (declaration.localName === "Default") {
+      const extension = xmlAttribute(declaration, "", "Extension");
+      if (!extension || extension !== extension.trim() || !/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(extension)) {
+        throw new Error("official editable donor content types Default has an invalid extension");
+      }
+      const key = extension.toLowerCase();
+      if (defaults.has(key)) throw new Error("official editable donor content types contain a duplicate Default extension");
+      defaults.set(key, contentType);
+    } else {
+      const partName = xmlAttribute(declaration, "", "PartName");
+      if (!partName) throw new Error("official editable donor content types Override is missing PartName");
+      const part = safeContentTypePartName(partName);
+      const key = part.toLowerCase();
+      if (overrides.has(key)) throw new Error("official editable donor content types contain a duplicate Override part");
+      if (!zip.file(part)) throw new Error(`official editable donor content types Override target is missing: ${part}`);
+      overrides.set(key, contentType);
+    }
+  }
+  return { defaults, overrides };
+}
+
+function declaredDonorContentType(contentTypes: DonorContentTypes, part: string): string | undefined {
+  const override = contentTypes.overrides.get(part.toLowerCase());
+  if (override) return override;
+  const basename = posix.basename(part);
+  const dot = basename.lastIndexOf(".");
+  const extension = dot >= 0 ? basename.slice(dot + 1).toLowerCase() : "";
+  return extension ? contentTypes.defaults.get(extension) : undefined;
+}
+
+function validateDonorContentTypeDeclarations(
+  names: string[],
+  slideParts: string[],
+  contentTypes: DonorContentTypes,
+): void {
+  const relationshipParts = names.filter((name) => name === "_rels/.rels" || /\/_rels\/[^/]+\.rels$/.test(name));
+  if (
+    contentTypes.defaults.get("rels") !== RELATIONSHIPS_CONTENT_TYPE
+    || relationshipParts.some((part) => declaredDonorContentType(contentTypes, part) !== RELATIONSHIPS_CONTENT_TYPE)
+  ) throw new Error("official editable donor relationship content type declaration is missing or invalid");
+  if (declaredDonorContentType(contentTypes, "ppt/presentation.xml") !== PRESENTATION_CONTENT_TYPE) {
+    throw new Error("official editable donor presentation content type declaration is missing or invalid");
+  }
+  if (slideParts.some((part) => declaredDonorContentType(contentTypes, part) !== SLIDE_CONTENT_TYPE)) {
+    throw new Error("official editable donor slide content type declaration is missing or invalid");
+  }
+  const slideLayouts = names.filter((name) => /^ppt\/slideLayouts\/slideLayout[0-9]+\.xml$/.test(name));
+  if (slideLayouts.some((part) => declaredDonorContentType(contentTypes, part) !== SLIDE_LAYOUT_CONTENT_TYPE)) {
+    throw new Error("official editable donor slide layout content type declaration is missing or invalid");
+  }
+  const pngParts = names.filter((name) => /^ppt\/media\/.+\.png$/i.test(name));
+  if (pngParts.length === 0 || pngParts.some((part) => declaredDonorContentType(contentTypes, part) !== "image/png")) {
+    throw new Error("official editable donor PNG content type declaration is missing or invalid");
+  }
+  for (const name of names) {
+    if (name === "[Content_Types].xml") continue;
+    if (!declaredDonorContentType(contentTypes, name)) {
+      throw new Error(`official editable donor content type declaration is missing for part: ${name}`);
+    }
+  }
+}
+
 function relationshipTarget(slidePart: string, target: string): string {
   const resolved = resolveDonorRelationshipTarget(slidePart, target);
   if (!/^ppt\/media\/[A-Za-z0-9._-]+\.png$/.test(resolved)) {
@@ -405,12 +553,29 @@ export async function inspectOfficialEditableDonor(
     /(?:vbaProject|\/embeddings\/|\/activeX\/|\/charts\/|\/diagrams\/)/i.test(name)
     || (/^ppt\/media\//.test(name) && !/\.png$/i.test(name)));
   if (forbidden) throw new Error(`official editable donor contains unsupported active content: ${forbidden}`);
-  for (const required of ["ppt/presentation.xml", "ppt/_rels/presentation.xml.rels"]) {
+  for (const required of ["[Content_Types].xml", "_rels/.rels", "ppt/presentation.xml", "ppt/_rels/presentation.xml.rels"]) {
     if (!zip.file(required)) throw new Error(`official editable donor is missing ${required}`);
   }
+  const contentTypes = await validateDonorContentTypes(zip, names);
   const validatedRelationshipParts = await validateDonorRelationships(zip, names);
+  const rootRelationships = validatedRelationshipParts.get("_rels/.rels") ?? [];
+  const officeDocumentRelationships = rootRelationships.filter((relationship) =>
+    xmlAttribute(relationship, "", "Type") === OFFICE_DOCUMENT_RELATIONSHIP);
+  if (officeDocumentRelationships.length !== 1) {
+    throw new Error("official editable donor package root must contain exactly one officeDocument relationship");
+  }
+  if (rootRelationships.some((relationship) => !SAFE_ROOT_RELATIONSHIP_TYPES.has(xmlAttribute(relationship, "", "Type") ?? ""))) {
+    throw new Error("official editable donor package root contains an unsupported extra relationship");
+  }
+  const rootRelationship = officeDocumentRelationships[0]!;
+  const rootTarget = xmlAttribute(rootRelationship, "", "Target");
+  if (
+    !rootTarget
+    || resolveDonorRelationshipTarget("", rootTarget) !== "ppt/presentation.xml"
+  ) throw new Error("official editable donor package root relationship must bind officeDocument to ppt/presentation.xml");
   const slideParts = names.filter((name) => /^ppt\/slides\/slide[0-9]+\.xml$/.test(name));
   if (slideParts.length !== 1) throw new Error("official editable donor must contain exactly one slide");
+  validateDonorContentTypeDeclarations(names, slideParts, contentTypes);
   const presentationXml = await zip.file("ppt/presentation.xml")!.async("string");
   const presentationElements = scanOoxmlRanges(presentationXml).elements;
   const slideIds = presentationElements.filter((element) =>
