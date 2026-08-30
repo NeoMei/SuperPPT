@@ -20,7 +20,7 @@
     "tsconfig.json"
   ],
   "scripts": {
-    "test": "node --import tsx --test \"tests/*.test.ts\"",
+    "test": "node --import tsx scripts/test.ts",
     "lint:types": "tsc -p tsconfig.json --noEmit",
     "build": "tsc -p tsconfig.json",
     "test:compiled": "node --experimental-detect-module --test \"dist/tests/*.test.js\"",

@@ -59,6 +59,16 @@ async function project(t: TestContext, prefix: string): Promise<string> {
   return root;
 }
 
+function projectCliOptions(root: string) {
+  return {
+    cwd: process.cwd(),
+    env: {
+      ...process.env,
+      SUPERPPT_AUTHORIZATION_TRUST_ROOT: join(root, "..", "authorization-trust"),
+    },
+  };
+}
+
 async function waitForHandshake<T>(signal: Promise<T>, label: string): Promise<T> {
   let timer: NodeJS.Timeout | undefined;
   try {
@@ -1317,15 +1327,15 @@ test("CLI validates and publishes plans and exposes no artifact override", async
   await writeValidPlan(root);
   const invocation = ["--import", "tsx", "src/cli.ts"];
   const source = "# CLI input\r\n\r\nexact\r\n";
-  await execFileAsync(process.execPath, [...invocation, "ingest", "--project", root, "--text", source], { cwd: process.cwd() });
+  await execFileAsync(process.execPath, [...invocation, "ingest", "--project", root, "--text", source], projectCliOptions(root));
   assert.equal(await readFile(join(root, "source", "original.md"), "utf8"), source);
-  const validated = await execFileAsync(process.execPath, [...invocation, "validate-plan", "--project", root], { cwd: process.cwd() });
+  const validated = await execFileAsync(process.execPath, [...invocation, "validate-plan", "--project", root], projectCliOptions(root));
   assert.equal(validated.stderr, "");
   assert.equal((JSON.parse(validated.stdout) as { slideCount: number }).slideCount, 3);
-  await execFileAsync(process.execPath, [...invocation, "approve", "--project", root, "--gate", "outline"], { cwd: process.cwd() });
+  await execFileAsync(process.execPath, [...invocation, "approve", "--project", root, "--gate", "outline"], projectCliOptions(root));
   assert.equal(await assertGateCurrent(root, "outline"), true);
-  await assert.rejects(execFileAsync(process.execPath, [...invocation, "approve", "--project", root, "--gate", "outline", "--artifacts", "[\"superppt.json\"]"], { cwd: process.cwd() }), /unknown CLI flag/);
-  await assert.rejects(execFileAsync(process.execPath, [...invocation, "validate-plan", "--project", "relative"], { cwd: process.cwd() }), /Unsafe project root/);
+  await assert.rejects(execFileAsync(process.execPath, [...invocation, "approve", "--project", root, "--gate", "outline", "--artifacts", "[\"superppt.json\"]"], projectCliOptions(root)), /unknown CLI flag/);
+  await assert.rejects(execFileAsync(process.execPath, [...invocation, "validate-plan", "--project", "relative"], projectCliOptions(root)), /Unsafe project root/);
 });
 
 test("CLI publishes and approves the outline before any slide specs exist", async (t) => {
@@ -1333,7 +1343,7 @@ test("CLI publishes and approves the outline before any slide specs exist", asyn
   await writeFile(join(root, "brief.json"), `${JSON.stringify(brief, null, 2)}\n`);
   await writeFile(join(root, "outline.json"), `${JSON.stringify(outline, null, 2)}\n`);
   const invocation = ["--import", "tsx", "src/cli.ts"];
-  const run = (args: string[]) => execFileAsync(process.execPath, [...invocation, ...args], { cwd: process.cwd() });
+  const run = (args: string[]) => execFileAsync(process.execPath, [...invocation, ...args], projectCliOptions(root));
 
   const published = await run(["validate-outline", "--project", root]);
   assert.equal((JSON.parse(published.stdout) as { slideCount: number }).slideCount, 3);
@@ -1348,13 +1358,7 @@ test("CLI publishes authoritative style evidence before the existing approval ga
   await writeValidPlan(root);
   await writeValidStyleSample(root);
   const invocation = ["--import", "tsx", "src/cli.ts"];
-  const run = (args: string[]) => execFileAsync(process.execPath, [...invocation, ...args], {
-    cwd: process.cwd(),
-    env: {
-      ...process.env,
-      SUPERPPT_AUTHORIZATION_TRUST_ROOT: join(root, "..", "authorization-trust"),
-    },
-  });
+  const run = (args: string[]) => execFileAsync(process.execPath, [...invocation, ...args], projectCliOptions(root));
 
   await run(["validate-plan", "--project", root]);
   await run(["approve", "--project", root, "--gate", "outline"]);

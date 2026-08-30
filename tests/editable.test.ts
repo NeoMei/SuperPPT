@@ -607,14 +607,35 @@ test("replacement preparation rejects sealed revisions and symlink-ancestor stag
   );
 });
 
-async function unreviewedProject(t: TestContext): Promise<{ root: string; slideId: string }> {
+type EditableProjectFixture = {
+  root: string;
+  slideId: string;
+  authorizationTrustRoot: string;
+};
+
+function projectCliOptions(project: EditableProjectFixture) {
+  return {
+    cwd: process.cwd(),
+    env: {
+      ...process.env,
+      SUPERPPT_AUTHORIZATION_TRUST_ROOT: project.authorizationTrustRoot,
+    },
+  };
+}
+
+async function unreviewedProject(t: TestContext): Promise<EditableProjectFixture> {
   const parent = await realpath(await temporary(t, "superppt-editable-project-"));
   const root = join(parent, "project");
   const slideId = "00000000-0000-4000-8000-000000000102";
+  const authorizationTrustRoot = join(parent, "authorization-trust");
   await initializeProject({
     root,
     title: "Editable fixture",
     idFactory: () => "00000000-0000-4000-8000-000000000101",
+  });
+  await configureGenerationAuthorizationTrustForTests(root, {
+    root: authorizationTrustRoot,
+    deterministicKeySeed: `superppt-editable:${root}`,
   });
   const render = await sharp({ create: { width: 1920, height: 1080, channels: 3, background: "#23384d" } }).png().toBuffer();
   await writeFile(join(root, "images", `${slideId}.png`), render);
@@ -640,7 +661,7 @@ async function unreviewedProject(t: TestContext): Promise<{ root: string; slideI
       staleReasons: [],
     }],
   }));
-  return { root, slideId };
+  return { root, slideId, authorizationTrustRoot };
 }
 
 async function fixtureCandidateOutputs(
@@ -659,12 +680,17 @@ async function fixtureCandidateOutputs(
   await buildMontage(renders, paths.montage);
 }
 
-async function readyProject(t: TestContext): Promise<{ root: string; slideId: string }> {
+async function readyProject(t: TestContext): Promise<EditableProjectFixture> {
   const parent = await realpath(await temporary(t, "superppt-editable-reviewed-"));
   const root = join(parent, "project");
   const slideId = "00000000-0000-4000-8000-000000000102";
+  const authorizationTrustRoot = join(parent, "authorization-trust");
   const ids = [slideId, "00000000-0000-4000-8000-000000000103", "00000000-0000-4000-8000-000000000104"] as const;
   await initializeProject({ root, title: "Editable reviewed fixture", idFactory: () => "00000000-0000-4000-8000-000000000101" });
+  await configureGenerationAuthorizationTrustForTests(root, {
+    root: authorizationTrustRoot,
+    deterministicKeySeed: `superppt-editable:${root}`,
+  });
   await writeFile(join(root, "brief.json"), `${JSON.stringify({ schemaVersion: 1, title: "Editable reviewed fixture", purpose: "Test", audience: "Testers", language: "zh-CN", targetSlides: 3, mustCover: ["Editable page", "Support page", "Summary page"], constraints: ["16:9"] })}\n`);
   const outlineSlides = ids.map((id, order) => ({ id, order, title: order === 0 ? "Editable page" : order === 1 ? "Support page" : "Summary page", role: order === 0 ? "cover" : order === 2 ? "summary" : "content", purpose: "Test", sourceRefs: [`L${order + 1}`] }));
   await writeFile(join(root, "outline.json"), `${JSON.stringify({ schemaVersion: 1, slides: outlineSlides })}\n`);
@@ -676,7 +702,6 @@ async function readyProject(t: TestContext): Promise<{ root: string; slideId: st
   await publishPlanViews(root);
   await approveGate(root, "outline");
   await approveGate(root, "slide-specs");
-  await configureGenerationAuthorizationTrustForTests(root, { root: join(parent, "authorization-trust"), deterministicKeySeed: `superppt-editable:${root}` });
   await finalizeDelegatedStyleSampleForTest(root);
   const manifest = await readProject(root);
   const generated = await Promise.all(outlineSlides.map(async (slide) => {
@@ -695,7 +720,7 @@ async function readyProject(t: TestContext): Promise<{ root: string; slideId: st
   const candidate = await assembleProjectCandidate(root, { buildOutputs: fixtureCandidateOutputs });
   const review = await publishDeckReview(root, candidate.candidateId);
   await applyDeckReviewAction(root, { action: "edit-page", slideId, candidateId: candidate.candidateId, descriptorSha256: review.descriptorSha256 });
-  return { root, slideId };
+  return { root, slideId, authorizationTrustRoot };
 }
 
 test("selected page conversion rejects a ready page that was not selected from the current reviewed deck", async (t) => {
@@ -733,6 +758,7 @@ test("project conversion has no dependency-optional production bypass", async (t
 async function readyCurrentEditableProject(t: TestContext): Promise<{
   root: string;
   slideId: string;
+  authorizationTrustRoot: string;
   modifiedRevisionId: string;
   conversionCalls: () => number;
 }> {
@@ -1015,7 +1041,7 @@ test("exposes promote-editable as a strict executable CLI route", async (t) => {
     "--revision", source.revisionId,
     "--element", "ocr-title",
     "--kind", "text",
-  ], { cwd: process.cwd() });
+  ], projectCliOptions(project));
   assert.equal(stderr, "");
   const output = JSON.parse(stdout) as {
     route: string;
@@ -1063,7 +1089,7 @@ test("classifies unsupported promote-editable CLI targets as a minimal regenerat
       "--revision", source.revisionId,
       "--element", target.elementId,
       "--kind", target.kind,
-    ], { cwd: process.cwd() });
+    ], projectCliOptions(project));
     assert.equal(stdout, '{"route":"regenerate"}\n');
     assert.equal(stderr, "");
     const after = await recursiveProjectSnapshot(project.root);
@@ -1081,7 +1107,7 @@ test("classifies unsupported promote-editable CLI targets as a minimal regenerat
     "--revision", source.revisionId,
     "--element", "ocr-title",
     "--kind", "shape",
-  ], { cwd: process.cwd() }), (error: unknown) => {
+  ], projectCliOptions(project)), (error: unknown) => {
     const failure = error as { code: number; stdout: string; stderr: string };
     assert.equal(failure.code, 1);
     assert.equal(failure.stdout, "");
@@ -1151,7 +1177,7 @@ test("reports an already-editable page through the real CLI without regeneration
     "--revision", project.modifiedRevisionId,
     "--element", "ocr-title",
     "--kind", "text",
-  ], { cwd: process.cwd() });
+  ], projectCliOptions(project));
 
   assert.equal(stdout, '{"route":"editable","status":"already-editable"}\n');
   assert.equal(stderr, "");
@@ -1176,7 +1202,7 @@ test("routes missing or wrong-kind targets on an already-editable page to regene
       "--revision", project.modifiedRevisionId,
       "--element", target.elementId,
       "--kind", target.kind,
-    ], { cwd: process.cwd() });
+    ], projectCliOptions(project));
     assert.equal(stdout, '{"route":"regenerate"}\n');
     assert.equal(stderr, "");
   }
@@ -1198,7 +1224,7 @@ test("keeps stale-revision authentication failures distinct from already-editabl
     "--revision", "00000000-0000-4000-8000-000000000299",
     "--element", "ocr-title",
     "--kind", "text",
-  ], { cwd: process.cwd() }), (error: unknown) => {
+  ], projectCliOptions(project)), (error: unknown) => {
     const failure = error as { code: number; stdout: string; stderr: string };
     assert.equal(failure.code, 1);
     assert.equal(failure.stdout, "");
@@ -1224,7 +1250,7 @@ test("authenticates the current modified revision before reporting already-edita
     "--revision", project.modifiedRevisionId,
     "--element", "ocr-title",
     "--kind", "text",
-  ], { cwd: process.cwd() }), (error: unknown) => {
+  ], projectCliOptions(project)), (error: unknown) => {
     const failure = error as { code: number; stdout: string; stderr: string };
     assert.equal(failure.code, 1);
     assert.equal(failure.stdout, "");
