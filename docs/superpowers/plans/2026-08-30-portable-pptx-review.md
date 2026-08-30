@@ -1,5 +1,7 @@
 # Portable PPTX Review Implementation Plan
 
+> **Superseded on 2026-08-30:** The confirmed product direction no longer includes Review adapters, Codex/native viewers, Web Office, WPS image fallbacks, PDF, montage, or post-save sealing copies. Implement [`2026-08-30-local-full-deck-editing.md`](./2026-08-30-local-full-deck-editing.md) instead. This file remains only as historical design context and must not be executed.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Make the exact PPTX revision the primary SuperPPT review object on every host, use Codex Desktop's native viewer when available, degrade through explicit host adapters, and preserve a user-saved Office file without any post-save content rewrite.
