@@ -36,7 +36,7 @@ import { approveGate } from "../src/planning/confirm.js";
 import { publishPlanViews } from "../src/planning/views.js";
 import { applyDeckReviewAction, publishDeckReview } from "../src/project/promotion.js";
 import { finalizeDelegatedStyleSampleForTest } from "./helpers/delegated-style-sample.js";
-import { resolveSkillDependencies } from "../src/dependencies/resolve.js";
+import { resolveAiImageSkillDependency } from "../src/dependencies/resolve.js";
 import type { ResolvedDependencies } from "../src/dependencies/schemas.js";
 import {
   applyEditPlan,
@@ -92,7 +92,7 @@ async function converterRoot(t: TestContext): Promise<string> {
   await mkdir(join(root, "skills", "image-to-editable-pptx"), { recursive: true });
   await writeFile(join(root, "package.json"), `${JSON.stringify({
     name: "image-to-editable-pptx",
-    version: "0.1.0",
+    version: "0.2.0",
     engines: { node: ">=22.6" },
     scripts: { cli: "tsx src/cli.ts" },
   })}\n`);
@@ -115,7 +115,7 @@ async function resolvedDependencies(
   ]) {
     await writeFile(join(aiRoot, "scripts", script), `# fixture ${script}\n`);
   }
-  return resolveSkillDependencies({ aiSkillRoot: aiRoot, editableSkillRoot: editableRoot });
+  return resolvedDependenciesFromRoots(aiRoot, editableRoot);
 }
 
 type FixtureConversionOptions = Omit<Parameters<typeof strictConvertProjectPage>[0], "dependencies"> & {
@@ -141,7 +141,37 @@ async function resolvedDependenciesForPlugin(editableRoot: string): Promise<Reso
   for (const script of ["generation_result.py", "host_routing_policy.py", "import_host_image.py", "prepare_editable_input.py"]) {
     await writeFile(join(aiRoot, "scripts", script), `# fixture ${script}\n`);
   }
-  return resolveSkillDependencies({ aiSkillRoot: aiRoot, editableSkillRoot: editableRoot });
+  return resolvedDependenciesFromRoots(aiRoot, editableRoot);
+}
+
+async function resolvedDependenciesFromRoots(
+  aiRoot: string,
+  editableRoot: string,
+): Promise<ResolvedDependencies> {
+  const ai = await resolveAiImageSkillDependency(aiRoot);
+  const editableCanonical = await realpath(editableRoot);
+  const packageFile = join(editableCanonical, "package.json");
+  const skillFile = join(editableCanonical, "skills", "image-to-editable-pptx", "SKILL.md");
+  const packageSha256 = projectSha256(await readFile(packageFile));
+  const skillSha256 = projectSha256(await readFile(skillFile));
+  return {
+    ai,
+    editable: {
+      kind: "image-to-editable-pptx",
+      root: editableCanonical,
+      packageFile,
+      packageSha256,
+      skillFile,
+      skillSha256,
+      version: "0.2.0",
+    },
+    integrity: {
+      aiSkillSha256: ai.skillSha256,
+      aiScripts: ai.scriptSha256,
+      editablePackageSha256: packageSha256,
+      editableSkillSha256: skillSha256,
+    },
+  };
 }
 
 async function png(width: number, height: number, alpha = false): Promise<Buffer> {
@@ -155,11 +185,68 @@ async function png(width: number, height: number, alpha = false): Promise<Buffer
   }).png().toBuffer();
 }
 
+const PRESENTATION = "http://schemas.openxmlformats.org/presentationml/2006/main";
+const DRAWING = "http://schemas.openxmlformats.org/drawingml/2006/main";
+const DOCUMENT_RELATIONSHIPS = "http://schemas.openxmlformats.org/officeDocument/2006/relationships";
+const PACKAGE_RELATIONSHIPS = "http://schemas.openxmlformats.org/package/2006/relationships";
+
+async function officialDonorPptx(manifest: {
+  elements: Array<{ kind: string; id: string; label?: string }>;
+}): Promise<Buffer> {
+  const zip = new JSZip();
+  const objectXml: string[] = [
+    `<slide:pic><slide:nvPicPr><slide:cNvPr id="2" name="asset-background"/></slide:nvPicPr><slide:blipFill><art:blip rel:embed="rId2"/></slide:blipFill></slide:pic>`,
+  ];
+  let id = 3;
+  let imageRelationshipId = 3;
+  const imageRelationships: string[] = [];
+  for (const element of manifest.elements) {
+    if (element.kind === "text") {
+      objectXml.push(`<slide:sp><slide:nvSpPr><slide:cNvPr id="${id}" name="text-${element.id}"/></slide:nvSpPr><slide:txBody><art:p><art:r><art:t>Editable text</art:t></art:r></art:p></slide:txBody></slide:sp>`);
+    } else if (element.kind === "shape") {
+      objectXml.push(`<slide:sp><slide:nvSpPr><slide:cNvPr id="${id}" name="shape-${element.id}-${element.label ?? "Shape"}"/></slide:nvSpPr><slide:spPr/></slide:sp>`);
+    } else {
+      objectXml.push(`<slide:pic><slide:nvPicPr><slide:cNvPr id="${id}" name="asset-${element.id}"/></slide:nvPicPr><slide:blipFill><art:blip rel:embed="rId${imageRelationshipId}"/></slide:blipFill></slide:pic>`);
+      imageRelationships.push(`<pkg:Relationship Id="rId${imageRelationshipId}" Type="${DOCUMENT_RELATIONSHIPS}/image" Target="../media/asset-${element.id}.png"/>`);
+      zip.file(`ppt/media/asset-${element.id}.png`, await png(48, 48, true));
+      imageRelationshipId += 1;
+    }
+    id += 1;
+  }
+  zip.file("[Content_Types].xml", `<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="xml" ContentType="application/xml"/><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="png" ContentType="image/png"/></Types>`);
+  zip.file("ppt/presentation.xml", `<slide:presentation xmlns:slide="${PRESENTATION}" xmlns:rel="${DOCUMENT_RELATIONSHIPS}"><slide:sldIdLst><slide:sldId id="256" rel:id="rId1"/></slide:sldIdLst><slide:sldSz cx="12192000" cy="6858000"/></slide:presentation>`);
+  zip.file("ppt/_rels/presentation.xml.rels", `<pkg:Relationships xmlns:pkg="${PACKAGE_RELATIONSHIPS}"><pkg:Relationship Id="rId1" Type="${DOCUMENT_RELATIONSHIPS}/slide" Target="slides/slide1.xml"/></pkg:Relationships>`);
+  zip.file("ppt/slides/slide1.xml", `<slide:sld xmlns:slide="${PRESENTATION}" xmlns:art="${DRAWING}" xmlns:rel="${DOCUMENT_RELATIONSHIPS}"><slide:cSld><slide:spTree><slide:nvGrpSpPr><slide:cNvPr id="1" name="Group 1"/></slide:nvGrpSpPr><slide:grpSpPr/>${objectXml.join("")}</slide:spTree></slide:cSld></slide:sld>`);
+  zip.file("ppt/slides/_rels/slide1.xml.rels", `<pkg:Relationships xmlns:pkg="${PACKAGE_RELATIONSHIPS}"><pkg:Relationship Id="rId1" Type="${DOCUMENT_RELATIONSHIPS}/slideLayout" Target="../slideLayouts/slideLayout1.xml"/><pkg:Relationship Id="rId2" Type="${DOCUMENT_RELATIONSHIPS}/image" Target="../media/background.png"/>${imageRelationships.join("")}</pkg:Relationships>`);
+  zip.file("ppt/slideLayouts/slideLayout1.xml", `<slide:sldLayout xmlns:slide="${PRESENTATION}"/>`);
+  zip.file("ppt/media/background.png", await png(1280, 720));
+  return zip.generateAsync({ type: "nodebuffer", compression: "DEFLATE" });
+}
+
 async function writeFakeConverterOutput(outDir: string, sourcePng: string): Promise<void> {
   await mkdir(join(outDir, "assets"), { recursive: true });
-  const manifest = await readFile(join(fixtureRoot, "manifest.json"));
+  const legacyManifest = JSON.parse(await readFile(join(fixtureRoot, "manifest.json"), "utf8"));
   const background = await readFile(join(fixtureRoot, "clean-background.png"));
   const icon = await readFile(join(fixtureRoot, "assets", "icon.png"));
+  const iconSha256 = sha256(icon);
+  const manifestValue = {
+    ...legacyManifest,
+    manifestVersion: 2,
+    elements: legacyManifest.elements.map((element: Record<string, unknown>) => element.kind === "asset" ? {
+      ...element,
+      role: "foreground-object",
+      groupId: "fixture-icon",
+      provenance: {
+        kind: "source-visible",
+        sourceCropSha256: iconSha256,
+        visibleMaskSha256: "1".repeat(64),
+        assetSha256: iconSha256,
+      },
+      relations: [{ id: "icon-behind-title", kind: "behind", from: "icon-1", to: "ocr-title", confidence: 0.99 }],
+      reviewRequired: true,
+    } : element),
+  };
+  const manifest = Buffer.from(`${JSON.stringify(manifestValue, null, 2)}\n`);
   const files = {
     "ocr.json": Buffer.from('{"lines":[]}\n'),
     "vision.json": Buffer.from('{"elements":[]}\n'),
@@ -168,7 +255,7 @@ async function writeFakeConverterOutput(outDir: string, sourcePng: string): Prom
     "removal-mask.png": await png(1280, 720, true),
     "clean-background.png": background,
     "assets/icon.png": icon,
-    "fixture-editable.pptx": Buffer.from("fixture-pptx"),
+    "slide-editable.pptx": await officialDonorPptx(manifestValue),
   } as const;
   for (const [name, bytes] of Object.entries(files)) {
     await writeFile(join(outDir, name), bytes);
@@ -213,7 +300,7 @@ async function writeFakeConverterOutput(outDir: string, sourcePng: string): Prom
       removalMask: sha256(files["removal-mask.png"]),
       cleanBackground: sha256(files["clean-background.png"]),
       assets: { "assets/icon.png": sha256(files["assets/icon.png"]) },
-      pptx: sha256(files["fixture-editable.pptx"]),
+      pptx: sha256(files["slide-editable.pptx"]),
     },
     outputs: {
       directory: outDir,
@@ -224,7 +311,7 @@ async function writeFakeConverterOutput(outDir: string, sourcePng: string): Prom
       removalMask: output("removal-mask.png"),
       cleanBackground: output("clean-background.png"),
       assets: output("assets"),
-      pptx: output("fixture-editable.pptx"),
+      pptx: output("slide-editable.pptx"),
     },
   };
   RunLedgerV2Schema.parse(ledger);
@@ -247,6 +334,9 @@ async function makeConverterOutputTextOnly(outDir: string): Promise<void> {
   ledger.hashes.manifest = sha256(manifestBytes);
   ledger.hashes.assets = {};
   ledger.decisions = ledger.decisions.filter((decision: { kind: string }) => decision.kind === "text");
+  const donor = await officialDonorPptx(manifest);
+  await writeFile(join(outDir, "slide-editable.pptx"), donor);
+  ledger.hashes.pptx = sha256(donor);
   await writeFile(ledgerPath, `${JSON.stringify(ledger, null, 2)}\n`);
 }
 
@@ -369,7 +459,7 @@ test("authenticates ownership, the source, manifest, background, assets, and eve
   const plugin = await converterRoot(t);
   const sourcePng = join(root, "source.png");
   await writeFile(sourcePng, await png(1280, 720));
-  for (const tamper of ["manifest.json", "clean-background.png", "assets/icon.png", "ocr.json", "fixture-editable.pptx"] as const) {
+  for (const tamper of ["manifest.json", "clean-background.png", "assets/icon.png", "ocr.json", "slide-editable.pptx"] as const) {
     const outDir = join(root, `output-${tamper.replaceAll("/", "-")}`);
     await assert.rejects(runEditableConversion({
       converterRoot: plugin,
@@ -954,7 +1044,6 @@ test("promotes one authenticated extracted target without changing content or re
       return { stdout: "", stderr: "" };
     },
   });
-  const sourceManifestBytes = await readFile(source.manifestPath);
   const promoted = await promoteProjectEditableTarget({
     ...project,
     sourceRevisionId: source.revisionId,
@@ -964,9 +1053,9 @@ test("promotes one authenticated extracted target without changing content or re
   });
 
   assert.equal(conversionCalls, 1);
-  assert.deepEqual(promoted.manifest, JSON.parse(sourceManifestBytes.toString("utf8")));
+  assert.deepEqual(promoted.manifest, source.manifest);
   const validated = await validateModifiedRevision(promoted.revisionRoot);
-  assert.deepEqual(validated.manifest, JSON.parse(sourceManifestBytes.toString("utf8")));
+  assert.deepEqual(validated.manifest, source.manifest);
   assert.deepEqual(validated.record.intent, {
     kind: "promote-editable",
     elementId: "ocr-title",

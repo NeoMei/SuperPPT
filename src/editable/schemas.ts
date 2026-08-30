@@ -35,7 +35,66 @@ const TextElementSchema = z.object({
   zIndex: z.number().int(),
 }).strict();
 
-const AssetElementSchema = z.object({
+const ShapeElementSchema = z.object({
+  kind: z.literal("shape"),
+  id: z.string().min(1),
+  label: z.string(),
+  shape: z.enum(["rect", "roundRect", "ellipse", "line"]),
+  bbox: EditableBBoxSchema,
+  fillColor: z.string(),
+  strokeColor: z.string(),
+  strokeWidthPx: z.number().finite().nonnegative(),
+  cornerRadiusPx: z.number().finite().nonnegative(),
+  zIndex: z.number().int(),
+}).strict();
+
+const SceneRoleSchema = z.enum([
+  "background",
+  "text",
+  "text-backing",
+  "foreground-object",
+  "connector",
+  "compound-group",
+  "decoration",
+]);
+
+const SceneRelationSchema = z.object({
+  id: z.string().min(1),
+  kind: z.enum(["belongs-to", "connected-to", "carries-text", "occludes", "in-front-of", "behind"]),
+  from: z.string().min(1),
+  to: z.string().min(1),
+  confidence: z.number().finite().min(0).max(1),
+}).strict();
+
+const AssetProvenanceSchema = z.discriminatedUnion("kind", [
+  z.object({
+    kind: z.literal("source-visible"),
+    sourceCropSha256: Sha256Schema,
+    visibleMaskSha256: Sha256Schema,
+    assetSha256: Sha256Schema,
+  }).strict(),
+  z.object({
+    kind: z.literal("generated-hidden"),
+    sourceCropSha256: Sha256Schema,
+    generatedMaskSha256: Sha256Schema,
+    assetSha256: Sha256Schema,
+    modelId: z.string().min(1),
+    taskIdSha256: Sha256Schema,
+    sanitizedProviderMetadata: z.json().optional(),
+  }).strict(),
+  z.object({
+    kind: z.literal("composite"),
+    sourceCropSha256: Sha256Schema,
+    visibleMaskSha256: Sha256Schema,
+    generatedMaskSha256: Sha256Schema,
+    assetSha256: Sha256Schema,
+    modelId: z.string().min(1),
+    taskIdSha256: Sha256Schema,
+    sanitizedProviderMetadata: z.json().optional(),
+  }).strict(),
+]);
+
+const AssetElementFields = {
   kind: z.literal("asset"),
   id: z.string().min(1),
   label: z.string(),
@@ -47,7 +106,22 @@ const AssetElementSchema = z.object({
   ),
   zIndex: z.number().int(),
   fallbackReason: z.string().optional(),
-}).strict();
+};
+
+const AssetElementSchema = z.object(AssetElementFields).strict();
+
+const AssetElementV2Schema = z.object({
+  ...AssetElementFields,
+  role: SceneRoleSchema,
+  groupId: z.string().min(1).nullable(),
+  provenance: AssetProvenanceSchema,
+  relations: z.array(SceneRelationSchema),
+  reviewRequired: z.boolean(),
+}).strict().superRefine((asset, context) => {
+  if (asset.provenance.kind !== "source-visible" && !asset.reviewRequired) {
+    context.addIssue({ code: "custom", path: ["reviewRequired"], message: "assets containing generated hidden pixels require review" });
+  }
+});
 
 export const EditableManifestSchema = z.object({
   manifestVersion: z.literal(1),
@@ -67,9 +141,28 @@ export const EditableManifestSchema = z.object({
   }
 });
 
+export const EditableManifestV2Schema = z.object({
+  manifestVersion: z.literal(2),
+  canvas: z.object({ width: z.literal(1280), height: z.literal(720) }).strict(),
+  elements: z.array(z.discriminatedUnion("kind", [
+    TextElementSchema,
+    ShapeElementSchema,
+    AssetElementV2Schema,
+  ])),
+  warnings: z.array(z.string()),
+}).strict().superRefine((manifest, context) => {
+  const seen = new Set<string>();
+  for (const [index, element] of manifest.elements.entries()) {
+    if (seen.has(element.id)) {
+      context.addIssue({ code: "custom", path: ["elements", index, "id"], message: "editable element IDs must be unique" });
+    }
+    seen.add(element.id);
+  }
+});
+
 const CandidateDecisionSchema = z.object({
   candidateId: z.string().min(1),
-  kind: z.enum(["text", "icon"]),
+  kind: z.enum(["text", "icon", "foreground-object", "text-backing", "compound-group"]),
   decision: z.enum(["accepted", "kept_in_background"]),
   bbox: EditableBBoxSchema,
   sourceElementIndexes: z.array(z.number().int().nonnegative()),
@@ -89,6 +182,19 @@ const CandidateDecisionSchema = z.object({
     "transparent_extraction_failed",
     "transparent_pixel_ratio_above_92_percent",
     "transparent_pixel_ratio_below_5_percent",
+    "ambiguous_substantial_overlap",
+    "cycle_in_layer_order",
+    "dangling_ocr_association",
+    "decoration_candidate",
+    "uncertain_candidate",
+    "backing_mask_invalid",
+    "glyph_residue",
+    "repair_seam",
+    "surface_unstable",
+    "semantic_mask_unavailable",
+    "text_mask_unavailable",
+    "occlusion_completion_unavailable",
+    "completion_provenance_invalid",
   ]).optional(),
   repairMetrics: z.object({
     maskedPixels: z.number().int().nonnegative(),
@@ -144,6 +250,12 @@ export const RunLedgerV2Schema = z.object({
     cleanBackground: Sha256Schema,
     assets: z.record(EditableProjectPathSchema, Sha256Schema),
     pptx: Sha256Schema,
+    qaPreviews: z.object({
+      recomposition: Sha256Schema,
+      layerReview: Sha256Schema,
+      exploded: Sha256Schema,
+    }).strict().optional(),
+    sceneGraph: Sha256Schema.optional(),
   }).strict(),
   outputs: z.object({
     directory: z.string().min(1),
@@ -155,7 +267,34 @@ export const RunLedgerV2Schema = z.object({
     cleanBackground: z.string().min(1),
     assets: z.string().min(1),
     pptx: z.string().min(1),
+    qaPreviews: z.object({
+      recomposition: z.string().min(1),
+      layerReview: z.string().min(1),
+      exploded: z.string().min(1),
+    }).strict().optional(),
+    sceneGraph: z.string().min(1).optional(),
   }).strict(),
+}).strict();
+
+export const AuthenticatedEditableConversionSchema = z.object({
+  converterVersion: z.string().regex(/^0\.2\.[0-9]+(?:[-+].*)?$/),
+  manifestVersion: z.literal(2),
+  sourceImagePath: EditableProjectPathSchema,
+  sourceImageSha256: Sha256Schema,
+  manifestPath: EditableProjectPathSchema,
+  manifestSha256: Sha256Schema,
+  ledgerPath: EditableProjectPathSchema,
+  ledgerSha256: Sha256Schema,
+  cleanBackgroundPath: EditableProjectPathSchema,
+  cleanBackgroundSha256: Sha256Schema,
+  donorPptxPath: EditableProjectPathSchema.refine((path) => path.endsWith("/slide-editable.pptx")),
+  donorPptxSha256: Sha256Schema,
+  assets: z.record(EditableProjectPathSchema, Sha256Schema),
+  reviewRequiredObjects: z.array(z.object({
+    elementId: z.string().min(1),
+    label: z.string().min(1),
+    role: z.string().min(1),
+  }).strict()),
 }).strict();
 
 export const ConverterOwnershipMarkerSchema = z.object({
@@ -244,12 +383,13 @@ export const ConversionRecordSchema = z.object({
     reviewDescriptorSha256: Sha256Schema,
     actionEvidenceSha256: Sha256Schema,
   }).strict(),
-  converterVersion: z.string().min(1),
+  converterVersion: z.string().regex(/^0\.2\.[0-9]+(?:[-+].*)?$/),
   artifacts: z.object({
     sourceImage: Sha256Schema,
     manifest: Sha256Schema,
     runLedger: Sha256Schema,
     cleanBackground: Sha256Schema,
+    donorPptx: Sha256Schema,
     assets: z.record(EditableProjectPathSchema, Sha256Schema),
     outputs: z.record(z.string().min(1), Sha256Schema),
   }).strict(),
@@ -326,7 +466,9 @@ export const ModifiedRevisionRecordSchema = z.object({
 }).strict();
 
 export type EditableManifest = z.infer<typeof EditableManifestSchema>;
+export type EditableManifestV2 = z.infer<typeof EditableManifestV2Schema>;
 export type RunLedgerV2 = z.infer<typeof RunLedgerV2Schema>;
+export type AuthenticatedEditableConversion = z.infer<typeof AuthenticatedEditableConversionSchema>;
 export type EditPlan = z.infer<typeof EditPlanSchema>;
 export type EditableRevisionMarker = z.infer<typeof EditableRevisionMarkerSchema>;
 export type EditableStagingMarker = z.infer<typeof EditableStagingMarkerSchema>;

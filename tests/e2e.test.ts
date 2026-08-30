@@ -4,6 +4,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 
+import JSZip from "jszip";
+
 import { runOfflineAcceptance } from "../src/acceptance/offline.js";
 import { assembleProjectCandidate } from "../src/deck/assemble.js";
 import { sha256 } from "../src/project/store.js";
@@ -49,6 +51,28 @@ test("runs intake through mixed-slide replacement without changing untouched ren
   assert.ok(result.providerCalls.perSlide.every((calls) => calls <= 3));
   assert.equal(result.logs.some((line) => /secret|api[_-]?key|authorization/i.test(line)), false);
   assert.equal(result.logs.some((line) => line.includes("一个编排核心") || line.includes(result.editOperation.after)), false);
+
+  const editableRoot = join(result.root, "editable", result.changedSlideId);
+  const editableRevisions = await readdir(editableRoot);
+  let authenticatedConversion: { root: string; record: { converterVersion: string } } | null = null;
+  for (const revision of editableRevisions.filter((name) => /^[0-9a-f-]{36}$/.test(name))) {
+    try {
+      authenticatedConversion = {
+        root: join(editableRoot, revision),
+        record: JSON.parse(await readFile(join(editableRoot, revision, "conversion-record.json"), "utf8")),
+      };
+      break;
+    } catch (error: unknown) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+    }
+  }
+  assert.ok(authenticatedConversion, "offline acceptance must retain its authenticated conversion evidence");
+  assert.equal(authenticatedConversion.record.converterVersion, "0.2.0");
+  const officialManifest = JSON.parse(await readFile(join(authenticatedConversion.root, "converter-output", "manifest.json"), "utf8"));
+  assert.equal(officialManifest.manifestVersion, 2);
+  const officialDonor = await JSZip.loadAsync(await readFile(join(authenticatedConversion.root, "converter-output", "slide-editable.pptx")));
+  assert.ok(officialDonor.file("ppt/presentation.xml"));
+  assert.ok(officialDonor.file("ppt/slides/slide1.xml"));
 
   for (const snapshot of [result.before, result.after]) {
     const acceptance = JSON.parse(await readFile(snapshot.acceptance, "utf8"));

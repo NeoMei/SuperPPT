@@ -1,8 +1,9 @@
 import { execFile } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import { lstat, mkdir, readFile, realpath, rm, unlink } from "node:fs/promises";
-import { basename, dirname, extname, isAbsolute, join, relative, resolve } from "node:path";
+import { basename, dirname, extname, isAbsolute, join, posix, relative, resolve } from "node:path";
 import { promisify } from "node:util";
+import JSZip from "jszip";
 import sharp from "sharp";
 
 import { preflightDependencies } from "../dependencies/preflight.js";
@@ -13,15 +14,21 @@ import { syncDirectory, writeDurableExclusive } from "../project/durable.js";
 import { validateProjectRoot } from "../project/paths.js";
 import { readOwnedRegularFile, readRegularFileNoFollow } from "../project/safe-file.js";
 import { assertProjectMutationNotFrozen, readProject, sha256 as projectSha256 } from "../project/store.js";
+import { scanOoxmlRanges, type OoxmlElementRange } from "../deck-revisions/ooxml.js";
 import {
+  AuthenticatedEditableConversionSchema,
   ConversionRecordSchema,
   ConverterOwnershipMarkerSchema,
   EditableConversionStagingMarkerSchema,
   EditableManifestSchema,
+  EditableManifestV2Schema,
+  EditableProjectPathSchema,
   EditableRevisionMarkerSchema,
   EditableSlideMarkerSchema,
   RunLedgerV2Schema,
   type EditableManifest,
+  type EditableManifestV2,
+  type AuthenticatedEditableConversion,
   type RunLedgerV2,
 } from "./schemas.js";
 
@@ -30,6 +37,11 @@ const OUTPUT_MARKER = ".image-to-editable-pptx-output.json";
 const MAX_JSON = 16 * 1024 * 1024;
 const MAX_ASSET = 64 * 1024 * 1024;
 const MAX_OUTPUT = 512 * 1024 * 1024;
+const PRESENTATION = "http://schemas.openxmlformats.org/presentationml/2006/main";
+const DOCUMENT_RELATIONSHIPS = "http://schemas.openxmlformats.org/officeDocument/2006/relationships";
+const PACKAGE_RELATIONSHIPS = "http://schemas.openxmlformats.org/package/2006/relationships";
+const IMAGE_RELATIONSHIP = `${DOCUMENT_RELATIONSHIPS}/image`;
+const LAYOUT_RELATIONSHIP = `${DOCUMENT_RELATIONSHIPS}/slideLayout`;
 export const CONVERTER_OUTPUT_DIRECTORY = "converter-output";
 
 export type EditableConverterExecutor = (
@@ -50,6 +62,7 @@ export type EditableArtifactHashes = {
   manifest: string;
   runLedger: string;
   cleanBackground: string;
+  donorPptx: string;
   assets: Record<string, string>;
   outputs: Record<string, string>;
 };
@@ -59,8 +72,10 @@ export type EditableConversionResult = {
   outputRoot: string;
   manifestPath: string;
   cleanBackground: string;
+  donorPptx: string;
   ledgerPath: string;
   manifest: EditableManifest;
+  officialManifest: EditableManifestV2;
   ledger: RunLedgerV2;
   artifactHashes: EditableArtifactHashes;
 };
@@ -81,7 +96,7 @@ function nodeSupported(value: string): boolean {
 
 function compatibleConverterVersion(value: string): boolean {
   const match = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$/.exec(value);
-  return Boolean(match && match[1] === "0" && match[2] === "1");
+  return Boolean(match && match[1] === "0" && match[2] === "2");
 }
 
 async function boundedRegularFile(path: string, maximum: number, label: string): Promise<Buffer> {
@@ -137,7 +152,7 @@ async function validateConverterRoot(root: string, nodeVersion: string): Promise
     || pkg.engines?.node !== ">=22.6"
     || typeof pkg.scripts?.cli !== "string"
     || !pkg.scripts.cli.trim()
-  ) throw new Error("converter package is not a compatible image-to-editable-pptx 0.1.x package");
+  ) throw new Error("converter package is not a compatible image-to-editable-pptx 0.2.x package");
   const skill = join(canonical, "skills", "image-to-editable-pptx", "SKILL.md");
   await boundedRegularFile(skill, MAX_JSON, "converter Skill entry");
   return canonical;
@@ -239,9 +254,146 @@ function sameBox(
     && left.height === right.height;
 }
 
-function validateDecisionBinding(manifest: EditableManifest, ledger: RunLedgerV2): void {
+function xmlAttribute(element: OoxmlElementRange, namespaceUri: string, localName: string): string | null {
+  const matches = element.attributes.filter((attribute) =>
+    attribute.namespaceUri === namespaceUri && attribute.localName === localName);
+  if (matches.length > 1) throw new Error(`duplicate OOXML ${localName} attribute`);
+  return matches[0]?.value ?? null;
+}
+
+function relationshipTarget(slidePart: string, target: string): string {
+  if (!target || target.includes("\\") || target.split("/").some((part) => part === ".")) {
+    throw new Error("donor relationship target is unsafe");
+  }
+  const resolved = target.startsWith("/")
+    ? target.slice(1)
+    : posix.normalize(posix.join(posix.dirname(slidePart), target));
+  if (!/^ppt\/media\/[A-Za-z0-9._-]+\.png$/.test(resolved) || resolved.includes("../")) {
+    throw new Error("donor image relationship target is unsafe or not PNG");
+  }
+  return resolved;
+}
+
+export type OfficialEditableDonorInspection = {
+  zip: JSZip;
+  slidePart: string;
+  slideXml: string;
+  relationshipsPart: string;
+  relationshipsXml: string;
+  objectNames: string[];
+  imageRelationships: Array<{ id: string; targetPart: string }>;
+};
+
+export async function inspectOfficialEditableDonor(
+  bytes: Buffer,
+  manifest: EditableManifestV2,
+): Promise<OfficialEditableDonorInspection> {
+  let zip: JSZip;
+  try {
+    zip = await JSZip.loadAsync(bytes);
+  } catch (error: unknown) {
+    throw new Error("official editable donor PPTX is invalid", { cause: error });
+  }
+  const names = Object.keys(zip.files).filter((name) => !zip.files[name]!.dir);
+  const forbidden = names.find((name) =>
+    /(?:vbaProject|\/embeddings\/|\/activeX\/|\/charts\/|\/diagrams\/)/i.test(name)
+    || (/^ppt\/media\//.test(name) && !/\.png$/i.test(name)));
+  if (forbidden) throw new Error(`official editable donor contains unsupported active content: ${forbidden}`);
+  for (const required of ["ppt/presentation.xml", "ppt/_rels/presentation.xml.rels"]) {
+    if (!zip.file(required)) throw new Error(`official editable donor is missing ${required}`);
+  }
+  const slideParts = names.filter((name) => /^ppt\/slides\/slide[0-9]+\.xml$/.test(name));
+  if (slideParts.length !== 1) throw new Error("official editable donor must contain exactly one slide");
+  const presentationXml = await zip.file("ppt/presentation.xml")!.async("string");
+  const presentationElements = scanOoxmlRanges(presentationXml).elements;
+  const slideIds = presentationElements.filter((element) =>
+    element.namespaceUri === PRESENTATION && element.localName === "sldId");
+  if (slideIds.length !== 1) throw new Error("official editable donor must contain exactly one slide");
+  const slideSize = presentationElements.filter((element) =>
+    element.namespaceUri === PRESENTATION && element.localName === "sldSz");
+  if (slideSize.length !== 1) throw new Error("official editable donor page size is missing or ambiguous");
+  const width = Number(xmlAttribute(slideSize[0]!, "", "cx"));
+  const height = Number(xmlAttribute(slideSize[0]!, "", "cy"));
+  if (!Number.isSafeInteger(width) || !Number.isSafeInteger(height) || width <= 0 || height <= 0 || width * 9 !== height * 16) {
+    throw new Error("official editable donor page size must be 16:9");
+  }
+  const presentationRels = scanOoxmlRanges(await zip.file("ppt/_rels/presentation.xml.rels")!.async("string")).elements
+    .filter((element) => element.namespaceUri === PACKAGE_RELATIONSHIPS && element.localName === "Relationship");
+  const slideRelationshipId = xmlAttribute(slideIds[0]!, DOCUMENT_RELATIONSHIPS, "id");
+  const slideRelationship = presentationRels.find((element) => xmlAttribute(element, "", "Id") === slideRelationshipId);
+  const slideTarget = slideRelationship && xmlAttribute(slideRelationship, "", "Target");
+  if (!slideTarget || xmlAttribute(slideRelationship!, "", "TargetMode") === "External") {
+    throw new Error("official editable donor slide relationship is invalid");
+  }
+  const slidePart = posix.normalize(posix.join("ppt", slideTarget));
+  if (slidePart !== slideParts[0] || !/^ppt\/slides\/slide[0-9]+\.xml$/.test(slidePart)) {
+    throw new Error("official editable donor slide relationship is ambiguous");
+  }
+  const slideXml = await zip.file(slidePart)!.async("string");
+  const slideElements = scanOoxmlRanges(slideXml).elements;
+  const shapeTrees = slideElements.filter((element) =>
+    element.namespaceUri === PRESENTATION && element.localName === "spTree");
+  if (shapeTrees.length !== 1) throw new Error("official editable donor must contain exactly one shape tree");
+  const objectNames = slideElements
+    .filter((element) => element.namespaceUri === PRESENTATION && element.localName === "cNvPr")
+    .map((element) => xmlAttribute(element, "", "name"))
+    .filter((name): name is string => Boolean(name));
+  if (new Set(objectNames).size !== objectNames.length) throw new Error("official editable donor has duplicate object names");
+  const expectedNames = ["asset-background", ...manifest.elements.map((element) => {
+    if (element.kind === "text") return `text-${element.id}`;
+    if (element.kind === "shape") return `shape-${element.id}-${element.label}`;
+    return `asset-${element.id}`;
+  })];
+  for (const name of expectedNames) {
+    if (objectNames.filter((candidate) => candidate === name).length !== 1) {
+      throw new Error(`official editable donor object name does not match manifest: ${name}`);
+    }
+  }
+  const links = shapeTrees.flatMap((shapeTree) => slideElements.filter((element) =>
+    element.start >= shapeTree.start && element.end <= shapeTree.end)
+    .flatMap((element) => element.attributes.filter((attribute) =>
+      attribute.namespaceUri === DOCUMENT_RELATIONSHIPS && attribute.localName === "link")));
+  if (links.length > 0) throw new Error("official editable donor shape tree contains r:link");
+  const embeds = new Set(shapeTrees.flatMap((shapeTree) => slideElements.filter((element) =>
+    element.start >= shapeTree.start && element.end <= shapeTree.end)
+    .flatMap((element) => element.attributes.filter((attribute) =>
+      attribute.namespaceUri === DOCUMENT_RELATIONSHIPS && attribute.localName === "embed")
+      .map((attribute) => attribute.value))));
+  const relationshipsPart = `ppt/slides/_rels/${posix.basename(slidePart)}.rels`;
+  const relationshipsFile = zip.file(relationshipsPart);
+  if (!relationshipsFile) throw new Error("official editable donor slide relationships are missing");
+  const relationshipsXml = await relationshipsFile.async("string");
+  const relationshipElements = scanOoxmlRanges(relationshipsXml).elements.filter((element) =>
+    element.namespaceUri === PACKAGE_RELATIONSHIPS && element.localName === "Relationship");
+  const ids = new Set<string>();
+  const imageRelationships: OfficialEditableDonorInspection["imageRelationships"] = [];
+  for (const relationship of relationshipElements) {
+    const id = xmlAttribute(relationship, "", "Id");
+    const type = xmlAttribute(relationship, "", "Type");
+    const target = xmlAttribute(relationship, "", "Target");
+    if (!id || !type || !target || ids.has(id)) throw new Error("official editable donor relationship is incomplete or duplicate");
+    ids.add(id);
+    if (xmlAttribute(relationship, "", "TargetMode") === "External") throw new Error("official editable donor contains an external relationship");
+    if (type !== IMAGE_RELATIONSHIP && type !== LAYOUT_RELATIONSHIP) {
+      throw new Error(`official editable donor contains an unsupported relationship: ${type}`);
+    }
+    if (embeds.has(id)) {
+      if (type !== IMAGE_RELATIONSHIP) throw new Error("official editable donor shape-tree relationship must be an image");
+      const targetPart = relationshipTarget(slidePart, target);
+      if (!zip.file(targetPart)) throw new Error("official editable donor image relationship target is missing");
+      imageRelationships.push({ id, targetPart });
+    }
+  }
+  if (imageRelationships.length !== embeds.size || imageRelationships.length === 0) {
+    throw new Error("official editable donor image relationship binding is incomplete");
+  }
+  return { zip, slidePart, slideXml, relationshipsPart, relationshipsXml, objectNames: expectedNames, imageRelationships };
+}
+
+function validateDecisionBinding(manifest: EditableManifestV2, ledger: RunLedgerV2): void {
+  const decisionElements = manifest.elements.filter((element) => element.kind !== "shape");
   const accepted = ledger.decisions.filter((decision) => decision.decision === "accepted");
-  if (accepted.length !== manifest.elements.length) {
+  if (accepted.length !== decisionElements.length) {
     throw new Error("converter ledger decision count does not match editable manifest elements");
   }
   const byElement = new Map<string, (typeof accepted)[number]>();
@@ -254,7 +406,7 @@ function validateDecisionBinding(manifest: EditableManifest, ledger: RunLedgerV2
     }
     byElement.set(decision.output.manifestElementId, decision);
   }
-  for (const element of manifest.elements) {
+  for (const element of decisionElements) {
     const decision = byElement.get(element.id);
     if (!decision || decision.output.state !== "editable_layer" || !sameBox(decision.bbox, element.bbox)) {
       throw new Error(`converter ledger decision does not authenticate manifest element: ${element.id}`);
@@ -264,7 +416,7 @@ function validateDecisionBinding(manifest: EditableManifest, ledger: RunLedgerV2
         throw new Error(`converter ledger decision does not authenticate text element: ${element.id}`);
       }
     } else if (
-      decision.kind !== "icon"
+      !["icon", "foreground-object", "text-backing", "compound-group"].includes(decision.kind)
       || decision.extraction !== "transparent"
       || decision.output.assetPath !== element.assetPath
     ) {
@@ -301,7 +453,12 @@ async function verifyOutputHash(
   return checked;
 }
 
-async function verifyConverterOutput(outDir: string, sourceBytes: Buffer): Promise<Omit<EditableConversionResult, "converterRoot">> {
+async function verifyConverterOutput(
+  outDir: string,
+  sourceBytes: Buffer,
+  converterVersionValue: string,
+): Promise<Omit<EditableConversionResult, "converterRoot">> {
+  AuthenticatedEditableConversionSchema.shape.converterVersion.parse(converterVersionValue);
   const canonicalOutput = await requireDirectory(outDir, "converter output");
   const canonicalParent = await realpath(dirname(resolve(outDir)));
   if (canonicalOutput !== join(canonicalParent, basename(resolve(outDir)))) {
@@ -309,18 +466,22 @@ async function verifyConverterOutput(outDir: string, sourceBytes: Buffer): Promi
   }
   await parseJson(join(outDir, OUTPUT_MARKER), MAX_JSON, "converter ownership marker", (value) => ConverterOwnershipMarkerSchema.parse(value));
   const manifestPath = join(outDir, "manifest.json");
-  const parsedManifest = await parseJson(manifestPath, MAX_JSON, "converter manifest", (value) => EditableManifestSchema.parse(value));
+  const parsedManifest = await parseJson(manifestPath, MAX_JSON, "converter manifest", (value) => EditableManifestV2Schema.parse(value));
   const ledgerPath = join(outDir, "run-ledger.json");
   const parsedLedger = await parseJson(ledgerPath, MAX_JSON, "converter run ledger", (value) => RunLedgerV2Schema.parse(value));
-  const { value: manifest, bytes: manifestBytes } = parsedManifest;
+  const { value: officialManifest, bytes: manifestBytes } = parsedManifest;
   const { value: ledger, bytes: ledgerBytes } = parsedLedger;
-  validateDecisionBinding(manifest, ledger);
+  validateDecisionBinding(officialManifest, ledger);
   if (ledger.hashes.sourceImage !== sha256(sourceBytes)) throw new Error("source image hash mismatch");
   if (ledger.hashes.manifest !== sha256(manifestBytes)) throw new Error("converter manifest hash mismatch");
 
+  const visionName = basename(ledger.outputs.vision);
+  if (visionName !== "vision.json" && visionName !== "scene-graph.json") {
+    throw new Error("converter ledger vision output path is invalid");
+  }
   const outputNames = {
     ocr: "ocr.json",
-    vision: "vision.json",
+    vision: visionName,
     analysisLedger: "analysis-ledger.json",
     manifest: "manifest.json",
     removalMask: "removal-mask.png",
@@ -332,7 +493,7 @@ async function verifyConverterOutput(outDir: string, sourceBytes: Buffer): Promi
   }
   expectedOutput(outDir, ledger.outputs.assets, "assets");
   const pptxRelative = basename(ledger.outputs.pptx);
-  if (extname(pptxRelative).toLowerCase() !== ".pptx") throw new Error("converter ledger PPTX output path is invalid");
+  if (pptxRelative !== "slide-editable.pptx") throw new Error("converter ledger must publish the official slide-editable.pptx donor");
   expectedOutput(outDir, ledger.outputs.pptx, pptxRelative);
   await requireDirectory(join(outDir, "assets"), "converter asset directory");
 
@@ -354,7 +515,7 @@ async function verifyConverterOutput(outDir: string, sourceBytes: Buffer): Promi
   await exactPng(join(outDir, "clean-background.png"), 1280, 720, "clean background");
   await exactPng(join(outDir, "removal-mask.png"), 1280, 720, "removal mask");
 
-  const referencedAssets = manifest.elements.flatMap((element) => element.kind === "asset" ? [element.assetPath] : []);
+  const referencedAssets = officialManifest.elements.flatMap((element) => element.kind === "asset" ? [element.assetPath] : []);
   if (new Set(referencedAssets).size !== referencedAssets.length) throw new Error("converter manifest asset paths must be unique");
   const ledgerAssetKeys = Object.keys(ledger.hashes.assets).sort();
   if (JSON.stringify([...referencedAssets].sort()) !== JSON.stringify(ledgerAssetKeys)) {
@@ -364,20 +525,44 @@ async function verifyConverterOutput(outDir: string, sourceBytes: Buffer): Promi
   for (const assetPath of referencedAssets) {
     const checked = await verifyOutputHash(outDir, assetPath, ledger.hashes.assets[assetPath]!, `converter asset ${assetPath}`, MAX_ASSET);
     if (!await transparentPng(checked.bytes)) throw new Error(`converter asset ${assetPath} must be a transparent PNG`);
+    const element = officialManifest.elements.find((candidate) => candidate.kind === "asset" && candidate.assetPath === assetPath);
+    if (!element || element.kind !== "asset" || element.provenance.assetSha256 !== checked.hash) {
+      throw new Error(`converter asset provenance hash mismatch: ${assetPath}`);
+    }
     assetHashes[assetPath] = checked.hash;
   }
+  await inspectOfficialEditableDonor(pptx.bytes, officialManifest);
+  const legacyElements: EditableManifest["elements"] = [];
+  for (const element of officialManifest.elements) {
+    if (element.kind === "shape") continue;
+    if (element.kind === "text") {
+      legacyElements.push(element);
+      continue;
+    }
+    const { role: _role, groupId: _groupId, provenance: _provenance, relations: _relations, reviewRequired: _reviewRequired, ...legacy } = element;
+    legacyElements.push(legacy);
+  }
+  const manifest = EditableManifestSchema.parse({
+    manifestVersion: 1,
+    canvas: officialManifest.canvas,
+    elements: legacyElements,
+    warnings: officialManifest.warnings,
+  });
   return {
     outputRoot: canonicalOutput,
     manifestPath,
     cleanBackground: join(outDir, "clean-background.png"),
+    donorPptx: join(outDir, "slide-editable.pptx"),
     ledgerPath,
     manifest,
+    officialManifest,
     ledger,
     artifactHashes: {
       sourceImage: sha256(sourceBytes),
       manifest: sha256(manifestBytes),
       runLedger: sha256(ledgerBytes),
       cleanBackground: ledger.hashes.cleanBackground,
+      donorPptx: ledger.hashes.pptx,
       assets: assetHashes,
       outputs: outputHashes,
     },
@@ -408,6 +593,7 @@ export async function runEditableConversion(options: {
   nodeVersion?: string;
 }): Promise<EditableConversionResult> {
   const converterRoot = await validateConverterRoot(options.converterRoot, options.nodeVersion ?? process.versions.node);
+  const version = await converterVersion(converterRoot);
   const sourceBytes = await exactPng(options.sourcePng, 1280, 720, "converter source");
   await freshOutputPath(options.outDir, options.sourcePng);
   const execute = options.execute ?? (execFileAsync as unknown as EditableConverterExecutor);
@@ -427,16 +613,100 @@ export async function runEditableConversion(options: {
   }
   return {
     converterRoot,
-    ...await verifyConverterOutput(options.outDir, sourceBytes),
+    ...await verifyConverterOutput(options.outDir, sourceBytes, version),
   };
 }
 
 export async function validateEditableConversionOutput(options: {
   sourcePng: string;
   outDir: string;
+  converterVersion?: string;
 }): Promise<Omit<EditableConversionResult, "converterRoot">> {
   const sourceBytes = await exactPng(options.sourcePng, 1280, 720, "converter source");
-  return verifyConverterOutput(options.outDir, sourceBytes);
+  let version = options.converterVersion;
+  if (!version) {
+    try {
+      const record = await parseJson(
+        join(dirname(options.outDir), "conversion-record.json"),
+        MAX_JSON,
+        "conversion record",
+        (value) => ConversionRecordSchema.parse(value),
+      );
+      version = record.value.converterVersion;
+    } catch (error: unknown) {
+      throw new Error("converter version evidence is missing or invalid", { cause: error });
+    }
+  }
+  return verifyConverterOutput(options.outDir, sourceBytes, version);
+}
+
+export type AuthenticatedEditableConversionResult = AuthenticatedEditableConversion & {
+  manifest: EditableManifestV2;
+  ledger: RunLedgerV2;
+};
+
+export async function authenticateProjectEditableConversion(options: {
+  projectRoot: string;
+  conversionRoot: string;
+  slideId: string;
+}): Promise<AuthenticatedEditableConversionResult> {
+  const projectRoot = await validateProjectRoot(options.projectRoot);
+  const project = await readProject(projectRoot);
+  const conversionRoot = resolve(options.conversionRoot);
+  const expectedPrefix = join(projectRoot, "editable", options.slideId);
+  if (!inside(expectedPrefix, conversionRoot) || dirname(conversionRoot) !== expectedPrefix) {
+    throw new Error("editable conversion root is outside its owned slide path");
+  }
+  if (await realpath(conversionRoot) !== conversionRoot) throw new Error("editable conversion root is not canonical");
+  const recordResult = await parseJson(
+    join(conversionRoot, "conversion-record.json"),
+    MAX_JSON,
+    "conversion record",
+    (value) => ConversionRecordSchema.parse(value),
+  );
+  const record = recordResult.value;
+  if (
+    record.projectId !== project.projectId
+    || record.slideId !== options.slideId
+    || record.revisionId !== basename(conversionRoot)
+  ) throw new Error("conversion record does not bind the owned project slide revision");
+  const sourcePng = join(conversionRoot, "source-1280x720.png");
+  const outputRoot = join(conversionRoot, CONVERTER_OUTPUT_DIRECTORY);
+  const converted = await validateEditableConversionOutput({
+    sourcePng,
+    outDir: outputRoot,
+    converterVersion: record.converterVersion,
+  });
+  if (JSON.stringify(converted.artifactHashes) !== JSON.stringify(record.artifacts)) {
+    throw new Error("conversion record artifact hashes do not match official converter output");
+  }
+  const ownedPath = (path: string): string => {
+    const value = relative(projectRoot, path).split("\\").join("/");
+    return EditableProjectPathSchema.parse(value);
+  };
+  const authenticated = AuthenticatedEditableConversionSchema.parse({
+    converterVersion: record.converterVersion,
+    manifestVersion: converted.officialManifest.manifestVersion,
+    sourceImagePath: ownedPath(sourcePng),
+    sourceImageSha256: converted.artifactHashes.sourceImage,
+    manifestPath: ownedPath(converted.manifestPath),
+    manifestSha256: converted.artifactHashes.manifest,
+    ledgerPath: ownedPath(converted.ledgerPath),
+    ledgerSha256: converted.artifactHashes.runLedger,
+    cleanBackgroundPath: ownedPath(converted.cleanBackground),
+    cleanBackgroundSha256: converted.artifactHashes.cleanBackground,
+    donorPptxPath: ownedPath(converted.donorPptx),
+    donorPptxSha256: converted.artifactHashes.donorPptx,
+    assets: Object.fromEntries(Object.entries(converted.artifactHashes.assets).map(([path, hash]) => [
+      ownedPath(join(outputRoot, ...path.split("/"))),
+      hash,
+    ])),
+    reviewRequiredObjects: converted.officialManifest.elements.flatMap((element) =>
+      element.kind === "asset" && element.reviewRequired
+        ? [{ elementId: element.id, label: element.label, role: element.role }]
+        : []),
+  });
+  return { ...authenticated, manifest: converted.officialManifest, ledger: converted.ledger };
 }
 
 async function ownedSlideRoot(options: {
