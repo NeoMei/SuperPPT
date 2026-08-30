@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
-import { lstat, mkdir, readdir, rename } from "node:fs/promises";
-import { dirname, join } from "node:path";
+import { lstat, mkdir, rename } from "node:fs/promises";
+import { dirname, join, relative, sep } from "node:path";
 
 import { z } from "zod";
 
@@ -50,6 +50,20 @@ const AdoptionJournalSchema = z.object({
 }).strict();
 type AdoptionJournal = z.infer<typeof AdoptionJournalSchema>;
 
+const BootstrapJournalSchema = z.object({
+  schemaVersion: z.literal(1),
+  revisionId: UuidSchema,
+  projectId: UuidSchema,
+  projectRevisionId: UuidSchema,
+  sourceRelativePath: z.string().min(1),
+  sourceSha256: Sha256Schema,
+  slideTopologySha256: Sha256Schema,
+  changedSlideIds: z.array(UuidSchema),
+  createdAt: z.string().datetime(),
+  phases: z.array(z.string().min(1)),
+}).strict();
+type BootstrapJournal = z.infer<typeof BootstrapJournalSchema>;
+
 export type DeckAdoptionCheckpoint = "revision-written" | "evidence-written" | "pointer-written" | "session-adopted";
 export type DeckAdoptionOperations = {
   checkpoint?: (phase: DeckAdoptionCheckpoint) => Promise<void> | void;
@@ -78,6 +92,17 @@ type BootstrapInitialDeckRevisionOptions = {
   sourceAbsolutePath: string;
   slideTopology: SlideTopology;
   changedSlideIds: string[];
+  operations?: BootstrapInitialDeckRevisionOperations;
+};
+
+export type BootstrapInitialDeckRevisionCheckpoint =
+  | "directory-created"
+  | "deck-copied"
+  | "revision-written"
+  | "pointer-written"
+  | "manifest-updated";
+export type BootstrapInitialDeckRevisionOperations = {
+  checkpoint?: (phase: BootstrapInitialDeckRevisionCheckpoint) => Promise<void> | void;
 };
 
 function json(value: unknown): string {
@@ -98,6 +123,7 @@ async function ensureDeckRoots(root: string): Promise<void> {
   await ensureDirectory(join(root, "output"));
   await ensureDirectory(join(root, "output", "deck-revisions"));
   await ensureDirectory(join(root, "output", "deck-edit-sessions"));
+  await ensureDirectory(join(root, "output", "deck-bootstrap"));
 }
 
 async function replaceJson(path: string, value: unknown): Promise<void> {
@@ -121,6 +147,32 @@ function revisionRelativePath(revisionId: string): string {
 
 function sessionPath(root: string, sessionId: string): string {
   return join(root, "output", "deck-edit-sessions", sessionId);
+}
+
+function bootstrapPath(root: string, revisionId: string): string {
+  return join(root, "output", "deck-bootstrap", revisionId);
+}
+
+async function regularFileExists(path: string): Promise<boolean> {
+  try {
+    const info = await lstat(path);
+    if (info.isSymbolicLink() || !info.isFile()) throw new Error(`unsafe bootstrap residue: ${path}`);
+    return true;
+  } catch (error: unknown) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return false;
+    throw error;
+  }
+}
+
+async function writeBootstrapJournal(path: string, journal: BootstrapJournal): Promise<void> {
+  await replaceJson(path, BootstrapJournalSchema.parse(journal));
+}
+
+async function appendBootstrapPhase(path: string, journal: BootstrapJournal, phase: string): Promise<BootstrapJournal> {
+  if (journal.phases.includes(phase)) return journal;
+  const next = BootstrapJournalSchema.parse({ ...journal, phases: [...journal.phases, phase] });
+  await writeBootstrapJournal(path, next);
+  return next;
 }
 
 async function writeExclusiveJson(path: string, value: unknown): Promise<void> {
@@ -204,7 +256,6 @@ export async function bootstrapInitialDeckRevision(
   return withProjectLease(root, "deck-revisions", async (canonicalRoot) => {
     await ensureDeckRoots(canonicalRoot);
     const manifest = await readProject(canonicalRoot);
-    if (manifest.currentDeck !== null) return readCurrentDeckPointerUnlocked(canonicalRoot);
     if (manifest.currentRevision.id !== projectRevisionId) throw new Error("initial deck revision does not bind the current project revision");
     const source = await inspectLocalPptx(options.sourceAbsolutePath);
     if (source.projectRoot !== canonicalRoot) throw new Error("initial deck source escaped its owned project");
@@ -219,15 +270,60 @@ export async function bootstrapInitialDeckRevision(
           || entry.creationId !== slide.creationId;
       })
     ) throw new Error("initial deck topology does not bind the source PPTX");
+    const sourceRelativePath = relative(canonicalRoot, source.absolutePath).split(sep).join("/");
+    const journalRoot = bootstrapPath(canonicalRoot, revisionId);
+    const journalPath = join(journalRoot, "journal.json");
+    const journalExists = await regularFileExists(journalPath);
+    if (!journalExists && manifest.currentDeck !== null) return readCurrentDeckPointerUnlocked(canonicalRoot);
+    if (!journalExists && await regularFileExists(join(canonicalRoot, "output", "current.json"))) {
+      throw new Error("initial bootstrap current pointer exists without its journal");
+    }
+    await ensureDirectory(journalRoot);
+    let journal: BootstrapJournal;
+    if (journalExists) {
+      journal = BootstrapJournalSchema.parse(await readJson(journalPath));
+      if (
+        journal.revisionId !== revisionId
+        || journal.projectId !== manifest.projectId
+        || journal.projectRevisionId !== projectRevisionId
+        || journal.sourceRelativePath !== sourceRelativePath
+        || journal.sourceSha256 !== source.sha256
+        || journal.slideTopologySha256 !== slideTopology.sha256
+        || JSON.stringify(journal.changedSlideIds) !== JSON.stringify(changedSlideIds)
+      ) throw new Error("initial bootstrap retry does not match its durable journal");
+    } else {
+      journal = BootstrapJournalSchema.parse({
+        schemaVersion: 1,
+        revisionId,
+        projectId: manifest.projectId,
+        projectRevisionId,
+        sourceRelativePath,
+        sourceSha256: source.sha256,
+        slideTopologySha256: slideTopology.sha256,
+        changedSlideIds,
+        createdAt: new Date().toISOString(),
+        phases: [],
+      });
+      await writeDurableExclusive(journalPath, json(journal));
+      await syncDirectory(journalRoot);
+    }
     const directory = revisionPath(canonicalRoot, revisionId);
-    await mkdir(directory, { mode: 0o700 });
+    await ensureDirectory(directory);
+    journal = await appendBootstrapPhase(journalPath, journal, "directory-created");
+    await options.operations?.checkpoint?.("directory-created");
     const relativePath = revisionRelativePath(revisionId);
     const absolutePath = join(canonicalRoot, ...relativePath.split("/"));
-    await writeDurableExclusive(absolutePath, await readRegularFileNoFollow(source.absolutePath));
-    await syncDirectory(directory);
+    if (await regularFileExists(absolutePath)) {
+      const existing = await inspectLocalPptx(absolutePath);
+      if (existing.sha256 !== source.sha256) throw new Error("initial bootstrap deck residue does not match source bytes");
+    } else {
+      await writeDurableExclusive(absolutePath, await readRegularFileNoFollow(source.absolutePath));
+      await syncDirectory(directory);
+    }
     const copied = await inspectLocalPptx(absolutePath);
     if (copied.sha256 !== source.sha256) throw new Error("initial immutable revision copy changed bytes");
-    const createdAt = new Date().toISOString();
+    journal = await appendBootstrapPhase(journalPath, journal, "deck-copied");
+    await options.operations?.checkpoint?.("deck-copied");
     const revision = LocalDeckRevisionSchema.parse({
       schemaVersion: 1,
       revisionId,
@@ -240,29 +336,42 @@ export async function bootstrapInitialDeckRevision(
       slideTopology,
       editableSlideIds: [],
       changedSlideIds,
-      createdAt,
+      createdAt: journal.createdAt,
     });
     await writeExclusiveJson(join(directory, "revision.json"), revision);
-    const pointer = await writeCurrentPointerOnly(canonicalRoot, {
+    journal = await appendBootstrapPhase(journalPath, journal, "revision-written");
+    await options.operations?.checkpoint?.("revision-written");
+    const intendedPointer = CurrentDeckPointerSchema.parse({
       schemaVersion: 1,
       revisionId,
       relativePath,
       sha256: copied.sha256,
-      updatedAt: createdAt,
+      updatedAt: journal.createdAt,
     });
+    let pointer: ResolvedCurrentDeckPointer;
+    if (await regularFileExists(join(canonicalRoot, "output", "current.json"))) {
+      pointer = await readCurrentDeckPointerUnlocked(canonicalRoot);
+      const { absolutePath: _absolutePath, ...persistedPointer } = pointer;
+      if (JSON.stringify(persistedPointer) !== JSON.stringify(intendedPointer)) {
+        throw new Error("initial bootstrap current pointer residue does not match its journal");
+      }
+    } else {
+      pointer = await writeCurrentPointerOnly(canonicalRoot, intendedPointer);
+    }
+    journal = await appendBootstrapPhase(journalPath, journal, "pointer-written");
+    await options.operations?.checkpoint?.("pointer-written");
     await updateProject(canonicalRoot, (project) => {
-      if (project.currentDeck !== null) throw new Error("initial deck pointer was concurrently created");
+      if (project.currentDeck !== null && JSON.stringify(project.currentDeck) !== JSON.stringify(intendedPointer)) {
+        throw new Error("initial bootstrap manifest residue does not match its journal");
+      }
       return {
         ...project,
-        currentDeck: CurrentDeckPointerSchema.parse({
-          schemaVersion: pointer.schemaVersion,
-          revisionId: pointer.revisionId,
-          relativePath: pointer.relativePath,
-          sha256: pointer.sha256,
-          updatedAt: pointer.updatedAt,
-        }),
+        currentDeck: intendedPointer,
       };
     });
+    journal = await appendBootstrapPhase(journalPath, journal, "manifest-updated");
+    await options.operations?.checkpoint?.("manifest-updated");
+    await appendBootstrapPhase(journalPath, journal, "complete");
     return pointer;
   });
 }
@@ -419,7 +528,11 @@ export async function adoptDeckCandidate(
   return withProjectLease(root, "deck-revisions", async (canonicalRoot) => {
     const session = await readSession(canonicalRoot, validSessionId);
     if (session.mode !== options.mode) throw new Error("deck adoption mode does not match its session");
-    if (session.state === "adopted") return readCurrentDeckPointerUnlocked(canonicalRoot);
+    if (session.state === "adopted") {
+      const manifest = await readProject(canonicalRoot);
+      if (manifest.activeDeckEditSessionId !== session.sessionId) return readCurrentDeckPointerUnlocked(canonicalRoot);
+      return finishAdoptedSessionCleanup(canonicalRoot, session);
+    }
     const current = await readCurrentDeckPointerUnlocked(canonicalRoot);
     if (current.revisionId !== session.parentRevisionId) throw new Error("deck adoption parent is no longer current");
     if (options.mode === "manual" && options.userSignal !== "saved-and-closed") {
@@ -465,29 +578,34 @@ export async function adoptDeckCandidate(
   });
 }
 
+async function finishAdoptedSessionCleanup(
+  root: string,
+  session: DeckEditSession,
+): Promise<ResolvedCurrentDeckPointer> {
+  const pointer = await readCurrentDeckPointerUnlocked(root);
+  if (pointer.revisionId !== session.candidateRevisionId) {
+    throw new Error("active adopted deck session does not match the current pointer");
+  }
+  const currentDeck = CurrentDeckPointerSchema.parse({
+    schemaVersion: pointer.schemaVersion,
+    revisionId: pointer.revisionId,
+    relativePath: pointer.relativePath,
+    sha256: pointer.sha256,
+    updatedAt: pointer.updatedAt,
+  });
+  await updateProject(root, (project) => {
+    if (project.activeDeckEditSessionId !== session.sessionId) {
+      throw new Error("active adopted deck cleanup lost its session authority");
+    }
+    return { ...project, currentDeck, activeDeckEditSessionId: null };
+  });
+  return pointer;
+}
+
 async function recoveryCandidate(root: string, sessionId: string): Promise<ResolvedCurrentDeckPointer | null> {
   const session = await readSession(root, sessionId);
   const journal = await readJournal(root, sessionId);
-  if (session.state === "adopted") {
-    const pointer = await readCurrentDeckPointerUnlocked(root);
-    if (pointer.revisionId !== session.candidateRevisionId) {
-      throw new Error("adopted deck session does not match the current pointer");
-    }
-    const currentDeck = CurrentDeckPointerSchema.parse({
-      schemaVersion: pointer.schemaVersion,
-      revisionId: pointer.revisionId,
-      relativePath: pointer.relativePath,
-      sha256: pointer.sha256,
-      updatedAt: pointer.updatedAt,
-    });
-    await updateProject(root, (project) => {
-      if (project.activeDeckEditSessionId !== null && project.activeDeckEditSessionId !== session.sessionId) {
-        throw new Error("adopted deck cleanup conflicts with another active session");
-      }
-      return { ...project, currentDeck, activeDeckEditSessionId: null };
-    });
-    return pointer;
-  }
+  if (session.state === "adopted") return finishAdoptedSessionCleanup(root, session);
   if (!journal.adoption || !journal.entries.some((entry) => entry.phase === "validated")) return null;
   let revision: ReturnType<typeof LocalDeckRevisionSchema.parse> | ResolvedLocalDeckRevision;
   try {
@@ -527,13 +645,9 @@ async function recoveryCandidate(root: string, sessionId: string): Promise<Resol
 export async function recoverDeckAdoption(root: string): Promise<ResolvedCurrentDeckPointer | null> {
   return withProjectLease(root, "deck-revisions", async (canonicalRoot) => {
     await ensureDeckRoots(canonicalRoot);
-    const sessionsRoot = join(canonicalRoot, "output", "deck-edit-sessions");
-    for (const entry of await readdir(sessionsRoot, { withFileTypes: true })) {
-      if (!entry.isDirectory() || entry.isSymbolicLink() || !UuidSchema.safeParse(entry.name).success) continue;
-      const recovered = await recoveryCandidate(canonicalRoot, entry.name);
-      if (recovered) return recovered;
-    }
-    return null;
+    const manifest = await readProject(canonicalRoot);
+    if (manifest.activeDeckEditSessionId === null) return null;
+    return recoveryCandidate(canonicalRoot, manifest.activeDeckEditSessionId);
   });
 }
 

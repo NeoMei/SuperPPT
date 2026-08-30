@@ -9,6 +9,7 @@ import JSZip from "jszip";
 
 import {
   adoptDeckCandidate,
+  bootstrapInitialDeckRevision,
   createDeckCandidate,
   readCurrentDeckPointer,
   readLocalDeckRevision,
@@ -58,12 +59,14 @@ async function fixture(t: TestContext) {
       creationId: 1001 + position,
     })),
     deletedStableSlideIds: [],
+    deletedSlideIdentities: [],
     sha256: "",
   };
   topology.sha256 = digest(JSON.stringify({
     schemaVersion: topology.schemaVersion,
     entries: topology.entries,
     deletedStableSlideIds: topology.deletedStableSlideIds,
+    deletedSlideIdentities: topology.deletedSlideIdentities,
   }));
   const revision = {
     schemaVersion: 1 as const,
@@ -253,6 +256,151 @@ test("interrupted adoption recovery keeps revision records immutable and finishe
       assert.equal(manifest.activeDeckEditSessionId, null);
       assert.equal(manifest.currentDeck?.revisionId, candidate.candidateRevisionId);
       assert.deepEqual((await readdir(join(value.root, "output"))).filter((name) => /^current.*\.json$/.test(name)), ["current.json"]);
+    });
+  }
+});
+
+test("recovery skips a historical adopted session after rollback", async (t) => {
+  const value = await fixture(t);
+  const candidate = await createDeckCandidate(value.root, {
+    sourceRevisionId: value.current.revisionId,
+    reason: "manual-edit",
+    changedSlideIds: [value.slideIds[0]!],
+    editableSlideIds: [],
+    targetSlideId: value.slideIds[0]!,
+    mode: "manual",
+  });
+  await adoptDeckCandidate(value.root, { sessionId: candidate.sessionId, mode: "manual", userSignal: "saved-and-closed" });
+  await rollbackCurrentDeck(value.root, value.current.revisionId);
+  assert.equal(await recoverDeckAdoption(value.root), null);
+  assert.equal((await readCurrentDeckPointer(value.root)).revisionId, value.current.revisionId);
+  assert.equal((await readProject(value.root)).activeDeckEditSessionId, null);
+});
+
+test("recovery ignores multiple historical sessions and completes only the active adopted crash window", async (t) => {
+  const value = await fixture(t);
+  let sourceRevisionId: string = value.current.revisionId;
+  for (let index = 0; index < 2; index += 1) {
+    const historical = await createDeckCandidate(value.root, {
+      sourceRevisionId,
+      reason: "manual-edit",
+      changedSlideIds: [value.slideIds[index]!],
+      editableSlideIds: [],
+      targetSlideId: value.slideIds[index]!,
+      mode: "manual",
+    });
+    const adopted = await adoptDeckCandidate(value.root, { sessionId: historical.sessionId, mode: "manual", userSignal: "saved-and-closed" });
+    sourceRevisionId = adopted.revisionId;
+  }
+  const active = await createDeckCandidate(value.root, {
+    sourceRevisionId,
+    reason: "manual-edit",
+    changedSlideIds: [value.slideIds[0]!],
+    editableSlideIds: [],
+    targetSlideId: value.slideIds[0]!,
+    mode: "manual",
+  });
+  await assert.rejects(adoptDeckCandidate(value.root, {
+    sessionId: active.sessionId,
+    mode: "manual",
+    userSignal: "saved-and-closed",
+    operations: { checkpoint: (phase) => { if (phase === "session-adopted") throw new Error("active cleanup crash"); } },
+  }), /active cleanup crash/);
+
+  const recovered = await recoverDeckAdoption(value.root);
+  assert.equal(recovered?.revisionId, active.candidateRevisionId);
+  assert.equal((await readProject(value.root)).activeDeckEditSessionId, null);
+});
+
+test("adopted fast-path idempotently finishes its active manifest mirror", async (t) => {
+  const value = await fixture(t);
+  const candidate = await createDeckCandidate(value.root, {
+    sourceRevisionId: value.current.revisionId,
+    reason: "manual-edit",
+    changedSlideIds: [value.slideIds[0]!],
+    editableSlideIds: [],
+    targetSlideId: value.slideIds[0]!,
+    mode: "manual",
+  });
+  await assert.rejects(adoptDeckCandidate(value.root, {
+    sessionId: candidate.sessionId,
+    mode: "manual",
+    userSignal: "saved-and-closed",
+    operations: { checkpoint: (phase) => { if (phase === "session-adopted") throw new Error("active cleanup crash"); } },
+  }), /active cleanup crash/);
+  const pointer = await adoptDeckCandidate(value.root, {
+    sessionId: candidate.sessionId,
+    mode: "manual",
+    userSignal: "saved-and-closed",
+  });
+  const manifest = await readProject(value.root);
+  assert.equal(pointer.revisionId, candidate.candidateRevisionId);
+  assert.equal(manifest.currentDeck?.revisionId, candidate.candidateRevisionId);
+  assert.equal(manifest.activeDeckEditSessionId, null);
+});
+
+async function initialBootstrapFixture(t: TestContext) {
+  const value = await fixture(t);
+  await rm(join(value.root, "output", "current.json"));
+  await updateProject(value.root, (project) => ({ ...project, currentDeck: null }));
+  const sourceId = randomUUID();
+  const sourceRoot = join(value.root, "output", "candidates", sourceId);
+  await mkdir(sourceRoot, { recursive: true });
+  const sourceAbsolutePath = join(sourceRoot, "deck.pptx");
+  await writeFile(sourceAbsolutePath, value.deckBytes);
+  return {
+    ...value,
+    options: {
+      revisionId: randomUUID(),
+      projectRevisionId: value.revision.projectRevisionId,
+      sourceAbsolutePath,
+      slideTopology: value.revision.slideTopology,
+      changedSlideIds: value.slideIds,
+    },
+  };
+}
+
+test("initial bootstrap retry converges from every durable publication checkpoint", async (t) => {
+  for (const checkpoint of ["directory-created", "deck-copied", "revision-written", "pointer-written", "manifest-updated"] as const) {
+    await t.test(checkpoint, async (st) => {
+      const value = await initialBootstrapFixture(st);
+      await assert.rejects(bootstrapInitialDeckRevision(value.root, {
+        ...value.options,
+        operations: { checkpoint: (phase) => { if (phase === checkpoint) throw new Error("bootstrap crash"); } },
+      }), /bootstrap crash/);
+      const pointer = await bootstrapInitialDeckRevision(value.root, value.options);
+      assert.equal(pointer.revisionId, value.options.revisionId);
+      const manifest = await readProject(value.root);
+      assert.equal(manifest.currentDeck?.revisionId, value.options.revisionId);
+      assert.equal((await readLocalDeckRevision(value.root, value.options.revisionId)).sha256, pointer.sha256);
+    });
+  }
+});
+
+test("initial bootstrap rejects mismatched durable residues", async (t) => {
+  for (const kind of ["deck", "revision", "pointer"] as const) {
+    await t.test(kind, async (st) => {
+      const value = await initialBootstrapFixture(st);
+      const checkpoint = kind === "deck" ? "deck-copied" : kind === "revision" ? "revision-written" : "pointer-written";
+      await assert.rejects(bootstrapInitialDeckRevision(value.root, {
+        ...value.options,
+        operations: { checkpoint: (phase) => { if (phase === checkpoint) throw new Error("bootstrap crash"); } },
+      }), /bootstrap crash/);
+      const revisionRoot = join(value.root, "output", "deck-revisions", value.options.revisionId);
+      if (kind === "deck") await writeFile(join(revisionRoot, "deck.pptx"), "tampered deck");
+      if (kind === "revision") {
+        const path = join(revisionRoot, "revision.json");
+        const record = JSON.parse(await readFile(path, "utf8")) as Record<string, unknown>;
+        await writeFile(path, `${JSON.stringify({ ...record, sha256: "0".repeat(64) }, null, 2)}\n`);
+      }
+      if (kind === "pointer") {
+        const other = randomUUID();
+        const path = join(value.root, "output", "current.json");
+        const pointer = JSON.parse(await readFile(path, "utf8")) as Record<string, unknown>;
+        await writeFile(path, `${JSON.stringify({ ...pointer, revisionId: other, relativePath: `output/deck-revisions/${other}/deck.pptx` }, null, 2)}\n`);
+      }
+      await assert.rejects(bootstrapInitialDeckRevision(value.root, value.options), /mismatch|changed|bind|invalid|unsafe|package|different bytes|regular file/i);
+      assert.equal((await readProject(value.root)).currentDeck, null);
     });
   }
 });

@@ -1,7 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
 
 import type { InspectedLocalPptx, InspectedSlidePart } from "./inspect.js";
-import { SlideTopologySchema, type SlideTopology, type SlideTopologyEntry } from "./schemas.js";
+import { SlideTopologySchema, type DeletedSlideIdentity, type SlideTopology, type SlideTopologyEntry } from "./schemas.js";
 
 export type ReconciledSlideTopology = {
   topology: SlideTopology;
@@ -18,8 +18,9 @@ function topologyHash(value: Omit<SlideTopology, "sha256">): string {
 export function finalizeSlideTopology(
   entries: SlideTopologyEntry[],
   deletedStableSlideIds: string[],
+  deletedSlideIdentities: DeletedSlideIdentity[] = [],
 ): SlideTopology {
-  const value = { schemaVersion: 1 as const, entries, deletedStableSlideIds };
+  const value = { schemaVersion: 1 as const, entries, deletedStableSlideIds, deletedSlideIdentities };
   return SlideTopologySchema.parse({ ...value, sha256: topologyHash(value) });
 }
 
@@ -43,6 +44,8 @@ export function reconcileSlideTopology(
   }
   const byCreation = new Map(validPrevious.entries.map((entry) => [entry.creationId, entry]));
   const byPresentation = new Map(validPrevious.entries.map((entry) => [entry.presentationSlideId, entry]));
+  const deletedByCreation = new Map(validPrevious.deletedSlideIdentities.map((entry) => [entry.creationId, entry]));
+  const deletedByPresentation = new Map(validPrevious.deletedSlideIdentities.map((entry) => [entry.presentationSlideId, entry]));
   const consumed = new Set<string>();
   const reservedStableIds = new Set([
     ...validPrevious.entries.map((entry) => entry.stableSlideId),
@@ -50,6 +53,11 @@ export function reconcileSlideTopology(
   ]);
   const movements: ReconciledSlideTopology["movements"] = [];
   const entries: SlideTopologyEntry[] = inspected.slides.map((slide) => {
+    const deletedCreationMatch = slide.creationId === null ? undefined : deletedByCreation.get(slide.creationId);
+    const deletedPresentationMatch = deletedByPresentation.get(slide.presentationSlideId);
+    if (deletedCreationMatch || deletedPresentationMatch) {
+      conflicts.push(`deleted slide identity reappeared for ${slide.slidePart}`);
+    }
     const creationMatch = slide.creationId === null ? undefined : byCreation.get(slide.creationId);
     const presentationMatch = byPresentation.get(slide.presentationSlideId);
     if (
@@ -74,9 +82,6 @@ export function reconcileSlideTopology(
       };
     }
     if (slide.creationId === null) conflicts.push(`new slide ${slide.slidePart} has no persistent creation identity`);
-    if (validPrevious.deletedStableSlideIds.length > 0) {
-      conflicts.push(`unknown slide identity ${slide.slidePart} cannot be distinguished from a deleted identity`);
-    }
     let stableSlideId = randomUUID();
     while (reservedStableIds.has(stableSlideId)) stableSlideId = randomUUID();
     reservedStableIds.add(stableSlideId);
@@ -89,14 +94,13 @@ export function reconcileSlideTopology(
       creationId: slide.creationId ?? 1,
     };
   });
-  const deletedStableSlideIds = [...new Set([
-    ...validPrevious.deletedStableSlideIds,
-    ...validPrevious.entries
-      .filter((entry) => !consumed.has(entry.stableSlideId))
-      .map((entry) => entry.stableSlideId),
-  ])];
+  const newlyDeleted = validPrevious.entries
+    .filter((entry) => !consumed.has(entry.stableSlideId))
+    .map(({ stableSlideId, presentationSlideId, creationId }) => ({ stableSlideId, presentationSlideId, creationId }));
+  const deletedSlideIdentities = [...validPrevious.deletedSlideIdentities, ...newlyDeleted];
+  const deletedStableSlideIds = deletedSlideIdentities.map((entry) => entry.stableSlideId);
   if (conflicts.length > 0) {
     return { topology: validPrevious, movements: [], conflicts };
   }
-  return { topology: finalizeSlideTopology(entries, deletedStableSlideIds), movements, conflicts };
+  return { topology: finalizeSlideTopology(entries, deletedStableSlideIds, deletedSlideIdentities), movements, conflicts };
 }

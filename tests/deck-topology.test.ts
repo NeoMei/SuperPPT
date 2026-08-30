@@ -10,6 +10,7 @@ import JSZip from "jszip";
 import { publishInitialSlideIdentities } from "../src/deck-revisions/identity.js";
 import { inspectLocalPptx } from "../src/deck-revisions/inspect.js";
 import { scanOoxmlRanges } from "../src/deck-revisions/ooxml.js";
+import { SlideTopologySchema, type SlideTopology } from "../src/deck-revisions/schemas.js";
 import { reconcileSlideTopology } from "../src/deck-revisions/topology.js";
 import { initializeProject } from "../src/project/initialize.js";
 
@@ -18,8 +19,11 @@ const R = "http://schemas.openxmlformats.org/officeDocument/2006/relationships";
 const REL = "http://schemas.openxmlformats.org/package/2006/relationships";
 const P14 = "http://schemas.microsoft.com/office/powerpoint/2010/main";
 
-function signedTopology<T extends { schemaVersion: 1; entries: unknown[]; deletedStableSlideIds: string[] }>(value: T): T & { sha256: string } {
-  return { ...value, sha256: createHash("sha256").update(JSON.stringify(value)).digest("hex") };
+function signedTopology(value: Omit<SlideTopology, "sha256" | "deletedSlideIdentities"> & {
+  deletedSlideIdentities?: SlideTopology["deletedSlideIdentities"];
+}): SlideTopology {
+  const normalized = { ...value, deletedSlideIdentities: value.deletedSlideIdentities ?? [] };
+  return { ...normalized, sha256: createHash("sha256").update(JSON.stringify(normalized)).digest("hex") };
 }
 
 async function projectRoot(t: TestContext): Promise<string> {
@@ -243,7 +247,7 @@ test("topology reconciliation rejects a known presentation ID with an uncorrobor
   assert.equal(reconciled.topology.entries[0]!.creationId, 1001);
 });
 
-test("topology carries deletion history across revisions and blocks unknown identity after a deletion", () => {
+test("topology carries strict deletion evidence while allowing a genuinely new unmanaged slide", () => {
   const deleted = randomUUID();
   const survivor = randomUUID();
   const first = signedTopology({
@@ -261,10 +265,51 @@ test("topology carries deletion history across revisions and blocks unknown iden
   const third = reconcileSlideTopology(second.topology, onlySurvivor);
   assert.deepEqual(third.topology.deletedStableSlideIds, [deleted]);
 
+  const inserted = reconcileSlideTopology(third.topology, { slides: [
+    ...onlySurvivor.slides,
+    { position: 1, slidePart: "ppt/slides/slide9.xml", presentationSlideId: 300, relationshipId: "rId9", relationshipTarget: "slides/slide9.xml", creationId: 2003, xmlSha256: "f".repeat(64), relationshipsSha256: null },
+  ] });
+  assert.deepEqual(inserted.conflicts, []);
+  assert.equal(inserted.topology.entries[1]!.management, "unmanaged");
+  assert.deepEqual(inserted.topology.deletedStableSlideIds, [deleted]);
+  assert.deepEqual(inserted.topology.deletedSlideIdentities, [{ stableSlideId: deleted, presentationSlideId: 256, creationId: 1001 }]);
+
   const reappeared = reconcileSlideTopology(third.topology, { slides: [
     ...onlySurvivor.slides,
     { position: 1, slidePart: "ppt/slides/slide9.xml", presentationSlideId: 256, relationshipId: "rId9", relationshipTarget: "slides/slide9.xml", creationId: 1001, xmlSha256: "f".repeat(64), relationshipsSha256: null },
   ] });
   assert.match(reappeared.conflicts.join("\n"), /deleted|identity|unknown/i);
   assert.deepEqual(reappeared.topology, third.topology);
+});
+
+test("topology accumulates tombstones and rejects duplicate or inconsistent deletion evidence", () => {
+  const first = randomUUID();
+  const second = randomUUID();
+  const initial = signedTopology({
+    schemaVersion: 1 as const,
+    entries: [
+      { stableSlideId: first, slidePart: "ppt/slides/slide1.xml", position: 0, management: "managed" as const, presentationSlideId: 256, creationId: 1001 },
+      { stableSlideId: second, slidePart: "ppt/slides/slide2.xml", position: 1, management: "managed" as const, presentationSlideId: 257, creationId: 1002 },
+    ],
+    deletedStableSlideIds: [],
+    deletedSlideIdentities: [],
+  });
+  const afterFirst = reconcileSlideTopology(initial, { slides: [{ position: 0, slidePart: "ppt/slides/slide2.xml", presentationSlideId: 257, relationshipId: "rId2", relationshipTarget: "slides/slide2.xml", creationId: 1002, xmlSha256: "a".repeat(64), relationshipsSha256: null }] });
+  const afterSecond = reconcileSlideTopology(afterFirst.topology, { slides: [] });
+  assert.deepEqual(afterSecond.topology.deletedStableSlideIds, [first, second]);
+  assert.deepEqual(afterSecond.topology.deletedSlideIdentities, [
+    { stableSlideId: first, presentationSlideId: 256, creationId: 1001 },
+    { stableSlideId: second, presentationSlideId: 257, creationId: 1002 },
+  ]);
+  const duplicate = {
+    ...afterSecond.topology,
+    deletedSlideIdentities: [...afterSecond.topology.deletedSlideIdentities, afterSecond.topology.deletedSlideIdentities[0]],
+  };
+  duplicate.sha256 = createHash("sha256").update(JSON.stringify({
+    schemaVersion: duplicate.schemaVersion,
+    entries: duplicate.entries,
+    deletedStableSlideIds: duplicate.deletedStableSlideIds,
+    deletedSlideIdentities: duplicate.deletedSlideIdentities,
+  })).digest("hex");
+  assert.equal(SlideTopologySchema.safeParse(duplicate).success, false);
 });
