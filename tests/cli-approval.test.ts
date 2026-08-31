@@ -13,6 +13,13 @@ import { formatLocalPptxLink, requireLocalDeckHandoff } from "../src/host/capabi
 import { beginAgentCandidateConfirmation } from "../src/deck-revisions/workflow.js";
 import { createDeckCandidate, readCurrentDeckPointer } from "../src/deck-revisions/store.js";
 import { finalizeSlideTopology } from "../src/deck-revisions/topology.js";
+import {
+  bindAgentDeckConfirmation,
+  mapUpstreamDeckChange,
+  presentUpstreamImpactPlan,
+  requireImpactPlanConfirmation,
+  translateManualDeckSignal,
+} from "../src/editable/route.js";
 import { initializeProject } from "../src/project/initialize.js";
 import { readProject, updateProject } from "../src/project/store.js";
 import { applyCompleteDeckReviewAction } from "../src/project/promotion.js";
@@ -85,7 +92,25 @@ async function cliProject(t: TestContext) {
   }, null, 2)}\n`);
   const current = { schemaVersion: 1 as const, revisionId, relativePath, sha256: digest(bytes), updatedAt: new Date().toISOString() };
   await writeFile(join(root, "output", "current.json"), `${JSON.stringify(current, null, 2)}\n`);
-  await updateProject(root, (manifest) => ({ ...manifest, currentDeck: current }));
+  await updateProject(root, (manifest) => ({
+    ...manifest,
+    stage: "deck-review",
+    currentDeck: current,
+    slides: slideIds.map((id, order) => ({
+      id,
+      order,
+      title: `Slide ${order + 1}`,
+      role: order === 0 ? "cover" as const : order === slideIds.length - 1 ? "summary" as const : "content" as const,
+      specRevisionId: manifest.currentRevision.id,
+      promptRevisionId: null,
+      styleRevisionId: null,
+      status: "ready" as const,
+      image: null,
+      editable: null,
+      finalRender: null,
+      staleReasons: [],
+    })),
+  }));
   return { root, slideIds, revisionId, absolutePath };
 }
 
@@ -135,15 +160,16 @@ test("manual commands return one clickable complete PPTX and adopt only saved-an
   assert.equal(prepared.targetSlideId, project.slideIds[1]);
   assert.match(prepared.absolutePath, /output\/deck-revisions\/.+\/deck\.pptx$/);
   assert.equal(prepared.markdownLink, `[${prepared.linkLabel}](<${prepared.absolutePath}>)`);
-  assert.equal(prepared.waitFor, "saved-and-closed");
+  assert.equal(prepared.waitFor, "已保存并关闭");
 
-  await assert.rejects(runCli([
-    "adopt-saved-deck", "--project", project.root, "--session-id", prepared.sessionId, "--user-signal", "saved",
-  ]), /saved-and-closed/i);
+  assert.throws(() => translateManualDeckSignal("已保存"), /已保存并关闭/);
+  const internalSignal = translateManualDeckSignal("已保存并关闭");
   const adopted = await runCliJson([
-    "adopt-saved-deck", "--project", project.root, "--session-id", prepared.sessionId, "--user-signal", "saved-and-closed",
+    "adopt-saved-deck", "--project", project.root, "--session-id", prepared.sessionId, "--user-signal", internalSignal,
   ]);
   assert.equal(adopted.currentRevisionId, prepared.revisionId);
+  assert.equal("absolutePath" in adopted, false);
+  assert.match(adopted.nextRequiredAction, /current-deck-link/);
 });
 
 test("Agent confirmation, rejection, and deck rollback use exact complete-deck identities", async (t) => {
@@ -171,12 +197,66 @@ test("Agent confirmation, rejection, and deck rollback use exact complete-deck i
     mode: "agent",
   });
   const presented = await beginAgentCandidateConfirmation({ root: project.root, sessionId: candidate.sessionId, slideId: project.slideIds[1]! });
+  assert.throws(() => bindAgentDeckConfirmation("确认一下", presented.sha256), /精确.*确认|exact.*确认/i);
+  await assert.rejects(runCli([
+    "confirm-agent-deck", "--project", project.root, "--session-id", presented.sessionId, "--sha256", "0".repeat(64),
+  ]), /hash|sha-256|presented/i);
   const confirmed = await runCliJson([
-    "confirm-agent-deck", "--project", project.root, "--session-id", presented.sessionId, "--sha256", presented.sha256,
+    "confirm-agent-deck", "--project", project.root, "--session-id", presented.sessionId, "--sha256", bindAgentDeckConfirmation("确认", presented.sha256),
   ]);
   assert.equal(confirmed.currentRevisionId, presented.revisionId);
+  assert.equal("absolutePath" in confirmed, false);
+  assert.match(confirmed.nextRequiredAction, /current-deck-link/);
   const rolledBack = await runCliJson(["rollback-deck", "--project", project.root, "--revision-id", first.revisionId]);
   assert.equal(rolledBack.currentRevisionId, first.revisionId);
+  assert.equal("absolutePath" in rolledBack, false);
+  assert.match(rolledBack.nextRequiredAction, /current-deck-link/);
+});
+
+test("upstream choices publish hash-bound actual impact, wait, then resume from restartStage", async (t) => {
+  const cases = [
+    ["修改大纲", "outline"],
+    ["修改第 2 页描述", "slide-specs"],
+    ["换风格", "style"],
+  ] as const;
+  for (const [choice, expectedRestartStage] of cases) {
+    const project = await cliProject(t);
+    const current = await readCurrentDeckPointer(project.root);
+    const beforeSelection = await readFile(join(project.root, "superppt.json"));
+    const selected = await applyCompleteDeckReviewAction(project.root, {
+      action: "return-upstream",
+      revisionId: current.revisionId,
+      deckSha256: current.sha256,
+    });
+    assert.equal(selected.stage, "deck-review", choice);
+    assert.deepEqual(await readFile(join(project.root, "superppt.json")), beforeSelection, choice);
+
+    const change = mapUpstreamDeckChange(choice, project.slideIds);
+    const changePath = join(project.root, `change-${expectedRestartStage}.json`);
+    await writeFile(changePath, `${JSON.stringify(change)}\n`, { mode: 0o600 });
+    const plan = await runCliJson(["impact", "--project", project.root, "--change", changePath]);
+    const presentation = presentUpstreamImpactPlan(plan);
+    assert.equal(plan.restartStage, expectedRestartStage, choice);
+    assert.deepEqual(
+      plan.staleSlideIds,
+      choice === "修改第 2 页描述" ? [project.slideIds[1]] : project.slideIds,
+      choice,
+    );
+    assert.deepEqual(plan.invalidatedOutputs, ["complete-local-pptx", "formal-delivery", "acceptance-evidence"], choice);
+    assert.match(plan.sha256, /^[a-f0-9]{64}$/, choice);
+    assert.equal(presentation.waitFor, "确认", choice);
+    assert.equal((await readProject(project.root)).stage, "deck-review", `${choice} must wait before apply`);
+
+    assert.throws(() => requireImpactPlanConfirmation("同意", presentation.sha256), /精确.*确认|exact.*确认/i);
+    const confirmedPlanSha256 = requireImpactPlanConfirmation("确认", presentation.sha256);
+    const approved = await runCliJson(["approve-impact", "--project", project.root, "--sha256", confirmedPlanSha256]);
+    assert.equal(approved.approved, true, choice);
+    assert.equal((await readProject(project.root)).stage, "deck-review", `${choice} approval alone must not apply`);
+    const applied = await runCliJson(["apply-impact", "--project", project.root]);
+    assert.equal(applied.applied, true, choice);
+    assert.equal(applied.restartStage, expectedRestartStage, choice);
+    assert.equal((await readProject(project.root)).stage, expectedRestartStage, choice);
+  }
 });
 
 test("complete-deck review actions fail closed on stale hashes and persist revision path hash evidence", async (t) => {

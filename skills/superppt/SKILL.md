@@ -7,7 +7,7 @@ description: Guide users from a topic, pasted content, or Markdown to a high-det
 
 Use a real guided conversation. The visible route is：内容导入/描述 → 针对内容追问 → `outline` → `slide-specs` → 紧凑单选风格 → `style-sample-generation` → `style-sample` → `generation-authorization` → 逐页串行生成 → `deck-review` → 修改某页 / 返回前序 / 确认交付。每个用户决定都要停下来等待；不得从导入静默跑到最终 PPT，也不得把反馈拖到交付时才收集。
 
-Before advancing, read [references/阶段契约.json](references/阶段契约.json). It is the 唯一 wait/continue authority. Its eight entries are all mandatory user waits: stop, present that entry's `userVisibleArtifact`, and wait for one of its `allowedNextActions`. Machine validation cannot advance a stage or imply approval. 每次只问一个与当前内容直接相关的问题，或展示一组当前决定；同时摘要已经知道的内容，让用户能即时纠正。确认建立可恢复基线，不锁死前序阶段。
+Before advancing, read [references/阶段契约.json](references/阶段契约.json). It is the 唯一 wait/continue authority. Its seven entries are all mandatory user waits: stop, present that entry's `userVisibleArtifact`, and wait for one of its `allowedNextActions`. Machine validation cannot advance a stage or imply approval. 每次只问一个与当前内容直接相关的问题，或展示一组当前决定；同时摘要已经知道的内容，让用户能即时纠正。确认建立可恢复基线，不锁死前序阶段。
 
 ## Start or resume
 
@@ -41,11 +41,13 @@ After sample approval, publish the whole-deck plan and stop at `generation-autho
 
 ## Review, revision, and editing
 
-Assemble a review-only candidate and show the real 候选稿 montage before formal delivery. At `deck-review`, offer exactly `修改某页 / 返回前序 / 确认交付` (`edit-page / return-upstream / confirm-delivery`). Only authenticated `confirm-delivery` may promote formal PPTX, PDF, montage, and acceptance evidence; never use generic `approve` for deck review or deliver before it.
+At `deck-review`, run `current-deck-link`, show its single clickable complete local PPTX link, and stop with exactly `修改某页 / 返回前序 / 确认交付` (`edit-page / return-upstream / confirm-delivery`). WPS or PowerPoint is the review and editing interface. Only `confirm-delivery` bound to that exact current revision and SHA-256 may cross the delivery gate; never use generic `approve` or present any second handoff artifact.
 
-The user may return to any earlier stage. Follow [references/修改路由.md](references/修改路由.md): publish revision-impact evidence, explain which stable IDs and downstream artifacts change, invalidate only that downstream scope, and resume at the impact plan's first changed gate. Do not force a restart or silently mutate a confirmed artifact.
+The user may return to any earlier stage. Follow [references/修改路由.md](references/修改路由.md): map `修改大纲 / 修改第 N 页描述 / 换风格` to the existing change schema, publish the immutable impact plan, present its actual affected stable IDs, invalidated outputs, `restartStage`, and SHA-256, then stop and wait for `确认`. Only after that exact confirmation may `approve-impact` and `apply-impact` run; resume from the plan's `restartStage`, never a hard-coded generation stage.
 
-When editability is requested, classify from the manifest. Only reliably extracted text and transparent assets are editable; never describe the whole image page as editable. 只对 action 绑定的选中页执行 `convert-page`, then show before/after and route evidence at `slide-preview`. Approval rebuilds the candidate and returns to `deck-review`; rejection leaves the current page and deck unchanged. Detailed `promote-editable`, `already-editable`, regenerate, and preview routes are in [references/修改路由.md](references/修改路由.md).
+When a page edit is requested, resolve its stable ID, classify `direct-edit / activate-editable / regenerate-slide`, and disclose the chosen route in one sentence. Only reliably extracted text and transparent assets are editable; never describe the whole image page as editable. If the user has not already chosen a mode, ask exactly `需要我帮你修改，还是由你手动修改？`; accept natural unambiguous answers and reject contradictory dual-mode language.
+
+For manual mode, run `prepare-manual-deck`, show only its complete local PPTX link plus any `reviewRequiredObjects` labels, then stop and wait. Do not continue for `已保存`; continue only after the user says exactly `已保存并关闭`, then invoke `adopt-saved-deck` with the internal `saved-and-closed` signal. For Agent mode, run `prepare-agent-deck`, show only its complete local PPTX link, concise change summary, and presented SHA-256, then stop and wait for exactly `确认`; bind that confirmation to the presented hash before `confirm-agent-deck`, or use `reject-deck-candidate` on rejection. Use `rollback-deck` for `恢复上一版`. State-only acknowledgements direct back to `current-deck-link` and do not expose a raw path. Detailed direct/activate/regenerate and upstream routes are in [references/修改路由.md](references/修改路由.md).
 
 Read [references/门禁清单.md](references/门禁清单.md) whenever presenting, authorizing, approving, rejecting, or reopening a decision.
 

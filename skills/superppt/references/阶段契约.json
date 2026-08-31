@@ -55,8 +55,8 @@
       "interaction": "human",
       "action": "wait",
       "mustWaitForUser": true,
-      "inputs": ["review-only candidate descriptor", "candidate montage", "page QA evidence"],
-      "userVisibleArtifact": "候选稿 montage 和逐页审阅证据，不是正式交付",
+      "inputs": ["exact current complete local PPTX revision", "current deck SHA-256", "page QA evidence", "reviewRequired object labels"],
+      "userVisibleArtifact": "唯一完整本地 PPTX 可点击链接、SHA-256、逐页审阅证据和人工复核对象标签",
       "allowedNextActions": ["edit-page", "return-upstream", "confirm-delivery"],
       "invalidationDependencies": ["formal-delivery", "acceptance-evidence"],
       "canSpendImageCalls": false
@@ -83,18 +83,6 @@
       "userVisibleArtifact": "受影响稳定页面 ID、失效下游产物、恢复阶段和 impact plan 哈希",
       "allowedNextActions": ["approve-impact", "revise-change-request", "reject-and-keep-current-revision"],
       "invalidationDependencies": ["approved-impact-plan.staleSlideIds", "approved-impact-plan.restartStage-and-downstream-gates", "formal-delivery", "acceptance-evidence"],
-      "canSpendImageCalls": false
-    },
-    {
-      "id": "slide-preview",
-      "kind": "conditional",
-      "interaction": "human",
-      "action": "wait",
-      "mustWaitForUser": true,
-      "inputs": ["one action-bound selected slide", "editable or regenerated candidate", "before-and-after preview"],
-      "userVisibleArtifact": "选中单页的修改前后预览、编辑路由和稳定页面 ID",
-      "allowedNextActions": ["approve-and-replace-selected-slide", "revise-selected-slide", "reject-and-keep-current-deck"],
-      "invalidationDependencies": ["candidate-montage", "deck-review", "formal-delivery", "acceptance-evidence"],
       "canSpendImageCalls": false
     }
   ],

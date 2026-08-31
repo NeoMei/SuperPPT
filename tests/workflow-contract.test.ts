@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
 
@@ -6,7 +7,8 @@ import {
   DECK_EDIT_MODE_QUESTION,
   classifyDeckEditMode,
   describeDeckEditRoute,
-  describeUpstreamDeckChange,
+  mapUpstreamDeckChange,
+  presentUpstreamImpactPlan,
 } from "../src/editable/route.js";
 
 const skillRoot = "skills/superppt";
@@ -90,7 +92,7 @@ function validateStageContract(contract: StageContract): void {
   const expectedByKind: Record<GateKind, string[]> = {
     ordinary: ["outline", "slide-specs", "style-sample", "generation-authorization", "deck-review"],
     "execution-authorization": ["style-sample-generation"],
-    conditional: ["revision-impact", "slide-preview"],
+    conditional: ["revision-impact"],
   };
   for (const [kind, expected] of Object.entries(expectedByKind) as Array<[GateKind, string[]]>) {
     assert.deepEqual(contract.stages.filter((entry) => entry.kind === kind).map((entry) => entry.id), expected);
@@ -104,7 +106,6 @@ function validateStageContract(contract: StageContract): void {
     "deck-review": ["formal-delivery", "acceptance-evidence"],
     "style-sample-generation": ["style-sample", "generation-authorization", "deck-review", "formal-delivery", "acceptance-evidence"],
     "revision-impact": ["approved-impact-plan.staleSlideIds", "approved-impact-plan.restartStage-and-downstream-gates", "formal-delivery", "acceptance-evidence"],
-    "slide-preview": ["candidate-montage", "deck-review", "formal-delivery", "acceptance-evidence"],
   };
   for (const entry of contract.stages) {
     assert.equal(entry.interaction, "human", `${entry.id} interaction`);
@@ -288,28 +289,49 @@ test("delegation discloses exact outbound inputs and preserves current Task 10 r
     "prepare-deck-job",
     "admit-image-call",
     "record-image-result",
-    "assemble-candidate",
-    "publish-deck-review",
-    "deck-review-action",
+    "current-deck-link",
+    "prepare-manual-deck",
+    "adopt-saved-deck",
+    "prepare-agent-deck",
+    "confirm-agent-deck",
+    "reject-deck-candidate",
+    "rollback-deck",
   ];
   for (const route of requiredRoutes) assert.match(dependencies, new RegExp(route.replaceAll("-", "\\-")));
   assert.doesNotMatch(dependencies, /approve --project .*deck-review/);
 });
 
-test("review blocks delivery and selected-page editability remains preview-gated", async () => {
-  const [skill, dependencies, route] = await Promise.all([
+test("active workflow hands off only one complete local PPTX and names exact wait signals", async () => {
+  const [skill, dependencies, route, gates, workspace, stages] = await Promise.all([
     text("SKILL.md"),
     text("references/依赖说明.md"),
     text("references/修改路由.md"),
+    text("references/门禁清单.md"),
+    text("references/工作区契约.md"),
+    text("references/阶段契约.json"),
   ]);
-  const workflow = `${skill}\n${dependencies}\n${route}`;
-  assert.match(workflow, /候选.*montage.*修改某页.*返回前序.*确认交付/is);
-  assert.match(workflow, /confirm-delivery.*才.*交付|delivery.*only.*confirm-delivery/is);
-  assert.match(workflow, /只.*选中页.*convert|convert.*selected page/is);
-  assert.match(workflow, /slide-preview/);
-  assert.match(workflow, /render-editable.*confirm-preview.*replace-slide/is);
+  const workflow = `${skill}\n${dependencies}\n${route}\n${gates}\n${workspace}\n${stages}`;
+  assert.match(workflow, /需要我帮你修改，还是由你手动修改？/);
+  assert.match(workflow, /一句|one sentence/i);
+  assert.match(workflow, /完整.*本地.*PPTX.*链接|complete local PPTX link/i);
+  assert.match(workflow, /停止.*等待|stop.*wait/is);
+  assert.match(workflow, /已保存并关闭/);
+  assert.match(workflow, /确认.*SHA-256|SHA-256.*确认/is);
+  assert.match(workflow, /current-deck-link.*prepare-manual-deck.*adopt-saved-deck/is);
+  assert.match(workflow, /prepare-agent-deck.*confirm-agent-deck.*reject-deck-candidate/is);
+  assert.match(workflow, /rollback-deck/);
+  for (const obsolete of [
+    "render-editable",
+    "confirm-preview",
+    "replace-slide",
+    "assemble-candidate",
+    "publish-deck-review",
+    "deck-review-action",
+    "slide-preview",
+    "montage",
+  ]) assert.doesNotMatch(workflow, new RegExp(obsolete, "i"), obsolete);
+  assert.doesNotMatch(workflow, /(?:交付|展示|链接|handoff)[^\n]*(?:PNG|PDF|单页 PPTX|browser|cloud|upload)/i);
   assert.match(workflow, /不能把整页图片描述为可编辑/);
-  assert.match(workflow, /already-editable.*不.*regenerate|already-editable.*不得.*重生/is);
 });
 
 test("controlled WPS smoke edits, undoes, discards, and reopens without saving canonical output", async () => {
@@ -336,37 +358,81 @@ test("controlled WPS smoke edits, undoes, discards, and reopens without saving c
   assert.doesNotMatch(workflow, /blocked until Task 12|blocked-until-task-12|task-11-save-based-incompatible/i);
 });
 
-test("deck editing infers mode only from explicit user language and otherwise asks the exact wait-point question", () => {
-  assert.equal(classifyDeckEditMode({ change: "text", instruction: "我自己改这一页" }), "manual");
-  assert.equal(classifyDeckEditMode({ change: "text", instruction: "帮我改这一页" }), "agent");
-  assert.equal(classifyDeckEditMode({ change: "text", instruction: "把标题改短" }), null);
+test("deck editing recognizes natural answers to the exact mode question and rejects contradictions", () => {
+  const cases = [
+    ["我自己改这一页", "manual"],
+    ["我手动修改这一页", "manual"],
+    ["由我手动修改", "manual"],
+    ["帮我改这一页", "agent"],
+    ["帮我修改这一页", "agent"],
+    ["你帮我修改", "agent"],
+    ["把标题改短", null],
+  ] as const;
+  for (const [instruction, expected] of cases) {
+    assert.equal(classifyDeckEditMode({ change: "text", instruction }), expected, instruction);
+  }
+  assert.throws(
+    () => classifyDeckEditMode({ change: "text", instruction: "你帮我修改，也可以由我手动修改" }),
+    /contradictory|冲突|只能选择/i,
+  );
   assert.equal(DECK_EDIT_MODE_QUESTION, "需要我帮你修改，还是由你手动修改？");
 });
 
-test("deck edit routing and upstream returns always disclose the chosen route and impact", () => {
+test("deck edit routing is one sentence and upstream choices bind actual impact-plan fields", () => {
   const revisionId = "00000000-0000-4000-8000-000000000091";
   const slideId = "00000000-0000-4000-8000-000000000092";
-  assert.match(describeDeckEditRoute({
+  const routeDisclosures = [describeDeckEditRoute({
     route: "direct-edit",
     currentRevisionId: revisionId,
     slideId,
     operations: [{ kind: "replace-text", elementId: "title", text: "New" }],
-  }), /直接修改.*完整.*PPTX/);
-  assert.match(describeDeckEditRoute({
+  }), describeDeckEditRoute({
     route: "activate-editable",
     currentRevisionId: revisionId,
     slideId,
     operations: [],
-  }), /转为可编辑.*完整.*PPTX/);
-  assert.match(describeDeckEditRoute({
+  }), describeDeckEditRoute({
     route: "regenerate-slide",
     currentRevisionId: revisionId,
     slideId,
     reason: "layout",
     styleLockSha256: "a".repeat(64),
-  }), /重做.*完整.*PPTX/);
-  for (const change of ["outline", "slide-description", "style"] as const) {
-    const disclosure = describeUpstreamDeckChange(change);
-    assert.match(disclosure, /影响|失效|重新生成/);
+  })];
+  assert.match(routeDisclosures[0]!, /直接修改.*完整.*PPTX/);
+  assert.match(routeDisclosures[1]!, /转为可编辑.*完整.*PPTX/);
+  assert.match(routeDisclosures[2]!, /重做.*完整.*PPTX/);
+  for (const disclosure of routeDisclosures) {
+    assert.equal(disclosure.split("。").filter(Boolean).length, 1, disclosure);
   }
+  const slideIds = [
+    "00000000-0000-4000-8000-000000000091",
+    "00000000-0000-4000-8000-000000000092",
+    "00000000-0000-4000-8000-000000000093",
+  ];
+  assert.deepEqual(mapUpstreamDeckChange("修改大纲", slideIds), { kind: "outline-structure", slideIds });
+  assert.deepEqual(mapUpstreamDeckChange("修改第 2 页描述", slideIds), { kind: "slide-spec", slideIds: [slideIds[1]] });
+  assert.deepEqual(mapUpstreamDeckChange("换风格", slideIds), { kind: "style" });
+  assert.throws(() => mapUpstreamDeckChange("修改第 4 页描述", slideIds), /page|页码|range/i);
+
+  const impactBody = {
+    schemaVersion: 1,
+    kind: "revision-impact-plan",
+    projectId: "00000000-0000-4000-8000-000000000081",
+    baseRevisionId: "00000000-0000-4000-8000-000000000082",
+    baseRevisionNumber: 1,
+    baseManifestSha256: "a".repeat(64),
+    evidencePath: "revisions/pending-impact.json",
+    change: { kind: "slide-spec", slideIds: [slideIds[1]] },
+    staleSlideIds: [slideIds[1]],
+    invalidatedOutputs: ["complete-local-pptx", "formal-delivery", "acceptance-evidence"],
+    invalidateExports: true,
+    restartStage: "slide-specs",
+  } as const;
+  const impactSha256 = createHash("sha256").update(JSON.stringify(impactBody)).digest("hex");
+  const presentation = presentUpstreamImpactPlan({ ...impactBody, sha256: impactSha256 });
+  assert.deepEqual(presentation.affectedStableSlideIds, [slideIds[1]]);
+  assert.deepEqual(presentation.invalidatedOutputs, ["complete-local-pptx", "formal-delivery", "acceptance-evidence"]);
+  assert.equal(presentation.restartStage, "slide-specs");
+  assert.equal(presentation.sha256, impactSha256);
+  assert.equal(presentation.waitFor, "确认");
 });

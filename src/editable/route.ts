@@ -2,6 +2,11 @@ import { z } from "zod";
 
 import { EditableManifestV2Schema, Sha256Schema } from "./schemas.js";
 import { EditOperationSchema, type EditOperation } from "./operations.js";
+import {
+  ChangeRequestSchema,
+  ImpactPlanSchema,
+  type ChangeRequest,
+} from "../revisions/impact.js";
 
 export const DeckEditRouteSchema = z.discriminatedUnion("route", [
   z.object({
@@ -112,9 +117,33 @@ export function classifyDeckEdit(rawRequest: unknown, rawContext: unknown): Deck
 
 export function classifyDeckEditMode(rawRequest: unknown): DeckEditMode | null {
   const request = DeckEditRequestSchema.parse(rawRequest);
-  if (request.instruction?.includes("我自己改")) return "manual";
-  if (request.instruction?.includes("帮我改")) return "agent";
+  const instruction = request.instruction ?? "";
+  const manual = ["我自己改", "我自己修改", "我手动改", "我手动修改", "由我手动改", "由我手动修改", "我来改", "我来修改"]
+    .some((phrase) => instruction.includes(phrase));
+  const agent = ["帮我改", "帮我修改", "你帮我改", "你帮我修改", "由你修改", "由你来修改"]
+    .some((phrase) => instruction.includes(phrase));
+  if (manual && agent) throw new Error("contradictory deck edit modes: 只能选择 Agent 修改或手动修改其中一种");
+  if (manual) return "manual";
+  if (agent) return "agent";
   return null;
+}
+
+export function translateManualDeckSignal(rawSignal: unknown): "saved-and-closed" {
+  const signal = z.string().parse(rawSignal);
+  if (signal !== "已保存并关闭") throw new Error("手动 adoption 必须等待精确回复 已保存并关闭");
+  return "saved-and-closed";
+}
+
+export function bindAgentDeckConfirmation(rawSignal: unknown, rawPresentedSha256: unknown): string {
+  const signal = z.string().parse(rawSignal);
+  if (signal !== "确认") throw new Error("Agent candidate 必须等待精确回复 确认");
+  return Sha256Schema.parse(rawPresentedSha256);
+}
+
+export function requireImpactPlanConfirmation(rawSignal: unknown, rawPlanSha256: unknown): string {
+  const signal = z.string().parse(rawSignal);
+  if (signal !== "确认") throw new Error("impact plan 必须等待精确回复 确认");
+  return Sha256Schema.parse(rawPlanSha256);
 }
 
 export function describeDeckEditRoute(rawRoute: unknown): string {
@@ -124,10 +153,39 @@ export function describeDeckEditRoute(rawRoute: unknown): string {
   return "这次会重做目标页，并只把该页结果写入一份完整的本地 PPTX 候选。";
 }
 
-export function describeUpstreamDeckChange(change: "outline" | "slide-description" | "style"): string {
-  if (change === "outline") return "修改大纲会影响对应页描述及下游生成证据，确认后这些结果会失效并按影响范围重新生成。";
-  if (change === "slide-description") return "修改第 N 页描述会影响该页生成证据，确认后该页结果会失效并重新生成。";
-  return "换风格会影响风格样张、生成授权和后续页面结果，确认后相关证据会失效并重新生成。";
+export function mapUpstreamDeckChange(userChoice: string, rawStableSlideIds: readonly string[]): ChangeRequest {
+  const choice = z.string().trim().min(1).parse(userChoice);
+  const stableSlideIds = z.array(z.string().uuid()).min(1).refine(
+    (ids) => new Set(ids).size === ids.length,
+    "stable slide IDs must be unique",
+  ).parse([...rawStableSlideIds]);
+  if (choice === "修改大纲") {
+    return ChangeRequestSchema.parse({ kind: "outline-structure", slideIds: stableSlideIds });
+  }
+  if (choice === "换风格") return ChangeRequestSchema.parse({ kind: "style" });
+  const page = /^修改第\s*(\d+)\s*页描述$/.exec(choice);
+  if (!page) throw new Error("unsupported upstream choice; use 修改大纲、修改第 N 页描述 or 换风格");
+  const pageNumber = Number(page[1]);
+  const slideId = stableSlideIds[pageNumber - 1];
+  if (!slideId) throw new Error("upstream page number is outside the current deck range");
+  return ChangeRequestSchema.parse({ kind: "slide-spec", slideIds: [slideId] });
+}
+
+export function presentUpstreamImpactPlan(rawPlan: unknown): {
+  affectedStableSlideIds: string[];
+  invalidatedOutputs: ["complete-local-pptx", "formal-delivery", "acceptance-evidence"];
+  restartStage: "outline" | "slide-specs" | "style";
+  sha256: string;
+  waitFor: "确认";
+} {
+  const plan = ImpactPlanSchema.parse(rawPlan);
+  return {
+    affectedStableSlideIds: plan.staleSlideIds,
+    invalidatedOutputs: plan.invalidatedOutputs,
+    restartStage: plan.restartStage,
+    sha256: plan.sha256,
+    waitFor: "确认",
+  };
 }
 
 export type PrepareAgentEditDeckOptions = {

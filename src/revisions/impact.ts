@@ -35,6 +35,11 @@ const ImpactPlanBodySchema = z.object({
   evidencePath: z.literal(PENDING_IMPACT_PATH),
   change: ChangeRequestSchema,
   staleSlideIds: z.array(z.string().uuid()),
+  invalidatedOutputs: z.tuple([
+    z.literal("complete-local-pptx"),
+    z.literal("formal-delivery"),
+    z.literal("acceptance-evidence"),
+  ]),
   invalidateExports: z.literal(true),
   restartStage: z.enum(["outline", "slide-specs", "style"]),
 }).strict();
@@ -267,6 +272,7 @@ export function planImpact(
     evidencePath: PENDING_IMPACT_PATH,
     change,
     staleSlideIds,
+    invalidatedOutputs: ["complete-local-pptx", "formal-delivery", "acceptance-evidence"],
     invalidateExports: true,
     restartStage,
   });

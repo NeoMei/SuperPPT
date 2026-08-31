@@ -42,7 +42,7 @@ export type DeckReviewActionOutcome =
 
 export type CompleteDeckReviewActionOutcome = {
   action: CompleteDeckReviewActionRequest["action"];
-  stage: "deck-review" | "revising" | "generation-authorization";
+  stage: "deck-review" | "revising";
   currentRevisionId: string;
   evidence: CompleteDeckReviewActionEvidence;
 };
@@ -117,9 +117,7 @@ export async function applyCompleteDeckReviewAction(
       });
       const stage = request.action === "edit-page"
         ? "revising" as const
-        : request.action === "return-upstream"
-          ? "generation-authorization" as const
-          : "deck-review" as const;
+        : "deck-review" as const;
       await updateProject(canonicalRoot, (live) => {
         if (JSON.stringify(live) !== JSON.stringify(manifest)) {
           throw new Error("project revision changed during complete deck review action");

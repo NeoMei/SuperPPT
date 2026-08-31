@@ -199,7 +199,15 @@ function completeDeckOutput(
     slideCount: deck.slideCount,
     reviewRequiredObjects: deck.reviewRequiredObjects,
     nextRequiredAction: "open this complete PPTX in WPS or PowerPoint",
-    ...(deck.mode ? { waitFor: deck.mode === "manual" ? "saved-and-closed" : "confirmation" } : {}),
+    ...(deck.mode ? { waitFor: deck.mode === "manual" ? "已保存并关闭" : "确认" } : {}),
+  };
+}
+
+function currentDeckStateAcknowledgement(currentRevisionId: string, sha256: string): Record<string, unknown> {
+  return {
+    currentRevisionId,
+    sha256,
+    nextRequiredAction: "run current-deck-link to present the current complete local PPTX",
   };
 }
 
@@ -262,7 +270,7 @@ async function main(argv: string[]): Promise<void> {
       sessionId: options.get("--session-id")!,
       userSignal: options.get("--user-signal")!,
     });
-    outputJson({ currentRevisionId: current.revisionId, absolutePath: current.absolutePath, sha256: current.sha256 });
+    outputJson(currentDeckStateAcknowledgement(current.revisionId, current.sha256));
     return;
   }
 
@@ -292,7 +300,7 @@ async function main(argv: string[]): Promise<void> {
       sessionId: options.get("--session-id")!,
       confirmedSha256: options.get("--sha256")!,
     });
-    outputJson({ currentRevisionId: current.revisionId, absolutePath: current.absolutePath, sha256: current.sha256 });
+    outputJson(currentDeckStateAcknowledgement(current.revisionId, current.sha256));
     return;
   }
 
@@ -306,7 +314,7 @@ async function main(argv: string[]): Promise<void> {
   if (command === "rollback-deck") {
     const options = exactFlags(argv.slice(1), ["--project", "--revision-id"]);
     const current = await rollbackCurrentDeck(options.get("--project")!, options.get("--revision-id")!);
-    outputJson({ currentRevisionId: current.revisionId, absolutePath: current.absolutePath, sha256: current.sha256 });
+    outputJson(currentDeckStateAcknowledgement(current.revisionId, current.sha256));
     return;
   }
   if (command === "preflight") {
@@ -540,7 +548,7 @@ async function main(argv: string[]): Promise<void> {
     const root = options.get("--project")!;
     const { plan } = await readPendingImpactEvidence(root);
     await applyRevision(root, plan, plan.change);
-    outputJson({ sha256: plan.sha256, applied: true });
+    outputJson({ sha256: plan.sha256, applied: true, restartStage: plan.restartStage });
     return;
   }
 
