@@ -365,6 +365,89 @@ test("rejects statically unreachable object-name and writeFile calls", async (t)
   }
 });
 
+test("rejects donor evidence with non-normal completion or the wrong lexical binding", async (t) => {
+  const realOutputName = 'function outputName(imagePath?: string): string { if (imagePath === undefined) return "slide-editable.pptx"; return "other.pptx"; }\n';
+  for (const [name, replacement] of [
+    ["do break skips the condition", `${realOutputName}export function buildSlide(): string { do { break; } while (outputName()); return "other.pptx"; }\n`],
+    ["for break skips the increment", `${realOutputName}export function buildSlide(): string { for (;; outputName()) { break; } return "other.pptx"; }\n`],
+    ["continue skips the rest of the loop body", `${realOutputName}export function buildSlide(): string { for (;;) { continue; outputName(); } }\n`],
+    ["nested labelled break skips the outer remainder", `${realOutputName}export function buildSlide(): string { outer: for (;;) { for (;;) { break outer; } outputName(); } return "other.pptx"; }\n`],
+    ["nested labelled continue skips the outer remainder", `${realOutputName}export function buildSlide(): string { outer: for (;;) { for (;;) { continue outer; } outputName(); } }\n`],
+    ["switch skips a non-matching case", `${realOutputName}export function buildSlide(): string { switch (0) { case 1: return outputName(); } return "other.pptx"; }\n`],
+    ["switch break skips its default", `${realOutputName}export function buildSlide(): string { switch (0) { case 0: break; default: return outputName(); } return "other.pptx"; }\n`],
+    ["switch selected return prevents fallthrough evidence", `${realOutputName}export function buildSlide(): string { switch (0) { case 0: return "other.pptx"; case 1: outputName(); default: return "other.pptx"; } }\n`],
+    ["try return survives an empty finally", `${realOutputName}export function buildSlide(): string { try { return "other.pptx"; } finally {} outputName(); }\n`],
+    ["try throw survives an empty finally", `${realOutputName}export function buildSlide(): string { try { throw new Error("stop"); } finally {} outputName(); }\n`],
+    ["const false binding prunes the branch", `${realOutputName}export function buildSlide(): string { const ENABLED = false; if (ENABLED) return outputName(); return "other.pptx"; }\n`],
+    ["top-level const false binding prunes the branch", `const ENABLED = false;\n${realOutputName}export function buildSlide(): string { if (ENABLED) return outputName(); return "other.pptx"; }\n`],
+    ["negative zero prunes the branch", `${realOutputName}export function buildSlide(): string { if (-0) return outputName(); return "other.pptx"; }\n`],
+    ["bigint zero prunes the branch", `${realOutputName}export function buildSlide(): string { if (0n) return outputName(); return "other.pptx"; }\n`],
+    ["uncalled object method is not executable", `${realOutputName}export function buildSlide(): string { const holder = { run() { return outputName(); } }; return "other.pptx"; }\n`],
+    ["uninstantiated constructor is not executable", `${realOutputName}class Holder { constructor() { outputName(); } }\nexport function buildSlide(): string { return "other.pptx"; }\n`],
+    ["definitely throwing helper prevents later donor evidence", `${realOutputName}function stop(): never { throw new Error("stop"); }\nexport function buildSlide(): string { stop(); return outputName(); }\n`],
+    ["dead official return does not prove outputName", 'function outputName(imagePath?: string): string { return "other.pptx"; if (imagePath === undefined) return "slide-editable.pptx"; }\nexport function buildSlide(): string { return outputName(); }\n'],
+    ["top-level undefined shadow does not select the official return", 'const undefined = "shadowed";\nfunction outputName(imagePath?: string): string { if (imagePath === undefined) return "slide-editable.pptx"; return "other.pptx"; }\nexport function buildSlide(): string { return outputName(); }\n'],
+    ["non-undefined argument does not select the official donor", `${realOutputName}export function buildSlide(): string { return outputName("source.png"); }\n`],
+    ["parameter shadow does not call the real outputName", `${realOutputName}export function buildSlide(outputName: () => string): string { return outputName(); }\n`],
+    ["local shadow does not call the real outputName", `${realOutputName}export function buildSlide(): string { const outputName = () => "other.pptx"; return outputName(); }\n`],
+  ] as const) {
+    await t.test(name, async (subtest) => {
+      const current = await fixture(subtest);
+      await writeFile(join(current.editable, "src", "pipeline.ts"), replacement);
+      await assert.rejects(resolveSkillDependencies(request(current)), /official donor|semantic.*evidence/i);
+    });
+  }
+});
+
+test("accepts a const lexical alias that calls the real outputName with undefined", async (t) => {
+  const current = await fixture(t);
+  await writeFile(join(current.editable, "src", "pipeline.ts"), [
+    'function outputName(imagePath?: string): string { if (imagePath === undefined) return "slide-editable.pptx"; return "other.pptx"; }',
+    "export function buildSlide(): string {",
+    "  const selected = outputName;",
+    "  return selected();",
+    "}",
+    "",
+  ].join("\n"));
+
+  const resolved = await resolveSkillDependencies(request(current));
+  const report = await preflightDependencies(resolved);
+
+  assert.equal(resolved.editable.officialDonor, "slide-editable.pptx");
+  assert.equal(report.ok, true);
+  assert.deepEqual(report.errors, []);
+});
+
+test("rejects object-name evidence assembled from dead paths or rebound receivers", async (t) => {
+  const setup = "let pptx = new PptxGenConstructor(); let slide = pptx.addSlide(); ";
+  const names = 'slide.addImage({ objectName: "asset-background" }); slide.addText("", { objectName: `text-${element.id}` }); slide.addShape("", { objectName: `shape-${element.id}-${element.label}` }); slide.addImage({ objectName: `asset-${element.id}` }); ';
+  const write = 'await pptx.writeFile({ fileName: "out.pptx" });';
+  for (const [name, body] of [
+    ["try return makes later names and write unreachable", `try { return; } finally {} ${names}${write}`],
+    ["continue makes later names and write unreachable", `for (;;) { continue; ${names}${write} }`],
+    ["break skips the for increment write", `for (;; pptx.writeFile({ fileName: "out.pptx" })) { ${names}break; }`],
+    ["mutually exclusive if branches cannot combine names and write", `if (flag) { ${names} } else { ${write} }`],
+    ["mutually exclusive switch cases cannot combine names and write", `switch (flag) { case 0: ${names}break; default: ${write} }`],
+    ["selected switch return prevents fallthrough names and write", `switch (0) { case 0: return; case 1: ${names}default: ${write} }`],
+    ["stable flag cannot change across loop iterations", `for (let index = 0; index < 2; index += 1) { if (flag) { ${names} } else { ${write} } }`],
+    ["empty for-of never executes object-name calls", `for (const ignored of []) { ${names} } ${write}`],
+    ["reassigned slide is not the constructed receiver", `slide = fakeSlide; ${names}${write}`],
+    ["reassigned pptx is not the constructed receiver", `${names}pptx = fakePptx; ${write}`],
+    ["uncalled object method does not construct receivers", `const holder = { async run() { ${setup}${names}${write} } };`],
+    ["uninstantiated constructor does not construct receivers", `class Holder { constructor() { ${setup}${names}pptx.writeFile({ fileName: "out.pptx" }); } }`],
+  ] as const) {
+    await t.test(name, async (subtest) => {
+      const current = await fixture(subtest);
+      const usesOuterSetup = !name.includes("does not construct receivers");
+      await writeFile(
+        join(current.editable, "src", "export", "pptx.ts"),
+        `export async function exportPptx(element: any, flag: any, fakeSlide: any, fakePptx: any): Promise<void> { ${usesOuterSetup ? setup : ""}${body} }\n`,
+      );
+      await assert.rejects(resolveSkillDependencies(request(current)), /object.name|semantic.*evidence/i);
+    });
+  }
+});
+
 test("rejects converter 0.1, manifest v1, and missing official donor contracts", async (t) => {
   await t.test("converter 0.1", async (subtest) => {
     const current = await fixture(subtest, "0.1.9");
