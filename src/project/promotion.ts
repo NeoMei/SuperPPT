@@ -4,12 +4,16 @@ import { dirname, join } from "node:path";
 
 import {
   AcceptanceSchema,
+  CompleteDeckReviewActionEvidenceSchema,
+  CompleteDeckReviewActionRequestSchema,
   DeckReviewActionEvidenceSchema,
   DeckReviewActionRequestSchema,
   DeckReviewDescriptorSchema,
   type DeckReviewActionEvidence,
   type DeckReviewActionRequest,
   type DeckReviewDescriptor,
+  type CompleteDeckReviewActionEvidence,
+  type CompleteDeckReviewActionRequest,
 } from "../acceptance/schema.js";
 import { bindConfirmedDeckReview } from "../acceptance/build.js";
 import {
@@ -27,6 +31,7 @@ import { readOwnedRegularFile, readRegularFileNoFollow } from "./safe-file.js";
 import { type Artifact, type ProjectManifest } from "./schemas.js";
 import { assertProjectMutationNotFrozen, readProject, updateProject } from "./store.js";
 import { withGenerationLease } from "../generation/lease.js";
+import { readCurrentDeckPointer, readLocalDeckRevision } from "../deck-revisions/store.js";
 
 export { promoteExclusive } from "./exclusive.js";
 
@@ -34,6 +39,13 @@ export type DeckReviewActionOutcome =
   | { action: "confirm-delivery"; stage: "assembling"; delivery: AssembleProjectResult }
   | { action: "edit-page"; stage: "revising"; delivery: null }
   | { action: "return-upstream"; stage: "generation-authorization"; delivery: null };
+
+export type CompleteDeckReviewActionOutcome = {
+  action: CompleteDeckReviewActionRequest["action"];
+  stage: "deck-review" | "revising" | "generation-authorization";
+  currentRevisionId: string;
+  evidence: CompleteDeckReviewActionEvidence;
+};
 
 export type CurrentDeckEditSelection = {
   candidateId: string;
@@ -63,6 +75,76 @@ async function writeReplacementBytes(path: string, bytes: Buffer): Promise<void>
   await writeDurableExclusive(staging, bytes);
   await rename(staging, path);
   await syncDirectory(dirname(path));
+}
+
+export async function applyCompleteDeckReviewAction(
+  root: string,
+  rawRequest: unknown,
+): Promise<CompleteDeckReviewActionOutcome> {
+  const request = CompleteDeckReviewActionRequestSchema.parse(rawRequest);
+  return withGenerationLease(root, async (generationRoot) => {
+    await assertProjectMutationNotFrozen(generationRoot);
+    return withPlanningLock(generationRoot, async (canonicalRoot) => {
+      const manifest = await readProject(canonicalRoot);
+      const current = await readCurrentDeckPointer(canonicalRoot);
+      if (request.revisionId !== current.revisionId || request.deckSha256 !== current.sha256) {
+        throw new Error("complete deck review action is stale for the exact current revision and SHA-256");
+      }
+      const revision = await readLocalDeckRevision(canonicalRoot, current.revisionId);
+      if (revision.absolutePath !== current.absolutePath || revision.sha256 !== current.sha256) {
+        throw new Error("complete deck review action does not bind the exact local PPTX path");
+      }
+      if (request.action === "edit-page"
+        && !revision.slideTopology.entries.some((entry) => entry.stableSlideId === request.slideId)) {
+        throw new Error("complete deck review edit-page action does not name a current stable slide ID");
+      }
+      const actionBase = {
+        schemaVersion: 1 as const,
+        kind: "complete-deck-review-action" as const,
+        actionId: randomUUID(),
+        action: request.action,
+        ...(request.action === "edit-page" ? { slideId: request.slideId } : {}),
+        revisionId: current.revisionId,
+        absolutePath: current.absolutePath,
+        deckSha256: current.sha256,
+        projectId: manifest.projectId,
+        projectRevisionId: manifest.currentRevision.id,
+        actedAt: new Date().toISOString(),
+      };
+      const evidence = CompleteDeckReviewActionEvidenceSchema.parse({
+        ...actionBase,
+        actionEvidenceSha256: sha256Evidence(JSON.stringify(actionBase)),
+      });
+      const stage = request.action === "edit-page"
+        ? "revising" as const
+        : request.action === "return-upstream"
+          ? "generation-authorization" as const
+          : "deck-review" as const;
+      await updateProject(canonicalRoot, (live) => {
+        if (JSON.stringify(live) !== JSON.stringify(manifest)) {
+          throw new Error("project revision changed during complete deck review action");
+        }
+        return {
+          ...live,
+          stage,
+          gates: request.action === "confirm-delivery"
+            ? [...live.gates, {
+              gate: "deck-review" as const,
+              revisionId: live.currentRevision.id,
+              artifactHashes: {},
+              deckReview: {
+                revisionId: current.revisionId,
+                absolutePath: current.absolutePath,
+                sha256: current.sha256,
+              },
+              confirmedAt: evidence.actedAt,
+            }]
+            : live.gates,
+        };
+      });
+      return { action: request.action, stage, currentRevisionId: current.revisionId, evidence };
+    });
+  });
 }
 
 function verifiedDeckReviewDescriptor(bytes: Buffer): DeckReviewDescriptor {

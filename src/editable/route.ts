@@ -55,6 +55,8 @@ export type DeckEditRequest = z.infer<typeof DeckEditRequestSchema>;
 export type DeckEditContext = z.infer<typeof DeckEditContextSchema>;
 export type DeckEditMode = "manual" | "agent";
 
+export const DECK_EDIT_MODE_QUESTION = "需要我帮你修改，还是由你手动修改？";
+
 const REGENERATION_CHANGES = new Set<DeckEditRequest["change"]>([
   "layout",
   "background",
@@ -108,10 +110,24 @@ export function classifyDeckEdit(rawRequest: unknown, rawContext: unknown): Deck
   });
 }
 
-export function classifyDeckEditMode(rawRequest: unknown): DeckEditMode {
+export function classifyDeckEditMode(rawRequest: unknown): DeckEditMode | null {
   const request = DeckEditRequestSchema.parse(rawRequest);
   if (request.instruction?.includes("我自己改")) return "manual";
-  return "agent";
+  if (request.instruction?.includes("帮我改")) return "agent";
+  return null;
+}
+
+export function describeDeckEditRoute(rawRoute: unknown): string {
+  const route = DeckEditRouteSchema.parse(rawRoute);
+  if (route.route === "direct-edit") return "这次会直接修改目标对象，并把结果放在一份完整的本地 PPTX 候选中。";
+  if (route.route === "activate-editable") return "这次会先把目标页转为可编辑，再在一份完整的本地 PPTX 候选中修改。";
+  return "这次会重做目标页，并只把该页结果写入一份完整的本地 PPTX 候选。";
+}
+
+export function describeUpstreamDeckChange(change: "outline" | "slide-description" | "style"): string {
+  if (change === "outline") return "修改大纲会影响对应页描述及下游生成证据，确认后这些结果会失效并按影响范围重新生成。";
+  if (change === "slide-description") return "修改第 N 页描述会影响该页生成证据，确认后该页结果会失效并重新生成。";
+  return "换风格会影响风格样张、生成授权和后续页面结果，确认后相关证据会失效并重新生成。";
 }
 
 export type PrepareAgentEditDeckOptions = {

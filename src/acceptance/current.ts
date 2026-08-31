@@ -1,12 +1,12 @@
 import { createHash } from "node:crypto";
-import { posix } from "node:path";
+import { join, posix } from "node:path";
 
 import { AttemptLedgerSchema } from "../generation/schemas.js";
 import {
   validateCurrentPresentationBinding,
   validateOrdinaryGateEvidence,
 } from "../project/evidence.js";
-import { readOwnedRegularFile } from "../project/safe-file.js";
+import { readOwnedRegularFile, readRegularFileNoFollow } from "../project/safe-file.js";
 import type { ProjectManifest } from "../project/schemas.js";
 import type { Acceptance } from "./schema.js";
 
@@ -21,6 +21,17 @@ export async function validateAcceptanceManifestBinding(
 ): Promise<void> {
   if (acceptance.projectId !== manifest.projectId || acceptance.revisionId !== manifest.currentRevision.id) {
     throw new Error("acceptance evidence is not current");
+  }
+  if (acceptance.completeDeckReview) {
+    const pointer = manifest.currentDeck;
+    const absolutePath = pointer ? join(root, ...pointer.relativePath.split("/")) : null;
+    if (
+      !pointer
+      || acceptance.completeDeckReview.revisionId !== pointer.revisionId
+      || acceptance.completeDeckReview.absolutePath !== absolutePath
+      || acceptance.completeDeckReview.sha256 !== pointer.sha256
+      || createHash("sha256").update(await readRegularFileNoFollow(absolutePath!)).digest("hex") !== pointer.sha256
+    ) throw new Error("acceptance complete deck review evidence is not current");
   }
   const gateKinds = ["outline", "slide-specs", "style-sample"] as const;
   const gateRecords = gateKinds.map((kind) => [...manifest.gates].reverse().find((gate) => gate.gate === kind));

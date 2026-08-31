@@ -3,8 +3,6 @@ import { resolve } from "node:path";
 import { preflightDependencies } from "./dependencies/preflight.js";
 import { resolveAiImageSkillDependency, resolveSkillDependencies } from "./dependencies/resolve.js";
 import {
-  applyEditableReplacement,
-  assembleProjectCandidate,
   readProjectAcceptance,
   recordClientAcceptance,
 } from "./deck/assemble.js";
@@ -32,8 +30,8 @@ import {
   promoteProjectEditableTarget,
   UnsupportedEditableTargetError,
 } from "./editable/operations.js";
-import { confirmEditablePreview, renderProjectEditablePreview } from "./editable/render.js";
 import { EditPlanSchema, type EditPlan } from "./editable/schemas.js";
+import { DeckEditRouteSchema, prepareAgentEditDeck } from "./editable/route.js";
 import { approveExecutionGate, approveGate, type PlanningGate } from "./planning/confirm.js";
 import { normalizeInput, type InputRequest } from "./planning/intake.js";
 import { publishOutlineViews, publishPlanViews, publishStyleSample } from "./planning/views.js";
@@ -41,7 +39,6 @@ import { initializeProject } from "./project/initialize.js";
 import { readRegularFileNoFollow } from "./project/safe-file.js";
 import { readProject } from "./project/store.js";
 import { readCliJsonInput } from "./cli-input.js";
-import { applyDeckReviewAction, publishDeckReview } from "./project/promotion.js";
 import {
   applyRevision,
   approveImpact,
@@ -53,6 +50,21 @@ import {
   ChangeRequestSchema,
   readPendingImpactEvidence,
 } from "./revisions/impact.js";
+import {
+  adoptManualSavedDeck,
+  confirmAgentEditDeck,
+  prepareManualEditDeck,
+  rejectDeckEdit,
+} from "./deck-revisions/workflow.js";
+import {
+  readCurrentDeckPointer,
+  readLocalDeckRevision,
+  rollbackCurrentDeck,
+} from "./deck-revisions/store.js";
+import {
+  formatLocalPptxLink,
+  readInjectedHostRuntimeCapabilities,
+} from "./host/capabilities.js";
 
 function flags(argv: string[]): Map<string, string> {
   const result = new Map<string, string>();
@@ -156,8 +168,147 @@ function editPlanSummary(plan: EditPlan): Record<string, unknown> {
   };
 }
 
+function requireInjectedLocalHandoff(): void {
+  readInjectedHostRuntimeCapabilities(process.env);
+}
+
+function completeDeckOutput(
+  title: string,
+  deck: {
+    revisionId: string;
+    absolutePath: string;
+    sha256: string;
+    slideCount: number;
+    reviewRequiredObjects: unknown[];
+    mode?: "manual" | "agent";
+    sessionId?: string;
+    targetSlideId?: string;
+  },
+): Record<string, unknown> {
+  const linkLabel = `${title}.pptx`;
+  return {
+    kind: "complete-local-pptx",
+    ...(deck.mode ? { mode: deck.mode } : {}),
+    revisionId: deck.revisionId,
+    ...(deck.sessionId ? { sessionId: deck.sessionId } : {}),
+    ...(deck.targetSlideId ? { targetSlideId: deck.targetSlideId } : {}),
+    absolutePath: deck.absolutePath,
+    linkLabel,
+    markdownLink: formatLocalPptxLink(deck.absolutePath, linkLabel),
+    sha256: deck.sha256,
+    slideCount: deck.slideCount,
+    reviewRequiredObjects: deck.reviewRequiredObjects,
+    nextRequiredAction: "open this complete PPTX in WPS or PowerPoint",
+    ...(deck.mode ? { waitFor: deck.mode === "manual" ? "saved-and-closed" : "confirmation" } : {}),
+  };
+}
+
+function revisionReviewObjects(revision: Awaited<ReturnType<typeof readLocalDeckRevision>>) {
+  return Object.entries(revision.reviewRequiredObjectsBySlideId)
+    .flatMap(([stableSlideId, objects]) => objects.map((object) => ({ stableSlideId, ...object })))
+    .sort((left, right) => `${left.stableSlideId}:${left.elementId}`.localeCompare(`${right.stableSlideId}:${right.elementId}`));
+}
+
+const REMOVED_COMPLETE_DECK_COMMANDS = new Set([
+  "render-editable",
+  "confirm-preview",
+  "replace-slide",
+  "export-review-derived",
+  "assemble-candidate",
+  "publish-deck-review",
+  "deck-review-action",
+]);
+
 async function main(argv: string[]): Promise<void> {
   const command = argv[0];
+  if (command && REMOVED_COMPLETE_DECK_COMMANDS.has(command)) {
+    throw new Error(`${command} was removed: use current-deck-link, prepare-manual-deck, or prepare-agent-deck for one complete deck`);
+  }
+
+  if (command === "current-deck-link") {
+    requireInjectedLocalHandoff();
+    const options = exactFlags(argv.slice(1), ["--project"]);
+    const root = options.get("--project")!;
+    const [project, current] = await Promise.all([readProject(root), readCurrentDeckPointer(root)]);
+    const revision = await readLocalDeckRevision(root, current.revisionId);
+    outputJson(completeDeckOutput(project.title, {
+      revisionId: current.revisionId,
+      absolutePath: current.absolutePath,
+      sha256: current.sha256,
+      slideCount: revision.slideTopology.entries.length,
+      reviewRequiredObjects: revisionReviewObjects(revision),
+    }));
+    return;
+  }
+
+  if (command === "prepare-manual-deck") {
+    requireInjectedLocalHandoff();
+    const options = selectedFlags(argv.slice(1), ["--project", "--slide-id"], ["--project", "--slide-id", "--conversion-root"]);
+    const root = options.get("--project")!;
+    const project = await readProject(root);
+    const prepared = await prepareManualEditDeck({
+      root,
+      slideId: options.get("--slide-id")!,
+      ...(options.has("--conversion-root") ? { conversionRoot: options.get("--conversion-root")! } : {}),
+    });
+    outputJson(completeDeckOutput(project.title, prepared));
+    return;
+  }
+
+  if (command === "adopt-saved-deck") {
+    const options = exactFlags(argv.slice(1), ["--project", "--session-id", "--user-signal"]);
+    const current = await adoptManualSavedDeck({
+      root: options.get("--project")!,
+      sessionId: options.get("--session-id")!,
+      userSignal: options.get("--user-signal")!,
+    });
+    outputJson({ currentRevisionId: current.revisionId, absolutePath: current.absolutePath, sha256: current.sha256 });
+    return;
+  }
+
+  if (command === "prepare-agent-deck") {
+    requireInjectedLocalHandoff();
+    const options = selectedFlags(
+      argv.slice(1),
+      ["--project", "--route"],
+      ["--project", "--route", "--conversion-root", "--generation-job-id"],
+    );
+    const root = options.get("--project")!;
+    const project = await readProject(root);
+    const prepared = await prepareAgentEditDeck({
+      root,
+      route: await readCliJsonInput(options.get("--route")!, "deck edit route", DeckEditRouteSchema, { privateInput: true }),
+      ...(options.has("--conversion-root") ? { conversionRoot: options.get("--conversion-root")! } : {}),
+      ...(options.has("--generation-job-id") ? { generationJobId: options.get("--generation-job-id")! } : {}),
+    });
+    outputJson(completeDeckOutput(project.title, prepared));
+    return;
+  }
+
+  if (command === "confirm-agent-deck") {
+    const options = exactFlags(argv.slice(1), ["--project", "--session-id", "--sha256"]);
+    const current = await confirmAgentEditDeck({
+      root: options.get("--project")!,
+      sessionId: options.get("--session-id")!,
+      confirmedSha256: options.get("--sha256")!,
+    });
+    outputJson({ currentRevisionId: current.revisionId, absolutePath: current.absolutePath, sha256: current.sha256 });
+    return;
+  }
+
+  if (command === "reject-deck-candidate") {
+    const options = exactFlags(argv.slice(1), ["--project", "--session-id"]);
+    await rejectDeckEdit({ root: options.get("--project")!, sessionId: options.get("--session-id")! });
+    outputJson({ sessionId: options.get("--session-id")!, rejected: true });
+    return;
+  }
+
+  if (command === "rollback-deck") {
+    const options = exactFlags(argv.slice(1), ["--project", "--revision-id"]);
+    const current = await rollbackCurrentDeck(options.get("--project")!, options.get("--revision-id")!);
+    outputJson({ currentRevisionId: current.revisionId, absolutePath: current.absolutePath, sha256: current.sha256 });
+    return;
+  }
   if (command === "preflight") {
     const options = exactFlags(argv.slice(1), ["--ai-skill", "--editable-skill"]);
     const report = await preflightDependencies(await resolveSkillDependencies({
@@ -265,7 +416,7 @@ async function main(argv: string[]): Promise<void> {
     await readProject(root);
     const requestedGate = options.get("--gate")!;
     if (requestedGate === "deck-review") {
-      throw new Error("deck-review approval requires deck-review-action --action confirm-delivery");
+      throw new Error("generic deck-review approval is unavailable; use current-deck-link and bind the exact complete deck revision and SHA-256");
     }
     if (requestedGate === "style-sample-generation") {
       await approveExecutionGate(root, "style-sample-generation", "style/sample/generation-plan.json");
@@ -362,7 +513,7 @@ async function main(argv: string[]): Promise<void> {
   if (command === "generation-status") {
     const options = exactFlags(argv.slice(1), ["--project"]);
     const status = await describeProjectGeneration(options.get("--project")!);
-    outputJson({ ...status, nextRequiredAction: status.currentJob ? "continue the exact current serial job" : "review the completed pages before candidate assembly" });
+    outputJson({ ...status, nextRequiredAction: status.currentJob ? "continue the exact current serial job" : "use current-deck-link for the complete local PPTX" });
     return;
   }
 
@@ -493,94 +644,6 @@ async function main(argv: string[]): Promise<void> {
     return;
   }
 
-  if (command === "render-editable") {
-    const options = exactFlags(argv.slice(1), ["--project", "--slide", "--revision", "--record-sha256"]);
-    outputJson(await renderProjectEditablePreview({
-      root: options.get("--project")!,
-      slideId: options.get("--slide")!,
-      modifiedRevisionId: options.get("--revision")!,
-      expectedModifiedRevisionRecordSha256: options.get("--record-sha256")!,
-    }));
-    return;
-  }
-
-  if (command === "confirm-preview") {
-    const options = selectedFlags(
-      argv.slice(1),
-      ["--project", "--slide", "--revision", "--record-sha256", "--render"],
-      ["--project", "--slide", "--revision", "--record-sha256", "--render", "--decision"],
-    );
-    const decision = options.get("--decision") ?? "approved";
-    if (decision !== "approved" && decision !== "rejected") throw new Error("preview decision must be approved or rejected");
-    const result = await confirmEditablePreview({
-      root: options.get("--project")!,
-      slideId: options.get("--slide")!,
-      modifiedRevisionId: options.get("--revision")!,
-      expectedModifiedRevisionRecordSha256: options.get("--record-sha256")!,
-      preview: options.get("--render")!,
-      approved: decision === "approved",
-    });
-    outputJson(result ? { approved: true, ...result } : { approved: false });
-    return;
-  }
-
-  if (command === "replace-slide") {
-    const options = exactFlags(argv.slice(1), ["--project", "--slide", "--revision", "--record-sha256"]);
-    outputJson({
-      ...await applyEditableReplacement({
-      root: options.get("--project")!,
-      slideId: options.get("--slide")!,
-      modifiedRevisionId: options.get("--revision")!,
-      expectedModifiedRevisionRecordSha256: options.get("--record-sha256")!,
-      }),
-      nextRequiredAction: "assemble and review a new candidate before delivery",
-    });
-    return;
-  }
-
-  if (command === "assemble-candidate") {
-    const options = exactFlags(argv.slice(1), ["--project"]);
-    const candidate = await assembleProjectCandidate(options.get("--project")!);
-    outputJson({ ...candidate, nextRequiredAction: "publish this exact candidate for deck review" });
-    return;
-  }
-
-  if (command === "publish-deck-review") {
-    const options = exactFlags(argv.slice(1), ["--project", "--candidate-id"]);
-    const review = await publishDeckReview(options.get("--project")!, options.get("--candidate-id")!);
-    outputJson({ review, nextRequiredAction: "ask the user to choose edit-page, return-upstream, or confirm-delivery" });
-    return;
-  }
-
-  if (command === "deck-review-action") {
-    const parsed = flags(argv.slice(1));
-    for (const key of parsed.keys()) {
-      if (!["--project", "--candidate-id", "--descriptor-sha256", "--action", "--slide-id"].includes(key)) {
-        throw new Error(`unknown CLI flag: ${key}`);
-      }
-    }
-    for (const key of ["--project", "--candidate-id", "--descriptor-sha256", "--action"]) {
-      if (!parsed.has(key)) throw new Error("required CLI flags: --project --candidate-id --descriptor-sha256 --action");
-    }
-    const action = parsed.get("--action")!;
-    if (action === "edit-page" && !parsed.has("--slide-id")) throw new Error("edit-page requires exactly one --slide-id");
-    if (action !== "edit-page" && parsed.has("--slide-id")) throw new Error("only edit-page accepts --slide-id");
-    const outcome = await applyDeckReviewAction(parsed.get("--project")!, {
-      action,
-      candidateId: parsed.get("--candidate-id")!,
-      descriptorSha256: parsed.get("--descriptor-sha256")!,
-      ...(action === "edit-page" ? { slideId: parsed.get("--slide-id")! } : {}),
-    } as Parameters<typeof applyDeckReviewAction>[1]);
-    outputJson({
-      ...outcome,
-      nextRequiredAction: action === "confirm-delivery"
-        ? "create a controlled smoke copy; temporarily edit the selected object, observe the edit, undo it, discard/do not save, close, reopen, verify the original content, then submit authenticated acceptance-record evidence"
-        : action === "edit-page"
-          ? "convert only the selected page, confirm its preview, then assemble a new candidate"
-          : "revise the upstream generation inputs with the user",
-    });
-    return;
-  }
 
   if (command === "acceptance") {
     const options = exactFlags(argv.slice(1), ["--project"]);

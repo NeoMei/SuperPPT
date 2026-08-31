@@ -5,6 +5,7 @@ import {
   AcceptanceSchema,
   type Acceptance,
   type DeckReviewActionEvidence,
+  type CompleteDeckReviewActionEvidence,
 } from "./schema.js";
 
 const sha256Bytes = (bytes: Buffer): string =>
@@ -38,6 +39,11 @@ export type AcceptanceInput = {
     candidateId: string;
     projectRevisionId: string;
     projectBindingSha256: string;
+  };
+  completeDeckReview?: {
+    revisionId: string;
+    absolutePath: string;
+    sha256: string;
   };
   warnings?: string[];
 };
@@ -86,6 +92,7 @@ export async function buildAcceptance(input: AcceptanceInput): Promise<Acceptanc
     editablePageIds: slides.filter((slide) => slide.mode === "editable").map((slide) => slide.id),
     warnings: input.warnings ?? [],
     ...(input.candidateReview ? { candidateReview: input.candidateReview } : {}),
+    ...(input.completeDeckReview ? { completeDeckReview: input.completeDeckReview } : {}),
     deliveryComplete: false,
     clientAcceptance: {
       application: null,
@@ -98,6 +105,32 @@ export async function buildAcceptance(input: AcceptanceInput): Promise<Acceptanc
       reopenObserved: false,
       observedResult: null,
       confirmedAt: null,
+    },
+  });
+}
+
+export function bindConfirmedCompleteDeckReview(
+  acceptance: Acceptance,
+  action: CompleteDeckReviewActionEvidence,
+): Acceptance {
+  if (action.action !== "confirm-delivery") {
+    throw new Error("only confirm-delivery may bind formal complete-deck acceptance");
+  }
+  if (
+    acceptance.projectId !== action.projectId
+    || acceptance.revisionId !== action.projectRevisionId
+    || acceptance.completeDeckReview?.revisionId !== action.revisionId
+    || acceptance.completeDeckReview.absolutePath !== action.absolutePath
+    || acceptance.completeDeckReview.sha256 !== action.deckSha256
+  ) throw new Error("confirm-delivery action does not bind the exact complete local deck");
+  return AcceptanceSchema.parse({
+    ...acceptance,
+    completeDeckReviewConfirmation: {
+      actionId: action.actionId,
+      action: action.action,
+      revisionId: action.revisionId,
+      deckSha256: action.deckSha256,
+      actionEvidenceSha256: action.actionEvidenceSha256,
     },
   });
 }

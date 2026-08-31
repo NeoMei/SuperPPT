@@ -1360,7 +1360,7 @@ test("rejects delivery when immutable gate snapshots or presentation pointers ar
   }
 });
 
-test("exposes candidate assembly and acceptance as strict CLI routes without legacy direct assembly", async (t) => {
+test("removes candidate assembly while retaining acceptance record inspection during migration", async (t) => {
   const root = await directory(t);
   const cli = join(process.cwd(), "src", "cli.ts");
   const invoke = async (args: string[], env: NodeJS.ProcessEnv = process.env) => {
@@ -1383,7 +1383,7 @@ test("exposes candidate assembly and acceptance as strict CLI routes without leg
     SUPERPPT_AI_IMAGE_TO_PPT_SOURCE: "",
     SUPERPPT_IMAGE_TO_EDITABLE_PPTX_SOURCE: "",
   });
-  assert.match(assembleError, /not owned by SuperPPT|planning artifact must be a regular file/);
+  assert.match(assembleError, /complete deck|current-deck-link|prepare-manual-deck/i);
   assert.doesNotMatch(assembleError, /unknown command/);
 
   const acceptanceError = await invoke(["acceptance", "--project", root]);
@@ -2425,30 +2425,12 @@ test("rejects orphaned acceptance evidence when the transaction commitment is mi
   assert.equal((await readProject(fixture.root)).stage, "assembling");
 });
 
-test("confirm-delivery CLI requires temporary edit, undo, discard, reopen, and authenticated evidence", async (t) => {
-  const fixture = await readyProject(t);
-  await authorizeDeckGeneration(fixture.root);
-  const candidate = await assembleProjectCandidate(fixture.root, { buildOutputs: fakeOutputs });
-  const review = await publishDeckReview(fixture.root, candidate.candidateId);
+test("removes the preview-bound confirm-delivery CLI in favor of exact complete-deck review evidence", async () => {
   const cli = join(process.cwd(), "src", "cli.ts");
-  const { stdout } = await execFileAsync(process.execPath, [
-    "--import",
-    "tsx",
-    cli,
-    "deck-review-action",
-    "--project",
-    fixture.root,
-    "--candidate-id",
-    candidate.candidateId,
-    "--descriptor-sha256",
-    review.descriptorSha256,
-    "--action",
-    "confirm-delivery",
-  ]);
-  const output = JSON.parse(stdout);
-  assert.match(output.nextRequiredAction, /controlled smoke copy/i);
-  assert.match(output.nextRequiredAction, /temporarily edit.*observe.*undo.*discard.*do not save.*close.*reopen.*verify (?:the )?original.*acceptance-record/i);
-  assert.doesNotMatch(output.nextRequiredAction, /edit-save|save[ -]?and[ -]?reopen/i);
+  await assert.rejects(
+    execFileAsync(process.execPath, ["--import", "tsx", cli, "deck-review-action"]),
+    /complete deck|current-deck-link|prepare-manual-deck/i,
+  );
 });
 
 test("uses only injected workspace runtime paths and a platform PATH delimiter", async () => {

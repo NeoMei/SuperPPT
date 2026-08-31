@@ -486,6 +486,25 @@ async function validateSlidePreviewGateEvidence(
   }
 }
 
+async function validateCompleteDeckReviewGateEvidence(
+  root: string,
+  manifest: ProjectManifest,
+  gate: ProjectManifest["gates"][number],
+): Promise<void> {
+  const binding = gate.deckReview;
+  const current = manifest.currentDeck;
+  if (gate.gate !== "deck-review" || !binding || !current) {
+    throw new Error("complete deck review binding is missing");
+  }
+  const absolutePath = join(root, ...current.relativePath.split("/"));
+  if (
+    binding.revisionId !== current.revisionId
+    || binding.absolutePath !== absolutePath
+    || binding.sha256 !== current.sha256
+    || sha256Evidence(await readRegularFileNoFollow(absolutePath)) !== current.sha256
+  ) throw new Error("complete deck review binding is stale or does not bind the exact local PPTX");
+}
+
 export function createOwnershipMarker(
   projectId: string,
   canonicalRoot: string,
@@ -604,7 +623,16 @@ async function persistProject(
   }
 
   for (const gate of valid.gates.slice(owned.manifest.gates.length)) {
-    if (
+    if (gate.gate === "deck-review" && gate.deckReview) {
+      try {
+        if (gate.revisionId !== valid.currentRevision.id) {
+          throw new Error("complete deck review project revision must be current");
+        }
+        await validateCompleteDeckReviewGateEvidence(owned.root, valid, gate);
+      } catch (error: unknown) {
+        throw new Error("complete deck review evidence is invalid", { cause: error });
+      }
+    } else if (
       gate.gate === "outline"
       || gate.gate === "slide-specs"
       || gate.gate === "style-sample"

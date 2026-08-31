@@ -19,6 +19,48 @@ export const DeckReviewActionSchema = z.enum([
   "confirm-delivery",
 ]);
 
+export const CompleteDeckReviewBindingSchema = z.object({
+  revisionId: z.string().uuid(),
+  absolutePath: z.string().min(1),
+  sha256: Sha256Schema,
+}).strict();
+
+const CompleteDeckReviewActionRequestBaseSchema = z.object({
+  revisionId: z.string().uuid(),
+  deckSha256: Sha256Schema,
+});
+
+export const CompleteDeckReviewActionRequestSchema = z.discriminatedUnion("action", [
+  CompleteDeckReviewActionRequestBaseSchema.extend({
+    action: z.literal("edit-page"),
+    slideId: z.string().uuid(),
+  }).strict(),
+  CompleteDeckReviewActionRequestBaseSchema.extend({ action: z.literal("return-upstream") }).strict(),
+  CompleteDeckReviewActionRequestBaseSchema.extend({ action: z.literal("confirm-delivery") }).strict(),
+]);
+
+const CompleteDeckReviewActionEvidenceBaseSchema = z.object({
+  schemaVersion: z.literal(1),
+  kind: z.literal("complete-deck-review-action"),
+  actionId: z.string().uuid(),
+  revisionId: z.string().uuid(),
+  absolutePath: z.string().min(1),
+  deckSha256: Sha256Schema,
+  projectId: z.string().uuid(),
+  projectRevisionId: z.string().uuid(),
+  actedAt: z.string().datetime(),
+  actionEvidenceSha256: Sha256Schema,
+});
+
+export const CompleteDeckReviewActionEvidenceSchema = z.discriminatedUnion("action", [
+  CompleteDeckReviewActionEvidenceBaseSchema.extend({
+    action: z.literal("edit-page"),
+    slideId: z.string().uuid(),
+  }).strict(),
+  CompleteDeckReviewActionEvidenceBaseSchema.extend({ action: z.literal("return-upstream") }).strict(),
+  CompleteDeckReviewActionEvidenceBaseSchema.extend({ action: z.literal("confirm-delivery") }).strict(),
+]);
+
 const DeckReviewActionRequestBaseSchema = z.object({
   candidateId: z.string().uuid(),
   descriptorSha256: Sha256Schema,
@@ -223,10 +265,18 @@ export const AcceptanceSchema = z.object({
   editablePageIds: z.array(z.string().uuid()),
   warnings: z.array(z.string().min(1)),
   candidateReview: CandidateAcceptanceBindingSchema.nullable().optional(),
+  completeDeckReview: CompleteDeckReviewBindingSchema.optional(),
   deckReviewConfirmation: z.object({
     actionId: z.string().uuid(),
     action: z.literal("confirm-delivery"),
     candidateId: z.string().uuid(),
+    actionEvidenceSha256: Sha256Schema,
+  }).strict().optional(),
+  completeDeckReviewConfirmation: z.object({
+    actionId: z.string().uuid(),
+    action: z.literal("confirm-delivery"),
+    revisionId: z.string().uuid(),
+    deckSha256: Sha256Schema,
     actionEvidenceSha256: Sha256Schema,
   }).strict().optional(),
   deliveryComplete: z.boolean(),
@@ -278,3 +328,6 @@ export type DeckReviewDescriptor = z.infer<typeof DeckReviewDescriptorSchema>;
 export type DeckReviewAction = z.infer<typeof DeckReviewActionSchema>;
 export type DeckReviewActionRequest = z.infer<typeof DeckReviewActionRequestSchema>;
 export type DeckReviewActionEvidence = z.infer<typeof DeckReviewActionEvidenceSchema>;
+export type CompleteDeckReviewBinding = z.infer<typeof CompleteDeckReviewBindingSchema>;
+export type CompleteDeckReviewActionRequest = z.infer<typeof CompleteDeckReviewActionRequestSchema>;
+export type CompleteDeckReviewActionEvidence = z.infer<typeof CompleteDeckReviewActionEvidenceSchema>;

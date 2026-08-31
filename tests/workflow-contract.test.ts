@@ -2,6 +2,13 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
 
+import {
+  DECK_EDIT_MODE_QUESTION,
+  classifyDeckEditMode,
+  describeDeckEditRoute,
+  describeUpstreamDeckChange,
+} from "../src/editable/route.js";
+
 const skillRoot = "skills/superppt";
 const references = [
   "阶段契约.json",
@@ -327,4 +334,39 @@ test("controlled WPS smoke edits, undoes, discards, and reopens without saving c
   assert.match(workflow, /成功.*记录.*正式交付|successful authenticated record.*formal delivery/is);
   assert.match(workflow, /不得虚构|never fabricate/i);
   assert.doesNotMatch(workflow, /blocked until Task 12|blocked-until-task-12|task-11-save-based-incompatible/i);
+});
+
+test("deck editing infers mode only from explicit user language and otherwise asks the exact wait-point question", () => {
+  assert.equal(classifyDeckEditMode({ change: "text", instruction: "我自己改这一页" }), "manual");
+  assert.equal(classifyDeckEditMode({ change: "text", instruction: "帮我改这一页" }), "agent");
+  assert.equal(classifyDeckEditMode({ change: "text", instruction: "把标题改短" }), null);
+  assert.equal(DECK_EDIT_MODE_QUESTION, "需要我帮你修改，还是由你手动修改？");
+});
+
+test("deck edit routing and upstream returns always disclose the chosen route and impact", () => {
+  const revisionId = "00000000-0000-4000-8000-000000000091";
+  const slideId = "00000000-0000-4000-8000-000000000092";
+  assert.match(describeDeckEditRoute({
+    route: "direct-edit",
+    currentRevisionId: revisionId,
+    slideId,
+    operations: [{ kind: "replace-text", elementId: "title", text: "New" }],
+  }), /直接修改.*完整.*PPTX/);
+  assert.match(describeDeckEditRoute({
+    route: "activate-editable",
+    currentRevisionId: revisionId,
+    slideId,
+    operations: [],
+  }), /转为可编辑.*完整.*PPTX/);
+  assert.match(describeDeckEditRoute({
+    route: "regenerate-slide",
+    currentRevisionId: revisionId,
+    slideId,
+    reason: "layout",
+    styleLockSha256: "a".repeat(64),
+  }), /重做.*完整.*PPTX/);
+  for (const change of ["outline", "slide-description", "style"] as const) {
+    const disclosure = describeUpstreamDeckChange(change);
+    assert.match(disclosure, /影响|失效|重新生成/);
+  }
 });

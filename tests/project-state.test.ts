@@ -83,7 +83,7 @@ test("initializes the complete owned workspace and reopens it", async (t) => {
   assert.equal((await lstat(join(root, "superppt.json"))).mode & 0o777, 0o600);
 });
 
-test("generation authorization and deck review stages accept authenticated presentation kinds", async (t) => {
+test("generation authorization and complete-deck review stages accept authenticated evidence", async (t) => {
   const parent = await temporaryParent(t, "superppt-guided-stage-model-");
   const root = join(parent, "demo");
   const manifest = await initializeProject({
@@ -95,29 +95,39 @@ test("generation authorization and deck review stages accept authenticated prese
   for (const stage of ["style-sample", "generation-authorization", "deck-review"] as const) {
     assert.equal(ProjectManifestSchema.parse({ ...manifest, stage }).stage, stage);
   }
-  for (const [gate, kind, publicationPath, artifactHashes] of [
-    ["generation-authorization", "generation-plan", "generation/authorization-plan.json", { "generation/authorization-plan.json": "a".repeat(64) }],
-    ["deck-review", "deck-review", "output/candidates/current/review.json", {
-      "output/candidates/current/review.json": "a".repeat(64),
-      "output/candidates/current/montage.jpg": "b".repeat(64),
+  const generation = ProjectManifestSchema.parse({
+    ...manifest,
+    gates: [{
+      gate: "generation-authorization",
+      revisionId: manifest.currentRevision.id,
+      artifactHashes: { "generation/authorization-plan.json": "a".repeat(64) },
+      presentation: {
+        kind: "generation-plan",
+        publicationPath: "generation/authorization-plan.json",
+        descriptorSha256: "a".repeat(64),
+      },
+      confirmedAt: new Date().toISOString(),
     }],
-  ] as const) {
-    const parsed = ProjectManifestSchema.parse({
-      ...manifest,
-      gates: [{
-        gate,
-        revisionId: manifest.currentRevision.id,
-        artifactHashes,
-        presentation: {
-          kind,
-          publicationPath,
-          descriptorSha256: "a".repeat(64),
-        },
-        confirmedAt: new Date().toISOString(),
-      }],
-    });
-    assert.equal(parsed.gates[0]!.presentation?.kind, kind);
-  }
+  });
+  assert.equal(generation.gates[0]!.presentation?.kind, "generation-plan");
+
+  const deckRevisionId = "00000000-0000-4000-8000-000000000099";
+  const completeDeck = ProjectManifestSchema.parse({
+    ...manifest,
+    gates: [{
+      gate: "deck-review",
+      revisionId: manifest.currentRevision.id,
+      artifactHashes: {},
+      deckReview: {
+        revisionId: deckRevisionId,
+        absolutePath: `/tmp/project/output/deck-revisions/${deckRevisionId}/deck.pptx`,
+        sha256: "b".repeat(64),
+      },
+      confirmedAt: new Date().toISOString(),
+    }],
+  });
+  assert.equal(completeDeck.gates[0]!.deckReview?.revisionId, deckRevisionId);
+  assert.equal(completeDeck.gates[0]!.presentation, undefined);
 });
 
 test("refuses roots, source files, unowned targets, and symlink aliases", async (t) => {
@@ -765,12 +775,19 @@ test("delegation CLI exposes only explicit Agent-mediated image routes", async (
     "admit-image-call",
     "prepare-page-regeneration-job",
     "generation-status",
-    "assemble-candidate",
-    "publish-deck-review",
-    "deck-review-action",
   ]) {
     const error = await invoke([command]);
     assert.match(error, /required CLI flags/);
+    assert.doesNotMatch(error, /unknown command/, command);
+  }
+
+  for (const command of ["assemble-candidate", "publish-deck-review", "deck-review-action"]) {
+    assert.match(await invoke([command]), /complete deck|current-deck-link|prepare-manual-deck/i, command);
+  }
+
+  for (const command of ["current-deck-link", "prepare-manual-deck", "prepare-agent-deck"]) {
+    const error = await invoke([command]);
+    assert.match(error, /injected host capabilities/i, command);
     assert.doesNotMatch(error, /unknown command/, command);
   }
 

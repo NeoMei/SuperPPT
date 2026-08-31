@@ -25,6 +25,12 @@ export const ArtifactSchema = z.object({
   revisionId: z.string().uuid(),
 }).strict();
 
+export const DeckReviewGateBindingSchema = z.object({
+  revisionId: z.string().uuid(),
+  absolutePath: z.string().min(1),
+  sha256: Sha256Schema,
+}).strict();
+
 export const ClientSmokeCopyAnchorSchema = z.object({
   anchorVersion: z.literal(1),
   anchorId: z.string().uuid(),
@@ -189,8 +195,21 @@ export const GateSchema = z.object({
     descriptorSha256: Sha256Schema,
   }).strict().optional(),
   slidePreview: EditableRevisionBindingSchema.optional(),
+  deckReview: DeckReviewGateBindingSchema.optional(),
   confirmedAt: z.string().datetime(),
 }).strict().superRefine((gate, context) => {
+  if (gate.deckReview) {
+    if (gate.gate !== "deck-review") {
+      context.addIssue({ code: "custom", path: ["deckReview"], message: "only deck-review gates accept complete deck bindings" });
+    }
+    if (Object.keys(gate.artifactHashes).length > 0 || gate.approvalId || gate.snapshotPath || gate.snapshotManifestSha256 || gate.presentation || gate.slidePreview) {
+      context.addIssue({ code: "custom", message: "complete deck review binds only revisionId, absolutePath, and sha256" });
+    }
+    return;
+  }
+  if (gate.gate !== "deck-review" && gate.deckReview) {
+    context.addIssue({ code: "custom", path: ["deckReview"], message: "complete deck binding is only valid for deck review" });
+  }
   if (gate.gate === "slide-preview") {
     if (!gate.slidePreview) {
       context.addIssue({ code: "custom", path: ["slidePreview"], message: "slide-preview gate requires an external editable revision binding" });

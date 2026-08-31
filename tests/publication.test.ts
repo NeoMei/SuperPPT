@@ -2,8 +2,8 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
 
-import { DeckReviewActionRequestSchema } from "../src/acceptance/schema.js";
-import { applyDeckReviewAction } from "../src/project/promotion.js";
+import { CompleteDeckReviewActionRequestSchema } from "../src/acceptance/schema.js";
+import { applyCompleteDeckReviewAction } from "../src/project/promotion.js";
 
 const json = async (path: string) => JSON.parse(await readFile(path, "utf8"));
 const text = (path: string) => readFile(path, "utf8");
@@ -32,23 +32,28 @@ test("publishes the approved Git-backed marketplace metadata", async () => {
   });
 });
 
-test("publishes one strict three-action deck-review boundary", () => {
-  assert.equal(typeof applyDeckReviewAction, "function");
-  const base = { candidateId: "00000000-0000-4000-8000-000000000099", descriptorSha256: "a".repeat(64) };
+test("publishes one strict three-action complete-deck review boundary", () => {
+  assert.equal(typeof applyCompleteDeckReviewAction, "function");
+  const base = { revisionId: "00000000-0000-4000-8000-000000000099", deckSha256: "a".repeat(64) };
   const slideId = "00000000-0000-4000-8000-000000000098";
-  assert.deepEqual(DeckReviewActionRequestSchema.parse({ ...base, action: "edit-page", slideId }), {
+  assert.deepEqual(CompleteDeckReviewActionRequestSchema.parse({ ...base, action: "edit-page", slideId }), {
     ...base,
     action: "edit-page",
     slideId,
   });
   for (const action of ["return-upstream", "confirm-delivery"] as const) {
-    assert.equal(DeckReviewActionRequestSchema.parse({ ...base, action }).action, action);
-    assert.throws(() => DeckReviewActionRequestSchema.parse({ ...base, action, slideId }), /unrecognized/i);
+    assert.equal(CompleteDeckReviewActionRequestSchema.parse({ ...base, action }).action, action);
+    assert.throws(() => CompleteDeckReviewActionRequestSchema.parse({ ...base, action, slideId }), /unrecognized/i);
   }
-  assert.throws(() => DeckReviewActionRequestSchema.parse({ ...base, action: "edit-page" }), /invalid/i);
-  assert.throws(() => DeckReviewActionRequestSchema.parse({ ...base, action: "edit-page", slideId, slideIds: [slideId] }), /unrecognized/i);
-  assert.throws(() => DeckReviewActionRequestSchema.parse({ ...base, action: "approve" }), /invalid/i);
-  assert.throws(() => DeckReviewActionRequestSchema.parse({ ...base, action: "confirm-delivery", gate: "deck-review" }), /unrecognized/i);
+  assert.throws(() => CompleteDeckReviewActionRequestSchema.parse({ ...base, action: "edit-page" }), /invalid/i);
+  assert.throws(() => CompleteDeckReviewActionRequestSchema.parse({ ...base, action: "edit-page", slideId, slideIds: [slideId] }), /unrecognized/i);
+  assert.throws(() => CompleteDeckReviewActionRequestSchema.parse({ ...base, action: "approve" }), /invalid/i);
+  assert.throws(() => CompleteDeckReviewActionRequestSchema.parse({ ...base, action: "confirm-delivery", gate: "deck-review" }), /unrecognized/i);
+  assert.throws(() => CompleteDeckReviewActionRequestSchema.parse({
+    ...base,
+    action: "confirm-delivery",
+    candidateId: "00000000-0000-4000-8000-000000000097",
+  }), /unrecognized/i);
 });
 
 test("runs deterministic verification on Linux, macOS, and Windows with Node 22.6", async () => {
