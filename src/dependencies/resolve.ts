@@ -4,6 +4,7 @@ import { lstat, readFile, realpath } from "node:fs/promises";
 import { dirname, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
+import ts from "typescript";
 
 import {
   AiImageCapabilityManifestSchema,
@@ -109,8 +110,140 @@ function compatibleVersion(version: string, range: string): boolean {
 
 type LoadedContract = Awaited<ReturnType<typeof loadDependencyContract>>["contract"];
 
-function literalPattern(value: string): RegExp {
-  return new RegExp(value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"));
+function parsedSource(path: string, source: string): ts.SourceFile {
+  const parsed = ts.createSourceFile(path, source, ts.ScriptTarget.ESNext, true, ts.ScriptKind.TS);
+  const diagnostics = (parsed as ts.SourceFile & { parseDiagnostics?: readonly ts.Diagnostic[] }).parseDiagnostics ?? [];
+  if (diagnostics.length > 0) throw new Error("installed TypeScript capability evidence is not syntactically valid");
+  return parsed;
+}
+
+function exported(node: ts.Node): boolean {
+  return Boolean(ts.canHaveModifiers(node) && ts.getModifiers(node)?.some(({ kind }) => kind === ts.SyntaxKind.ExportKeyword));
+}
+
+function callTo(expression: ts.Expression, receiver: string, member: string): expression is ts.CallExpression {
+  return ts.isCallExpression(expression)
+    && ts.isPropertyAccessExpression(expression.expression)
+    && ts.isIdentifier(expression.expression.expression)
+    && expression.expression.expression.text === receiver
+    && expression.expression.name.text === member;
+}
+
+function baseFluentCall(expression: ts.Expression): ts.Expression {
+  let current = expression;
+  while (ts.isCallExpression(current) && ts.isPropertyAccessExpression(current.expression) && ts.isCallExpression(current.expression.expression)) {
+    current = current.expression.expression;
+  }
+  return current;
+}
+
+function manifestV2Exported(source: ts.SourceFile, version: number): boolean {
+  for (const statement of source.statements) {
+    if (!ts.isVariableStatement(statement) || !exported(statement)) continue;
+    const declaration = statement.declarationList.declarations.find(({ name }) => ts.isIdentifier(name) && name.text === "SlideManifestV2Schema");
+    if (!declaration?.initializer) continue;
+    const base = baseFluentCall(declaration.initializer);
+    if (!callTo(base, "z", "object") || base.arguments.length !== 1 || !ts.isObjectLiteralExpression(base.arguments[0]!)) continue;
+    const property = base.arguments[0]!.properties.find((candidate): candidate is ts.PropertyAssignment =>
+      ts.isPropertyAssignment(candidate)
+      && ((ts.isIdentifier(candidate.name) && candidate.name.text === "manifestVersion") || (ts.isStringLiteral(candidate.name) && candidate.name.text === "manifestVersion"))
+    );
+    if (property && callTo(property.initializer, "z", "literal") && property.initializer.arguments.length === 1) {
+      const literal = property.initializer.arguments[0]!;
+      if (ts.isNumericLiteral(literal) && Number(literal.text) === version) return true;
+    }
+  }
+  return false;
+}
+
+function officialDonorIsExecutable(source: ts.SourceFile, donor: string): boolean {
+  const functions = new Map<string, ts.FunctionDeclaration>();
+  for (const statement of source.statements) {
+    if (ts.isFunctionDeclaration(statement) && statement.name && statement.body) functions.set(statement.name.text, statement);
+  }
+  const outputName = functions.get("outputName");
+  if (!outputName?.body || outputName.parameters.length !== 1 || !ts.isIdentifier(outputName.parameters[0]!.name) || outputName.parameters[0]!.name.text !== "imagePath") return false;
+  const hasDefaultReturn = outputName.body.statements.some((statement) => {
+    if (!ts.isIfStatement(statement) || !ts.isBinaryExpression(statement.expression)) return false;
+    const condition = statement.expression;
+    const exactUndefined = condition.operatorToken.kind === ts.SyntaxKind.EqualsEqualsEqualsToken
+      && ts.isIdentifier(condition.left) && condition.left.text === "imagePath"
+      && ts.isIdentifier(condition.right) && condition.right.text === "undefined";
+    const returned = ts.isReturnStatement(statement.thenStatement)
+      ? statement.thenStatement
+      : ts.isBlock(statement.thenStatement) && statement.thenStatement.statements.length === 1 && ts.isReturnStatement(statement.thenStatement.statements[0]!)
+        ? statement.thenStatement.statements[0]
+        : undefined;
+    return exactUndefined && returned?.expression !== undefined && ts.isStringLiteral(returned.expression) && returned.expression.text === donor;
+  });
+  const callsFrom = (declaration: ts.FunctionDeclaration): Set<string> => {
+    const calls = new Set<string>();
+    const visit = (node: ts.Node): void => {
+      if (ts.isCallExpression(node) && ts.isIdentifier(node.expression)) calls.add(node.expression.text);
+      ts.forEachChild(node, visit);
+    };
+    if (declaration.body) visit(declaration.body);
+    return calls;
+  };
+  const pending = [...functions.values()].filter(exported).map(({ name }) => name!.text);
+  const reachable = new Set<string>();
+  while (pending.length > 0) {
+    const name = pending.pop()!;
+    if (reachable.has(name)) continue;
+    reachable.add(name);
+    const declaration = functions.get(name);
+    if (!declaration) continue;
+    for (const called of callsFrom(declaration)) if (functions.has(called)) pending.push(called);
+  }
+  return hasDefaultReturn && reachable.has("outputName");
+}
+
+function objectNamesAreExported(source: ts.SourceFile, names: LoadedContract["dependencies"][1]["capabilities"]["objectNames"]): boolean {
+  const exportFunction = source.statements.find((statement): statement is ts.FunctionDeclaration =>
+    ts.isFunctionDeclaration(statement) && exported(statement) && statement.name?.text === "exportPptx" && statement.body !== undefined
+  );
+  if (!exportFunction?.body) return false;
+  const found = new Set<string>();
+  let writesPptx = false;
+  const objectVariables = new Map<string, ts.ObjectLiteralExpression>();
+  const collectVariables = (node: ts.Node): void => {
+    if (ts.isVariableDeclaration(node) && ts.isIdentifier(node.name) && node.initializer && ts.isObjectLiteralExpression(node.initializer)) {
+      objectVariables.set(node.name.text, node.initializer);
+    }
+    ts.forEachChild(node, collectVariables);
+  };
+  collectVariables(exportFunction.body);
+  const collectObjectName = (object: ts.ObjectLiteralExpression): void => {
+    const property = object.properties.find((candidate): candidate is ts.PropertyAssignment =>
+      ts.isPropertyAssignment(candidate)
+      && ((ts.isIdentifier(candidate.name) && candidate.name.text === "objectName") || (ts.isStringLiteral(candidate.name) && candidate.name.text === "objectName"))
+    );
+    if (!property) return;
+    if (ts.isStringLiteral(property.initializer)) found.add(property.initializer.text);
+    else if (ts.isTemplateExpression(property.initializer)) found.add(property.initializer.getText(source));
+  };
+  const visit = (node: ts.Node): void => {
+    if (ts.isCallExpression(node) && ts.isPropertyAccessExpression(node.expression)) {
+      const method = node.expression.name.text;
+      if (method === "writeFile") writesPptx = true;
+      if (["addImage", "addText", "addShape"].includes(method)) {
+        for (const argument of node.arguments) {
+          if (ts.isObjectLiteralExpression(argument)) collectObjectName(argument);
+          else if (ts.isIdentifier(argument)) {
+            const object = objectVariables.get(argument.text);
+            if (object) collectObjectName(object);
+          }
+        }
+      }
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(exportFunction.body);
+  return writesPptx
+    && found.has(names.background)
+    && found.has(`\`text-\${element.id}\``)
+    && found.has(`\`shape-\${element.id}-\${element.label}\``)
+    && found.has(`\`asset-\${element.id}\``);
 }
 
 async function editableCapabilityEvidence(
@@ -127,20 +260,14 @@ async function editableCapabilityEvidence(
     readFile(paths.officialDonor, "utf8"),
     readFile(paths.objectNames, "utf8"),
   ]);
-  if (!new RegExp(`manifestVersion\\s*:\\s*z\\.literal\\(\\s*${requirements.capabilities.manifestVersion}\\s*\\)`).test(manifestSource)) {
-    throw new Error("image-to-editable-pptx installed capability evidence does not prove manifest v2");
+  if (!manifestV2Exported(parsedSource(paths.manifestSchema, manifestSource), requirements.capabilities.manifestVersion)) {
+    throw new Error("image-to-editable-pptx installed semantic capability evidence does not prove manifest v2");
   }
-  if (!literalPattern(requirements.capabilities.officialDonor).test(donorSource)) {
-    throw new Error("image-to-editable-pptx installed capability evidence does not prove the official donor");
+  if (!officialDonorIsExecutable(parsedSource(paths.officialDonor, donorSource), requirements.capabilities.officialDonor)) {
+    throw new Error("image-to-editable-pptx installed semantic capability evidence does not prove the official donor");
   }
-  const objectPatterns = [
-    requirements.capabilities.objectNames.background,
-    requirements.capabilities.objectNames.text.replace("<id>", "${element.id}"),
-    requirements.capabilities.objectNames.shape.replace("<id>", "${element.id}").replace("<label>", "${element.label}"),
-    requirements.capabilities.objectNames.asset.replace("<id>", "${element.id}"),
-  ];
-  if (objectPatterns.some((pattern) => !literalPattern(pattern).test(objectSource))) {
-    throw new Error("image-to-editable-pptx installed capability evidence does not prove the object-name contract");
+  if (!objectNamesAreExported(parsedSource(paths.objectNames, objectSource), requirements.capabilities.objectNames)) {
+    throw new Error("image-to-editable-pptx installed semantic capability evidence does not prove the object-name contract");
   }
   return {
     manifestSchema: { path: paths.manifestSchema, sha256: await sha256(paths.manifestSchema) },

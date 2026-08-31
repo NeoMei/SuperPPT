@@ -259,11 +259,12 @@ export async function publishGenerationAuthorizationPlan(
   root: string,
   request: PlanPublicationRequest,
 ): Promise<GenerationAuthorizationPlan> {
+  const preflightAi = await assertWorkflowPreflightCurrent(request.aiDependency);
   return withGenerationLease(root, async (canonicalRoot) => {
+    const ai = await assertWorkflowPreflightCurrent(preflightAi);
     await assertProjectMutationNotFrozen(canonicalRoot);
     await requirePlanningGates(canonicalRoot, true);
-    const [ai, manifest, lock, plan] = await Promise.all([
-      assertWorkflowPreflightCurrent(request.aiDependency),
+    const [manifest, lock, plan] = await Promise.all([
       readProject(canonicalRoot),
       readApprovedStyleLock(canonicalRoot),
       loadValidatedPlan(canonicalRoot),
@@ -295,11 +296,12 @@ export async function publishStyleSampleGenerationPlan(
   request: PlanPublicationRequest,
 ): Promise<GenerationAuthorizationPlan> {
   if (request.callBudget !== 1) throw new Error("style-sample call budget must be exactly 1");
+  const preflightAi = await assertWorkflowPreflightCurrent(request.aiDependency);
   return withGenerationLease(root, async (canonicalRoot) => {
+    const ai = await assertWorkflowPreflightCurrent(preflightAi);
     await assertProjectMutationNotFrozen(canonicalRoot);
     await requirePlanningGates(canonicalRoot, false);
-    const [ai, manifest, lock, sample, plan] = await Promise.all([
-      assertWorkflowPreflightCurrent(request.aiDependency),
+    const [manifest, lock, sample, plan] = await Promise.all([
       readProject(canonicalRoot),
       readStyleLock(canonicalRoot),
       canonicalStyleSample(canonicalRoot),
@@ -329,11 +331,12 @@ export async function publishPageRegenerationAuthorizationPlan(root: string, req
   finalPrompt: string;
   callBudget: number;
 }): Promise<GenerationAuthorizationPlan> {
+  const preflightAi = await assertWorkflowPreflightCurrent(request.aiDependency);
   return withGenerationLease(root, async (canonicalRoot) => {
+    const ai = await assertWorkflowPreflightCurrent(preflightAi);
     await assertProjectMutationNotFrozen(canonicalRoot);
     await requirePlanningGates(canonicalRoot, true);
-    const [ai, manifest, lock, plan, currentAuthorization] = await Promise.all([
-      assertWorkflowPreflightCurrent(request.aiDependency),
+    const [manifest, lock, plan, currentAuthorization] = await Promise.all([
       readProject(canonicalRoot),
       readApprovedStyleLock(canonicalRoot),
       loadValidatedPlan(canonicalRoot),
@@ -722,8 +725,8 @@ async function validateCallTuple(
 ): Promise<{ request: GenerationCallTuple; job: ImageGenerationJob }> {
   const request = GenerationCallTupleSchema.parse(raw);
   const job = await readJob(root, request.jobId);
-  const manifest = await readProject(root);
   await assertAuthorizedJobBinding(root, job);
+  const manifest = await readProject(root);
   if (!options.allowStaleRevision && manifest.currentRevision.id !== job.projectRevisionId) {
     throw new Error("generation call job does not bind the current project revision");
   }

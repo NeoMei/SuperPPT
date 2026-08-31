@@ -114,6 +114,7 @@ test("runtime package and dependency authority expose only the two full-deck cap
     "koffi",
     "saxes",
     "sharp",
+    "typescript",
     "zod",
   ]);
   assert.deepEqual(contract.dependencies.map((entry: Record<string, unknown>) => entry.skill), [

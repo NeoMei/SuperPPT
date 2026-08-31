@@ -130,20 +130,7 @@ export const ImageToEditablePptxSkillDependencySchema = z.object({
   }).strict(),
 }).strict();
 
-export const WorkflowPreflightBindingSchema = z.object({
-  bindingVersion: z.literal(1),
-  contractFile: z.string().min(1),
-  contractSha256: Sha256Schema,
-  editable: ImageToEditablePptxSkillDependencySchema,
-  host: z.object({
-    source: z.literal("agent-host"),
-    localFilesystem: z.literal(true),
-    localFileLinks: z.literal(true),
-  }).strict(),
-  attestationSha256: Sha256Schema,
-}).strict();
-
-export const AiImageSkillDependencySchema = z.object({
+export const AiImageSkillDependencyIdentitySchema = z.object({
   kind: z.literal("ai-image-to-ppt"),
   root: z.string().min(1),
   skillFile: z.string().min(1),
@@ -157,6 +144,23 @@ export const AiImageSkillDependencySchema = z.object({
   outputs: AiImageCapabilityManifestSchema.shape.outputs,
   scripts: AiImageSkillScriptsSchema,
   scriptSha256: AiImageSkillScriptHashesSchema,
+}).strict();
+
+export const WorkflowPreflightBindingSchema = z.object({
+  bindingVersion: z.literal(1),
+  contractFile: z.string().min(1),
+  contractSha256: Sha256Schema,
+  ai: AiImageSkillDependencyIdentitySchema,
+  editable: ImageToEditablePptxSkillDependencySchema,
+  host: z.object({
+    source: z.literal("agent-host"),
+    localFilesystem: z.literal(true),
+    localFileLinks: z.literal(true),
+  }).strict(),
+  attestationSha256: Sha256Schema,
+}).strict();
+
+export const AiImageSkillDependencySchema = AiImageSkillDependencyIdentitySchema.extend({
   workflowPreflight: WorkflowPreflightBindingSchema.nullable(),
 }).strict();
 

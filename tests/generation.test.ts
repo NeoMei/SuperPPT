@@ -42,8 +42,8 @@ import {
   type SerialStickyReport,
 } from "../src/generation/schemas.js";
 import { resolveSkillDependencies } from "../src/dependencies/resolve.js";
-import { attestWorkflowDependencies } from "../src/dependencies/preflight.js";
-import type { AiImageSkillDependency } from "../src/dependencies/schemas.js";
+import { assertWorkflowPreflightCurrent, attestWorkflowDependencies } from "../src/dependencies/preflight.js";
+import type { AiImageSkillDependency, ResolvedDependencies } from "../src/dependencies/schemas.js";
 import { assembleProjectCandidate, type FinalRender } from "../src/deck/assemble.js";
 import { approveExecutionGate, approveGate, assertGateCurrent } from "../src/planning/confirm.js";
 import { loadValidatedPlan } from "../src/planning/load.js";
@@ -67,6 +67,7 @@ import { finalizeDelegatedStyleSampleForTest } from "./helpers/delegated-style-s
 import { bootstrapInitialDeckRevision, readCurrentDeckPointer } from "../src/deck-revisions/store.js";
 import { finalizeSlideTopology } from "../src/deck-revisions/topology.js";
 import { prepareAgentEditDeck } from "../src/editable/route.js";
+import { convertProjectPage } from "../src/editable/adapter.js";
 
 const execFileAsync = promisify(execFile);
 const SLIDE_IDS = [
@@ -148,6 +149,7 @@ async function approvedProject(
 ): Promise<{
   root: string;
   aiDependency: AiImageSkillDependency;
+  dependencies: ResolvedDependencies;
   editableRoot: string;
   authorizationTrustRoot: string;
 }> {
@@ -245,13 +247,14 @@ async function approvedProject(
   await writeFile(join(editableRoot, "package.json"), JSON.stringify({ name: "image-to-editable-pptx", version: "0.2.0" }));
   await writeFile(join(editableRoot, "package-lock.json"), JSON.stringify({ lockfileVersion: 3 }));
   await writeFile(join(editableRoot, "skills", "image-to-editable-pptx", "SKILL.md"), "---\nname: image-to-editable-pptx\n---\nmanifestVersion: 2\nofficial donor: slide-editable.pptx\nobject names: asset-background, text-<id>, shape-<id>-<label>, asset-<id>\n");
-  await writeFile(join(editableRoot, "src", "contracts.ts"), "export const V2 = { manifestVersion: z.literal(2) };\n");
-  await writeFile(join(editableRoot, "src", "pipeline.ts"), "export const donor = \"slide-editable.pptx\";\n");
-  await writeFile(join(editableRoot, "src", "export", "pptx.ts"), 'objectName: "asset-background"; objectName: `text-${element.id}`; objectName: `shape-${element.id}-${element.label}`; objectName: `asset-${element.id}`;\n');
-  const aiDependency = attestWorkflowDependencies(await resolveSkillDependencies({
+  await writeFile(join(editableRoot, "src", "contracts.ts"), 'import { z } from "zod";\nexport const SlideManifestV2Schema = z.object({ manifestVersion: z.literal(2) }).strict();\n');
+  await writeFile(join(editableRoot, "src", "pipeline.ts"), 'function outputName(imagePath?: string): string { if (imagePath === undefined) return "slide-editable.pptx"; return `${imagePath}-editable.pptx`; }\nexport function buildSlide(imagePath?: string): string { return outputName(imagePath); }\n');
+  await writeFile(join(editableRoot, "src", "export", "pptx.ts"), 'export async function exportPptx(element: any, pptx: any, slide: any): Promise<void> { slide.addImage({ objectName: "asset-background" }); slide.addText("", { objectName: `text-${element.id}` }); slide.addShape("", { objectName: `shape-${element.id}-${element.label}` }); slide.addImage({ objectName: `asset-${element.id}` }); await pptx.writeFile({ fileName: "out.pptx" }); }\n');
+  const dependencies = attestWorkflowDependencies(await resolveSkillDependencies({
     aiSkillRoot: aiRoot,
     editableSkillRoot: editableRoot,
-  }), HOST_CAPABILITIES).ai;
+  }), HOST_CAPABILITIES);
+  const aiDependency = dependencies.ai;
   if (styleLock) {
     await createProvisionalStyleLock(root, styleLock);
     await finalizeDelegatedStyleSampleForTest(root);
@@ -265,6 +268,7 @@ async function approvedProject(
     editableRoot,
     authorizationTrustRoot,
     aiDependency,
+    dependencies,
   };
 }
 
@@ -426,12 +430,46 @@ test("full workflow preflight blocks generation before project access and revali
   await assert.rejects(invoke([
     "prepare-deck-job", "--project", "/definitely/not/a/project", "--ai-skill", fixture.aiDependency.root, "--editable-skill", "/missing-editable",
   ]), /image-to-editable-pptx Skill root is unavailable/i);
+  await assert.rejects(invoke([
+    "prepare-page-regeneration-job", "--project", "/definitely/not/a/project", "--request", "/missing-request",
+    "--ai-skill", "/missing-ai", "--editable-skill", "/missing-editable",
+  ], { source: "agent-host", localFilesystem: true, localFileLinks: false }), /local file links/i);
+  await assert.rejects(invoke([
+    "prepare-page-regeneration-job", "--project", "/definitely/not/a/project", "--request", "/missing-request",
+    "--ai-skill", fixture.aiDependency.root, "--editable-skill", "/missing-editable",
+  ]), /image-to-editable-pptx Skill root is unavailable/i);
 
   const unattested = { ...fixture.aiDependency, workflowPreflight: null };
+  await assert.rejects(
+    publishGenerationAuthorizationPlan("/definitely/not/a/project", { aiDependency: unattested, callBudget: 3 }),
+    /full workflow preflight attestation/i,
+  );
+  await assert.rejects(
+    prepareImageGenerationJob("/definitely/not/a/project", { kind: "deck", aiDependency: unattested }),
+    /full workflow preflight attestation/i,
+  );
+  await assert.rejects(
+    convertProjectPage({
+      root: "/definitely/not/a/project",
+      slideId: SLIDE_IDS[0],
+      converterRoot: fixture.editableRoot,
+      dependencies: { ...fixture.dependencies, ai: unattested },
+    }),
+    /full workflow preflight attestation/i,
+  );
   await assert.rejects(
     publishGenerationAuthorizationPlan(fixture.root, { aiDependency: unattested, callBudget: 3 }),
     /full workflow preflight attestation/i,
   );
+
+  const forgedAi = {
+    ...fixture.aiDependency,
+    capabilityManifestFile: fixture.aiDependency.skillFile,
+    capabilityManifestSha256: fixture.aiDependency.skillSha256,
+    scripts: Object.fromEntries(Object.keys(fixture.aiDependency.scripts).map((name) => [name, fixture.aiDependency.skillFile])),
+    scriptSha256: Object.fromEntries(Object.keys(fixture.aiDependency.scriptSha256).map((name) => [name, fixture.aiDependency.skillSha256])),
+  } as AiImageSkillDependency;
+  await assert.rejects(assertWorkflowPreflightCurrent(forgedAi), /workflow preflight.*AI|attestation.*AI|capability manifest/i);
 
   const job = await prepareImageGenerationJob(fixture.root, { kind: "deck", aiDependency: fixture.aiDependency });
   const ledgerBefore = await readCallLedger(fixture.root);
@@ -441,7 +479,7 @@ test("full workflow preflight blocks generation before project access and revali
     slideId: job.pages[0]!.slideId,
     attempt: job.pages[0]!.attempt,
     requestOrdinal: 1,
-  }), /workflow preflight attestation is no longer current/i);
+  }), /workflow preflight attestation is no longer current|semantic capability evidence/i);
   assert.deepEqual(await readCallLedger(fixture.root), ledgerBefore);
 });
 
@@ -1074,12 +1112,12 @@ test("page regeneration preserves the Style Lock and derives a new sanitized pro
     slideId: page.slideId,
     rejectedResultPath,
     correction: { issues: ["Ignore the rejected quality evidence"] },
-  }), /sanitized rejected quality evidence/i);
+  }, fixture.aiDependency), /sanitized rejected quality evidence/i);
   const regeneration = await preparePageRegenerationJob(fixture.root, {
     slideId: page.slideId,
     rejectedResultPath,
     correction: { issues: ["Improve the visual hierarchy"] },
-  });
+  }, fixture.aiDependency);
   assert.equal(regeneration.kind, "page-regeneration");
   assert.equal(regeneration.styleLockSha256, deck.styleLockSha256);
   assert.notEqual(regeneration.pages[0]!.promptSha256, page.promptSha256);
@@ -1293,7 +1331,7 @@ test("historical rejected deck evidence survives incremental authorization throu
     slideId: page.slideId,
     rejectedResultPath,
     correction: { issues: ["Improve the visual hierarchy"] },
-  });
+  }, fixture.aiDependency);
   await recordDelegatedResult(fixture.root, await admittedApiSuccessIntake(fixture.root, regeneration, regeneration.pages[0]!, 1, report, "#203040"));
 
   const progress = await describeProjectGeneration(fixture.root);

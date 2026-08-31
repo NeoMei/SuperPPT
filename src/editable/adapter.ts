@@ -1184,20 +1184,21 @@ export async function convertProjectPage(options: {
   nodeVersion?: string;
   idFactory?: () => string;
 }): Promise<ProjectConversionResult> {
+  if (!options.dependencies) throw new Error("editable conversion requires preflight-resolved dependencies");
+  const initialReport = await preflightDependencies(options.dependencies);
+  if (!initialReport.ok) throw new Error("editable conversion dependency preflight failed");
+  const preflightAi = await assertWorkflowPreflightCurrent(options.dependencies.ai);
+  await assertAiImageSkillDependencyCurrent(preflightAi);
+  if (await realpath(options.converterRoot) !== options.dependencies.editable.root) {
+    throw new Error("editable converter root does not match the preflight-resolved dependency");
+  }
   return withGenerationLease(options.root, async (generationRoot) => {
+  await assertWorkflowPreflightCurrent(preflightAi);
   await assertProjectMutationNotFrozen(generationRoot);
   const manifest = await readProject(generationRoot);
   const root = await validateProjectRoot(generationRoot);
   const slide = manifest.slides.find((candidate) => candidate.id === options.slideId);
   if (!slide) throw new Error("editable conversion slide ID is not in the current project");
-  if (!options.dependencies) throw new Error("editable conversion requires preflight-resolved dependencies");
-  const report = await preflightDependencies(options.dependencies);
-  if (!report.ok) throw new Error("editable conversion dependency preflight failed");
-  await assertWorkflowPreflightCurrent(options.dependencies.ai);
-  await assertAiImageSkillDependencyCurrent(options.dependencies.ai);
-  if (await realpath(options.converterRoot) !== options.dependencies.editable.root) {
-    throw new Error("editable converter root does not match the preflight-resolved dependency");
-  }
   const selection = await (await import("../project/promotion.js")).authenticateCurrentDeckEditSelection(root, options.slideId);
   const sourceMaster = selection.sourceMaster;
   if (slide.status !== "ready" || !sourceMaster) throw new Error("editable conversion requires a ready current final render");

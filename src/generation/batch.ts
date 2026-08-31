@@ -6,6 +6,7 @@ import {
   AiImageSkillDependencySchema,
   type AiImageSkillDependency,
 } from "../dependencies/schemas.js";
+import { assertWorkflowPreflightCurrent } from "../dependencies/preflight.js";
 import { DeckEditRouteSchema, type DeckEditRoute } from "../editable/route.js";
 import { readCurrentDeckPointer, readLocalDeckRevision } from "../deck-revisions/store.js";
 import { assertGateCurrent } from "../planning/confirm.js";
@@ -138,16 +139,17 @@ export async function prepareDeckJob(
   root: string,
   aiDependency: AiImageSkillDependency,
 ): Promise<ImageGenerationJob> {
+  const preflightAi = await assertWorkflowPreflightCurrent(aiDependency);
   await assertCurrentDeckGates(root);
   const jobs = await currentGenerationJobs(root);
   const existing = [...jobs].reverse().find((job) =>
-    job.kind === "deck" && sameJson(dependencyFromJob(job), AiImageSkillDependencySchema.parse(aiDependency))
+    job.kind === "deck" && sameJson(dependencyFromJob(job), preflightAi)
   );
   if (existing) {
     await authenticatedResultOrNull(root, existing);
     return existing;
   }
-  return prepareImageGenerationJob(root, { kind: "deck", aiDependency });
+  return prepareImageGenerationJob(root, { kind: "deck", aiDependency: preflightAi });
 }
 
 export async function prepareRegeneratedSlideJob(
@@ -158,6 +160,7 @@ export async function prepareRegeneratedSlideJob(
     previousPromptSha256: string;
   },
 ): Promise<ImageGenerationJob> {
+  const preflightAi = await assertWorkflowPreflightCurrent(options.aiDependency);
   const route = DeckEditRouteSchema.parse(rawRoute);
   if (route.route !== "regenerate-slide") throw new Error("regenerated slide jobs require the regenerate-slide route");
   const [manifest, lock, validated, currentDeck] = await Promise.all([
@@ -185,7 +188,7 @@ export async function prepareRegeneratedSlideJob(
   }).text;
   const job = await prepareImageGenerationJob(options.root, {
     kind: "page-regeneration",
-    aiDependency: options.aiDependency,
+    aiDependency: preflightAi,
     slideId: route.slideId,
     previousPromptSha256: options.previousPromptSha256,
     finalPrompt,
@@ -300,7 +303,9 @@ async function describeProjectGenerationUnderLease(root: string): Promise<Genera
 export async function preparePageRegenerationJob(
   root: string,
   rawRequest: z.input<typeof PageRegenerationRequestSchema>,
+  aiDependency: AiImageSkillDependency,
 ): Promise<ImageGenerationJob> {
+  const preflightAi = await assertWorkflowPreflightCurrent(aiDependency);
   await assertCurrentDeckGates(root);
   const request = PageRegenerationRequestSchema.parse(rawRequest);
   const path = RejectedResultPathSchema.parse(request.rejectedResultPath);
@@ -309,6 +314,9 @@ export async function preparePageRegenerationJob(
   if (request.slideId !== resultSlideId) throw new Error("page-regeneration slide does not match the rejected result path");
 
   const authenticated = await readAndReauthenticateDelegatedResult(root, jobId);
+  if (!sameJson(dependencyFromJob(authenticated.job), preflightAi)) {
+    throw new Error("page-regeneration dependency preflight does not match the rejected immutable job");
+  }
   const rejected = authenticated.result.pages.find(({ slideId, attempt }) =>
     slideId === request.slideId && attempt === Number(attemptText)
   );
@@ -335,7 +343,7 @@ export async function preparePageRegenerationJob(
   }).text;
   return prepareImageGenerationJob(root, {
     kind: "page-regeneration",
-    aiDependency: dependencyFromJob(authenticated.job),
+    aiDependency: preflightAi,
     slideId: request.slideId,
     previousPromptSha256: rejected.actualPromptSha256,
     finalPrompt,

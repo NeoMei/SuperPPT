@@ -125,13 +125,16 @@ async function fixture(t: TestContext, version = "0.2.0"): Promise<Fixture> {
     join(editable, "skills", "image-to-editable-pptx", "SKILL.md"),
     "---\nname: image-to-editable-pptx\n---\nmanifestVersion: 2\nofficial donor: slide-editable.pptx\nobject names: asset-background, text-<id>, shape-<id>-<label>, asset-<id>\n",
   );
-  await writeFile(join(editable, "src", "contracts.ts"), "export const V2 = { manifestVersion: z.literal(2) };\n");
-  await writeFile(join(editable, "src", "pipeline.ts"), "export const officialDonor = \"slide-editable.pptx\";\n");
+  await writeFile(join(editable, "src", "contracts.ts"), 'import { z } from "zod";\nexport const SlideManifestV2Schema = z.object({ manifestVersion: z.literal(2) }).strict();\n');
+  await writeFile(join(editable, "src", "pipeline.ts"), 'function outputName(imagePath?: string): string { if (imagePath === undefined) return "slide-editable.pptx"; return `${imagePath}-editable.pptx`; }\nexport function buildSlide(imagePath?: string): string { return outputName(imagePath); }\n');
   await writeFile(join(editable, "src", "export", "pptx.ts"), [
-    'const background = { objectName: "asset-background" };',
-    'const text = { objectName: `text-${element.id}` };',
-    'const shape = { objectName: `shape-${element.id}-${element.label}` };',
-    'const asset = { objectName: `asset-${element.id}` };',
+    "export async function exportPptx(element: any, pptx: any, slide: any): Promise<void> {",
+    '  slide.addImage({ objectName: "asset-background" });',
+    '  slide.addText("", { objectName: `text-${element.id}` });',
+    '  slide.addShape("", { objectName: `shape-${element.id}-${element.label}` });',
+    '  slide.addImage({ objectName: `asset-${element.id}` });',
+    '  await pptx.writeFile({ fileName: "out.pptx" });',
+    "}",
     "",
   ].join("\n"));
   await writeFile(contractFile, `${JSON.stringify(dependencyContract, null, 2)}\n`);
@@ -239,6 +242,23 @@ test("rejects installed editable capability evidence drift before converter exec
     ["manifest v1", "src/contracts.ts", "export const V1 = { manifestVersion: z.literal(1) };\n", /manifest.*v2|capability evidence/i],
     ["missing official donor", "src/pipeline.ts", "export const officialDonor = \"other.pptx\";\n", /official donor|capability evidence/i],
     ["object-name drift", "src/export/pptx.ts", "export const names = ['background', 'text', 'shape', 'asset'];\n", /object.name|capability evidence/i],
+  ] as const) {
+    await t.test(name, async (subtest) => {
+      const current = await fixture(subtest);
+      await writeFile(join(current.editable, ...path.split("/")), replacement);
+      await assert.rejects(resolveSkillDependencies(request(current)), pattern);
+    });
+  }
+});
+
+test("rejects comment-only and dead editable capability literals", async (t) => {
+  for (const [name, path, replacement, pattern] of [
+    ["comment-only manifest", "src/contracts.ts", "// export const SlideManifestV2Schema = z.object({ manifestVersion: z.literal(2) });\n", /manifest.*v2|semantic.*evidence/i],
+    ["dead manifest literal", "src/contracts.ts", "const unused = { manifestVersion: z.literal(2) };\n", /manifest.*v2|semantic.*evidence/i],
+    ["comment-only donor", "src/pipeline.ts", "// function outputName() { return \"slide-editable.pptx\"; }\n", /official donor|semantic.*evidence/i],
+    ["dead donor literal", "src/pipeline.ts", "const unused = \"slide-editable.pptx\";\n", /official donor|semantic.*evidence/i],
+    ["comment-only object names", "src/export/pptx.ts", "// objectName: \"asset-background\"; `text-${element.id}`; `shape-${element.id}-${element.label}`; `asset-${element.id}`\n", /object.name|semantic.*evidence/i],
+    ["dead object-name literals", "src/export/pptx.ts", "const unused = [\"asset-background\", `text-${element.id}`, `shape-${element.id}-${element.label}`, `asset-${element.id}`];\n", /object.name|semantic.*evidence/i],
   ] as const) {
     await t.test(name, async (subtest) => {
       const current = await fixture(subtest);

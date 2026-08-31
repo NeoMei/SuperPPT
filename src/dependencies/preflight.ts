@@ -4,15 +4,23 @@ import { dirname, relative, sep } from "node:path";
 
 import { requireLocalDeckHandoff } from "../host/capabilities.js";
 import {
+  AiImageSkillDependencyIdentitySchema,
   AiImageSkillDependencySchema,
   WorkflowPreflightBindingSchema,
   type AiImageSkillDependency,
   type DependencyPreflight,
   type ResolvedDependencies,
 } from "./schemas.js";
+import { resolveSkillDependencies } from "./resolve.js";
+import { isDeepStrictEqual } from "node:util";
 
 function sha256Json(value: unknown): string {
   return createHash("sha256").update(JSON.stringify(value)).digest("hex");
+}
+
+function aiIdentity(ai: AiImageSkillDependency) {
+  const { workflowPreflight: _workflowPreflight, ...identity } = ai;
+  return AiImageSkillDependencyIdentitySchema.parse(identity);
 }
 
 export function attestWorkflowDependencies(
@@ -21,10 +29,12 @@ export function attestWorkflowDependencies(
 ): ResolvedDependencies {
   requireLocalDeckHandoff(hostCapabilities);
   const host = { source: "agent-host" as const, localFilesystem: true as const, localFileLinks: true as const };
+  const ai = aiIdentity(resolved.ai);
   const body = {
     bindingVersion: 1 as const,
     contractFile: resolved.contractFile,
     contractSha256: resolved.contractSha256,
+    ai,
     editable: resolved.editable,
     host,
   };
@@ -45,22 +55,20 @@ export async function assertWorkflowPreflightCurrent(raw: AiImageSkillDependency
   const { attestationSha256, ...body } = binding;
   if (sha256Json(body) !== attestationSha256) throw new Error("workflow preflight attestation hash is invalid");
   requireLocalDeckHandoff(binding.host);
-  const dependencyOnlyAi = AiImageSkillDependencySchema.parse({ ...ai, workflowPreflight: null });
-  const resolved: ResolvedDependencies = {
+  const callerAi = aiIdentity(ai);
+  if (!isDeepStrictEqual(callerAi, binding.ai)) {
+    throw new Error("workflow preflight AI dependency does not match the attested canonical identity");
+  }
+  const resolved = await resolveSkillDependencies({
+    aiSkillRoot: binding.ai.root,
+    editableSkillRoot: binding.editable.root,
     contractFile: binding.contractFile,
-    contractSha256: binding.contractSha256,
-    ai: dependencyOnlyAi,
-    editable: binding.editable,
-    integrity: {
-      aiSkillSha256: dependencyOnlyAi.skillSha256,
-      aiCapabilityManifestSha256: dependencyOnlyAi.capabilityManifestSha256,
-      aiScripts: dependencyOnlyAi.scriptSha256,
-      editablePackageSha256: binding.editable.packageSha256,
-      editableSkillSha256: binding.editable.skillSha256,
-      editableCapabilityEvidence: binding.editable.capabilityEvidence,
-      contractSha256: binding.contractSha256,
-    },
-  };
+  });
+  if (
+    resolved.contractSha256 !== binding.contractSha256
+    || !isDeepStrictEqual(aiIdentity(resolved.ai), binding.ai)
+    || !isDeepStrictEqual(resolved.editable, binding.editable)
+  ) throw new Error("full workflow preflight attestation is no longer current");
   const report = await preflightDependencies(resolved);
   if (!report.ok) throw new Error("full workflow preflight attestation is no longer current");
   return ai;

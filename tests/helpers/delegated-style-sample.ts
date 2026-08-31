@@ -55,9 +55,9 @@ async function testAiDependency(root: string): Promise<AiImageSkillDependency> {
   await mkdir(join(editableRoot, "src", "export"), { recursive: true });
   await writeFile(join(editableRoot, "package.json"), JSON.stringify({ name: "image-to-editable-pptx", version: "0.2.0" }));
   await writeFile(join(editableRoot, "skills", "image-to-editable-pptx", "SKILL.md"), "---\nname: image-to-editable-pptx\n---\n");
-  await writeFile(join(editableRoot, "src", "contracts.ts"), "export const V2 = { manifestVersion: z.literal(2) };\n");
-  await writeFile(join(editableRoot, "src", "pipeline.ts"), "export const donor = \"slide-editable.pptx\";\n");
-  await writeFile(join(editableRoot, "src", "export", "pptx.ts"), 'objectName: "asset-background"; objectName: `text-${element.id}`; objectName: `shape-${element.id}-${element.label}`; objectName: `asset-${element.id}`;\n');
+  await writeFile(join(editableRoot, "src", "contracts.ts"), 'import { z } from "zod";\nexport const SlideManifestV2Schema = z.object({ manifestVersion: z.literal(2) }).strict();\n');
+  await writeFile(join(editableRoot, "src", "pipeline.ts"), 'function outputName(imagePath?: string): string { if (imagePath === undefined) return "slide-editable.pptx"; return `${imagePath}-editable.pptx`; }\nexport function buildSlide(imagePath?: string): string { return outputName(imagePath); }\n');
+  await writeFile(join(editableRoot, "src", "export", "pptx.ts"), 'export async function exportPptx(element: any, pptx: any, slide: any): Promise<void> { slide.addImage({ objectName: "asset-background" }); slide.addText("", { objectName: `text-${element.id}` }); slide.addShape("", { objectName: `shape-${element.id}-${element.label}` }); slide.addImage({ objectName: `asset-${element.id}` }); await pptx.writeFile({ fileName: "out.pptx" }); }\n');
   return attestWorkflowDependencies(await resolveSkillDependencies({
     aiSkillRoot: aiRoot,
     editableSkillRoot: editableRoot,

@@ -2,6 +2,7 @@ import { closeSync, readdirSync } from "node:fs";
 import { createHash, randomUUID } from "node:crypto";
 
 import type { AiImageSkillDependency } from "../dependencies/schemas.js";
+import { assertWorkflowPreflightCurrent } from "../dependencies/preflight.js";
 import { withProjectLease } from "../project/lock.js";
 import { withGenerationLease } from "./lease.js";
 import { readOwnedRegularFile } from "../project/safe-file.js";
@@ -152,12 +153,13 @@ export async function prepareStyleSampleJob(
   root: string,
   aiDependency: AiImageSkillDependency,
 ): Promise<ImageGenerationJob> {
+  const preflightAi = await assertWorkflowPreflightCurrent(aiDependency);
   const authorization = await authorizationForPreparation(root, "style-sample");
   const budget = await authorizationCallBudget(root, authorization.digest, authorization.plan.callBudget);
   if (budget.remaining === 0) {
     throw new Error("a new style sample generation plan is required after its one-call budget is exhausted");
   }
-  return prepareImageGenerationJob(root, { kind: "style-sample", aiDependency });
+  return prepareImageGenerationJob(root, { kind: "style-sample", aiDependency: preflightAi });
 }
 
 export async function finalizeStyleSample(root: string, jobId: string): Promise<StyleSampleArtifacts> {

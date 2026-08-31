@@ -471,6 +471,45 @@ test("generation authorization and deck review extend the ordinary gate chain", 
 });
 
 test("generation authorization plan schema binds ordered prompts and a sufficient call budget", () => {
+  const workflowAi = {
+    kind: "ai-image-to-ppt" as const,
+    root: "/resolved/ai-image-to-ppt",
+    skillFile: "/resolved/ai-image-to-ppt/SKILL.md",
+    skillSha256: "a".repeat(64),
+    gitRevision: null,
+    capabilityManifestFile: "/resolved/ai-image-to-ppt/references/capabilities.json",
+    capabilityManifestSha256: "9".repeat(64),
+    capabilitySchemaVersion: 1 as const,
+    contracts: { generationResult: 1 as const, serialStickyRouterReport: 1 as const, hostImageImport: 1 as const, editableInput: 1 as const },
+    routingOrder: [
+      { provider: "openai" as const, channel: "host" as const, modelSelection: "host-owned" as const },
+      { provider: "openai" as const, channel: "api" as const, defaultModel: "gpt-image-2" as const },
+      { provider: "gemini" as const, channel: "host" as const, modelSelection: "host-owned" as const },
+      { provider: "gemini" as const, channel: "api" as const, defaultModel: "gemini-3.1-flash-image" as const },
+      { provider: "doubao" as const, channel: "host" as const, modelSelection: "host-owned" as const },
+      { provider: "doubao" as const, channel: "api" as const, defaultModel: "doubao-seedream-5-0-260128" as const },
+    ],
+    outputs: {
+      normalizedSlide: { format: "image" as const, width: 1920 as const, height: 1080 as const },
+      editableInput: { format: "png" as const, width: 1280 as const, height: 720 as const },
+    },
+    scripts: {
+      generationResult: "/resolved/ai-image-to-ppt/scripts/generation_result.py",
+      hostRoutingPolicy: "/resolved/ai-image-to-ppt/scripts/host_routing_policy.py",
+      importHostImage: "/resolved/ai-image-to-ppt/scripts/import_host_image.py",
+      prepareEditableInput: "/resolved/ai-image-to-ppt/scripts/prepare_editable_input.py",
+      apiGenerator: "/resolved/ai-image-to-ppt/scripts/gen_slide.py",
+      normalizedExport: "/resolved/ai-image-to-ppt/scripts/export_images.py",
+    },
+    scriptSha256: {
+      generationResult: "c".repeat(64),
+      hostRoutingPolicy: "d".repeat(64),
+      importHostImage: "e".repeat(64),
+      prepareEditableInput: "f".repeat(64),
+      apiGenerator: "1".repeat(64),
+      normalizedExport: "2".repeat(64),
+    },
+  };
   const plan = {
     contractVersion: 1 as const,
     kind: "deck" as const,
@@ -507,6 +546,7 @@ test("generation authorization plan schema binds ordered prompts and a sufficien
         bindingVersion: 1 as const,
         contractFile: "/resolved/SuperPPT/references/dependencies.json",
         contractSha256: "3".repeat(64),
+        ai: workflowAi,
         editable: {
           kind: "image-to-editable-pptx" as const,
           root: "/resolved/image-to-editable-pptx",

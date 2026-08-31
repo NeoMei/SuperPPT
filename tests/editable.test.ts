@@ -102,9 +102,9 @@ async function converterRoot(t: TestContext): Promise<string> {
     scripts: { cli: "tsx src/cli.ts" },
   })}\n`);
   await writeFile(join(root, "skills", "image-to-editable-pptx", "SKILL.md"), "---\nname: image-to-editable-pptx\n---\n");
-  await writeFile(join(root, "src", "contracts.ts"), "export const V2 = { manifestVersion: z.literal(2) };\n");
-  await writeFile(join(root, "src", "pipeline.ts"), "export const donor = \"slide-editable.pptx\";\n");
-  await writeFile(join(root, "src", "export", "pptx.ts"), 'objectName: "asset-background"; objectName: `text-${element.id}`; objectName: `shape-${element.id}-${element.label}`; objectName: `asset-${element.id}`;\n');
+  await writeFile(join(root, "src", "contracts.ts"), 'import { z } from "zod";\nexport const SlideManifestV2Schema = z.object({ manifestVersion: z.literal(2) }).strict();\n');
+  await writeFile(join(root, "src", "pipeline.ts"), 'function outputName(imagePath?: string): string { if (imagePath === undefined) return "slide-editable.pptx"; return `${imagePath}-editable.pptx`; }\nexport function buildSlide(imagePath?: string): string { return outputName(imagePath); }\n');
+  await writeFile(join(root, "src", "export", "pptx.ts"), 'export async function exportPptx(element: any, pptx: any, slide: any): Promise<void> { slide.addImage({ objectName: "asset-background" }); slide.addText("", { objectName: `text-${element.id}` }); slide.addShape("", { objectName: `shape-${element.id}-${element.label}` }); slide.addImage({ objectName: `asset-${element.id}` }); await pptx.writeFile({ fileName: "out.pptx" }); }\n');
   return root;
 }
 

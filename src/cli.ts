@@ -521,7 +521,8 @@ async function main(argv: string[]): Promise<void> {
   }
 
   if (command === "prepare-page-regeneration-job") {
-    const options = exactFlags(argv.slice(1), ["--project", "--request"]);
+    const options = exactFlags(argv.slice(1), ["--project", "--request", "--ai-skill", "--editable-skill"]);
+    const dependencies = await resolveInjectedWorkflowDependencies(options.get("--ai-skill")!, options.get("--editable-skill")!);
     const job = await preparePageRegenerationJob(
       options.get("--project")!,
       await readCliJsonInput(
@@ -530,6 +531,7 @@ async function main(argv: string[]): Promise<void> {
         PageRegenerationRequestSchema,
         { privateInput: true },
       ),
+      dependencies.ai,
     );
     outputJson({ job, nextRequiredAction: "publish and approve a new incremental generation authorization when required" });
     return;

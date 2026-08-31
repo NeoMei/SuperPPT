@@ -460,9 +460,10 @@ export async function prepareImageGenerationJob(
   } catch (error: unknown) {
     throw new Error("invalid image generation job request", { cause: error });
   }
+  const preflightAi = await assertWorkflowPreflightCurrent(request.aiDependency);
   return withGenerationLease(root, async (canonicalRoot) => {
+    const ai = await assertWorkflowPreflightCurrent(preflightAi);
     await assertProjectMutationNotFrozen(canonicalRoot);
-    const ai = await assertWorkflowPreflightCurrent(request.aiDependency);
     const authorization = await authorizationForPreparation(canonicalRoot, request.kind);
     const [manifest, lock] = await Promise.all([
       readProject(canonicalRoot),
