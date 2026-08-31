@@ -9,6 +9,10 @@ export const ReviewRequiredObjectSchema = z.object({
   role: z.string().min(1),
 }).strict();
 
+export const PreparedReviewRequiredObjectSchema = ReviewRequiredObjectSchema.extend({
+  stableSlideId: z.string().uuid(),
+}).strict();
+
 export const PreparedDeckEditSchema = z.object({
   kind: z.literal("complete-local-pptx"),
   mode: z.enum(["manual", "agent"]),
@@ -21,10 +25,14 @@ export const PreparedDeckEditSchema = z.object({
   sha256: Sha256Schema,
   slideCount: z.number().int().positive(),
   editableSlideIds: z.array(z.string().uuid()),
-  reviewRequiredObjects: z.array(ReviewRequiredObjectSchema),
+  reviewRequiredObjects: z.array(PreparedReviewRequiredObjectSchema),
 }).strict().superRefine((prepared, context) => {
   if (prepared.localLink !== prepared.absolutePath) {
     context.addIssue({ code: "custom", path: ["localLink"], message: "complete deck local link must equal its absolute path" });
+  }
+  const identities = prepared.reviewRequiredObjects.map((object) => `${object.stableSlideId}\u0000${object.elementId}`);
+  if (new Set(identities).size !== identities.length) {
+    context.addIssue({ code: "custom", path: ["reviewRequiredObjects"], message: "complete deck review-required object identities must be unique" });
   }
 });
 
@@ -495,6 +503,7 @@ export type EditableManifestV2 = z.infer<typeof EditableManifestV2Schema>;
 export type RunLedgerV2 = z.infer<typeof RunLedgerV2Schema>;
 export type AuthenticatedEditableConversion = z.infer<typeof AuthenticatedEditableConversionSchema>;
 export type PreparedDeckEdit = z.infer<typeof PreparedDeckEditSchema>;
+export type PreparedReviewRequiredObject = z.infer<typeof PreparedReviewRequiredObjectSchema>;
 export type ReviewRequiredObject = z.infer<typeof ReviewRequiredObjectSchema>;
 export type EditPlan = z.infer<typeof EditPlanSchema>;
 export type EditableRevisionMarker = z.infer<typeof EditableRevisionMarkerSchema>;

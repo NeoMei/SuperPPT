@@ -1,8 +1,12 @@
 import { z } from "zod";
 
-import { PreparedDeckEditSchema, type PreparedDeckEdit } from "../editable/schemas.js";
+import {
+  PreparedDeckEditSchema,
+  type PreparedDeckEdit,
+  type PreparedReviewRequiredObject,
+} from "../editable/schemas.js";
 import { activateEditableSlideInDeck } from "./activate-slide.js";
-import type { ResolvedCurrentDeckPointer } from "./schemas.js";
+import type { DeckEditSession, LocalDeckRevision, ResolvedCurrentDeckPointer } from "./schemas.js";
 import {
   adoptDeckCandidate,
   createDeckCandidate,
@@ -34,6 +38,7 @@ function preparedResult(
   mode: "manual" | "agent",
   targetSlideIndex: number,
   presented: Awaited<ReturnType<typeof presentDeckCandidate>>,
+  reviewRequiredObjects: PreparedReviewRequiredObject[],
 ): PreparedDeckEdit {
   return PreparedDeckEditSchema.parse({
     kind: "complete-local-pptx",
@@ -47,8 +52,36 @@ function preparedResult(
     sha256: presented.inspected.sha256,
     slideCount: presented.inspected.slideCount,
     editableSlideIds: presented.editableSlideIds,
-    reviewRequiredObjects: presented.session.reviewRequiredObjects,
+    reviewRequiredObjects,
   });
+}
+
+function completeReviewRequiredObjects(
+  parent: LocalDeckRevision,
+  session: DeckEditSession,
+): PreparedReviewRequiredObject[] {
+  const bySlideId = { ...parent.reviewRequiredObjectsBySlideId };
+  if (session.reviewRequiredObjects.length > 0 || !parent.editableSlideIds.includes(session.targetSlideId)) {
+    bySlideId[session.targetSlideId] = session.reviewRequiredObjects;
+  }
+  const results: PreparedReviewRequiredObject[] = [];
+  const identities = new Map<string, PreparedReviewRequiredObject>();
+  for (const entry of [...parent.slideTopology.entries].sort((left, right) => left.position - right.position)) {
+    for (const object of bySlideId[entry.stableSlideId] ?? []) {
+      const prepared = { stableSlideId: entry.stableSlideId, ...object };
+      const identity = `${prepared.stableSlideId}\u0000${prepared.elementId}`;
+      const prior = identities.get(identity);
+      if (prior) {
+        if (JSON.stringify(prior) !== JSON.stringify(prepared)) {
+          throw new Error("authenticated review-required metadata has a conflicting object identity");
+        }
+        continue;
+      }
+      identities.set(identity, prepared);
+      results.push(prepared);
+    }
+  }
+  return results;
 }
 
 export async function prepareManualEditDeck(options: {
@@ -89,7 +122,12 @@ export async function prepareManualEditDeck(options: {
       targetSlideId: valid.slideId,
       state: "external-editing",
     });
-    return preparedResult("manual", target.position, presented);
+    return preparedResult(
+      "manual",
+      target.position,
+      presented,
+      completeReviewRequiredObjects(parent, presented.session),
+    );
   } catch (error: unknown) {
     try {
       const currentSession = await readDeckEditSession(valid.root, candidate.sessionId);
@@ -140,7 +178,12 @@ export async function beginAgentCandidateConfirmation(options: {
     targetSlideId: valid.slideId,
     state: "awaiting-confirmation",
   });
-  return preparedResult("agent", target.position, presented);
+  return preparedResult(
+    "agent",
+    target.position,
+    presented,
+    completeReviewRequiredObjects(parent, presented.session),
+  );
 }
 
 export async function confirmAgentEditDeck(options: {

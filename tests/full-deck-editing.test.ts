@@ -82,6 +82,7 @@ async function workflowFixture(t: TestContext) {
     editableSlideIds: [...slideIds],
     changedSlideIds: [...slideIds],
     reviewRequiredObjectsBySlideId: {
+      [slideIds[0]!]: [{ elementId: "chart", label: "Review chart", role: "data-visual" }],
       [slideIds[1]!]: [{ elementId: "icon", label: "Review icon", role: "foreground-object" }],
     },
     createdAt: new Date().toISOString(),
@@ -136,7 +137,20 @@ test("manual flow exposes only one complete deck and adopts exact bytes only aft
   assert.equal(prepared.slideCount, fixture.slideIds.length);
   assert.equal(prepared.localLink, prepared.absolutePath);
   assert.equal(prepared.targetSlideIndex, 1);
-  assert.deepEqual(prepared.reviewRequiredObjects, [{ elementId: "icon", label: "Review icon", role: "foreground-object" }]);
+  assert.deepEqual(prepared.reviewRequiredObjects, [
+    {
+      stableSlideId: fixture.slideIds[0],
+      elementId: "chart",
+      label: "Review chart",
+      role: "data-visual",
+    },
+    {
+      stableSlideId: fixture.slideIds[1],
+      elementId: "icon",
+      label: "Review icon",
+      role: "foreground-object",
+    },
+  ]);
   assert.deepEqual(await readdir(join(fixture.root, "output", "deck-revisions", prepared.revisionId)), ["deck.pptx"]);
   for (const forbidden of ["singleSlidePath", "preview", "pdf", "montage", "viewer"]) {
     assert.equal(forbidden in prepared, false);

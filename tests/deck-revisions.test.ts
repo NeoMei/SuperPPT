@@ -282,6 +282,106 @@ test("interrupted adoption recovery keeps revision records immutable and finishe
   }
 });
 
+test("validated manual adoption recovery rejects candidate bytes changed after the accepted stable read", async (t) => {
+  const value = await fixture(t);
+  const candidate = await createDeckCandidate(value.root, {
+    sourceRevisionId: value.current.revisionId,
+    reason: "manual-edit",
+    changedSlideIds: [value.slideIds[1]!],
+    editableSlideIds: [value.slideIds[1]!],
+    targetSlideId: value.slideIds[1]!,
+    mode: "manual",
+  });
+  await presentManualCandidate(value.root, candidate);
+  const acceptedBytes = await userEditedFixture(await readFile(candidate.absolutePath));
+  await writeFile(candidate.absolutePath, acceptedBytes);
+  await assert.rejects(adoptDeckCandidate(value.root, {
+    sessionId: candidate.sessionId,
+    mode: "manual",
+    userSignal: "saved-and-closed",
+    operations: {
+      checkpoint: (phase) => {
+        if ((phase as string) === "validated") throw new Error("injected validated adoption crash");
+      },
+    },
+  }), /injected validated adoption crash/);
+
+  const changedAfterValidation = await userEditedFixture(acceptedBytes);
+  await writeFile(candidate.absolutePath, changedAfterValidation);
+  await assert.rejects(recoverDeckAdoption(value.root), /validated|changed|bind|sha/i);
+  await assert.rejects(adoptDeckCandidate(value.root, {
+    sessionId: candidate.sessionId,
+    mode: "manual",
+    userSignal: "saved-and-closed",
+  }), /validated|changed|bind|sha/i);
+  assert.equal((await readCurrentDeckPointer(value.root)).revisionId, value.current.revisionId);
+  assert.deepEqual(await readFile(candidate.absolutePath), changedAfterValidation);
+  await assert.rejects(
+    readFile(join(value.root, "output", "deck-revisions", candidate.candidateRevisionId, "revision.json")),
+    { code: "ENOENT" },
+  );
+});
+
+test("validated adoption journal recovers unchanged manual and Agent candidates from its exact revision snapshot", async (t) => {
+  for (const mode of ["manual", "agent"] as const) {
+    await t.test(mode, async (st) => {
+      const value = await fixture(st);
+      const candidate = await createDeckCandidate(value.root, {
+        sourceRevisionId: value.current.revisionId,
+        reason: mode === "manual" ? "manual-edit" : "agent-edit",
+        changedSlideIds: [value.slideIds[0]!],
+        editableSlideIds: [value.slideIds[0]!],
+        targetSlideId: value.slideIds[0]!,
+        mode,
+      });
+      if (mode === "manual") {
+        await presentManualCandidate(value.root, candidate);
+      } else {
+        await presentDeckCandidate(value.root, {
+          sessionId: candidate.sessionId,
+          mode: "agent",
+          targetSlideId: candidate.targetSlideId,
+          state: "awaiting-confirmation",
+        });
+      }
+      await assert.rejects(adoptDeckCandidate(value.root, {
+        sessionId: candidate.sessionId,
+        mode,
+        ...(mode === "manual"
+          ? { userSignal: "saved-and-closed" as const }
+          : { confirmedSha256: candidate.preparedSha256 }),
+        operations: {
+          checkpoint: (phase) => {
+            if ((phase as string) === "validated") throw new Error("injected validated adoption crash");
+          },
+        },
+      }), /injected validated adoption crash/);
+      const journal = JSON.parse(await readFile(
+        join(value.root, "output", "deck-edit-sessions", candidate.sessionId, "journal.json"),
+        "utf8",
+      )) as {
+        adoption: {
+          validatedSha256: string;
+          reconciledSlideTopology: { sha256: string };
+          validatedRevision: { sha256: string; slideTopology: { sha256: string } };
+        };
+      };
+      assert.equal(journal.adoption.validatedSha256, candidate.preparedSha256);
+      assert.equal(journal.adoption.reconciledSlideTopology.sha256, value.revision.slideTopology.sha256);
+      assert.equal(journal.adoption.validatedRevision.sha256, candidate.preparedSha256);
+      assert.equal(
+        journal.adoption.validatedRevision.slideTopology.sha256,
+        journal.adoption.reconciledSlideTopology.sha256,
+      );
+
+      const recovered = await recoverDeckAdoption(value.root);
+      assert.equal(recovered?.revisionId, candidate.candidateRevisionId);
+      assert.equal(recovered?.sha256, candidate.preparedSha256);
+      assert.equal((await readCurrentDeckPointer(value.root)).revisionId, candidate.candidateRevisionId);
+    });
+  }
+});
+
 test("recovery skips a historical adopted session after rollback", async (t) => {
   const value = await fixture(t);
   const candidate = await createDeckCandidate(value.root, {
