@@ -137,7 +137,98 @@ function baseFluentCall(expression: ts.Expression): ts.Expression {
   return current;
 }
 
+function staticTruth(expression: ts.Expression): boolean | undefined {
+  const value = ts.isParenthesizedExpression(expression) ? expression.expression : expression;
+  if (value.kind === ts.SyntaxKind.FalseKeyword || value.kind === ts.SyntaxKind.NullKeyword) return false;
+  if (value.kind === ts.SyntaxKind.TrueKeyword) return true;
+  if (ts.isNumericLiteral(value)) return Number(value.text) !== 0;
+  if (ts.isStringLiteral(value) || ts.isNoSubstitutionTemplateLiteral(value)) return value.text.length > 0;
+  if (ts.isPrefixUnaryExpression(value) && value.operator === ts.SyntaxKind.ExclamationToken) {
+    const nested = staticTruth(value.operand);
+    return nested === undefined ? undefined : !nested;
+  }
+  return undefined;
+}
+
+type ExecutableVisitor = {
+  call?: (node: ts.CallExpression) => void;
+  variable?: (node: ts.VariableDeclaration) => void;
+};
+
+function walkExecutable(node: ts.Node, visitor: ExecutableVisitor, callbackOwner?: string): void {
+  if (ts.isFunctionDeclaration(node) || ts.isFunctionExpression(node) || ts.isArrowFunction(node)) return;
+  if (ts.isBlock(node)) {
+    for (const statement of node.statements) {
+      walkExecutable(statement, visitor, callbackOwner);
+      if (ts.isReturnStatement(statement) || ts.isThrowStatement(statement)) break;
+    }
+    return;
+  }
+  if (ts.isIfStatement(node)) {
+    const truth = staticTruth(node.expression);
+    if (truth !== false) walkExecutable(node.thenStatement, visitor, callbackOwner);
+    if (truth !== true && node.elseStatement) walkExecutable(node.elseStatement, visitor, callbackOwner);
+    return;
+  }
+  if (ts.isVariableDeclaration(node)) visitor.variable?.(node);
+  if (ts.isCallExpression(node)) {
+    visitor.call?.(node);
+    if (
+      callbackOwner
+      && ts.isIdentifier(node.expression)
+      && node.expression.text === callbackOwner
+    ) {
+      for (const argument of node.arguments) {
+        if (!ts.isObjectLiteralExpression(argument)) continue;
+        for (const property of argument.properties) {
+          if (
+            ts.isPropertyAssignment(property)
+            && ((ts.isIdentifier(property.name) && property.name.text === "build") || (ts.isStringLiteral(property.name) && property.name.text === "build"))
+            && (ts.isArrowFunction(property.initializer) || ts.isFunctionExpression(property.initializer))
+          ) walkExecutable(property.initializer.body, visitor, callbackOwner);
+        }
+      }
+    }
+  }
+  ts.forEachChild(node, (child) => walkExecutable(child, visitor, callbackOwner));
+}
+
 function manifestV2Exported(source: ts.SourceFile, version: number): boolean {
+  let directZodBindings = 0;
+  let competingZBinding = false;
+  for (const statement of source.statements) {
+    if (ts.isImportDeclaration(statement) && statement.importClause) {
+      const module = ts.isStringLiteral(statement.moduleSpecifier) ? statement.moduleSpecifier.text : null;
+      if (statement.importClause.name?.text === "z") competingZBinding = true;
+      const bindings = statement.importClause.namedBindings;
+      if (bindings && ts.isNamespaceImport(bindings) && bindings.name.text === "z") competingZBinding = true;
+      if (bindings && ts.isNamedImports(bindings)) {
+        for (const element of bindings.elements) {
+          if (element.name.text !== "z") continue;
+          const directRuntimeZod = module === "zod"
+            && !statement.importClause.isTypeOnly
+            && !element.isTypeOnly
+            && (element.propertyName?.text ?? element.name.text) === "z";
+          if (directRuntimeZod) directZodBindings += 1;
+          else competingZBinding = true;
+        }
+      }
+      continue;
+    }
+    if (ts.isVariableStatement(statement)) {
+      if (statement.declarationList.declarations.some(({ name }) => ts.isIdentifier(name) && name.text === "z")) competingZBinding = true;
+      continue;
+    }
+    if (
+      (ts.isFunctionDeclaration(statement)
+        || ts.isClassDeclaration(statement)
+        || ts.isEnumDeclaration(statement)
+        || ts.isModuleDeclaration(statement))
+      && statement.name?.text === "z"
+    ) competingZBinding = true;
+    if (ts.isImportEqualsDeclaration(statement) && statement.name.text === "z") competingZBinding = true;
+  }
+  if (directZodBindings !== 1 || competingZBinding) return false;
   for (const statement of source.statements) {
     if (!ts.isVariableStatement(statement) || !exported(statement)) continue;
     const declaration = statement.declarationList.declarations.find(({ name }) => ts.isIdentifier(name) && name.text === "SlideManifestV2Schema");
@@ -178,14 +269,17 @@ function officialDonorIsExecutable(source: ts.SourceFile, donor: string): boolea
   });
   const callsFrom = (declaration: ts.FunctionDeclaration): Set<string> => {
     const calls = new Set<string>();
-    const visit = (node: ts.Node): void => {
-      if (ts.isCallExpression(node) && ts.isIdentifier(node.expression)) calls.add(node.expression.text);
-      ts.forEachChild(node, visit);
-    };
-    if (declaration.body) visit(declaration.body);
+    if (declaration.body) walkExecutable(declaration.body, {
+      call: (node) => {
+        if (ts.isIdentifier(node.expression)) calls.add(node.expression.text);
+      },
+    }, "publishOutputAtomically");
     return calls;
   };
-  const pending = [...functions.values()].filter(exported).map(({ name }) => name!.text);
+  const pending = ["buildSlide", "runPipeline"].filter((name) => {
+    const declaration = functions.get(name);
+    return declaration !== undefined && exported(declaration);
+  });
   const reachable = new Set<string>();
   while (pending.length > 0) {
     const name = pending.pop()!;
@@ -204,42 +298,61 @@ function objectNamesAreExported(source: ts.SourceFile, names: LoadedContract["de
   );
   if (!exportFunction?.body) return false;
   const found = new Set<string>();
-  let writesPptx = false;
+  let callOrdinal = 0;
+  let writeOrdinal: number | null = null;
+  let constructsPptx = false;
+  let constructsSlide = false;
   const objectVariables = new Map<string, ts.ObjectLiteralExpression>();
-  const collectVariables = (node: ts.Node): void => {
-    if (ts.isVariableDeclaration(node) && ts.isIdentifier(node.name) && node.initializer && ts.isObjectLiteralExpression(node.initializer)) {
-      objectVariables.set(node.name.text, node.initializer);
-    }
-    ts.forEachChild(node, collectVariables);
-  };
-  collectVariables(exportFunction.body);
-  const collectObjectName = (object: ts.ObjectLiteralExpression): void => {
+  const collectObjectName = (object: ts.ObjectLiteralExpression, ordinal: number): void => {
     const property = object.properties.find((candidate): candidate is ts.PropertyAssignment =>
       ts.isPropertyAssignment(candidate)
       && ((ts.isIdentifier(candidate.name) && candidate.name.text === "objectName") || (ts.isStringLiteral(candidate.name) && candidate.name.text === "objectName"))
     );
     if (!property) return;
-    if (ts.isStringLiteral(property.initializer)) found.add(property.initializer.text);
-    else if (ts.isTemplateExpression(property.initializer)) found.add(property.initializer.getText(source));
+    const value = ts.isStringLiteral(property.initializer)
+      ? property.initializer.text
+      : ts.isTemplateExpression(property.initializer)
+        ? property.initializer.getText(source)
+        : null;
+    if (value !== null && (writeOrdinal === null || ordinal < writeOrdinal)) found.add(value);
   };
-  const visit = (node: ts.Node): void => {
-    if (ts.isCallExpression(node) && ts.isPropertyAccessExpression(node.expression)) {
-      const method = node.expression.name.text;
-      if (method === "writeFile") writesPptx = true;
-      if (["addImage", "addText", "addShape"].includes(method)) {
-        for (const argument of node.arguments) {
-          if (ts.isObjectLiteralExpression(argument)) collectObjectName(argument);
-          else if (ts.isIdentifier(argument)) {
-            const object = objectVariables.get(argument.text);
-            if (object) collectObjectName(object);
+  walkExecutable(exportFunction.body, {
+    variable: (node) => {
+      if (!ts.isIdentifier(node.name) || !node.initializer) return;
+      if (ts.isObjectLiteralExpression(node.initializer)) objectVariables.set(node.name.text, node.initializer);
+      if (node.name.text === "pptx" && ts.isNewExpression(node.initializer) && ts.isIdentifier(node.initializer.expression) && node.initializer.expression.text === "PptxGenConstructor") {
+        constructsPptx = true;
+      }
+      if (
+        node.name.text === "slide"
+        && ts.isCallExpression(node.initializer)
+        && ts.isPropertyAccessExpression(node.initializer.expression)
+        && ts.isIdentifier(node.initializer.expression.expression)
+        && node.initializer.expression.expression.text === "pptx"
+        && node.initializer.expression.name.text === "addSlide"
+      ) constructsSlide = true;
+    },
+    call: (node) => {
+      callOrdinal += 1;
+      if (ts.isPropertyAccessExpression(node.expression) && ts.isIdentifier(node.expression.expression)) {
+        const receiver = node.expression.expression.text;
+        const method = node.expression.name.text;
+        if (receiver === "pptx" && method === "writeFile" && writeOrdinal === null) writeOrdinal = callOrdinal;
+        if (receiver === "slide" && ["addImage", "addText", "addShape"].includes(method)) {
+          for (const argument of node.arguments) {
+            if (ts.isObjectLiteralExpression(argument)) collectObjectName(argument, callOrdinal);
+            else if (ts.isIdentifier(argument)) {
+              const object = objectVariables.get(argument.text);
+              if (object) collectObjectName(object, callOrdinal);
+            }
           }
         }
       }
-    }
-    ts.forEachChild(node, visit);
-  };
-  visit(exportFunction.body);
-  return writesPptx
+    },
+  });
+  return constructsPptx
+    && constructsSlide
+    && writeOrdinal !== null
     && found.has(names.background)
     && found.has(`\`text-\${element.id}\``)
     && found.has(`\`shape-\${element.id}-\${element.label}\``)

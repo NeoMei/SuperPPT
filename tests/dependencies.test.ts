@@ -128,7 +128,9 @@ async function fixture(t: TestContext, version = "0.2.0"): Promise<Fixture> {
   await writeFile(join(editable, "src", "contracts.ts"), 'import { z } from "zod";\nexport const SlideManifestV2Schema = z.object({ manifestVersion: z.literal(2) }).strict();\n');
   await writeFile(join(editable, "src", "pipeline.ts"), 'function outputName(imagePath?: string): string { if (imagePath === undefined) return "slide-editable.pptx"; return `${imagePath}-editable.pptx`; }\nexport function buildSlide(imagePath?: string): string { return outputName(imagePath); }\n');
   await writeFile(join(editable, "src", "export", "pptx.ts"), [
-    "export async function exportPptx(element: any, pptx: any, slide: any): Promise<void> {",
+    "export async function exportPptx(element: any): Promise<void> {",
+    "  const pptx = new PptxGenConstructor();",
+    "  const slide = pptx.addSlide();",
     '  slide.addImage({ objectName: "asset-background" });',
     '  slide.addText("", { objectName: `text-${element.id}` });',
     '  slide.addShape("", { objectName: `shape-${element.id}-${element.label}` });',
@@ -259,6 +261,30 @@ test("rejects comment-only and dead editable capability literals", async (t) => 
     ["dead donor literal", "src/pipeline.ts", "const unused = \"slide-editable.pptx\";\n", /official donor|semantic.*evidence/i],
     ["comment-only object names", "src/export/pptx.ts", "// objectName: \"asset-background\"; `text-${element.id}`; `shape-${element.id}-${element.label}`; `asset-${element.id}`\n", /object.name|semantic.*evidence/i],
     ["dead object-name literals", "src/export/pptx.ts", "const unused = [\"asset-background\", `text-${element.id}`, `shape-${element.id}-${element.label}`, `asset-${element.id}`];\n", /object.name|semantic.*evidence/i],
+  ] as const) {
+    await t.test(name, async (subtest) => {
+      const current = await fixture(subtest);
+      await writeFile(join(current.editable, ...path.split("/")), replacement);
+      await assert.rejects(resolveSkillDependencies(request(current)), pattern);
+    });
+  }
+});
+
+test("rejects non-Zod and unreachable editable AST evidence", async (t) => {
+  for (const [name, path, replacement, pattern] of [
+    ["non-Zod schema lookalike", "src/contracts.ts", "const z = fake;\nexport const SlideManifestV2Schema = z.object({ manifestVersion: z.literal(2) }).strict();\n", /manifest.*v2|semantic.*evidence/i],
+    ["aliased Zod binding", "src/contracts.ts", "import { z as schema } from \"zod\";\nexport const SlideManifestV2Schema = schema.object({ manifestVersion: schema.literal(2) }).strict();\n", /manifest.*v2|semantic.*evidence/i],
+    ["namespace Zod binding", "src/contracts.ts", "import * as z from \"zod\";\nexport const SlideManifestV2Schema = z.object({ manifestVersion: z.literal(2) }).strict();\n", /manifest.*v2|semantic.*evidence/i],
+    ["type-only Zod binding", "src/contracts.ts", "import type { z } from \"zod\";\nexport const SlideManifestV2Schema = z.object({ manifestVersion: z.literal(2) }).strict();\n", /manifest.*v2|semantic.*evidence/i],
+    ["shadowed Zod binding", "src/contracts.ts", "import { z } from \"zod\";\nconst z = fake;\nexport const SlideManifestV2Schema = z.object({ manifestVersion: z.literal(2) }).strict();\n", /manifest.*v2|semantic.*evidence/i],
+    ["competing Zod binding", "src/contracts.ts", "import { z } from \"zod\";\nimport { fake as z } from \"other\";\nexport const SlideManifestV2Schema = z.object({ manifestVersion: z.literal(2) }).strict();\n", /manifest.*v2|semantic.*evidence/i],
+    ["false-branch donor", "src/pipeline.ts", "function outputName(imagePath?: string): string { if (imagePath === undefined) return \"slide-editable.pptx\"; return \"other.pptx\"; }\nexport function buildSlide(): string { if (false) return outputName(); return \"other.pptx\"; }\n", /official donor|semantic.*evidence/i],
+    ["uninvoked nested donor", "src/pipeline.ts", "function outputName(imagePath?: string): string { if (imagePath === undefined) return \"slide-editable.pptx\"; return \"other.pptx\"; }\nexport function buildSlide(): string { function unused() { return outputName(); } return \"other.pptx\"; }\n", /official donor|semantic.*evidence/i],
+    ["unrelated exported donor", "src/pipeline.ts", "function outputName(imagePath?: string): string { if (imagePath === undefined) return \"slide-editable.pptx\"; return \"other.pptx\"; }\nexport function unrelated(): string { return outputName(); }\nexport function buildSlide(): string { return \"other.pptx\"; }\n", /official donor|semantic.*evidence/i],
+    ["false-branch object calls", "src/export/pptx.ts", "export async function exportPptx(element: any, pptx: any, slide: any): Promise<void> { if (false) { slide.addImage({ objectName: \"asset-background\" }); slide.addText(\"\", { objectName: `text-${element.id}` }); slide.addShape(\"\", { objectName: `shape-${element.id}-${element.label}` }); slide.addImage({ objectName: `asset-${element.id}` }); await pptx.writeFile({ fileName: \"out.pptx\" }); } }\n", /object.name|semantic.*evidence/i],
+    ["uninvoked nested object calls", "src/export/pptx.ts", "export async function exportPptx(element: any, pptx: any, slide: any): Promise<void> { async function unused() { slide.addImage({ objectName: \"asset-background\" }); slide.addText(\"\", { objectName: `text-${element.id}` }); slide.addShape(\"\", { objectName: `shape-${element.id}-${element.label}` }); slide.addImage({ objectName: `asset-${element.id}` }); await pptx.writeFile({ fileName: \"out.pptx\" }); } }\n", /object.name|semantic.*evidence/i],
+    ["object names after write", "src/export/pptx.ts", "export async function exportPptx(element: any): Promise<void> { const pptx = new PptxGenConstructor(); const slide = pptx.addSlide(); await pptx.writeFile({ fileName: \"out.pptx\" }); slide.addImage({ objectName: \"asset-background\" }); slide.addText(\"\", { objectName: `text-${element.id}` }); slide.addShape(\"\", { objectName: `shape-${element.id}-${element.label}` }); slide.addImage({ objectName: `asset-${element.id}` }); }\n", /object.name|semantic.*evidence/i],
+    ["wrong object-call receiver", "src/export/pptx.ts", "export async function exportPptx(element: any): Promise<void> { const pptx = new PptxGenConstructor(); const slide = pptx.addSlide(); other.addImage({ objectName: \"asset-background\" }); other.addText(\"\", { objectName: `text-${element.id}` }); other.addShape(\"\", { objectName: `shape-${element.id}-${element.label}` }); other.addImage({ objectName: `asset-${element.id}` }); await pptx.writeFile({ fileName: \"out.pptx\" }); }\n", /object.name|semantic.*evidence/i],
   ] as const) {
     await t.test(name, async (subtest) => {
       const current = await fixture(subtest);
