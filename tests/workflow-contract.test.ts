@@ -169,8 +169,18 @@ function validateStageContract(contract: StageContract): void {
 }
 
 test("machine contract encodes all user decisions and rejects unsafe workflow variants", async () => {
-  const contract = JSON.parse(await text("references/阶段契约.json")) as StageContract;
+  const [contractText, gateChecklist] = await Promise.all([
+    text("references/阶段契约.json"),
+    text("references/门禁清单.md"),
+  ]);
+  const contract = JSON.parse(contractText) as StageContract;
   validateStageContract(contract);
+  const declaredCount = /它的(\d+|[一二三四五六七八九十])个 stage entry/.exec(gateChecklist)?.[1];
+  const chineseCounts: Record<string, number> = {
+    一: 1, 二: 2, 三: 3, 四: 4, 五: 5, 六: 6, 七: 7, 八: 8, 九: 9, 十: 10,
+  };
+  assert.ok(declaredCount, "门禁清单 must declare the machine contract stage-entry count");
+  assert.equal(chineseCounts[declaredCount] ?? Number(declaredCount), contract.stages.length);
 
   const invalid: Array<[string, (fixture: StageContract) => void]> = [
     ["silent completion", (fixture) => { fixture.workflowPolicy.conversation.silentEndToEndAllowed = true; }],
