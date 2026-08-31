@@ -46,29 +46,59 @@ const IMAGE_RELATIONSHIP = `${DOCUMENT_RELATIONSHIPS}/image`;
 const LAYOUT_RELATIONSHIP = `${DOCUMENT_RELATIONSHIPS}/slideLayout`;
 const SLIDE_RELATIONSHIP = `${DOCUMENT_RELATIONSHIPS}/slide`;
 const OFFICE_DOCUMENT_RELATIONSHIP = `${DOCUMENT_RELATIONSHIPS}/officeDocument`;
+const CORE_PROPERTIES_RELATIONSHIP = "http://schemas.openxmlformats.org/package/2006/relationships/metadata/core-properties";
+const EXTENDED_PROPERTIES_RELATIONSHIP = `${DOCUMENT_RELATIONSHIPS}/extended-properties`;
+const CUSTOM_PROPERTIES_RELATIONSHIP = `${DOCUMENT_RELATIONSHIPS}/custom-properties`;
+const SLIDE_MASTER_RELATIONSHIP = `${DOCUMENT_RELATIONSHIPS}/slideMaster`;
+const THEME_RELATIONSHIP = `${DOCUMENT_RELATIONSHIPS}/theme`;
+const PRESENTATION_PROPERTIES_RELATIONSHIP = `${DOCUMENT_RELATIONSHIPS}/presProps`;
+const VIEW_PROPERTIES_RELATIONSHIP = `${DOCUMENT_RELATIONSHIPS}/viewProps`;
+const TABLE_STYLES_RELATIONSHIP = `${DOCUMENT_RELATIONSHIPS}/tableStyles`;
 const PRESENTATION_CONTENT_TYPE = "application/vnd.openxmlformats-officedocument.presentationml.presentation.main+xml";
 const SLIDE_CONTENT_TYPE = "application/vnd.openxmlformats-officedocument.presentationml.slide+xml";
 const SLIDE_LAYOUT_CONTENT_TYPE = "application/vnd.openxmlformats-officedocument.presentationml.slideLayout+xml";
+const CORE_PROPERTIES_CONTENT_TYPE = "application/vnd.openxmlformats-package.core-properties+xml";
+const EXTENDED_PROPERTIES_CONTENT_TYPE = "application/vnd.openxmlformats-officedocument.extended-properties+xml";
+const CUSTOM_PROPERTIES_CONTENT_TYPE = "application/vnd.openxmlformats-officedocument.custom-properties+xml";
+const SLIDE_MASTER_CONTENT_TYPE = "application/vnd.openxmlformats-officedocument.presentationml.slideMaster+xml";
+const THEME_CONTENT_TYPE = "application/vnd.openxmlformats-officedocument.theme+xml";
+const PRESENTATION_PROPERTIES_CONTENT_TYPE = "application/vnd.openxmlformats-officedocument.presentationml.presProps+xml";
+const VIEW_PROPERTIES_CONTENT_TYPE = "application/vnd.openxmlformats-officedocument.presentationml.viewProps+xml";
+const TABLE_STYLES_CONTENT_TYPE = "application/vnd.openxmlformats-officedocument.presentationml.tableStyles+xml";
 const RELATIONSHIPS_CONTENT_TYPE = "application/vnd.openxmlformats-package.relationships+xml";
 const SAFE_ROOT_RELATIONSHIP_TYPES = new Set([
-  "http://schemas.openxmlformats.org/package/2006/relationships/metadata/core-properties",
+  CORE_PROPERTIES_RELATIONSHIP,
   OFFICE_DOCUMENT_RELATIONSHIP,
-  `${DOCUMENT_RELATIONSHIPS}/extended-properties`,
-  `${DOCUMENT_RELATIONSHIPS}/custom-properties`,
+  EXTENDED_PROPERTIES_RELATIONSHIP,
+  CUSTOM_PROPERTIES_RELATIONSHIP,
 ]);
 const SAFE_DONOR_RELATIONSHIP_TYPES = new Set([
-  "http://schemas.openxmlformats.org/package/2006/relationships/metadata/core-properties",
-  `${DOCUMENT_RELATIONSHIPS}/officeDocument`,
-  `${DOCUMENT_RELATIONSHIPS}/extended-properties`,
-  `${DOCUMENT_RELATIONSHIPS}/custom-properties`,
+  CORE_PROPERTIES_RELATIONSHIP,
+  OFFICE_DOCUMENT_RELATIONSHIP,
+  EXTENDED_PROPERTIES_RELATIONSHIP,
+  CUSTOM_PROPERTIES_RELATIONSHIP,
   SLIDE_RELATIONSHIP,
-  `${DOCUMENT_RELATIONSHIPS}/slideMaster`,
+  SLIDE_MASTER_RELATIONSHIP,
   LAYOUT_RELATIONSHIP,
-  `${DOCUMENT_RELATIONSHIPS}/theme`,
-  `${DOCUMENT_RELATIONSHIPS}/presProps`,
-  `${DOCUMENT_RELATIONSHIPS}/viewProps`,
-  `${DOCUMENT_RELATIONSHIPS}/tableStyles`,
+  THEME_RELATIONSHIP,
+  PRESENTATION_PROPERTIES_RELATIONSHIP,
+  VIEW_PROPERTIES_RELATIONSHIP,
+  TABLE_STYLES_RELATIONSHIP,
   IMAGE_RELATIONSHIP,
+]);
+const RELATIONSHIP_TARGET_CONTENT_TYPES = new Map<string, string>([
+  [CORE_PROPERTIES_RELATIONSHIP, CORE_PROPERTIES_CONTENT_TYPE],
+  [OFFICE_DOCUMENT_RELATIONSHIP, PRESENTATION_CONTENT_TYPE],
+  [EXTENDED_PROPERTIES_RELATIONSHIP, EXTENDED_PROPERTIES_CONTENT_TYPE],
+  [CUSTOM_PROPERTIES_RELATIONSHIP, CUSTOM_PROPERTIES_CONTENT_TYPE],
+  [SLIDE_RELATIONSHIP, SLIDE_CONTENT_TYPE],
+  [SLIDE_MASTER_RELATIONSHIP, SLIDE_MASTER_CONTENT_TYPE],
+  [LAYOUT_RELATIONSHIP, SLIDE_LAYOUT_CONTENT_TYPE],
+  [THEME_RELATIONSHIP, THEME_CONTENT_TYPE],
+  [PRESENTATION_PROPERTIES_RELATIONSHIP, PRESENTATION_PROPERTIES_CONTENT_TYPE],
+  [VIEW_PROPERTIES_RELATIONSHIP, VIEW_PROPERTIES_CONTENT_TYPE],
+  [TABLE_STYLES_RELATIONSHIP, TABLE_STYLES_CONTENT_TYPE],
+  [IMAGE_RELATIONSHIP, "image/png"],
 ]);
 export const CONVERTER_OUTPUT_DIRECTORY = "converter-output";
 
@@ -329,9 +359,19 @@ function relationshipSourcePart(relationshipsPart: string): string {
   return `${match[1]}/${match[2]}`;
 }
 
-async function validateDonorRelationships(zip: JSZip, names: string[]): Promise<Map<string, OoxmlElementRange[]>> {
+type ValidatedDonorRelationship = {
+  id: string;
+  type: string;
+  relationshipsPart: string;
+  sourcePart: string;
+  targetPart: string;
+};
+
+type DonorRelationshipGraph = Map<string, ValidatedDonorRelationship[]>;
+
+async function validateDonorRelationships(zip: JSZip, names: string[]): Promise<DonorRelationshipGraph> {
   const relationshipParts = names.filter((name) => name === "_rels/.rels" || /\/_rels\/[^/]+\.rels$/.test(name));
-  const validated = new Map<string, OoxmlElementRange[]>();
+  const validated: DonorRelationshipGraph = new Map();
   for (const relationshipsPart of relationshipParts) {
     const xml = await zip.file(relationshipsPart)!.async("string");
     const parsed = scanOoxmlRanges(xml).elements;
@@ -364,6 +404,7 @@ async function validateDonorRelationships(zip: JSZip, names: string[]): Promise<
     }
     const ids = new Set<string>();
     const sourcePart = relationshipSourcePart(relationshipsPart);
+    const validatedRelationships: ValidatedDonorRelationship[] = [];
     for (const relationship of relationships) {
       const id = xmlAttribute(relationship, "", "Id");
       const type = xmlAttribute(relationship, "", "Type");
@@ -378,8 +419,9 @@ async function validateDonorRelationships(zip: JSZip, names: string[]): Promise<
       }
       const targetPart = resolveDonorRelationshipTarget(sourcePart, target);
       if (!zip.file(targetPart)) throw new Error(`official editable donor relationship target is missing: ${targetPart}`);
+      validatedRelationships.push({ id, type, relationshipsPart, sourcePart, targetPart });
     }
-    validated.set(relationshipsPart, relationships);
+    validated.set(relationshipsPart, validatedRelationships);
   }
   return validated;
 }
@@ -489,27 +531,22 @@ function declaredDonorContentType(contentTypes: DonorContentTypes, part: string)
 
 function validateDonorContentTypeDeclarations(
   names: string[],
-  slideParts: string[],
   contentTypes: DonorContentTypes,
+  relationships: DonorRelationshipGraph,
 ): void {
-  const relationshipParts = names.filter((name) => name === "_rels/.rels" || /\/_rels\/[^/]+\.rels$/.test(name));
+  const relationshipParts = [...relationships.keys()];
   if (
     contentTypes.defaults.get("rels") !== RELATIONSHIPS_CONTENT_TYPE
     || relationshipParts.some((part) => declaredDonorContentType(contentTypes, part) !== RELATIONSHIPS_CONTENT_TYPE)
   ) throw new Error("official editable donor relationship content type declaration is missing or invalid");
-  if (declaredDonorContentType(contentTypes, "ppt/presentation.xml") !== PRESENTATION_CONTENT_TYPE) {
-    throw new Error("official editable donor presentation content type declaration is missing or invalid");
-  }
-  if (slideParts.some((part) => declaredDonorContentType(contentTypes, part) !== SLIDE_CONTENT_TYPE)) {
-    throw new Error("official editable donor slide content type declaration is missing or invalid");
-  }
-  const slideLayouts = names.filter((name) => /^ppt\/slideLayouts\/slideLayout[0-9]+\.xml$/.test(name));
-  if (slideLayouts.some((part) => declaredDonorContentType(contentTypes, part) !== SLIDE_LAYOUT_CONTENT_TYPE)) {
-    throw new Error("official editable donor slide layout content type declaration is missing or invalid");
-  }
-  const pngParts = names.filter((name) => /^ppt\/media\/.+\.png$/i.test(name));
-  if (pngParts.length === 0 || pngParts.some((part) => declaredDonorContentType(contentTypes, part) !== "image/png")) {
-    throw new Error("official editable donor PNG content type declaration is missing or invalid");
+  for (const relationship of [...relationships.values()].flat()) {
+    const expectedContentType = RELATIONSHIP_TARGET_CONTENT_TYPES.get(relationship.type);
+    if (!expectedContentType) {
+      throw new Error(`official editable donor relationship type has no content type authority: ${relationship.type}`);
+    }
+    if (declaredDonorContentType(contentTypes, relationship.targetPart) !== expectedContentType) {
+      throw new Error(`official editable donor relationship target content type is missing or invalid in content types: ${relationship.targetPart} (${relationship.type})`);
+    }
   }
   for (const name of names) {
     if (name === "[Content_Types].xml") continue;
@@ -519,12 +556,11 @@ function validateDonorContentTypeDeclarations(
   }
 }
 
-function relationshipTarget(slidePart: string, target: string): string {
-  const resolved = resolveDonorRelationshipTarget(slidePart, target);
-  if (!/^ppt\/media\/[A-Za-z0-9._-]+\.png$/.test(resolved)) {
+function relationshipTarget(targetPart: string): string {
+  if (!/^ppt\/media\/[A-Za-z0-9._-]+\.png$/.test(targetPart)) {
     throw new Error("donor image relationship target is unsafe or not PNG");
   }
-  return resolved;
+  return targetPart;
 }
 
 export type OfficialEditableDonorInspection = {
@@ -560,22 +596,19 @@ export async function inspectOfficialEditableDonor(
   const validatedRelationshipParts = await validateDonorRelationships(zip, names);
   const rootRelationships = validatedRelationshipParts.get("_rels/.rels") ?? [];
   const officeDocumentRelationships = rootRelationships.filter((relationship) =>
-    xmlAttribute(relationship, "", "Type") === OFFICE_DOCUMENT_RELATIONSHIP);
+    relationship.type === OFFICE_DOCUMENT_RELATIONSHIP);
   if (officeDocumentRelationships.length !== 1) {
     throw new Error("official editable donor package root must contain exactly one officeDocument relationship");
   }
-  if (rootRelationships.some((relationship) => !SAFE_ROOT_RELATIONSHIP_TYPES.has(xmlAttribute(relationship, "", "Type") ?? ""))) {
+  if (rootRelationships.some((relationship) => !SAFE_ROOT_RELATIONSHIP_TYPES.has(relationship.type))) {
     throw new Error("official editable donor package root contains an unsupported extra relationship");
   }
   const rootRelationship = officeDocumentRelationships[0]!;
-  const rootTarget = xmlAttribute(rootRelationship, "", "Target");
-  if (
-    !rootTarget
-    || resolveDonorRelationshipTarget("", rootTarget) !== "ppt/presentation.xml"
-  ) throw new Error("official editable donor package root relationship must bind officeDocument to ppt/presentation.xml");
-  const slideParts = names.filter((name) => /^ppt\/slides\/slide[0-9]+\.xml$/.test(name));
+  if (rootRelationship.targetPart !== "ppt/presentation.xml") {
+    throw new Error("official editable donor package root relationship must bind officeDocument to ppt/presentation.xml");
+  }
+  const slideParts = names.filter((name) => /^ppt\/slides\/[^/]+\.xml$/.test(name));
   if (slideParts.length !== 1) throw new Error("official editable donor must contain exactly one slide");
-  validateDonorContentTypeDeclarations(names, slideParts, contentTypes);
   const presentationXml = await zip.file("ppt/presentation.xml")!.async("string");
   const presentationElements = scanOoxmlRanges(presentationXml).elements;
   const slideIds = presentationElements.filter((element) =>
@@ -591,16 +624,17 @@ export async function inspectOfficialEditableDonor(
   }
   const presentationRels = validatedRelationshipParts.get("ppt/_rels/presentation.xml.rels") ?? [];
   const slideRelationshipId = xmlAttribute(slideIds[0]!, DOCUMENT_RELATIONSHIPS, "id");
-  const matchingSlideRelationships = presentationRels.filter((element) => xmlAttribute(element, "", "Id") === slideRelationshipId);
+  const presentationSlideRelationships = presentationRels.filter((relationship) => relationship.type === SLIDE_RELATIONSHIP);
+  const matchingSlideRelationships = presentationRels.filter((relationship) => relationship.id === slideRelationshipId);
   const slideRelationship = matchingSlideRelationships[0];
-  const slideTarget = slideRelationship && xmlAttribute(slideRelationship, "", "Target");
-  if (matchingSlideRelationships.length !== 1 || !slideTarget || xmlAttribute(slideRelationship!, "", "Type") !== SLIDE_RELATIONSHIP) {
+  if (presentationSlideRelationships.length !== 1 || matchingSlideRelationships.length !== 1 || slideRelationship?.type !== SLIDE_RELATIONSHIP) {
     throw new Error("official editable donor slide relationship is invalid");
   }
-  const slidePart = resolveDonorRelationshipTarget("ppt/presentation.xml", slideTarget);
-  if (slidePart !== slideParts[0] || !/^ppt\/slides\/slide[0-9]+\.xml$/.test(slidePart)) {
+  const slidePart = slideRelationship.targetPart;
+  if (slidePart !== slideParts[0]) {
     throw new Error("official editable donor slide relationship is ambiguous");
   }
+  validateDonorContentTypeDeclarations(names, contentTypes, validatedRelationshipParts);
   const slideXml = await zip.file(slidePart)!.async("string");
   const slideElements = scanOoxmlRanges(slideXml).elements;
   const shapeTrees = slideElements.filter((element) =>
@@ -661,17 +695,14 @@ export async function inspectOfficialEditableDonor(
   const relationshipElements = validatedRelationshipParts.get(relationshipsPart) ?? [];
   const imageRelationships: OfficialEditableDonorInspection["imageRelationships"] = [];
   for (const relationship of relationshipElements) {
-    const id = xmlAttribute(relationship, "", "Id");
-    const type = xmlAttribute(relationship, "", "Type");
-    const target = xmlAttribute(relationship, "", "Target");
-    if (!id || !type || !target) throw new Error("official editable donor relationship is incomplete or duplicate");
+    const { id, type } = relationship;
     if (type !== IMAGE_RELATIONSHIP && type !== LAYOUT_RELATIONSHIP) {
       throw new Error(`official editable donor contains an unsupported relationship: ${type}`);
     }
     const objectName = [...objectEmbeds].find(([, embed]) => embed === id)?.[0];
     if (objectName) {
       if (type !== IMAGE_RELATIONSHIP) throw new Error("official editable donor shape-tree relationship must be an image");
-      const targetPart = relationshipTarget(slidePart, target);
+      const targetPart = relationshipTarget(relationship.targetPart);
       if (!zip.file(targetPart)) throw new Error("official editable donor image relationship target is missing");
       const mediaBytes = await zip.file(targetPart)!.async("nodebuffer");
       let metadata;

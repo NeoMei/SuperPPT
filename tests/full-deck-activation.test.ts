@@ -34,9 +34,25 @@ const CONTENT_TYPES = "http://schemas.openxmlformats.org/package/2006/content-ty
 const IMAGE_REL = `${R}/image`;
 const LAYOUT_REL = `${R}/slideLayout`;
 const OFFICE_DOCUMENT_REL = `${R}/officeDocument`;
+const CORE_PROPERTIES_REL = "http://schemas.openxmlformats.org/package/2006/relationships/metadata/core-properties";
+const EXTENDED_PROPERTIES_REL = `${R}/extended-properties`;
+const CUSTOM_PROPERTIES_REL = `${R}/custom-properties`;
+const SLIDE_MASTER_REL = `${R}/slideMaster`;
+const THEME_REL = `${R}/theme`;
+const PRES_PROPS_REL = `${R}/presProps`;
+const VIEW_PROPS_REL = `${R}/viewProps`;
+const TABLE_STYLES_REL = `${R}/tableStyles`;
 const PRESENTATION_CONTENT_TYPE = "application/vnd.openxmlformats-officedocument.presentationml.presentation.main+xml";
 const SLIDE_CONTENT_TYPE = "application/vnd.openxmlformats-officedocument.presentationml.slide+xml";
 const SLIDE_LAYOUT_CONTENT_TYPE = "application/vnd.openxmlformats-officedocument.presentationml.slideLayout+xml";
+const CORE_PROPERTIES_CONTENT_TYPE = "application/vnd.openxmlformats-package.core-properties+xml";
+const EXTENDED_PROPERTIES_CONTENT_TYPE = "application/vnd.openxmlformats-officedocument.extended-properties+xml";
+const CUSTOM_PROPERTIES_CONTENT_TYPE = "application/vnd.openxmlformats-officedocument.custom-properties+xml";
+const SLIDE_MASTER_CONTENT_TYPE = "application/vnd.openxmlformats-officedocument.presentationml.slideMaster+xml";
+const THEME_CONTENT_TYPE = "application/vnd.openxmlformats-officedocument.theme+xml";
+const PRES_PROPS_CONTENT_TYPE = "application/vnd.openxmlformats-officedocument.presentationml.presProps+xml";
+const VIEW_PROPS_CONTENT_TYPE = "application/vnd.openxmlformats-officedocument.presentationml.viewProps+xml";
+const TABLE_STYLES_CONTENT_TYPE = "application/vnd.openxmlformats-officedocument.presentationml.tableStyles+xml";
 const RELATIONSHIPS_CONTENT_TYPE = "application/vnd.openxmlformats-package.relationships+xml";
 
 const digest = (value: Buffer | string): string => createHash("sha256").update(value).digest("hex");
@@ -93,27 +109,77 @@ function validDonorRootRelationships(): string {
   return `<pkg:Relationships xmlns:pkg="${REL}"><pkg:Relationship Id="rId1" Type="${OFFICE_DOCUMENT_REL}" Target="ppt/presentation.xml"/></pkg:Relationships>`;
 }
 
-function validDonorContentTypes(): string {
-  return `<Types xmlns="${CONTENT_TYPES}"><Default Extension="rels" ContentType="${RELATIONSHIPS_CONTENT_TYPE}"/><Default Extension="png" ContentType="image/png"/><Override PartName="/ppt/presentation.xml" ContentType="${PRESENTATION_CONTENT_TYPE}"/><Override PartName="/ppt/slides/slide1.xml" ContentType="${SLIDE_CONTENT_TYPE}"/><Override PartName="/ppt/slideLayouts/slideLayout1.xml" ContentType="${SLIDE_LAYOUT_CONTENT_TYPE}"/></Types>`;
+function validDonorContentTypes(options: { slideFileName?: string; layoutFileName?: string; extraDeclarations?: string } = {}): string {
+  const slideFileName = options.slideFileName ?? "slide1.xml";
+  const layoutFileName = options.layoutFileName ?? "slideLayout1.xml";
+  return `<Types xmlns="${CONTENT_TYPES}"><Default Extension="rels" ContentType="${RELATIONSHIPS_CONTENT_TYPE}"/><Default Extension="png" ContentType="image/png"/><Override PartName="/ppt/presentation.xml" ContentType="${PRESENTATION_CONTENT_TYPE}"/><Override PartName="/ppt/slides/${slideFileName}" ContentType="${SLIDE_CONTENT_TYPE}"/><Override PartName="/ppt/slideLayouts/${layoutFileName}" ContentType="${SLIDE_LAYOUT_CONTENT_TYPE}"/>${options.extraDeclarations ?? ""}</Types>`;
 }
 
-async function donorPptx(options: { relType?: string; external?: boolean; linked?: boolean; duplicateName?: boolean; duplicateId?: boolean; wrongName?: boolean; localRedeclaration?: boolean; defaultNamespace?: boolean; localDefaultExtension?: boolean; xmlSpace?: boolean; undeclaredPrefix?: boolean; wrongBackground?: boolean; wrongAsset?: boolean; invalidPng?: boolean; extraImageRelationship?: boolean; presentationRelType?: string; duplicatePresentationRelId?: boolean; extraPackageRelationship?: "external" | "unsupported"; malformedRelationships?: "wrapper" | "foreign-child"; rootRelationshipsXml?: string | null; contentTypesXml?: string | null; pageSize?: [number, number]; extraEntry?: { path: string; bytes?: Buffer | string }; extraSlide?: boolean } = {}): Promise<Buffer> {
+async function donorPptx(options: { relType?: string; external?: boolean; linked?: boolean; duplicateName?: boolean; duplicateId?: boolean; wrongName?: boolean; localRedeclaration?: boolean; defaultNamespace?: boolean; localDefaultExtension?: boolean; xmlSpace?: boolean; undeclaredPrefix?: boolean; wrongBackground?: boolean; wrongAsset?: boolean; invalidPng?: boolean; extraImageRelationship?: boolean; presentationRelType?: string; duplicatePresentationRelId?: boolean; extraPackageRelationship?: "external" | "unsupported"; malformedRelationships?: "wrapper" | "foreign-child"; rootRelationshipsXml?: string | null; contentTypesXml?: string | null; slideFileName?: string; layoutFileName?: string; pageSize?: [number, number]; extraEntry?: { path: string; bytes?: Buffer | string }; extraSlide?: boolean } = {}): Promise<Buffer> {
   const zip = new JSZip();
   const [cx, cy] = options.pageSize ?? [12192000, 6858000];
-  if (options.contentTypesXml !== null) zip.file("[Content_Types].xml", options.contentTypesXml ?? validDonorContentTypes());
+  const slideFileName = options.slideFileName ?? "slide1.xml";
+  const layoutFileName = options.layoutFileName ?? "slideLayout1.xml";
+  if (options.contentTypesXml !== null) zip.file("[Content_Types].xml", options.contentTypesXml ?? validDonorContentTypes({ slideFileName, layoutFileName }));
   if (options.rootRelationshipsXml !== null) zip.file("_rels/.rels", options.rootRelationshipsXml ?? validDonorRootRelationships());
   zip.file("ppt/presentation.xml", `<slide:presentation xmlns:slide="${P}" xmlns:rel="${R}"><slide:sldIdLst><slide:sldId id="256" rel:id="rId1"/></slide:sldIdLst><slide:sldSz cx="${cx}" cy="${cy}"/></slide:presentation>`);
-  const presentationRelationships = `<pkg:Relationships xmlns:pkg="${REL}"><pkg:Relationship Id="rId1" Type="${options.presentationRelType ?? `${R}/slide`}" Target="slides/slide1.xml"/>${options.duplicatePresentationRelId ? `<pkg:Relationship Id="rId1" Type="${R}/slideLayout" Target="slideLayouts/slideLayout1.xml"/>` : ""}${options.malformedRelationships === "foreign-child" ? `<foreign:Extra xmlns:foreign="urn:foreign"/>` : ""}</pkg:Relationships>`;
+  const presentationRelationships = `<pkg:Relationships xmlns:pkg="${REL}"><pkg:Relationship Id="rId1" Type="${options.presentationRelType ?? `${R}/slide`}" Target="slides/${slideFileName}"/>${options.duplicatePresentationRelId ? `<pkg:Relationship Id="rId1" Type="${R}/slideLayout" Target="slideLayouts/${layoutFileName}"/>` : ""}${options.malformedRelationships === "foreign-child" ? `<foreign:Extra xmlns:foreign="urn:foreign"/>` : ""}</pkg:Relationships>`;
   zip.file("ppt/_rels/presentation.xml.rels", options.malformedRelationships === "wrapper" ? `<Wrapper>${presentationRelationships}</Wrapper>` : presentationRelationships);
-  zip.file("ppt/slides/slide1.xml", donorSlideXml(options));
-  zip.file("ppt/slides/_rels/slide1.xml.rels", `<pkg:Relationships xmlns:pkg="${REL}"><pkg:Relationship Id="rId1" Type="${LAYOUT_REL}" Target="../slideLayouts/slideLayout1.xml"/><pkg:Relationship Id="rId2" Type="${IMAGE_REL}" Target="../media/image1.png"/><pkg:Relationship Id="rId3" Type="${options.relType ?? IMAGE_REL}" Target="${options.external ? "https://example.invalid/icon.png" : "../media/image2.png"}"${options.external ? ` TargetMode="External"` : ""}/>${options.extraImageRelationship ? `<pkg:Relationship Id="rId4" Type="${IMAGE_REL}" Target="../media/image3.png"/>` : ""}</pkg:Relationships>`);
-  zip.file("ppt/slideLayouts/slideLayout1.xml", `<slide:sldLayout xmlns:slide="${P}"/>`);
-  if (options.extraPackageRelationship) zip.file("ppt/slideLayouts/_rels/slideLayout1.xml.rels", `<pkg:Relationships xmlns:pkg="${REL}"><pkg:Relationship Id="rId1" Type="${options.extraPackageRelationship === "external" ? `${R}/image` : `${R}/hyperlink`}" Target="${options.extraPackageRelationship === "external" ? "https://example.invalid/layout.png" : "../../media/image1.png"}"${options.extraPackageRelationship === "external" ? ` TargetMode="External"` : ""}/></pkg:Relationships>`);
+  zip.file(`ppt/slides/${slideFileName}`, donorSlideXml(options));
+  zip.file(`ppt/slides/_rels/${slideFileName}.rels`, `<pkg:Relationships xmlns:pkg="${REL}"><pkg:Relationship Id="rId1" Type="${LAYOUT_REL}" Target="../slideLayouts/${layoutFileName}"/><pkg:Relationship Id="rId2" Type="${IMAGE_REL}" Target="../media/image1.png"/><pkg:Relationship Id="rId3" Type="${options.relType ?? IMAGE_REL}" Target="${options.external ? "https://example.invalid/icon.png" : "../media/image2.png"}"${options.external ? ` TargetMode="External"` : ""}/>${options.extraImageRelationship ? `<pkg:Relationship Id="rId4" Type="${IMAGE_REL}" Target="../media/image3.png"/>` : ""}</pkg:Relationships>`);
+  zip.file(`ppt/slideLayouts/${layoutFileName}`, `<slide:sldLayout xmlns:slide="${P}"/>`);
+  if (options.extraPackageRelationship) zip.file(`ppt/slideLayouts/_rels/${layoutFileName}.rels`, `<pkg:Relationships xmlns:pkg="${REL}"><pkg:Relationship Id="rId1" Type="${options.extraPackageRelationship === "external" ? `${R}/image` : `${R}/hyperlink`}" Target="${options.extraPackageRelationship === "external" ? "https://example.invalid/layout.png" : "../../media/image1.png"}"${options.extraPackageRelationship === "external" ? ` TargetMode="External"` : ""}/></pkg:Relationships>`);
   zip.file("ppt/media/image1.png", options.invalidPng ? Buffer.from("not-png") : await png(1280, 720, options.wrongBackground));
   zip.file("ppt/media/image2.png", await png(options.wrongAsset ? 49 : 48, 48, true));
   if (options.extraImageRelationship) zip.file("ppt/media/image3.png", await png(12, 12, true));
   if (options.extraEntry) zip.file(options.extraEntry.path, options.extraEntry.bytes ?? "unsafe-active-content");
   if (options.extraSlide) zip.file("ppt/slides/slide2.xml", donorSlideXml());
+  return zip.generateAsync({ type: "nodebuffer", compression: "DEFLATE" });
+}
+
+const SEMANTIC_RELATIONSHIP_PARTS = {
+  coreProperties: { targetPart: "docProps/core-custom.xml", relationshipType: CORE_PROPERTIES_REL, contentType: CORE_PROPERTIES_CONTENT_TYPE },
+  extendedProperties: { targetPart: "docProps/app-custom.xml", relationshipType: EXTENDED_PROPERTIES_REL, contentType: EXTENDED_PROPERTIES_CONTENT_TYPE },
+  customProperties: { targetPart: "docProps/custom-custom.xml", relationshipType: CUSTOM_PROPERTIES_REL, contentType: CUSTOM_PROPERTIES_CONTENT_TYPE },
+  slideMaster: { targetPart: "ppt/slideMasters/master-custom.xml", relationshipType: SLIDE_MASTER_REL, contentType: SLIDE_MASTER_CONTENT_TYPE },
+  theme: { targetPart: "ppt/theme/theme-custom.xml", relationshipType: THEME_REL, contentType: THEME_CONTENT_TYPE },
+  presProps: { targetPart: "ppt/presentationProperties/pres-custom.xml", relationshipType: PRES_PROPS_REL, contentType: PRES_PROPS_CONTENT_TYPE },
+  viewProps: { targetPart: "ppt/viewProperties/view-custom.xml", relationshipType: VIEW_PROPS_REL, contentType: VIEW_PROPS_CONTENT_TYPE },
+  tableStyles: { targetPart: "ppt/tableStyles/styles-custom.xml", relationshipType: TABLE_STYLES_REL, contentType: TABLE_STYLES_CONTENT_TYPE },
+} as const;
+
+type SemanticRelationshipPart = keyof typeof SEMANTIC_RELATIONSHIP_PARTS;
+
+async function donorWithSemanticRelationshipParts(
+  contentTypes: Partial<Record<SemanticRelationshipPart, string | null>> = {},
+): Promise<Buffer> {
+  const declarations = Object.entries(SEMANTIC_RELATIONSHIP_PARTS).flatMap(([key, part]) => {
+    const selected = contentTypes[key as SemanticRelationshipPart];
+    const contentType = selected === undefined ? part.contentType : selected;
+    return contentType === null ? [] : [`<Override PartName="/${part.targetPart}" ContentType="${contentType}"/>`];
+  }).join("");
+  const zip = await JSZip.loadAsync(await donorPptx({
+    contentTypesXml: validDonorContentTypes({ extraDeclarations: declarations }),
+  }));
+  const rootRelationships = await zip.file("_rels/.rels")!.async("string");
+  zip.file("_rels/.rels", rootRelationships.replace("</pkg:Relationships>", [
+    `<pkg:Relationship Id="rId2" Type="${CORE_PROPERTIES_REL}" Target="docProps/core-custom.xml"/>`,
+    `<pkg:Relationship Id="rId3" Type="${EXTENDED_PROPERTIES_REL}" Target="docProps/app-custom.xml"/>`,
+    `<pkg:Relationship Id="rId4" Type="${CUSTOM_PROPERTIES_REL}" Target="docProps/custom-custom.xml"/>`,
+    "</pkg:Relationships>",
+  ].join("")));
+  const presentationRelationships = await zip.file("ppt/_rels/presentation.xml.rels")!.async("string");
+  zip.file("ppt/_rels/presentation.xml.rels", presentationRelationships.replace("</pkg:Relationships>", [
+    `<pkg:Relationship Id="rId2" Type="${SLIDE_MASTER_REL}" Target="slideMasters/master-custom.xml"/>`,
+    `<pkg:Relationship Id="rId3" Type="${PRES_PROPS_REL}" Target="presentationProperties/pres-custom.xml"/>`,
+    `<pkg:Relationship Id="rId4" Type="${VIEW_PROPS_REL}" Target="viewProperties/view-custom.xml"/>`,
+    `<pkg:Relationship Id="rId5" Type="${TABLE_STYLES_REL}" Target="tableStyles/styles-custom.xml"/>`,
+    "</pkg:Relationships>",
+  ].join("")));
+  zip.file("ppt/slideMasters/_rels/master-custom.xml.rels", `<pkg:Relationships xmlns:pkg="${REL}"><pkg:Relationship Id="rId1" Type="${LAYOUT_REL}" Target="../slideLayouts/slideLayout1.xml"/><pkg:Relationship Id="rId2" Type="${THEME_REL}" Target="../theme/theme-custom.xml"/></pkg:Relationships>`);
+  for (const part of Object.values(SEMANTIC_RELATIONSHIP_PARTS)) {
+    zip.file(part.targetPart, `<part relationshipType="${part.relationshipType}"/>`);
+  }
   return zip.generateAsync({ type: "nodebuffer", compression: "DEFLATE" });
 }
 
@@ -435,6 +501,88 @@ test("requires one strict OPC content-types document with exact donor declaratio
     await assert.rejects(
       activateEditableSlideInDeck({ projectRoot: fixture.root, candidatePath: fixture.candidatePath, slideIndex: 1, slideId: fixture.slideIds[1]!, conversionRoot: fixture.conversionRoot }),
       pattern,
+    );
+  });
+});
+
+test("binds required MIME declarations to authenticated relationship targets", async (t) => {
+  await t.test("accepts custom slide and layout filenames with exact correct Overrides", async (subtest) => {
+    const fixture = await activationFixture(subtest);
+    await writeFile(join(fixture.outputRoot, "slide-editable.pptx"), await donorPptx({
+      slideFileName: "custom-page.xml",
+      layoutFileName: "custom-layout.xml",
+    }));
+    await refreshConversionEvidence(fixture);
+    const result = await activateEditableSlideInDeck({ projectRoot: fixture.root, candidatePath: fixture.candidatePath, slideIndex: 1, slideId: fixture.slideIds[1]!, conversionRoot: fixture.conversionRoot });
+    assert.equal(result.absolutePath, fixture.candidatePath);
+  });
+
+  await t.test("rejects the actual custom layout target under a broad application/xml Default", async (subtest) => {
+    const fixture = await activationFixture(subtest);
+    const exactLayout = `<Override PartName="/ppt/slideLayouts/custom-layout.xml" ContentType="${SLIDE_LAYOUT_CONTENT_TYPE}"/>`;
+    const contentTypesXml = validDonorContentTypes({ layoutFileName: "custom-layout.xml" })
+      .replace(exactLayout, `<Default Extension="xml" ContentType="application/xml"/>`);
+    await writeFile(join(fixture.outputRoot, "slide-editable.pptx"), await donorPptx({ layoutFileName: "custom-layout.xml", contentTypesXml }));
+    await refreshConversionEvidence(fixture);
+    await assert.rejects(
+      activateEditableSlideInDeck({ projectRoot: fixture.root, candidatePath: fixture.candidatePath, slideIndex: 1, slideId: fixture.slideIds[1]!, conversionRoot: fixture.conversionRoot }),
+      /relationship target content type.*custom-layout\.xml|custom-layout\.xml.*content type/i,
+    );
+  });
+
+  await t.test("rejects the actual custom slide target under a broad application/xml Default", async (subtest) => {
+    const fixture = await activationFixture(subtest);
+    const exactSlide = `<Override PartName="/ppt/slides/custom-page.xml" ContentType="${SLIDE_CONTENT_TYPE}"/>`;
+    const contentTypesXml = validDonorContentTypes({ slideFileName: "custom-page.xml" })
+      .replace(exactSlide, `<Default Extension="xml" ContentType="application/xml"/>`);
+    await writeFile(join(fixture.outputRoot, "slide-editable.pptx"), await donorPptx({ slideFileName: "custom-page.xml", contentTypesXml }));
+    await refreshConversionEvidence(fixture);
+    await assert.rejects(
+      activateEditableSlideInDeck({ projectRoot: fixture.root, candidatePath: fixture.candidatePath, slideIndex: 1, slideId: fixture.slideIds[1]!, conversionRoot: fixture.conversionRoot }),
+      /relationship target content type.*custom-page\.xml|custom-page\.xml.*content type/i,
+    );
+  });
+
+  await t.test("rejects a missing declaration for the actual custom layout target", async (subtest) => {
+    const fixture = await activationFixture(subtest);
+    const exactLayout = `<Override PartName="/ppt/slideLayouts/custom-layout.xml" ContentType="${SLIDE_LAYOUT_CONTENT_TYPE}"/>`;
+    const contentTypesXml = validDonorContentTypes({ layoutFileName: "custom-layout.xml" }).replace(exactLayout, "");
+    await writeFile(join(fixture.outputRoot, "slide-editable.pptx"), await donorPptx({ layoutFileName: "custom-layout.xml", contentTypesXml }));
+    await refreshConversionEvidence(fixture);
+    await assert.rejects(
+      activateEditableSlideInDeck({ projectRoot: fixture.root, candidatePath: fixture.candidatePath, slideIndex: 1, slideId: fixture.slideIds[1]!, conversionRoot: fixture.conversionRoot }),
+      /relationship target content type.*custom-layout\.xml|custom-layout\.xml.*content type/i,
+    );
+  });
+
+  await t.test("accepts metadata and PresentationML relationship targets with their own exact MIME types", async (subtest) => {
+    const fixture = await activationFixture(subtest);
+    await writeFile(join(fixture.outputRoot, "slide-editable.pptx"), await donorWithSemanticRelationshipParts());
+    await refreshConversionEvidence(fixture);
+    const result = await activateEditableSlideInDeck({ projectRoot: fixture.root, candidatePath: fixture.candidatePath, slideIndex: 1, slideId: fixture.slideIds[1]!, conversionRoot: fixture.conversionRoot });
+    assert.equal(result.absolutePath, fixture.candidatePath);
+  });
+
+  for (const [key, part] of Object.entries(SEMANTIC_RELATIONSHIP_PARTS) as Array<[SemanticRelationshipPart, (typeof SEMANTIC_RELATIONSHIP_PARTS)[SemanticRelationshipPart]]>) {
+    await t.test(`rejects wrong MIME for traversed ${key} target`, async (subtest) => {
+      const fixture = await activationFixture(subtest);
+      await writeFile(join(fixture.outputRoot, "slide-editable.pptx"), await donorWithSemanticRelationshipParts({ [key]: "application/xml" }));
+      await refreshConversionEvidence(fixture);
+      const escapedTarget = part.targetPart.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+      await assert.rejects(
+        activateEditableSlideInDeck({ projectRoot: fixture.root, candidatePath: fixture.candidatePath, slideIndex: 1, slideId: fixture.slideIds[1]!, conversionRoot: fixture.conversionRoot }),
+        new RegExp(`relationship target content type.*${escapedTarget}|${escapedTarget}.*content type`, "i"),
+      );
+    });
+  }
+
+  await t.test("rejects missing MIME for a traversed theme target", async (subtest) => {
+    const fixture = await activationFixture(subtest);
+    await writeFile(join(fixture.outputRoot, "slide-editable.pptx"), await donorWithSemanticRelationshipParts({ theme: null }));
+    await refreshConversionEvidence(fixture);
+    await assert.rejects(
+      activateEditableSlideInDeck({ projectRoot: fixture.root, candidatePath: fixture.candidatePath, slideIndex: 1, slideId: fixture.slideIds[1]!, conversionRoot: fixture.conversionRoot }),
+      /relationship target content type.*theme-custom\.xml|theme-custom\.xml.*content type/i,
     );
   });
 });
