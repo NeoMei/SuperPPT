@@ -345,6 +345,9 @@ export async function replaceRegeneratedSlideShapeTree(options: {
   slideId: string;
   normalizedImage: Buffer;
   normalizedImageSha256: string;
+  operations?: {
+    beforeAtomicReplace?: (stagingPath: string) => Promise<void> | void;
+  };
 }): Promise<RegeneratedDeckResult> {
   const valid = z.object({
     root: z.string().min(1),
@@ -354,6 +357,9 @@ export async function replaceRegeneratedSlideShapeTree(options: {
     slideId: UuidSchema,
     normalizedImage: z.instanceof(Buffer),
     normalizedImageSha256: z.string().regex(/^[a-f0-9]{64}$/),
+    operations: z.object({
+      beforeAtomicReplace: z.custom<(stagingPath: string) => Promise<void> | void>((value) => typeof value === "function").optional(),
+    }).strict().optional(),
   }).strict().parse(options);
   if (digest(valid.normalizedImage) !== valid.normalizedImageSha256) throw new Error("regenerated normalized image hash does not match authenticated bytes");
   const metadata = await sharp(valid.normalizedImage, { failOn: "error" }).metadata();
@@ -388,6 +394,7 @@ export async function replaceRegeneratedSlideShapeTree(options: {
     const bytes = await readRegularFileNoFollow(candidatePath);
     if (digest(bytes) !== before.sha256) throw new Error("slide regeneration candidate changed during stable read");
     const zip = await JSZip.loadAsync(bytes);
+    const beforeMembers = await memberHashes(zip);
     const slideFile = zip.file(target.slidePart);
     if (!slideFile) throw new Error("slide regeneration target part is missing");
     const slideXml = await slideFile.async("string");
@@ -416,6 +423,7 @@ export async function replaceRegeneratedSlideShapeTree(options: {
     try {
       await writeDurableExclusive(stagingPath, await zip.generateAsync({ type: "nodebuffer", compression: "DEFLATE" }));
       await syncDirectory(dirname(candidatePath));
+      await valid.operations?.beforeAtomicReplace?.(stagingPath);
       const after = await inspectLocalPptx(stagingPath);
       assertStableTopology(before, after);
       for (const [index, previous] of before.slides.entries()) {
@@ -426,6 +434,13 @@ export async function replaceRegeneratedSlideShapeTree(options: {
         }
       }
       const stagedZip = await JSZip.loadAsync(await readRegularFileNoFollow(stagingPath));
+      const afterMembers = await memberHashes(stagedZip);
+      const allowedChanges = new Set([target.slidePart, relationshipsPart, "[Content_Types].xml"]);
+      for (const [name, hash] of beforeMembers) {
+        if (!allowedChanges.has(name) && afterMembers.get(name) !== hash) {
+          throw new Error(`slide regeneration changed a pre-existing package member: ${name}`);
+        }
+      }
       if (digest(await stagedZip.file(mediaPart)!.async("nodebuffer")) !== valid.normalizedImageSha256) {
         throw new Error("slide regeneration staged media does not match authenticated normalized bytes");
       }

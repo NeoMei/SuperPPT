@@ -54,6 +54,7 @@ import {
 import {
   classifyDeckEdit,
   classifyDeckEditMode,
+  DeckEditRouteSchema,
 } from "../src/editable/route.js";
 import { initializeProject } from "../src/project/initialize.js";
 import { readProject, sha256 as projectSha256, updateProject } from "../src/project/store.js";
@@ -682,10 +683,15 @@ test("routes direct edits before activation before regeneration without overstat
     operations: [{ kind: "replace-text" as const, elementId: "title", text: "New title" }],
   };
 
-  assert.equal(classifyDeckEdit(textRequest, context).route, "direct-edit");
-  assert.equal(classifyDeckEdit(textRequest, { ...context, editableSlideIds: [] }).route, "activate-editable");
+  const direct = classifyDeckEdit(textRequest, context);
+  const activate = classifyDeckEdit(textRequest, { ...context, editableSlideIds: [] });
+  assert.equal(direct.route, "direct-edit");
+  assert.equal(direct.currentRevisionId, currentRevisionId);
+  assert.equal(activate.route, "activate-editable");
+  assert.equal(activate.currentRevisionId, currentRevisionId);
   assert.deepEqual(classifyDeckEdit({ change: "layout", instruction: "Recompose this page" }, context), {
     route: "regenerate-slide",
+    currentRevisionId,
     slideId,
     reason: "Recompose this page",
     styleLockSha256,
@@ -698,6 +704,11 @@ test("routes direct edits before activation before regeneration without overstat
     change: "text",
     operations: [{ kind: "replace-text", elementId: "background-label", text: "X" }],
   }, context).route, "regenerate-slide");
+  assert.throws(() => DeckEditRouteSchema.parse({
+    route: "direct-edit",
+    slideId,
+    operations: textRequest.operations,
+  }), /currentRevisionId/i);
 });
 
 test("manual and Agent wording selects presentation mode without changing the technical route", () => {

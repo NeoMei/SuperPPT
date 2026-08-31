@@ -7,6 +7,7 @@ import {
   type AiImageSkillDependency,
 } from "../dependencies/schemas.js";
 import { DeckEditRouteSchema, type DeckEditRoute } from "../editable/route.js";
+import { readCurrentDeckPointer, readLocalDeckRevision } from "../deck-revisions/store.js";
 import { assertGateCurrent } from "../planning/confirm.js";
 import { loadValidatedPlan } from "../planning/load.js";
 import { readProject } from "../project/store.js";
@@ -146,20 +147,24 @@ export async function prepareRegeneratedSlideJob(
   rawRoute: DeckEditRoute,
   options: {
     root: string;
-    currentRevisionId: string;
     aiDependency: AiImageSkillDependency;
     previousPromptSha256: string;
   },
 ): Promise<ImageGenerationJob> {
   const route = DeckEditRouteSchema.parse(rawRoute);
   if (route.route !== "regenerate-slide") throw new Error("regenerated slide jobs require the regenerate-slide route");
-  const [manifest, lock, validated] = await Promise.all([
+  const [manifest, lock, validated, currentDeck] = await Promise.all([
     readProject(options.root),
     readApprovedStyleLock(options.root),
     loadValidatedPlan(options.root),
+    readCurrentDeckPointer(options.root),
   ]);
-  if (manifest.currentRevision.id !== options.currentRevisionId) {
-    throw new Error("regenerated slide route does not bind the current project revision");
+  if (currentDeck.revisionId !== route.currentRevisionId) {
+    throw new Error("regenerated slide route does not bind the current complete deck revision");
+  }
+  const deckRevision = await readLocalDeckRevision(options.root, currentDeck.revisionId);
+  if (manifest.currentRevision.id !== deckRevision.projectRevisionId) {
+    throw new Error("regenerated slide route deck does not bind the current project revision");
   }
   if (lock.styleLockSha256 !== route.styleLockSha256) {
     throw new Error("regenerated slide route does not bind the approved Style Lock");
@@ -180,7 +185,7 @@ export async function prepareRegeneratedSlideJob(
   });
   return assertRegeneratedSlideJobBinding(job, {
     slideId: route.slideId,
-    projectRevisionId: options.currentRevisionId,
+    projectRevisionId: deckRevision.projectRevisionId,
     styleLockSha256: route.styleLockSha256,
   });
 }

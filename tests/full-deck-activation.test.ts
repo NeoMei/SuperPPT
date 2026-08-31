@@ -9,8 +9,8 @@ import JSZip from "jszip";
 import sharp from "sharp";
 
 import { activateEditableSlideInDeck } from "../src/deck-revisions/activate-slide.js";
-import { beginAgentCandidateConfirmation } from "../src/deck-revisions/workflow.js";
-import { bootstrapInitialDeckRevision, createDeckCandidate, presentDeckCandidate } from "../src/deck-revisions/store.js";
+import { beginAgentCandidateConfirmation, confirmAgentEditDeck } from "../src/deck-revisions/workflow.js";
+import { bootstrapInitialDeckRevision, createDeckCandidate, presentDeckCandidate, readCurrentDeckPointer } from "../src/deck-revisions/store.js";
 import { inspectLocalPptx } from "../src/deck-revisions/inspect.js";
 import { scanOoxmlRanges } from "../src/deck-revisions/ooxml.js";
 import { finalizeSlideTopology } from "../src/deck-revisions/topology.js";
@@ -18,6 +18,7 @@ import { assembleProjectCandidate, type FinalRender } from "../src/deck/assemble
 import { buildMontage } from "../src/deck/montage.js";
 import { exportPdf } from "../src/deck/pdf.js";
 import { ConversionRecordSchema, RunLedgerV2Schema } from "../src/editable/schemas.js";
+import { prepareAgentEditDeck } from "../src/editable/route.js";
 import { configureGenerationAuthorizationTrustForTests } from "../src/generation/trusted-authorization.js";
 import { approveGate } from "../src/planning/confirm.js";
 import { publishPlanViews } from "../src/planning/views.js";
@@ -279,7 +280,7 @@ async function prepareReviewedSelection(root: string, slideIds: string[]): Promi
   return { finalRender: { path: `images/${slideIds[1]}/attempt-1/slide.png`, sha256: generated[1]!.digest }, selection: { candidateId: candidate.candidateId, reviewDescriptorSha256: review.descriptorSha256, actionEvidenceSha256: action.actionEvidenceSha256 } };
 }
 
-async function activationFixture(t: TestContext, mode: "manual" | "agent" = "agent") {
+async function activationRouteFixture(t: TestContext) {
   const root = await temporaryProject(t);
   const slideIds = [randomUUID(), randomUUID(), randomUUID()];
   const reviewed = await prepareReviewedSelection(root, slideIds);
@@ -290,9 +291,14 @@ async function activationFixture(t: TestContext, mode: "manual" | "agent" = "age
   const topology = finalizeSlideTopology(inspection.slides.map((slide, position) => ({ stableSlideId: slideIds[position]!, slidePart: slide.slidePart, position, management: "managed" as const, presentationSlideId: slide.presentationSlideId, creationId: slide.creationId! })), []);
   const parentRevisionId = randomUUID();
   await bootstrapInitialDeckRevision(root, { revisionId: parentRevisionId, projectRevisionId: project.currentRevision.id, sourceAbsolutePath: source, slideTopology: topology, changedSlideIds: slideIds });
-  const session = await createDeckCandidate(root, { sourceRevisionId: parentRevisionId, reason: mode === "manual" ? "manual-edit" : "agent-edit", changedSlideIds: [slideIds[1]!], editableSlideIds: [], targetSlideId: slideIds[1]!, mode });
   const conversion = await writeConversionEvidence({ root, slideId: slideIds[1]!, projectId: project.projectId, projectRevisionId: project.currentRevision.id, ...reviewed });
-  return { root, slideIds, candidatePath: session.absolutePath, sessionId: session.sessionId, ...conversion };
+  return { root, slideIds, parentRevisionId, ...conversion };
+}
+
+async function activationFixture(t: TestContext, mode: "manual" | "agent" = "agent") {
+  const fixture = await activationRouteFixture(t);
+  const session = await createDeckCandidate(fixture.root, { sourceRevisionId: fixture.parentRevisionId, reason: mode === "manual" ? "manual-edit" : "agent-edit", changedSlideIds: [fixture.slideIds[1]!], editableSlideIds: [], targetSlideId: fixture.slideIds[1]!, mode });
+  return { ...fixture, candidatePath: session.absolutePath, sessionId: session.sessionId };
 }
 
 type Fixture = Awaited<ReturnType<typeof activationFixture>>;
@@ -412,6 +418,102 @@ test("activates only the selected slide and returns the complete deck candidate"
   const session = JSON.parse(await readFile(join(fixture.root, "output", "deck-edit-sessions", fixture.sessionId, "session.json"), "utf8"));
   const journal = JSON.parse(await readFile(join(fixture.root, "output", "deck-edit-sessions", fixture.sessionId, "journal.json"), "utf8"));
   assert.equal(session.preparedSha256, after.sha256); assert.deepEqual(journal.editableSlideIds, [fixture.slideIds[1]]);
+});
+
+test("prepareAgentEditDeck activates then directly edits authenticated complete candidates through confirmation", async (t) => {
+  const fixture = await activationRouteFixture(t);
+  const activated = await prepareAgentEditDeck({
+    root: fixture.root,
+    route: {
+      route: "activate-editable",
+      currentRevisionId: fixture.parentRevisionId,
+      slideId: fixture.slideIds[1]!,
+      operations: [{ kind: "replace-text", elementId: "title", text: "Activated & editable" }],
+    },
+    conversionRoot: fixture.conversionRoot,
+  });
+
+  assert.equal(activated.kind, "complete-local-pptx");
+  assert.equal(activated.mode, "agent");
+  assert.equal(activated.slideCount, 3);
+  assert.deepEqual(activated.editableSlideIds, [fixture.slideIds[1]]);
+  assert.deepEqual(activated.reviewRequiredObjects, [{
+    stableSlideId: fixture.slideIds[1],
+    elementId: "icon",
+    label: "Review icon",
+    role: "foreground-object",
+  }]);
+  const activatedZip = await JSZip.loadAsync(await readFile(activated.absolutePath));
+  assert.match(await activatedZip.file("ppt/slides/slide2.xml")!.async("string"), /<art:t>Activated &amp; editable<\/art:t>/);
+  const adopted = await confirmAgentEditDeck({
+    root: fixture.root,
+    sessionId: activated.sessionId,
+    confirmedSha256: activated.sha256,
+  });
+  assert.equal(adopted.revisionId, activated.revisionId);
+
+  const direct = await prepareAgentEditDeck({
+    root: fixture.root,
+    route: {
+      route: "direct-edit",
+      currentRevisionId: adopted.revisionId,
+      slideId: fixture.slideIds[1]!,
+      operations: [{ kind: "replace-text", elementId: "title", text: "Direct <safe> & current" }],
+    },
+    conversionRoot: fixture.conversionRoot,
+  });
+  assert.equal(direct.kind, "complete-local-pptx");
+  assert.equal(direct.mode, "agent");
+  assert.equal(direct.slideCount, 3);
+  assert.deepEqual(direct.editableSlideIds, [fixture.slideIds[1]]);
+  assert.deepEqual(direct.reviewRequiredObjects, activated.reviewRequiredObjects);
+  const directZip = await JSZip.loadAsync(await readFile(direct.absolutePath));
+  assert.match(await directZip.file("ppt/slides/slide2.xml")!.async("string"), /<art:t>Direct &lt;safe&gt; &amp; current<\/art:t>/);
+  assert.equal((await JSON.parse(await readFile(join(fixture.root, "output", "deck-edit-sessions", direct.sessionId, "session.json"), "utf8")) as { state: string }).state, "awaiting-confirmation");
+});
+
+test("prepareAgentEditDeck rejects and cleans up an activation candidate when conversion authentication fails", async (t) => {
+  const fixture = await activationRouteFixture(t);
+  const original = await readCurrentDeckPointer(fixture.root);
+  await writeFile(join(fixture.outputRoot, "manifest.json"), "{}\n");
+
+  await assert.rejects(prepareAgentEditDeck({
+    root: fixture.root,
+    route: {
+      route: "activate-editable",
+      currentRevisionId: fixture.parentRevisionId,
+      slideId: fixture.slideIds[1]!,
+      operations: [],
+    },
+    conversionRoot: fixture.conversionRoot,
+  }), /manifest|hash|conversion/i);
+
+  assert.equal((await readProject(fixture.root)).activeDeckEditSessionId, null);
+  assert.equal((await readCurrentDeckPointer(fixture.root)).revisionId, original.revisionId);
+  const sessions = await readdir(join(fixture.root, "output", "deck-edit-sessions"));
+  assert.equal(sessions.length, 1);
+  const rejected = JSON.parse(await readFile(join(fixture.root, "output", "deck-edit-sessions", sessions[0]!, "session.json"), "utf8")) as { state: string };
+  assert.equal(rejected.state, "rejected");
+});
+
+test("prepareAgentEditDeck rejects a stale route revision before creating a candidate", async (t) => {
+  const fixture = await activationRouteFixture(t);
+  await assert.rejects(prepareAgentEditDeck({
+    root: fixture.root,
+    route: {
+      route: "activate-editable",
+      currentRevisionId: randomUUID(),
+      slideId: fixture.slideIds[1]!,
+      operations: [],
+    },
+    conversionRoot: fixture.conversionRoot,
+  }), /route is stale|current complete deck revision/i);
+  assert.equal((await readProject(fixture.root)).activeDeckEditSessionId, null);
+  const sessions = await readdir(join(fixture.root, "output", "deck-edit-sessions")).catch((error: unknown) => {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return [];
+    throw error;
+  });
+  assert.deepEqual(sessions, []);
 });
 
 test("rejects unauthenticated converter versions, manifests, owned paths, hashes, and missing evidence", async (t) => {

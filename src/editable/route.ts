@@ -6,16 +6,19 @@ import { EditOperationSchema, type EditOperation } from "./operations.js";
 export const DeckEditRouteSchema = z.discriminatedUnion("route", [
   z.object({
     route: z.literal("direct-edit"),
+    currentRevisionId: z.string().uuid(),
     slideId: z.string().uuid(),
     operations: z.array(EditOperationSchema).min(1),
   }).strict(),
   z.object({
     route: z.literal("activate-editable"),
+    currentRevisionId: z.string().uuid(),
     slideId: z.string().uuid(),
     operations: z.array(EditOperationSchema),
   }).strict(),
   z.object({
     route: z.literal("regenerate-slide"),
+    currentRevisionId: z.string().uuid(),
     slideId: z.string().uuid(),
     reason: z.string().min(1),
     styleLockSha256: Sha256Schema,
@@ -81,6 +84,7 @@ export function classifyDeckEdit(rawRequest: unknown, rawContext: unknown): Deck
   if (forceRegeneration || REGENERATION_CHANGES.has(request.change)) {
     return DeckEditRouteSchema.parse({
       route: "regenerate-slide",
+      currentRevisionId: context.currentRevisionId,
       slideId: context.slideId,
       reason: regenerationReason(request, `${request.change} changes require slide regeneration`),
       styleLockSha256: context.styleLockSha256,
@@ -90,6 +94,7 @@ export function classifyDeckEdit(rawRequest: unknown, rawContext: unknown): Deck
   if (operations.length === 0 || operations.some((operation) => !targetMatches(operation, context.manifest))) {
     return DeckEditRouteSchema.parse({
       route: "regenerate-slide",
+      currentRevisionId: context.currentRevisionId,
       slideId: context.slideId,
       reason: regenerationReason(request, "the requested target is not reliably editable in the authenticated page binding"),
       styleLockSha256: context.styleLockSha256,
@@ -97,6 +102,7 @@ export function classifyDeckEdit(rawRequest: unknown, rawContext: unknown): Deck
   }
   return DeckEditRouteSchema.parse({
     route: context.editableSlideIds.includes(context.slideId) ? "direct-edit" : "activate-editable",
+    currentRevisionId: context.currentRevisionId,
     slideId: context.slideId,
     operations,
   });
@@ -110,7 +116,6 @@ export function classifyDeckEditMode(rawRequest: unknown): DeckEditMode {
 
 export type PrepareAgentEditDeckOptions = {
   root: string;
-  currentRevisionId: string;
   route: DeckEditRoute;
   conversionRoot?: string;
   generationJobId?: string;
@@ -119,7 +124,6 @@ export type PrepareAgentEditDeckOptions = {
 export async function prepareAgentEditDeck(options: PrepareAgentEditDeckOptions) {
   const valid = z.object({
     root: z.string().min(1),
-    currentRevisionId: z.string().uuid(),
     route: DeckEditRouteSchema,
     conversionRoot: z.string().min(1).optional(),
     generationJobId: z.string().uuid().optional(),
@@ -129,7 +133,7 @@ export async function prepareAgentEditDeck(options: PrepareAgentEditDeckOptions)
     import("../deck-revisions/workflow.js"),
   ]);
   const current = await readCurrentDeckPointer(valid.root);
-  if (current.revisionId !== valid.currentRevisionId) throw new Error("deck edit route is stale for the current complete deck revision");
+  if (current.revisionId !== valid.route.currentRevisionId) throw new Error("deck edit route is stale for the current complete deck revision");
   const parent = await readLocalDeckRevision(valid.root, current.revisionId);
   const target = parent.slideTopology.entries.find((entry) => entry.stableSlideId === valid.route.slideId);
   if (!target) throw new Error("deck edit route target is absent from the current reconciled topology");
@@ -155,6 +159,9 @@ export async function prepareAgentEditDeck(options: PrepareAgentEditDeckOptions)
       if (!valid.generationJobId) throw new Error("slide regeneration requires an authenticated generation job ID");
       const { readAndReauthenticateDelegatedResult } = await import("../generation/delegation-result.js");
       const authenticated = await readAndReauthenticateDelegatedResult(valid.root, valid.generationJobId);
+      if (authenticated.job.projectRevisionId !== parent.projectRevisionId) {
+        throw new Error("regeneration job project revision is stale for the current complete deck revision");
+      }
       const page = authenticated.result.pages.find((result) => result.slideId === valid.route.slideId);
       if (authenticated.job.kind !== "page-regeneration"
         || authenticated.job.styleLockSha256 !== valid.route.styleLockSha256

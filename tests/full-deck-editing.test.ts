@@ -6,6 +6,7 @@ import { join } from "node:path";
 import test, { type TestContext } from "node:test";
 
 import JSZip from "jszip";
+import sharp from "sharp";
 
 import {
   adoptManualSavedDeck,
@@ -20,12 +21,13 @@ import {
   readCurrentDeckPointer,
   readLocalDeckRevision,
 } from "../src/deck-revisions/store.js";
-import { editActualSlideObjects } from "../src/deck-revisions/edit-slide.js";
+import { editActualSlideObjects, replaceRegeneratedSlideShapeTree } from "../src/deck-revisions/edit-slide.js";
 import { finalizeSlideTopology } from "../src/deck-revisions/topology.js";
 import { initializeProject } from "../src/project/initialize.js";
 import { readProject, updateProject } from "../src/project/store.js";
 
 const P = "http://schemas.openxmlformats.org/presentationml/2006/main";
+const A = "http://schemas.openxmlformats.org/drawingml/2006/main";
 const R = "http://schemas.openxmlformats.org/officeDocument/2006/relationships";
 const REL = "http://schemas.openxmlformats.org/package/2006/relationships";
 const P14 = "http://schemas.microsoft.com/office/powerpoint/2010/main";
@@ -33,24 +35,32 @@ const P14 = "http://schemas.microsoft.com/office/powerpoint/2010/main";
 const digest = (value: Buffer | string): string => createHash("sha256").update(value).digest("hex");
 
 function slideXml(creationId: number, label: string): string {
-  return `<p:sld xmlns:p="${P}" xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" xmlns:p14="${P14}"><p:cSld><p:spTree><p:nvGrpSpPr/><p:sp><p:nvSpPr><p:cNvPr id="2" name="text-${label}"/></p:nvSpPr><p:spPr><a:xfrm rot="0"><a:off x="952500" y="762000"/><a:ext cx="5715000" cy="762000"/></a:xfrm></p:spPr><p:txBody><a:p><a:pPr algn="ctr"/><a:r><a:rPr lang="zh-CN" sz="3200" b="1"><a:solidFill><a:srgbClr val="FFFFFF"/></a:solidFill><a:latin typeface="Aptos"/></a:rPr><a:t>${label}</a:t></a:r></a:p></p:txBody></p:sp><p:sp><p:nvSpPr><p:cNvPr id="3" name="shape-card-Card"/></p:nvSpPr><p:spPr><a:xfrm><a:off x="762000" y="1714500"/><a:ext cx="6096000" cy="3048000"/></a:xfrm><a:prstGeom prst="roundRect"/><a:solidFill><a:srgbClr val="112233"/></a:solidFill><a:ln w="19050"><a:solidFill><a:srgbClr val="445566"/></a:solidFill></a:ln></p:spPr></p:sp></p:spTree><p:extLst><p:ext uri="{BB962C8B-B14F-4D97-AF65-F5344CB8AC3E}"><p14:creationId val="${creationId}"/></p:ext></p:extLst></p:cSld></p:sld>`;
+  return `<p:sld xmlns:p="${P}" xmlns:a="${A}" xmlns:p14="${P14}"><p:cSld><p:spTree><p:nvGrpSpPr/><p:sp><p:nvSpPr><p:cNvPr id="2" name="text-${label}"/></p:nvSpPr><p:spPr><a:xfrm rot="0"><a:off x="952500" y="762000"/><a:ext cx="5715000" cy="762000"/></a:xfrm></p:spPr><p:txBody><a:p><a:pPr algn="ctr"/><a:r><a:rPr lang="zh-CN" sz="3200" b="1"><a:solidFill><a:srgbClr val="FFFFFF"/></a:solidFill><a:latin typeface="Aptos"/></a:rPr><a:t>${label}</a:t></a:r></a:p></p:txBody></p:sp><p:sp><p:nvSpPr><p:cNvPr id="3" name="shape-card-Card"/></p:nvSpPr><p:spPr><a:xfrm><a:off x="762000" y="1714500"/><a:ext cx="6096000" cy="3048000"/></a:xfrm><a:prstGeom prst="roundRect"/><a:solidFill><a:srgbClr val="112233"/></a:solidFill><a:ln w="19050"><a:solidFill><a:srgbClr val="445566"/></a:solidFill></a:ln></p:spPr></p:sp></p:spTree><p:extLst><p:ext uri="{BB962C8B-B14F-4D97-AF65-F5344CB8AC3E}"><p14:creationId val="${creationId}"/></p:ext></p:extLst></p:cSld></p:sld>`;
 }
 
-async function makeDeck(labels: string[]): Promise<Buffer> {
+function sensitiveTextSlideXml(creationId: number, label: string): string {
+  if (label !== "two") return slideXml(creationId, label);
+  return `<p:sld xmlns:p="${P}" xmlns:a="${A}" xmlns:p14="${P14}"><p:cSld><p:spTree><p:nvGrpSpPr/><p:sp><p:nvSpPr><p:cNvPr id="2" name="text-two"/></p:nvSpPr><p:spPr><a:xfrm rot="0"><a:off x="952500" y="762000"/><a:ext cx="5715000" cy="1524000"/></a:xfrm></p:spPr><p:txBody><a:p><a:pPr algn="ctr"/><a:r><a:rPr lang="zh-CN" sz="3200" b="1"><a:solidFill><a:srgbClr val="FFFFFF"/></a:solidFill><a:latin typeface="Aptos"/></a:rPr><a:t>A&amp;B</a:t></a:r><a:r><a:rPr lang="en-US" sz="2800" i="1"><a:solidFill><a:srgbClr val="FFCC00"/></a:solidFill><a:latin typeface="Courier New"/></a:rPr><a:t>&lt;C&gt;</a:t></a:r></a:p><a:p><a:pPr algn="r"/><a:r><a:rPr lang="zh-CN" sz="2400" b="0"><a:solidFill><a:srgbClr val="00CCFF"/></a:solidFill><a:latin typeface="Noto Sans CJK SC"/></a:rPr><a:t>&#x4E2D;&#25991;</a:t></a:r></a:p></p:txBody></p:sp><p:sp><p:nvSpPr><p:cNvPr id="3" name="shape-card-Card"/></p:nvSpPr><p:spPr><a:xfrm><a:off x="762000" y="1714500"/><a:ext cx="6096000" cy="3048000"/></a:xfrm><a:prstGeom prst="roundRect"/><a:solidFill><a:srgbClr val="112233"/></a:solidFill><a:ln w="19050"><a:solidFill><a:srgbClr val="445566"/></a:solidFill></a:ln></p:spPr></p:sp></p:spTree><p:extLst><p:ext uri="{BB962C8B-B14F-4D97-AF65-F5344CB8AC3E}"><p14:creationId val="${creationId}"/></p:ext></p:extLst></p:cSld></p:sld>`;
+}
+
+async function makeDeck(labels: string[], slideFactory: (creationId: number, label: string) => string = slideXml): Promise<Buffer> {
   const zip = new JSZip();
-  zip.file("[Content_Types].xml", "<Types xmlns=\"http://schemas.openxmlformats.org/package/2006/content-types\"/>");
+  zip.file("[Content_Types].xml", "<Types xmlns=\"http://schemas.openxmlformats.org/package/2006/content-types\"><Default Extension=\"png\" ContentType=\"image/png\"/></Types>");
   zip.file("ppt/presentation.xml", `<p:presentation xmlns:p="${P}" xmlns:r="${R}"><p:sldIdLst>${labels.map((_label, index) => `<p:sldId id="${256 + index}" r:id="rId${index + 1}"/>`).join("")}</p:sldIdLst></p:presentation>`);
   zip.file("ppt/_rels/presentation.xml.rels", `<Relationships xmlns="${REL}">${labels.map((_label, index) => `<Relationship Id="rId${index + 1}" Type="${R}/slide" Target="slides/slide${index + 1}.xml"/>`).join("")}</Relationships>`);
   for (const [index, label] of labels.entries()) {
-    zip.file(`ppt/slides/slide${index + 1}.xml`, slideXml(1001 + index, label));
-    zip.file(`ppt/slides/_rels/slide${index + 1}.xml.rels`, `<Relationships xmlns="${REL}"/>`);
+    zip.file(`ppt/slides/slide${index + 1}.xml`, slideFactory(1001 + index, label));
+    const mediaName = index < 2 ? "shared-existing.png" : "untouched-existing.png";
+    zip.file(`ppt/slides/_rels/slide${index + 1}.xml.rels`, `<Relationships xmlns="${REL}"><Relationship Id="rId9" Type="${R}/image" Target="../media/${mediaName}"/></Relationships>`);
   }
+  zip.file("ppt/media/shared-existing.png", await sharp({ create: { width: 16, height: 16, channels: 3, background: "#102030" } }).png().toBuffer());
+  zip.file("ppt/media/untouched-existing.png", await sharp({ create: { width: 12, height: 12, channels: 4, background: { r: 45, g: 67, b: 89, alpha: 0.5 } } }).png().toBuffer());
   return zip.generateAsync({ type: "nodebuffer" });
 }
 
 type WorkflowFixture = Awaited<ReturnType<typeof workflowFixture>>;
 
-async function workflowFixture(t: TestContext) {
+async function workflowFixture(t: TestContext, slideFactory: (creationId: number, label: string) => string = slideXml) {
   const parent = await realpath(await mkdtemp(join(tmpdir(), "superppt-full-deck-editing-")));
   t.after(async () => rm(parent, { recursive: true, force: true }));
   const root = join(parent, "project");
@@ -60,7 +70,7 @@ async function workflowFixture(t: TestContext) {
   const relativePath = `output/deck-revisions/${revisionId}/deck.pptx`;
   const absolutePath = join(root, ...relativePath.split("/"));
   await mkdir(join(root, "output", "deck-revisions", revisionId), { recursive: true });
-  const deckBytes = await makeDeck(["one", "two", "three"]);
+  const deckBytes = await makeDeck(["one", "two", "three"], slideFactory);
   await writeFile(absolutePath, deckBytes);
   const topology = finalizeSlideTopology(slideIds.map((stableSlideId, position) => ({
     stableSlideId,
@@ -443,6 +453,99 @@ test("Agent text edits patch the current OOXML object while preserving WPS forma
   assert.equal(afterTarget, beforeTarget.replace(">two</a:t>", ">Agent updated title</a:t>"));
   assert.deepEqual(await afterZip.file("ppt/slides/slide1.xml")!.async("nodebuffer"), beforeUntouched);
   assert.deepEqual(await readFile(fixture.absolutePath), fixture.deckBytes);
+});
+
+test("multi-run text replacement preserves paragraphs and run formatting while escaping replacement metacharacters", async (t) => {
+  const fixture = await workflowFixture(t, sensitiveTextSlideXml);
+  const current = await readCurrentDeckPointer(fixture.root);
+  const candidate = await createDeckCandidate(fixture.root, {
+    sourceRevisionId: current.revisionId,
+    reason: "agent-edit",
+    changedSlideIds: [fixture.slideIds[1]!],
+    editableSlideIds: fixture.slideIds,
+    targetSlideId: fixture.slideIds[1]!,
+    mode: "agent",
+  });
+  const beforeZip = await JSZip.loadAsync(await readFile(candidate.absolutePath));
+  const beforeTarget = await beforeZip.file("ppt/slides/slide2.xml")!.async("string");
+  const beforeUntouched = await beforeZip.file("ppt/slides/slide1.xml")!.async("nodebuffer");
+
+  await editActualSlideObjects({
+    root: fixture.root,
+    currentRevisionId: current.revisionId,
+    sessionId: candidate.sessionId,
+    candidatePath: candidate.absolutePath,
+    slideId: fixture.slideIds[1]!,
+    manifest: {
+      manifestVersion: 2,
+      canvas: { width: 1280, height: 720 },
+      warnings: [],
+      elements: [{
+        kind: "text",
+        id: "two",
+        text: "A&B<C>中文",
+        bbox: { x: 100, y: 80, width: 600, height: 160 },
+        rotation: 0,
+        color: "#ffffff",
+        fontSizePx: 48,
+        bold: true,
+        align: "center",
+        zIndex: 1,
+      }],
+    },
+    operations: [{ kind: "replace-text", elementId: "two", text: "X&Y<Z>\"'中文" }],
+  });
+
+  const afterZip = await JSZip.loadAsync(await readFile(candidate.absolutePath));
+  const afterTarget = await afterZip.file("ppt/slides/slide2.xml")!.async("string");
+  const expected = beforeTarget
+    .replace("A&amp;B", "X&amp;Y")
+    .replace("&lt;C&gt;", "&lt;Z&gt;")
+    .replace("&#x4E2D;&#25991;", "\"'中文");
+  assert.equal(afterTarget, expected);
+  for (const retained of [
+    '<a:pPr algn="ctr"/>',
+    '<a:pPr algn="r"/>',
+    '<a:xfrm rot="0"><a:off x="952500" y="762000"/><a:ext cx="5715000" cy="1524000"/></a:xfrm>',
+    '<a:rPr lang="zh-CN" sz="3200" b="1"><a:solidFill><a:srgbClr val="FFFFFF"/></a:solidFill><a:latin typeface="Aptos"/></a:rPr>',
+    '<a:rPr lang="en-US" sz="2800" i="1"><a:solidFill><a:srgbClr val="FFCC00"/></a:solidFill><a:latin typeface="Courier New"/></a:rPr>',
+    '<a:rPr lang="zh-CN" sz="2400" b="0"><a:solidFill><a:srgbClr val="00CCFF"/></a:solidFill><a:latin typeface="Noto Sans CJK SC"/></a:rPr>',
+  ]) assert.equal(afterTarget.includes(retained), true, retained);
+  assert.deepEqual(await afterZip.file("ppt/slides/slide1.xml")!.async("nodebuffer"), beforeUntouched);
+  assert.deepEqual(await readFile(fixture.absolutePath), fixture.deckBytes);
+});
+
+test("regeneration rejects a staged mutation of any pre-existing media member", async (t) => {
+  const fixture = await workflowFixture(t);
+  const current = await readCurrentDeckPointer(fixture.root);
+  const candidate = await createDeckCandidate(fixture.root, {
+    sourceRevisionId: current.revisionId,
+    reason: "slide-regeneration",
+    changedSlideIds: [fixture.slideIds[0]!],
+    editableSlideIds: fixture.slideIds.slice(1),
+    targetSlideId: fixture.slideIds[0]!,
+    mode: "agent",
+  });
+  const originalCandidate = await readFile(candidate.absolutePath);
+  const normalizedImage = await sharp({ create: { width: 1920, height: 1080, channels: 3, background: "#445566" } }).png().toBuffer();
+
+  await assert.rejects(replaceRegeneratedSlideShapeTree({
+    root: fixture.root,
+    currentRevisionId: current.revisionId,
+    sessionId: candidate.sessionId,
+    candidatePath: candidate.absolutePath,
+    slideId: fixture.slideIds[0]!,
+    normalizedImage,
+    normalizedImageSha256: digest(normalizedImage),
+    operations: {
+      beforeAtomicReplace: async (stagingPath: string) => {
+        const staged = await JSZip.loadAsync(await readFile(stagingPath));
+        staged.file("ppt/media/shared-existing.png", Buffer.from("tampered existing shared media"));
+        await writeFile(stagingPath, await staged.generateAsync({ type: "nodebuffer" }));
+      },
+    },
+  }), /pre-existing package member|shared-existing\.png/i);
+  assert.deepEqual(await readFile(candidate.absolutePath), originalCandidate);
 });
 
 test("supported simple-shape edits target the named current shape without rebuilding the slide", async (t) => {
