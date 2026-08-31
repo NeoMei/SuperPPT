@@ -137,6 +137,18 @@ test("runtime package and dependency authority expose only the two full-deck cap
       apiGenerator: "scripts/gen_slide.py",
       normalizedExport: "scripts/export_images.py",
     },
+    routingOrder: [
+      { provider: "openai", channel: "host", modelSelection: "host-owned" },
+      { provider: "openai", channel: "api", defaultModel: "gpt-image-2" },
+      { provider: "gemini", channel: "host", modelSelection: "host-owned" },
+      { provider: "gemini", channel: "api", defaultModel: "gemini-3.1-flash-image" },
+      { provider: "doubao", channel: "host", modelSelection: "host-owned" },
+      { provider: "doubao", channel: "api", defaultModel: "doubao-seedream-5-0-260128" },
+    ],
+    outputs: {
+      normalizedSlide: { format: "image", width: 1920, height: 1080 },
+      editableInput: { format: "png", width: 1280, height: 720 },
+    },
   });
   assert.deepEqual(contract.dependencies[1].capabilities, {
     version: ">=0.2.0 <0.3.0",
@@ -147,6 +159,11 @@ test("runtime package and dependency authority expose only the two full-deck cap
       text: "text-<id>",
       shape: "shape-<id>-<label>",
       asset: "asset-<id>",
+    },
+    evidence: {
+      manifestSchema: "src/contracts.ts",
+      officialDonor: "src/pipeline.ts",
+      objectNames: "src/export/pptx.ts",
     },
   });
   for (const path of [

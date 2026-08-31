@@ -756,6 +756,14 @@ test("CLI initializes and reports project status without changing preflight rout
 
 test("delegation CLI exposes only explicit Agent-mediated image routes", async () => {
   const invocation = ["--import", "tsx", "src/cli.ts"];
+  const localHandoffEnvironment = {
+    ...process.env,
+    SUPERPPT_HOST_CAPABILITIES: JSON.stringify({
+      source: "agent-host",
+      localFilesystem: true,
+      localFileLinks: true,
+    }),
+  };
   const invoke = async (args: string[], env: NodeJS.ProcessEnv = process.env): Promise<string> => {
     try {
       await execFileAsync(process.execPath, [...invocation, ...args], { cwd: process.cwd(), env });
@@ -777,7 +785,7 @@ test("delegation CLI exposes only explicit Agent-mediated image routes", async (
     "prepare-page-regeneration-job",
     "generation-status",
   ]) {
-    const error = await invoke([command]);
+    const error = await invoke([command], localHandoffEnvironment);
     assert.match(error, /required CLI flags/);
     assert.doesNotMatch(error, /unknown command/, command);
   }
@@ -801,17 +809,17 @@ test("delegation CLI exposes only explicit Agent-mediated image routes", async (
     "--ai-skill", "/missing-ai",
     "--editable-skill", "/missing-editable",
     "--provider", "openai",
-  ]), /unknown CLI flag: --provider/);
+  ], localHandoffEnvironment), /unknown CLI flag: --provider/);
   assert.match(await invoke([
     "prepare-deck-job",
     "--project", "/missing-project",
     "--ai-skill", "/missing-ai",
     "--concurrency", "2",
-  ]), /unknown CLI flag: --concurrency/);
+  ], localHandoffEnvironment), /unknown CLI flag: --concurrency/);
   assert.match(await invoke(["generation-status", "--project"]), /invalid or duplicate CLI flag/);
 
   const environmentOnly = {
-    ...process.env,
+    ...localHandoffEnvironment,
     SUPERPPT_AI_IMAGE_TO_PPT_SOURCE: "/environment-ai",
     SUPERPPT_IMAGE_TO_EDITABLE_PPTX_SOURCE: "/environment-editable",
   };

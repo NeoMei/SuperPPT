@@ -14,6 +14,7 @@ import {
 } from "../src/deck/assemble.js";
 import { convertProjectPage } from "../src/editable/adapter.js";
 import { resolveSkillDependencies } from "../src/dependencies/resolve.js";
+import { attestWorkflowDependencies } from "../src/dependencies/preflight.js";
 import type { ResolvedDependencies } from "../src/dependencies/schemas.js";
 import { configureGenerationAuthorizationTrustForTests } from "../src/generation/trusted-authorization.js";
 import { applyProjectEditPlan, promoteProjectEditableTarget } from "../src/editable/operations.js";
@@ -266,6 +267,7 @@ async function readyProject(t: TestContext): Promise<string> {
 async function converterRoot(t: TestContext): Promise<string> {
   const root = join(await temporary(t, "superppt-mixed-converter-"), "plugin");
   await mkdir(join(root, "skills", "image-to-editable-pptx"), { recursive: true });
+  await mkdir(join(root, "src", "export"), { recursive: true });
   await writeFile(join(root, "package.json"), `${JSON.stringify({
     name: "image-to-editable-pptx",
     version: "0.2.0",
@@ -273,6 +275,9 @@ async function converterRoot(t: TestContext): Promise<string> {
     scripts: { cli: "tsx src/cli.ts" },
   })}\n`);
   await writeFile(join(root, "skills", "image-to-editable-pptx", "SKILL.md"), "---\nname: image-to-editable-pptx\n---\n");
+  await writeFile(join(root, "src", "contracts.ts"), "export const V2 = { manifestVersion: z.literal(2) };\n");
+  await writeFile(join(root, "src", "pipeline.ts"), "export const donor = \"slide-editable.pptx\";\n");
+  await writeFile(join(root, "src", "export", "pptx.ts"), 'objectName: "asset-background"; objectName: `text-${element.id}`; objectName: `shape-${element.id}-${element.label}`; objectName: `asset-${element.id}`;\n');
   return root;
 }
 
@@ -315,7 +320,10 @@ async function resolvedDependenciesFromRoots(
   aiRoot: string,
   editableRoot: string,
 ): Promise<ResolvedDependencies> {
-  return resolveSkillDependencies({ aiSkillRoot: aiRoot, editableSkillRoot: editableRoot });
+  return attestWorkflowDependencies(
+    await resolveSkillDependencies({ aiSkillRoot: aiRoot, editableSkillRoot: editableRoot }),
+    { source: "agent-host", localFilesystem: true, localFileLinks: true },
+  );
 }
 
 async function transparentPng(width: number, height: number): Promise<Buffer> {

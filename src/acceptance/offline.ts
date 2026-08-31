@@ -28,6 +28,7 @@ import { initializeProject } from "../project/initialize.js";
 import { applyDeckReviewAction, publishDeckReview } from "../project/promotion.js";
 import { readProject, sha256 } from "../project/store.js";
 import { resolveSkillDependencies } from "../dependencies/resolve.js";
+import { attestWorkflowDependencies } from "../dependencies/preflight.js";
 import type { ResolvedDependencies } from "../dependencies/schemas.js";
 import { approveStyleLock, createProvisionalStyleLock } from "../styles/style-lock.js";
 
@@ -184,6 +185,7 @@ async function stagedAiDependency(parent: string): Promise<string> {
 async function stagedConverter(parent: string): Promise<string> {
   const root = join(parent, "offline-image-to-editable-pptx");
   await mkdir(join(root, "skills", "image-to-editable-pptx"), { recursive: true, mode: 0o700 });
+  await mkdir(join(root, "src", "export"), { recursive: true, mode: 0o700 });
   await writeFile(join(root, "package.json"), `${JSON.stringify({
     name: "image-to-editable-pptx",
     version: "0.2.0",
@@ -191,6 +193,9 @@ async function stagedConverter(parent: string): Promise<string> {
     scripts: { cli: "tsx src/cli.ts" },
   }, null, 2)}\n`, { flag: "wx", mode: 0o600 });
   await writeFile(join(root, "skills", "image-to-editable-pptx", "SKILL.md"), "---\nname: image-to-editable-pptx\n---\n", { flag: "wx", mode: 0o600 });
+  await writeFile(join(root, "src", "contracts.ts"), "export const V2 = { manifestVersion: z.literal(2) };\n", { flag: "wx", mode: 0o600 });
+  await writeFile(join(root, "src", "pipeline.ts"), "export const donor = \"slide-editable.pptx\";\n", { flag: "wx", mode: 0o600 });
+  await writeFile(join(root, "src", "export", "pptx.ts"), 'objectName: "asset-background"; objectName: `text-${element.id}`; objectName: `shape-${element.id}-${element.label}`; objectName: `asset-${element.id}`;\n', { flag: "wx", mode: 0o600 });
   return realpath(root);
 }
 
@@ -218,7 +223,10 @@ async function offlineOfficialDonor(background: Buffer, icon: Buffer): Promise<B
 }
 
 async function offlineDependencies(aiRoot: string, editableRoot: string): Promise<ResolvedDependencies> {
-  return resolveSkillDependencies({ aiSkillRoot: aiRoot, editableSkillRoot: editableRoot });
+  return attestWorkflowDependencies(
+    await resolveSkillDependencies({ aiSkillRoot: aiRoot, editableSkillRoot: editableRoot }),
+    { source: "agent-host", localFilesystem: true, localFileLinks: true },
+  );
 }
 
 async function writeConverterFixture(outDir: string, sourcePng: string, fixture: string): Promise<void> {

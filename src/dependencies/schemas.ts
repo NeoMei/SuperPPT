@@ -39,22 +39,26 @@ const ApiRouteSchema = z.object({
   defaultModel: z.string().min(1),
 }).strict();
 
+export const AiImageRoutingOrderSchema = z.tuple([
+  HostRouteSchema.extend({ provider: z.literal("openai") }),
+  ApiRouteSchema.extend({ provider: z.literal("openai"), defaultModel: z.literal("gpt-image-2") }),
+  HostRouteSchema.extend({ provider: z.literal("gemini") }),
+  ApiRouteSchema.extend({ provider: z.literal("gemini"), defaultModel: z.literal("gemini-3.1-flash-image") }),
+  HostRouteSchema.extend({ provider: z.literal("doubao") }),
+  ApiRouteSchema.extend({ provider: z.literal("doubao"), defaultModel: z.literal("doubao-seedream-5-0-260128") }),
+]);
+
+export const AiImageOutputsSchema = z.object({
+  normalizedSlide: z.object({ format: z.literal("image"), width: z.literal(1920), height: z.literal(1080) }).strict(),
+  editableInput: z.object({ format: z.literal("png"), width: z.literal(1280), height: z.literal(720) }).strict(),
+}).strict();
+
 export const AiImageCapabilityManifestSchema = z.object({
   schemaVersion: z.literal(1),
   skill: z.literal("ai-image-to-ppt"),
   contracts: AiImageSkillContractsSchema,
-  routingOrder: z.tuple([
-    HostRouteSchema.extend({ provider: z.literal("openai") }),
-    ApiRouteSchema.extend({ provider: z.literal("openai"), defaultModel: z.literal("gpt-image-2") }),
-    HostRouteSchema.extend({ provider: z.literal("gemini") }),
-    ApiRouteSchema.extend({ provider: z.literal("gemini") }),
-    HostRouteSchema.extend({ provider: z.literal("doubao") }),
-    ApiRouteSchema.extend({ provider: z.literal("doubao") }),
-  ]),
-  outputs: z.object({
-    normalizedSlide: z.object({ format: z.literal("image"), width: z.literal(1920), height: z.literal(1080) }).strict(),
-    editableInput: z.object({ format: z.literal("png"), width: z.literal(1280), height: z.literal(720) }).strict(),
-  }).strict(),
+  routingOrder: AiImageRoutingOrderSchema,
+  outputs: AiImageOutputsSchema,
   scripts: AiImageSkillScriptsSchema,
 }).strict();
 
@@ -78,21 +82,65 @@ export const DependencyContractSchema = z.object({
         schemaVersion: z.literal(1),
         contracts: AiImageSkillContractsSchema,
         scripts: AiImageSkillScriptsSchema,
+        routingOrder: AiImageRoutingOrderSchema,
+        outputs: AiImageOutputsSchema,
       }).strict(),
     }).strict(),
     z.object({
       skill: z.literal("image-to-editable-pptx"),
       cliFlag: z.literal("--editable-skill"),
       resolution: z.literal("explicit-only"),
-      required: z.tuple([z.literal("package.json"), z.literal("skills/image-to-editable-pptx/SKILL.md")]),
+      required: z.tuple([
+        z.literal("package.json"),
+        z.literal("skills/image-to-editable-pptx/SKILL.md"),
+        z.literal("src/contracts.ts"),
+        z.literal("src/pipeline.ts"),
+        z.literal("src/export/pptx.ts"),
+      ]),
       capabilities: z.object({
         version: z.literal(">=0.2.0 <0.3.0"),
         manifestVersion: z.literal(2),
         officialDonor: z.literal("slide-editable.pptx"),
         objectNames: EditableObjectNamesSchema,
+        evidence: z.object({
+          manifestSchema: z.literal("src/contracts.ts"),
+          officialDonor: z.literal("src/pipeline.ts"),
+          objectNames: z.literal("src/export/pptx.ts"),
+        }).strict(),
       }).strict(),
     }).strict(),
   ]),
+}).strict();
+
+export const ImageToEditablePptxSkillDependencySchema = z.object({
+  kind: z.literal("image-to-editable-pptx"),
+  root: z.string().min(1),
+  packageFile: z.string().min(1),
+  packageSha256: Sha256Schema,
+  skillFile: z.string().min(1),
+  skillSha256: Sha256Schema,
+  version: z.string().min(1),
+  manifestVersion: z.literal(2),
+  officialDonor: z.literal("slide-editable.pptx"),
+  objectNames: EditableObjectNamesSchema,
+  capabilityEvidence: z.object({
+    manifestSchema: z.object({ path: z.string().min(1), sha256: Sha256Schema }).strict(),
+    officialDonor: z.object({ path: z.string().min(1), sha256: Sha256Schema }).strict(),
+    objectNames: z.object({ path: z.string().min(1), sha256: Sha256Schema }).strict(),
+  }).strict(),
+}).strict();
+
+export const WorkflowPreflightBindingSchema = z.object({
+  bindingVersion: z.literal(1),
+  contractFile: z.string().min(1),
+  contractSha256: Sha256Schema,
+  editable: ImageToEditablePptxSkillDependencySchema,
+  host: z.object({
+    source: z.literal("agent-host"),
+    localFilesystem: z.literal(true),
+    localFileLinks: z.literal(true),
+  }).strict(),
+  attestationSha256: Sha256Schema,
 }).strict();
 
 export const AiImageSkillDependencySchema = z.object({
@@ -109,23 +157,12 @@ export const AiImageSkillDependencySchema = z.object({
   outputs: AiImageCapabilityManifestSchema.shape.outputs,
   scripts: AiImageSkillScriptsSchema,
   scriptSha256: AiImageSkillScriptHashesSchema,
-}).strict();
-
-export const ImageToEditablePptxSkillDependencySchema = z.object({
-  kind: z.literal("image-to-editable-pptx"),
-  root: z.string().min(1),
-  packageFile: z.string().min(1),
-  packageSha256: Sha256Schema,
-  skillFile: z.string().min(1),
-  skillSha256: Sha256Schema,
-  version: z.string().min(1),
-  manifestVersion: z.literal(2),
-  officialDonor: z.literal("slide-editable.pptx"),
-  objectNames: EditableObjectNamesSchema,
+  workflowPreflight: WorkflowPreflightBindingSchema.nullable(),
 }).strict();
 
 export type AiImageSkillDependency = z.infer<typeof AiImageSkillDependencySchema>;
 export type ImageToEditablePptxSkillDependency = z.infer<typeof ImageToEditablePptxSkillDependencySchema>;
+export type WorkflowPreflightBinding = z.infer<typeof WorkflowPreflightBindingSchema>;
 
 export type ResolvedDependencies = {
   contractFile: string;
@@ -138,6 +175,7 @@ export type ResolvedDependencies = {
     aiScripts: Record<keyof AiImageSkillDependency["scripts"], string>;
     editablePackageSha256: string;
     editableSkillSha256: string;
+    editableCapabilityEvidence: z.infer<typeof ImageToEditablePptxSkillDependencySchema>["capabilityEvidence"];
     contractSha256: string;
   };
 };
@@ -162,6 +200,7 @@ export type DependencyPreflight = {
     manifestVersion: 2;
     officialDonor: "slide-editable.pptx";
     objectNames: z.infer<typeof ImageToEditablePptxSkillDependencySchema>["objectNames"];
+    capabilityEvidence: z.infer<typeof ImageToEditablePptxSkillDependencySchema>["capabilityEvidence"];
   };
   errors: Array<{ dependency: string; code: string; safeMessage: string }>;
 };

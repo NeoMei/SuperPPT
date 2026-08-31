@@ -76,6 +76,7 @@ function dependencyFromJob(job: ImageGenerationJob): AiImageSkillDependency {
     contracts: job.aiSkill.contracts,
     routingOrder: job.aiSkill.routingOrder,
     outputs: job.aiSkill.outputs,
+    workflowPreflight: job.aiSkill.workflowPreflight,
     scripts: Object.fromEntries(Object.entries(job.aiSkill.scripts).map(([name, script]) => [name, script.path])),
     scriptSha256: Object.fromEntries(Object.entries(job.aiSkill.scripts).map(([name, script]) => [name, script.sha256])),
   });

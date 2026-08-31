@@ -109,6 +109,46 @@ function compatibleVersion(version: string, range: string): boolean {
 
 type LoadedContract = Awaited<ReturnType<typeof loadDependencyContract>>["contract"];
 
+function literalPattern(value: string): RegExp {
+  return new RegExp(value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"));
+}
+
+async function editableCapabilityEvidence(
+  root: string,
+  requirements: LoadedContract["dependencies"][1],
+): Promise<ImageToEditablePptxSkillDependency["capabilityEvidence"]> {
+  const paths = {
+    manifestSchema: await requiredRegularFile(root, join(root, ...requirements.capabilities.evidence.manifestSchema.split("/")), "image-to-editable-pptx manifest capability evidence is missing", "image-to-editable-pptx manifest capability evidence is unsafe"),
+    officialDonor: await requiredRegularFile(root, join(root, ...requirements.capabilities.evidence.officialDonor.split("/")), "image-to-editable-pptx official donor capability evidence is missing", "image-to-editable-pptx official donor capability evidence is unsafe"),
+    objectNames: await requiredRegularFile(root, join(root, ...requirements.capabilities.evidence.objectNames.split("/")), "image-to-editable-pptx object-name capability evidence is missing", "image-to-editable-pptx object-name capability evidence is unsafe"),
+  };
+  const [manifestSource, donorSource, objectSource] = await Promise.all([
+    readFile(paths.manifestSchema, "utf8"),
+    readFile(paths.officialDonor, "utf8"),
+    readFile(paths.objectNames, "utf8"),
+  ]);
+  if (!new RegExp(`manifestVersion\\s*:\\s*z\\.literal\\(\\s*${requirements.capabilities.manifestVersion}\\s*\\)`).test(manifestSource)) {
+    throw new Error("image-to-editable-pptx installed capability evidence does not prove manifest v2");
+  }
+  if (!literalPattern(requirements.capabilities.officialDonor).test(donorSource)) {
+    throw new Error("image-to-editable-pptx installed capability evidence does not prove the official donor");
+  }
+  const objectPatterns = [
+    requirements.capabilities.objectNames.background,
+    requirements.capabilities.objectNames.text.replace("<id>", "${element.id}"),
+    requirements.capabilities.objectNames.shape.replace("<id>", "${element.id}").replace("<label>", "${element.label}"),
+    requirements.capabilities.objectNames.asset.replace("<id>", "${element.id}"),
+  ];
+  if (objectPatterns.some((pattern) => !literalPattern(pattern).test(objectSource))) {
+    throw new Error("image-to-editable-pptx installed capability evidence does not prove the object-name contract");
+  }
+  return {
+    manifestSchema: { path: paths.manifestSchema, sha256: await sha256(paths.manifestSchema) },
+    officialDonor: { path: paths.officialDonor, sha256: await sha256(paths.officialDonor) },
+    objectNames: { path: paths.objectNames, sha256: await sha256(paths.objectNames) },
+  };
+}
+
 async function resolveEditableSkill(root: string, requirements: LoadedContract["dependencies"][1]): Promise<ImageToEditablePptxSkillDependency> {
   const packageFile = await requiredRegularFile(root, join(root, "package.json"), "image-to-editable-pptx package.json is missing", "image-to-editable-pptx package.json is unsafe");
   let pkg: { name?: string; version?: string };
@@ -121,6 +161,7 @@ async function resolveEditableSkill(root: string, requirements: LoadedContract["
     throw new Error(`a compatible image-to-editable-pptx ${requirements.capabilities.version} is required`);
   }
   const skillFile = await requiredRegularFile(root, join(root, "skills", "image-to-editable-pptx", "SKILL.md"), "editable Skill entry is missing", "editable Skill entry is unsafe");
+  const capabilityEvidence = await editableCapabilityEvidence(root, requirements);
   return ImageToEditablePptxSkillDependencySchema.parse({
     kind: "image-to-editable-pptx",
     root,
@@ -132,6 +173,7 @@ async function resolveEditableSkill(root: string, requirements: LoadedContract["
     manifestVersion: requirements.capabilities.manifestVersion,
     officialDonor: requirements.capabilities.officialDonor,
     objectNames: requirements.capabilities.objectNames,
+    capabilityEvidence,
   });
 }
 
@@ -160,6 +202,8 @@ async function resolveAiWithContract(aiSkillRoot: string, requirements: LoadedCo
     manifest.schemaVersion !== requirements.capabilityManifest.schemaVersion
     || JSON.stringify(manifest.contracts) !== JSON.stringify(requirements.capabilityManifest.contracts)
     || JSON.stringify(manifest.scripts) !== JSON.stringify(requirements.capabilityManifest.scripts)
+    || JSON.stringify(manifest.routingOrder) !== JSON.stringify(requirements.capabilityManifest.routingOrder)
+    || JSON.stringify(manifest.outputs) !== JSON.stringify(requirements.capabilityManifest.outputs)
   ) throw new Error("ai-image-to-ppt capability manifest and dependency-contract script requirements disagree");
 
   const entries: Array<readonly [string, string]> = [];
@@ -189,6 +233,7 @@ async function resolveAiWithContract(aiSkillRoot: string, requirements: LoadedCo
     outputs: manifest.outputs,
     scripts,
     scriptSha256,
+    workflowPreflight: null,
   });
 }
 
@@ -219,6 +264,7 @@ export async function resolveSkillDependencies(request: ResolveDependencyRequest
       aiScripts: ai.scriptSha256,
       editablePackageSha256: editable.packageSha256,
       editableSkillSha256: editable.skillSha256,
+      editableCapabilityEvidence: editable.capabilityEvidence,
       contractSha256: loaded.contractSha256,
     },
   };

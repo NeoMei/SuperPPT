@@ -22,6 +22,18 @@
           "prepareEditableInput": "scripts/prepare_editable_input.py",
           "apiGenerator": "scripts/gen_slide.py",
           "normalizedExport": "scripts/export_images.py"
+        },
+        "routingOrder": [
+          { "provider": "openai", "channel": "host", "modelSelection": "host-owned" },
+          { "provider": "openai", "channel": "api", "defaultModel": "gpt-image-2" },
+          { "provider": "gemini", "channel": "host", "modelSelection": "host-owned" },
+          { "provider": "gemini", "channel": "api", "defaultModel": "gemini-3.1-flash-image" },
+          { "provider": "doubao", "channel": "host", "modelSelection": "host-owned" },
+          { "provider": "doubao", "channel": "api", "defaultModel": "doubao-seedream-5-0-260128" }
+        ],
+        "outputs": {
+          "normalizedSlide": { "format": "image", "width": 1920, "height": 1080 },
+          "editableInput": { "format": "png", "width": 1280, "height": 720 }
         }
       }
     },
@@ -29,7 +41,13 @@
       "skill": "image-to-editable-pptx",
       "cliFlag": "--editable-skill",
       "resolution": "explicit-only",
-      "required": ["package.json", "skills/image-to-editable-pptx/SKILL.md"],
+      "required": [
+        "package.json",
+        "skills/image-to-editable-pptx/SKILL.md",
+        "src/contracts.ts",
+        "src/pipeline.ts",
+        "src/export/pptx.ts"
+      ],
       "capabilities": {
         "version": ">=0.2.0 <0.3.0",
         "manifestVersion": 2,
@@ -39,6 +57,11 @@
           "text": "text-<id>",
           "shape": "shape-<id>-<label>",
           "asset": "asset-<id>"
+        },
+        "evidence": {
+          "manifestSchema": "src/contracts.ts",
+          "officialDonor": "src/pipeline.ts",
+          "objectNames": "src/export/pptx.ts"
         }
       }
     }

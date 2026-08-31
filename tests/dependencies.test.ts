@@ -70,13 +70,15 @@ const dependencyContract = {
         schemaVersion: 1,
         contracts: capabilityManifest.contracts,
         scripts: capabilityManifest.scripts,
+        routingOrder: capabilityManifest.routingOrder,
+        outputs: capabilityManifest.outputs,
       },
     },
     {
       skill: "image-to-editable-pptx",
       cliFlag: "--editable-skill",
       resolution: "explicit-only",
-      required: ["package.json", "skills/image-to-editable-pptx/SKILL.md"],
+      required: ["package.json", "skills/image-to-editable-pptx/SKILL.md", "src/contracts.ts", "src/pipeline.ts", "src/export/pptx.ts"],
       capabilities: {
         version: ">=0.2.0 <0.3.0",
         manifestVersion: 2,
@@ -86,6 +88,11 @@ const dependencyContract = {
           text: "text-<id>",
           shape: "shape-<id>-<label>",
           asset: "asset-<id>",
+        },
+        evidence: {
+          manifestSchema: "src/contracts.ts",
+          officialDonor: "src/pipeline.ts",
+          objectNames: "src/export/pptx.ts",
         },
       },
     },
@@ -103,6 +110,7 @@ async function fixture(t: TestContext, version = "0.2.0"): Promise<Fixture> {
   await mkdir(join(ai, "scripts"), { recursive: true });
   await mkdir(join(ai, "references"), { recursive: true });
   await mkdir(join(editable, "skills", "image-to-editable-pptx"), { recursive: true });
+  await mkdir(join(editable, "src", "export"), { recursive: true });
   await writeFile(join(ai, "SKILL.md"), "---\nname: ai-image-to-ppt\n---\n");
   await Promise.all(Object.values(requiredScripts).map((script) => writeFile(
     join(ai, "scripts", script),
@@ -117,6 +125,15 @@ async function fixture(t: TestContext, version = "0.2.0"): Promise<Fixture> {
     join(editable, "skills", "image-to-editable-pptx", "SKILL.md"),
     "---\nname: image-to-editable-pptx\n---\nmanifestVersion: 2\nofficial donor: slide-editable.pptx\nobject names: asset-background, text-<id>, shape-<id>-<label>, asset-<id>\n",
   );
+  await writeFile(join(editable, "src", "contracts.ts"), "export const V2 = { manifestVersion: z.literal(2) };\n");
+  await writeFile(join(editable, "src", "pipeline.ts"), "export const officialDonor = \"slide-editable.pptx\";\n");
+  await writeFile(join(editable, "src", "export", "pptx.ts"), [
+    'const background = { objectName: "asset-background" };',
+    'const text = { objectName: `text-${element.id}` };',
+    'const shape = { objectName: `shape-${element.id}-${element.label}` };',
+    'const asset = { objectName: `asset-${element.id}` };',
+    "",
+  ].join("\n"));
   await writeFile(contractFile, `${JSON.stringify(dependencyContract, null, 2)}\n`);
   return { root, ai, editable, contractFile };
 }
@@ -199,6 +216,36 @@ test("rejects ai-image-to-ppt manifest and dependency-contract script disagreeme
   await writeFile(manifestPath, `${JSON.stringify(manifest)}\n`);
 
   await assert.rejects(resolveSkillDependencies(request(current)), /capability.*script.*disagree|apiGenerator/i);
+});
+
+test("rejects Gemini and Doubao default-model drift from the authoritative capability contract", async (t) => {
+  for (const [name, index, model] of [
+    ["Gemini", 3, "gemini-other"],
+    ["Doubao", 5, "doubao-other"],
+  ] as const) {
+    await t.test(name, async (subtest) => {
+      const current = await fixture(subtest);
+      const manifestPath = join(current.ai, "references", "capabilities.json");
+      const manifest = JSON.parse(await readFile(manifestPath, "utf8"));
+      manifest.routingOrder[index].defaultModel = model;
+      await writeFile(manifestPath, `${JSON.stringify(manifest)}\n`);
+      await assert.rejects(resolveSkillDependencies(request(current)), /capability manifest.*invalid|routing.*disagree/i);
+    });
+  }
+});
+
+test("rejects installed editable capability evidence drift before converter execution", async (t) => {
+  for (const [name, path, replacement, pattern] of [
+    ["manifest v1", "src/contracts.ts", "export const V1 = { manifestVersion: z.literal(1) };\n", /manifest.*v2|capability evidence/i],
+    ["missing official donor", "src/pipeline.ts", "export const officialDonor = \"other.pptx\";\n", /official donor|capability evidence/i],
+    ["object-name drift", "src/export/pptx.ts", "export const names = ['background', 'text', 'shape', 'asset'];\n", /object.name|capability evidence/i],
+  ] as const) {
+    await t.test(name, async (subtest) => {
+      const current = await fixture(subtest);
+      await writeFile(join(current.editable, ...path.split("/")), replacement);
+      await assert.rejects(resolveSkillDependencies(request(current)), pattern);
+    });
+  }
 });
 
 test("rejects converter 0.1, manifest v1, and missing official donor contracts", async (t) => {
@@ -410,6 +457,7 @@ test("preflight CLI uses only explicit roots and rejects env, sibling, and provi
   const fakeEnvironmentRoot = join(current.root, "environment-ai-skill");
   const environment = {
     ...process.env,
+    SUPERPPT_HOST_CAPABILITIES: JSON.stringify({ source: "agent-host", localFilesystem: true, localFileLinks: true }),
     SUPERPPT_AI_IMAGE_TO_PPT_SOURCE: fakeEnvironmentRoot,
     SUPERPPT_IMAGE_TO_EDITABLE_PPTX_SOURCE: join(current.root, "environment-editable-skill"),
   };

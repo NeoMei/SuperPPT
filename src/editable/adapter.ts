@@ -6,7 +6,7 @@ import { isDeepStrictEqual, promisify } from "node:util";
 import JSZip from "jszip";
 import sharp from "sharp";
 
-import { preflightDependencies } from "../dependencies/preflight.js";
+import { assertWorkflowPreflightCurrent, preflightDependencies } from "../dependencies/preflight.js";
 import type { ResolvedDependencies } from "../dependencies/schemas.js";
 import { assertAiImageSkillDependencyCurrent } from "../generation/authorization.js";
 import { withGenerationLease } from "../generation/lease.js";
@@ -1193,6 +1193,7 @@ export async function convertProjectPage(options: {
   if (!options.dependencies) throw new Error("editable conversion requires preflight-resolved dependencies");
   const report = await preflightDependencies(options.dependencies);
   if (!report.ok) throw new Error("editable conversion dependency preflight failed");
+  await assertWorkflowPreflightCurrent(options.dependencies.ai);
   await assertAiImageSkillDependencyCurrent(options.dependencies.ai);
   if (await realpath(options.converterRoot) !== options.dependencies.editable.root) {
     throw new Error("editable converter root does not match the preflight-resolved dependency");

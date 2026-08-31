@@ -22,6 +22,7 @@ const AiSkillBindingSchema = AiImageSkillDependencySchema.pick({
   contracts: true,
   routingOrder: true,
   outputs: true,
+  workflowPreflight: true,
 }).extend({
   scripts: z.object(Object.fromEntries(Object.keys(AiImageSkillDependencySchema.shape.scripts.shape).map((name) => [
     name,

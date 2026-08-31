@@ -5,7 +5,8 @@ import { dirname, join } from "node:path";
 import sharp from "sharp";
 
 import type { AiImageSkillDependency } from "../../src/dependencies/schemas.js";
-import { resolveAiImageSkillDependency } from "../../src/dependencies/resolve.js";
+import { resolveSkillDependencies } from "../../src/dependencies/resolve.js";
+import { attestWorkflowDependencies } from "../../src/dependencies/preflight.js";
 import { admitDelegatedGenerationCall, publishStyleSampleGenerationPlan } from "../../src/generation/authorization.js";
 import { recordDelegatedResult } from "../../src/generation/delegation-result.js";
 import { finalizeStyleSample, prepareStyleSampleJob } from "../../src/generation/style-sample.js";
@@ -49,7 +50,18 @@ async function testAiDependency(root: string): Promise<AiImageSkillDependency> {
     outputs: { normalizedSlide: { format: "image", width: 1920, height: 1080 }, editableInput: { format: "png", width: 1280, height: 720 } },
     scripts: Object.fromEntries(Object.entries(scripts).map(([name, path]) => [name, `scripts/${path.split("/").at(-1)}`])),
   }, null, 2)}\n`);
-  return resolveAiImageSkillDependency(aiRoot);
+  const editableRoot = join(dirname(root), "delegated-style-sample-editable");
+  await mkdir(join(editableRoot, "skills", "image-to-editable-pptx"), { recursive: true });
+  await mkdir(join(editableRoot, "src", "export"), { recursive: true });
+  await writeFile(join(editableRoot, "package.json"), JSON.stringify({ name: "image-to-editable-pptx", version: "0.2.0" }));
+  await writeFile(join(editableRoot, "skills", "image-to-editable-pptx", "SKILL.md"), "---\nname: image-to-editable-pptx\n---\n");
+  await writeFile(join(editableRoot, "src", "contracts.ts"), "export const V2 = { manifestVersion: z.literal(2) };\n");
+  await writeFile(join(editableRoot, "src", "pipeline.ts"), "export const donor = \"slide-editable.pptx\";\n");
+  await writeFile(join(editableRoot, "src", "export", "pptx.ts"), 'objectName: "asset-background"; objectName: `text-${element.id}`; objectName: `shape-${element.id}-${element.label}`; objectName: `asset-${element.id}`;\n');
+  return attestWorkflowDependencies(await resolveSkillDependencies({
+    aiSkillRoot: aiRoot,
+    editableSkillRoot: editableRoot,
+  }), { source: "agent-host", localFilesystem: true, localFileLinks: true }).ai;
 }
 
 /** Creates authenticated sample evidence as if the external Agent had completed its one admitted call. */

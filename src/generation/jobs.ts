@@ -7,6 +7,7 @@ import { join } from "node:path";
 import { z } from "zod";
 
 import { AiImageSkillDependencySchema, type AiImageSkillDependency } from "../dependencies/schemas.js";
+import { assertWorkflowPreflightCurrent } from "../dependencies/preflight.js";
 import { loadValidatedPlan } from "../planning/load.js";
 import type { SlideSpec } from "../planning/schemas.js";
 import { readOwnedRegularFile } from "../project/safe-file.js";
@@ -15,7 +16,6 @@ import { canonicalStyleSample } from "../styles/sample-contract.js";
 import { compileSlidePrompt } from "../styles/prompt-compiler.js";
 import { readApprovedStyleLock, readStyleLock, type LockedStyle } from "../styles/style-lock.js";
 import {
-  assertAiImageSkillDependencyCurrent,
   assertAuthorizedJobBinding,
   assertPreviousPromptPublished,
   authorizationCallBudget,
@@ -91,6 +91,7 @@ function dependencyBinding(ai: AiImageSkillDependency): ImageGenerationJob["aiSk
     contracts: ai.contracts,
     routingOrder: ai.routingOrder,
     outputs: ai.outputs,
+    workflowPreflight: ai.workflowPreflight,
     scripts: Object.fromEntries(Object.entries(ai.scripts).map(([name, path]) => [name, {
       path,
       sha256: ai.scriptSha256[name as keyof typeof ai.scriptSha256],
@@ -461,7 +462,7 @@ export async function prepareImageGenerationJob(
   }
   return withGenerationLease(root, async (canonicalRoot) => {
     await assertProjectMutationNotFrozen(canonicalRoot);
-    const ai = await assertAiImageSkillDependencyCurrent(request.aiDependency);
+    const ai = await assertWorkflowPreflightCurrent(request.aiDependency);
     const authorization = await authorizationForPreparation(canonicalRoot, request.kind);
     const [manifest, lock] = await Promise.all([
       readProject(canonicalRoot),

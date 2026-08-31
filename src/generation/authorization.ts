@@ -7,6 +7,7 @@ import { promisify } from "node:util";
 
 import type { AiImageSkillDependency } from "../dependencies/schemas.js";
 import { AiImageCapabilityManifestSchema, AiImageSkillDependencySchema } from "../dependencies/schemas.js";
+import { assertWorkflowPreflightCurrent } from "../dependencies/preflight.js";
 import { assertGateCurrent } from "../planning/confirm.js";
 import { loadValidatedPlan } from "../planning/load.js";
 import { SlideSpecSchema } from "../planning/schemas.js";
@@ -78,6 +79,7 @@ function aiSkillBinding(ai: AiImageSkillDependency): ImageGenerationJob["aiSkill
     contracts: ai.contracts,
     routingOrder: ai.routingOrder,
     outputs: ai.outputs,
+    workflowPreflight: ai.workflowPreflight,
     scripts: Object.fromEntries(Object.entries(ai.scripts).map(([name, path]) => [name, {
       path,
       sha256: ai.scriptSha256[name as keyof typeof ai.scriptSha256],
@@ -177,6 +179,22 @@ async function assertAiSkillBindingCurrent(binding: ImageGenerationJob["aiSkill"
     await assertPhysicalFileIdentity(binding.root, script.path, script.sha256);
   }
   await assertGitRevisionCurrent(binding.root, binding.gitRevision);
+  await assertWorkflowPreflightCurrent(AiImageSkillDependencySchema.parse({
+    kind: "ai-image-to-ppt",
+    root: binding.root,
+    skillFile,
+    skillSha256: binding.skillSha256,
+    gitRevision: binding.gitRevision,
+    capabilityManifestFile: join(binding.root, "references", "capabilities.json"),
+    capabilityManifestSha256: binding.capabilityManifestSha256,
+    capabilitySchemaVersion: binding.capabilitySchemaVersion,
+    contracts: binding.contracts,
+    routingOrder: binding.routingOrder,
+    outputs: binding.outputs,
+    scripts: Object.fromEntries(Object.entries(binding.scripts).map(([name, script]) => [name, script.path])),
+    scriptSha256: Object.fromEntries(Object.entries(binding.scripts).map(([name, script]) => [name, script.sha256])),
+    workflowPreflight: binding.workflowPreflight,
+  }));
 }
 
 async function requirePlanningGates(root: string, includeStyleSample: boolean): Promise<void> {
@@ -245,7 +263,7 @@ export async function publishGenerationAuthorizationPlan(
     await assertProjectMutationNotFrozen(canonicalRoot);
     await requirePlanningGates(canonicalRoot, true);
     const [ai, manifest, lock, plan] = await Promise.all([
-      assertAiImageSkillDependencyCurrent(request.aiDependency),
+      assertWorkflowPreflightCurrent(request.aiDependency),
       readProject(canonicalRoot),
       readApprovedStyleLock(canonicalRoot),
       loadValidatedPlan(canonicalRoot),
@@ -281,7 +299,7 @@ export async function publishStyleSampleGenerationPlan(
     await assertProjectMutationNotFrozen(canonicalRoot);
     await requirePlanningGates(canonicalRoot, false);
     const [ai, manifest, lock, sample, plan] = await Promise.all([
-      assertAiImageSkillDependencyCurrent(request.aiDependency),
+      assertWorkflowPreflightCurrent(request.aiDependency),
       readProject(canonicalRoot),
       readStyleLock(canonicalRoot),
       canonicalStyleSample(canonicalRoot),
@@ -315,7 +333,7 @@ export async function publishPageRegenerationAuthorizationPlan(root: string, req
     await assertProjectMutationNotFrozen(canonicalRoot);
     await requirePlanningGates(canonicalRoot, true);
     const [ai, manifest, lock, plan, currentAuthorization] = await Promise.all([
-      assertAiImageSkillDependencyCurrent(request.aiDependency),
+      assertWorkflowPreflightCurrent(request.aiDependency),
       readProject(canonicalRoot),
       readApprovedStyleLock(canonicalRoot),
       loadValidatedPlan(canonicalRoot),

@@ -1,7 +1,7 @@
 import { resolve } from "node:path";
 
-import { preflightDependencies } from "./dependencies/preflight.js";
-import { resolveAiImageSkillDependency, resolveSkillDependencies } from "./dependencies/resolve.js";
+import { attestWorkflowDependencies, preflightDependencies } from "./dependencies/preflight.js";
+import { resolveSkillDependencies } from "./dependencies/resolve.js";
 import {
   readProjectAcceptance,
   recordClientAcceptance,
@@ -172,6 +172,14 @@ function requireInjectedLocalHandoff(): void {
   readInjectedHostRuntimeCapabilities(process.env);
 }
 
+async function resolveInjectedWorkflowDependencies(aiSkillRoot: string, editableSkillRoot: string) {
+  const host = readInjectedHostRuntimeCapabilities(process.env);
+  const resolved = await resolveSkillDependencies({ aiSkillRoot, editableSkillRoot });
+  const report = await preflightDependencies(resolved);
+  if (!report.ok) throw new Error("full workflow dependency preflight failed");
+  return attestWorkflowDependencies(resolved, host);
+}
+
 function completeDeckOutput(
   title: string,
   deck: {
@@ -318,6 +326,7 @@ async function main(argv: string[]): Promise<void> {
     return;
   }
   if (command === "preflight") {
+    requireInjectedLocalHandoff();
     const options = exactFlags(argv.slice(1), ["--ai-skill", "--editable-skill"]);
     const report = await preflightDependencies(await resolveSkillDependencies({
       aiSkillRoot: options.get("--ai-skill")!,
@@ -390,9 +399,10 @@ async function main(argv: string[]): Promise<void> {
   }
 
   if (command === "publish-sample-generation-plan") {
-    const options = exactFlags(argv.slice(1), ["--project", "--ai-skill"]);
+    const options = exactFlags(argv.slice(1), ["--project", "--ai-skill", "--editable-skill"]);
+    const dependencies = await resolveInjectedWorkflowDependencies(options.get("--ai-skill")!, options.get("--editable-skill")!);
     const plan = await publishStyleSampleGenerationPlan(options.get("--project")!, {
-      aiDependency: await resolveAiImageSkillDependency(options.get("--ai-skill")!),
+      aiDependency: dependencies.ai,
       callBudget: 1,
     });
     outputJson({ plan, nextRequiredAction: "ask the user to approve style-sample-generation" });
@@ -400,10 +410,11 @@ async function main(argv: string[]): Promise<void> {
   }
 
   if (command === "prepare-style-sample-job") {
-    const options = exactFlags(argv.slice(1), ["--project", "--ai-skill"]);
+    const options = exactFlags(argv.slice(1), ["--project", "--ai-skill", "--editable-skill"]);
+    const dependencies = await resolveInjectedWorkflowDependencies(options.get("--ai-skill")!, options.get("--editable-skill")!);
     const job = await prepareStyleSampleJob(
       options.get("--project")!,
-      await resolveAiImageSkillDependency(options.get("--ai-skill")!),
+      dependencies.ai,
     );
     outputJson({ job, nextRequiredAction: "invoke ai-image-to-ppt as the Agent, then admit and record its exact result" });
     return;
@@ -445,9 +456,10 @@ async function main(argv: string[]): Promise<void> {
   }
 
   if (command === "publish-generation-plan") {
-    const options = exactFlags(argv.slice(1), ["--project", "--ai-skill", "--call-budget"]);
+    const options = exactFlags(argv.slice(1), ["--project", "--ai-skill", "--editable-skill", "--call-budget"]);
+    const dependencies = await resolveInjectedWorkflowDependencies(options.get("--ai-skill")!, options.get("--editable-skill")!);
     const plan = await publishGenerationAuthorizationPlan(options.get("--project")!, {
-      aiDependency: await resolveAiImageSkillDependency(options.get("--ai-skill")!),
+      aiDependency: dependencies.ai,
       callBudget: integerFlag(options.get("--call-budget")!, "call budget", 1),
     });
     outputJson({ plan, nextRequiredAction: "ask the user to approve generation-authorization" });
@@ -455,17 +467,19 @@ async function main(argv: string[]): Promise<void> {
   }
 
   if (command === "prepare-deck-job") {
-    const options = exactFlags(argv.slice(1), ["--project", "--ai-skill"]);
+    const options = exactFlags(argv.slice(1), ["--project", "--ai-skill", "--editable-skill"]);
+    const dependencies = await resolveInjectedWorkflowDependencies(options.get("--ai-skill")!, options.get("--editable-skill")!);
     const job = await prepareDeckJob(
       options.get("--project")!,
-      await resolveAiImageSkillDependency(options.get("--ai-skill")!),
+      dependencies.ai,
     );
     outputJson({ job, nextRequiredAction: "invoke ai-image-to-ppt serially as the Agent; admit each exact call first" });
     return;
   }
 
   if (command === "admit-image-call") {
-    const options = exactFlags(argv.slice(1), ["--project", "--job", "--slide", "--attempt", "--request-ordinal"]);
+    const options = exactFlags(argv.slice(1), ["--project", "--job", "--slide", "--attempt", "--request-ordinal", "--ai-skill", "--editable-skill"]);
+    const dependencies = await resolveInjectedWorkflowDependencies(options.get("--ai-skill")!, options.get("--editable-skill")!);
     const root = options.get("--project")!;
     const job = await verifiedJob(root, options.get("--job")!);
     const slideId = options.get("--slide")!;
@@ -473,6 +487,9 @@ async function main(argv: string[]): Promise<void> {
     const requestOrdinal = integerFlag(options.get("--request-ordinal")!, "request ordinal", 0);
     if (!job.pages.some((page) => page.slideId === slideId && page.attempt === attempt)) {
       throw new Error("admission tuple does not name a page in the immutable job");
+    }
+    if (JSON.stringify(job.aiSkill.workflowPreflight) !== JSON.stringify(dependencies.ai.workflowPreflight)) {
+      throw new Error("external generation call dependency preflight does not match the immutable job");
     }
     outputJson({
       ...await admitDelegatedGenerationCall(root, { jobId: job.jobId, slideId, attempt, requestOrdinal }),
@@ -562,10 +579,7 @@ async function main(argv: string[]): Promise<void> {
 
   if (command === "convert-page") {
     const options = exactFlags(argv.slice(1), ["--project", "--slide", "--ai-skill", "--editable-skill"]);
-    const resolved = await resolveSkillDependencies({
-      aiSkillRoot: options.get("--ai-skill")!,
-      editableSkillRoot: options.get("--editable-skill")!,
-    });
+    const resolved = await resolveInjectedWorkflowDependencies(options.get("--ai-skill")!, options.get("--editable-skill")!);
     const result = await convertProjectPage({
       root: options.get("--project")!,
       slideId: options.get("--slide")!,

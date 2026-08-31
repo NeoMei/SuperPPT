@@ -102,6 +102,7 @@ function dependencyBinding(job: ImageGenerationJob) {
     contracts: job.aiSkill.contracts,
     routingOrder: job.aiSkill.routingOrder,
     outputs: job.aiSkill.outputs,
+    workflowPreflight: job.aiSkill.workflowPreflight,
     scripts: Object.fromEntries(Object.entries(job.aiSkill.scripts).map(([name, script]) => [name, script.path])) as import("../dependencies/schemas.js").AiImageSkillDependency["scripts"],
     scriptSha256: Object.fromEntries(Object.entries(job.aiSkill.scripts).map(([name, script]) => [name, script.sha256])) as import("../dependencies/schemas.js").AiImageSkillDependency["scriptSha256"],
   };

@@ -42,6 +42,7 @@ import {
   type SerialStickyReport,
 } from "../src/generation/schemas.js";
 import { resolveSkillDependencies } from "../src/dependencies/resolve.js";
+import { attestWorkflowDependencies } from "../src/dependencies/preflight.js";
 import type { AiImageSkillDependency } from "../src/dependencies/schemas.js";
 import { assembleProjectCandidate, type FinalRender } from "../src/deck/assemble.js";
 import { approveExecutionGate, approveGate, assertGateCurrent } from "../src/planning/confirm.js";
@@ -77,6 +78,7 @@ const PRESENTATION = "http://schemas.openxmlformats.org/presentationml/2006/main
 const DOCUMENT_RELATIONSHIPS = "http://schemas.openxmlformats.org/officeDocument/2006/relationships";
 const PACKAGE_RELATIONSHIPS = "http://schemas.openxmlformats.org/package/2006/relationships";
 const POWERPOINT_2010 = "http://schemas.microsoft.com/office/powerpoint/2010/main";
+const HOST_CAPABILITIES = { source: "agent-host" as const, localFilesystem: true, localFileLinks: true };
 
 async function directory(t: TestContext, prefix: string): Promise<string> {
   const root = await mkdtemp(join(tmpdir(), prefix));
@@ -239,13 +241,17 @@ async function approvedProject(
   }, null, 2)}\n`);
   const editableRoot = join(parent, "image-to-editable-pptx");
   await mkdir(join(editableRoot, "skills", "image-to-editable-pptx"), { recursive: true });
+  await mkdir(join(editableRoot, "src", "export"), { recursive: true });
   await writeFile(join(editableRoot, "package.json"), JSON.stringify({ name: "image-to-editable-pptx", version: "0.2.0" }));
   await writeFile(join(editableRoot, "package-lock.json"), JSON.stringify({ lockfileVersion: 3 }));
   await writeFile(join(editableRoot, "skills", "image-to-editable-pptx", "SKILL.md"), "---\nname: image-to-editable-pptx\n---\nmanifestVersion: 2\nofficial donor: slide-editable.pptx\nobject names: asset-background, text-<id>, shape-<id>-<label>, asset-<id>\n");
-  const aiDependency = (await resolveSkillDependencies({
+  await writeFile(join(editableRoot, "src", "contracts.ts"), "export const V2 = { manifestVersion: z.literal(2) };\n");
+  await writeFile(join(editableRoot, "src", "pipeline.ts"), "export const donor = \"slide-editable.pptx\";\n");
+  await writeFile(join(editableRoot, "src", "export", "pptx.ts"), 'objectName: "asset-background"; objectName: `text-${element.id}`; objectName: `shape-${element.id}-${element.label}`; objectName: `asset-${element.id}`;\n');
+  const aiDependency = attestWorkflowDependencies(await resolveSkillDependencies({
     aiSkillRoot: aiRoot,
     editableSkillRoot: editableRoot,
-  })).ai;
+  }), HOST_CAPABILITIES).ai;
   if (styleLock) {
     await createProvisionalStyleLock(root, styleLock);
     await finalizeDelegatedStyleSampleForTest(root);
@@ -407,6 +413,37 @@ async function authorizedDeckProject(t: TestContext, prefix: string) {
   await approveGate(fixture.root, "generation-authorization");
   return fixture;
 }
+
+test("full workflow preflight blocks generation before project access and revalidates editable evidence before admission", async (t) => {
+  const fixture = await authorizedDeckProject(t, "superppt-full-workflow-preflight-");
+  const invoke = (args: string[], host = HOST_CAPABILITIES) => execFileAsync(process.execPath, ["--import", "tsx", "src/cli.ts", ...args], {
+    cwd: process.cwd(),
+    env: { ...process.env, SUPERPPT_HOST_CAPABILITIES: JSON.stringify(host) },
+  });
+  await assert.rejects(invoke([
+    "prepare-deck-job", "--project", "/definitely/not/a/project", "--ai-skill", "/missing-ai", "--editable-skill", "/missing-editable",
+  ], { source: "agent-host", localFilesystem: true, localFileLinks: false }), /local file links/i);
+  await assert.rejects(invoke([
+    "prepare-deck-job", "--project", "/definitely/not/a/project", "--ai-skill", fixture.aiDependency.root, "--editable-skill", "/missing-editable",
+  ]), /image-to-editable-pptx Skill root is unavailable/i);
+
+  const unattested = { ...fixture.aiDependency, workflowPreflight: null };
+  await assert.rejects(
+    publishGenerationAuthorizationPlan(fixture.root, { aiDependency: unattested, callBudget: 3 }),
+    /full workflow preflight attestation/i,
+  );
+
+  const job = await prepareImageGenerationJob(fixture.root, { kind: "deck", aiDependency: fixture.aiDependency });
+  const ledgerBefore = await readCallLedger(fixture.root);
+  await writeFile(join(fixture.editableRoot, "src", "contracts.ts"), "export const V1 = { manifestVersion: z.literal(1) };\n");
+  await assert.rejects(admitDelegatedGenerationCall(fixture.root, {
+    jobId: job.jobId,
+    slideId: job.pages[0]!.slideId,
+    attempt: job.pages[0]!.attempt,
+    requestOrdinal: 1,
+  }), /workflow preflight attestation is no longer current/i);
+  assert.deepEqual(await readCallLedger(fixture.root), ledgerBefore);
+});
 
 async function fakeCandidateOutputs(
   renders: FinalRender[],
@@ -1899,10 +1936,10 @@ test("image generation job rejects a changed non-null Skill Git revision", async
   await execFileAsync("git", ["-C", fixture.aiDependency.root, "config", "user.name", "SuperPPT Tests"]);
   await execFileAsync("git", ["-C", fixture.aiDependency.root, "add", "."]);
   await execFileAsync("git", ["-C", fixture.aiDependency.root, "commit", "-m", "initial Skill"]);
-  const dependency = (await resolveSkillDependencies({
+  const dependency = attestWorkflowDependencies(await resolveSkillDependencies({
     aiSkillRoot: fixture.aiDependency.root,
     editableSkillRoot: fixture.editableRoot,
-  })).ai;
+  }), HOST_CAPABILITIES).ai;
   assert.notEqual(dependency.gitRevision, null);
   await approveStyleLock(fixture.root);
   await publishGenerationAuthorizationPlan(fixture.root, { aiDependency: dependency, callBudget: 3 });
@@ -3314,6 +3351,7 @@ test("delegation CLI admits an exact immutable job tuple and settles its private
   const environment = {
     ...process.env,
     SUPERPPT_AUTHORIZATION_TRUST_ROOT: fixture.authorizationTrustRoot,
+    SUPERPPT_HOST_CAPABILITIES: JSON.stringify(HOST_CAPABILITIES),
   };
   const invoke = (args: string[]) => execFileAsync(process.execPath, [...cli, ...args], {
     cwd: process.cwd(),
@@ -3324,6 +3362,7 @@ test("delegation CLI admits an exact immutable job tuple and settles its private
     "prepare-deck-job",
     "--project", fixture.root,
     "--ai-skill", fixture.aiDependency.root,
+    "--editable-skill", fixture.editableRoot,
   ]);
   assert.equal(prepared.stderr, "");
   const job = ImageGenerationJobSchema.parse(JSON.parse(prepared.stdout).job);
@@ -3336,6 +3375,8 @@ test("delegation CLI admits an exact immutable job tuple and settles its private
     "--slide", page.slideId,
     "--attempt", String(page.attempt),
     "--request-ordinal", "1",
+    "--ai-skill", fixture.aiDependency.root,
+    "--editable-skill", fixture.editableRoot,
   ]);
   const admission = JSON.parse(admitted.stdout) as { admissionToken: string; remaining: number };
   assert.match(admission.admissionToken, /^[a-f0-9]{64}$/);
