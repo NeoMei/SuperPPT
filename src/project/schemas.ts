@@ -105,7 +105,6 @@ export const EditableRevisionBindingSchema = z.object({
   modifiedRevisionRecordPath: z.string().startsWith("editable/"),
   sourceFinalRender: ArtifactSchema,
   conversionFinalRender: ArtifactSchema,
-  preview: ArtifactSchema,
   modifiedManifest: ArtifactSchema,
 }).strict().superRefine((binding, context) => {
   const base = `editable/${binding.slideId}/${binding.modifiedRevisionId}`;
@@ -115,13 +114,9 @@ export const EditableRevisionBindingSchema = z.object({
   if (binding.modifiedManifest.path !== `${base}/modified-manifest.json`) {
     context.addIssue({ code: "custom", path: ["modifiedManifest", "path"], message: "editable manifest path must match the bound slide and revision" });
   }
-  if (binding.preview.path !== `previews/editable/${binding.slideId}/${binding.modifiedRevisionId}.png`) {
-    context.addIssue({ code: "custom", path: ["preview", "path"], message: "editable preview path must match the bound slide and revision" });
-  }
   for (const [name, artifact] of Object.entries({
     sourceFinalRender: binding.sourceFinalRender,
     conversionFinalRender: binding.conversionFinalRender,
-    preview: binding.preview,
     modifiedManifest: binding.modifiedManifest,
   })) {
     if (artifact.revisionId !== binding.projectRevisionId) {
@@ -178,7 +173,6 @@ export const GateSchema = z.object({
     "generation-authorization",
     "deck-review",
     "revision-impact",
-    "slide-preview",
   ]),
   revisionId: z.string().uuid(),
   approvalId: z.string().uuid().optional(),
@@ -194,7 +188,6 @@ export const GateSchema = z.object({
     ]),
     descriptorSha256: Sha256Schema,
   }).strict().optional(),
-  slidePreview: EditableRevisionBindingSchema.optional(),
   deckReview: DeckReviewGateBindingSchema.optional(),
   confirmedAt: z.string().datetime(),
 }).strict().superRefine((gate, context) => {
@@ -202,35 +195,13 @@ export const GateSchema = z.object({
     if (gate.gate !== "deck-review") {
       context.addIssue({ code: "custom", path: ["deckReview"], message: "only deck-review gates accept complete deck bindings" });
     }
-    if (Object.keys(gate.artifactHashes).length > 0 || gate.approvalId || gate.snapshotPath || gate.snapshotManifestSha256 || gate.presentation || gate.slidePreview) {
+    if (Object.keys(gate.artifactHashes).length > 0 || gate.approvalId || gate.snapshotPath || gate.snapshotManifestSha256 || gate.presentation) {
       context.addIssue({ code: "custom", message: "complete deck review binds only revisionId, absolutePath, and sha256" });
     }
     return;
   }
   if (gate.gate !== "deck-review" && gate.deckReview) {
     context.addIssue({ code: "custom", path: ["deckReview"], message: "complete deck binding is only valid for deck review" });
-  }
-  if (gate.gate === "slide-preview") {
-    if (!gate.slidePreview) {
-      context.addIssue({ code: "custom", path: ["slidePreview"], message: "slide-preview gate requires an external editable revision binding" });
-      return;
-    }
-    const expected = [gate.slidePreview.modifiedRevisionRecordPath, gate.slidePreview.preview.path].sort();
-    if (JSON.stringify(Object.keys(gate.artifactHashes).sort()) !== JSON.stringify(expected)) {
-      context.addIssue({ code: "custom", path: ["artifactHashes"], message: "slide-preview gate must bind the record and preview artifacts" });
-    }
-    if (
-      gate.revisionId !== gate.slidePreview.projectRevisionId
-      || gate.artifactHashes[gate.slidePreview.modifiedRevisionRecordPath] !== gate.slidePreview.expectedModifiedRevisionRecordSha256
-      || gate.artifactHashes[gate.slidePreview.preview.path] !== gate.slidePreview.preview.sha256
-    ) context.addIssue({ code: "custom", message: "slide-preview gate identity is inconsistent" });
-    if (gate.approvalId || gate.snapshotPath || gate.snapshotManifestSha256 || gate.presentation) {
-      context.addIssue({ code: "custom", message: "slide-preview gate accepts only direct conditional evidence" });
-    }
-    return;
-  }
-  if (gate.slidePreview) {
-    context.addIssue({ code: "custom", path: ["slidePreview"], message: "only slide-preview gates accept editable revision bindings" });
   }
   if (gate.gate === "style-sample-generation") {
     if (
@@ -317,15 +288,11 @@ export const ProjectManifestSchema = z.object({
     }).strict()),
     exports: z.object({
       pptx: ArtifactSchema,
-      pdf: ArtifactSchema,
-      montage: ArtifactSchema,
       acceptance: ArtifactSchema,
     }).strict(),
   }).strict()).optional(),
   exports: z.object({
     pptx: ArtifactSchema.nullable(),
-    pdf: ArtifactSchema.nullable(),
-    montage: ArtifactSchema.nullable(),
     acceptance: ArtifactSchema.nullable(),
   }).strict(),
 }).strict().superRefine((manifest, context) => {

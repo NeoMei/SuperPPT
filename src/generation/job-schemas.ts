@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 
 import { z } from "zod";
 
+import { AiImageSkillDependencySchema } from "../dependencies/schemas.js";
 import { Sha256Schema } from "../project/schemas.js";
 import { SlideSpecSchema } from "../planning/schemas.js";
 import { StyleLockSchema, StyleReferenceSchema } from "../styles/schemas.js";
@@ -12,16 +13,20 @@ export const ImageJobKindSchema = z.enum([
   "page-regeneration",
 ]);
 
-const AiSkillBindingSchema = z.object({
-  root: z.string().min(1),
-  skillSha256: Sha256Schema,
-  gitRevision: z.string().min(1).nullable(),
-  scripts: z.object({
-    generationResult: z.object({ path: z.string().min(1), sha256: Sha256Schema }).strict(),
-    hostRoutingPolicy: z.object({ path: z.string().min(1), sha256: Sha256Schema }).strict(),
-    importHostImage: z.object({ path: z.string().min(1), sha256: Sha256Schema }).strict(),
-    prepareEditableInput: z.object({ path: z.string().min(1), sha256: Sha256Schema }).strict(),
-  }).strict(),
+const AiSkillBindingSchema = AiImageSkillDependencySchema.pick({
+  root: true,
+  skillSha256: true,
+  gitRevision: true,
+  capabilityManifestSha256: true,
+  capabilitySchemaVersion: true,
+  contracts: true,
+  routingOrder: true,
+  outputs: true,
+}).extend({
+  scripts: z.object(Object.fromEntries(Object.keys(AiImageSkillDependencySchema.shape.scripts.shape).map((name) => [
+    name,
+    z.object({ path: z.string().min(1), sha256: Sha256Schema }).strict(),
+  ]))).strict(),
 }).strict();
 
 const OutboundDisclosureSchema = z.object({

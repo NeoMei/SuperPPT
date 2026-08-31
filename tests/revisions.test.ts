@@ -79,8 +79,6 @@ async function seedSlides(root: string): Promise<void> {
   const artifacts = [
     [`images/${A}.png`, Buffer.from("image-a")],
     [`images/${B}.png`, Buffer.from("image-b")],
-    [`previews/${A}.png`, Buffer.from("preview-a")],
-    [`previews/${B}.png`, Buffer.from("preview-b")],
     ["output/deck.pptx", Buffer.from("deck")],
   ] as const;
   for (const [path, bytes] of artifacts) {
@@ -107,11 +105,7 @@ async function seedSlides(root: string): Promise<void> {
         revisionId: manifest.currentRevision.id,
       },
       editable: null,
-      finalRender: {
-        path: `previews/${id}.png`,
-        sha256: hashes[`previews/${id}.png`]!,
-        revisionId: manifest.currentRevision.id,
-      },
+      finalRender: null,
       staleReasons: [],
     })),
     exports: {
@@ -733,7 +727,7 @@ test("applies order-only without invalidating slide images and applies style glo
   await applyRevision(orderRoot, orderPlan, orderPlan.change);
   const ordered = await readProject(orderRoot);
   assert.deepEqual(ordered.slides.map((slide) => slide.status), ["ready", "ready"]);
-  assert.ok(ordered.slides.every((slide) => slide.image && slide.finalRender));
+  assert.ok(ordered.slides.every((slide) => slide.image && slide.finalRender === null));
   assert.equal(ordered.exports.pptx, null);
 
   const styleRoot = await project(t, "superppt-impact-style-");

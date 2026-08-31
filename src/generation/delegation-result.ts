@@ -96,18 +96,14 @@ function dependencyBinding(job: ImageGenerationJob) {
     skillFile: join(job.aiSkill.root, "SKILL.md"),
     skillSha256: job.aiSkill.skillSha256,
     gitRevision: job.aiSkill.gitRevision,
-    scripts: {
-      generationResult: job.aiSkill.scripts.generationResult.path,
-      hostRoutingPolicy: job.aiSkill.scripts.hostRoutingPolicy.path,
-      importHostImage: job.aiSkill.scripts.importHostImage.path,
-      prepareEditableInput: job.aiSkill.scripts.prepareEditableInput.path,
-    },
-    scriptSha256: {
-      generationResult: job.aiSkill.scripts.generationResult.sha256,
-      hostRoutingPolicy: job.aiSkill.scripts.hostRoutingPolicy.sha256,
-      importHostImage: job.aiSkill.scripts.importHostImage.sha256,
-      prepareEditableInput: job.aiSkill.scripts.prepareEditableInput.sha256,
-    },
+    capabilityManifestFile: join(job.aiSkill.root, "references", "capabilities.json"),
+    capabilityManifestSha256: job.aiSkill.capabilityManifestSha256,
+    capabilitySchemaVersion: job.aiSkill.capabilitySchemaVersion,
+    contracts: job.aiSkill.contracts,
+    routingOrder: job.aiSkill.routingOrder,
+    outputs: job.aiSkill.outputs,
+    scripts: Object.fromEntries(Object.entries(job.aiSkill.scripts).map(([name, script]) => [name, script.path])) as import("../dependencies/schemas.js").AiImageSkillDependency["scripts"],
+    scriptSha256: Object.fromEntries(Object.entries(job.aiSkill.scripts).map(([name, script]) => [name, script.sha256])) as import("../dependencies/schemas.js").AiImageSkillDependency["scriptSha256"],
   };
 }
 

@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
+import { access, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -10,7 +10,7 @@ import { runOfflineAcceptance } from "../src/acceptance/offline.js";
 import { assembleProjectCandidate } from "../src/deck/assemble.js";
 import { sha256 } from "../src/project/store.js";
 
-test("runs intake through mixed-slide replacement without changing untouched renders", async (t) => {
+test("keeps editable preparation private and emits no post-save reconstruction artifacts", async (t) => {
   const temporary = process.env.SUPERPPT_ACCEPTANCE_ROOT
     ?? await mkdtemp(join(tmpdir(), "superppt-e2e-"));
   if (!process.env.SUPERPPT_ACCEPTANCE_ROOT) {
@@ -27,21 +27,15 @@ test("runs intake through mixed-slide replacement without changing untouched ren
   assert.equal(result.before.slideCount, 3);
   assert.deepEqual(result.deckReview, {
     action: "confirm-delivery",
-    promotedRevision: 2,
+    promotedRevision: 1,
   });
   const initialAcceptance = JSON.parse(await readFile(result.before.acceptance, "utf8"));
   assert.equal(initialAcceptance.deckReviewConfirmation.action, "confirm-delivery");
   assert.equal(initialAcceptance.deckReviewConfirmation.candidateId, initialAcceptance.candidateReview.candidateId);
   assert.equal(result.before.slideCount, result.after.slideCount);
   assert.deepEqual(result.after.slideOrder, result.before.slideOrder);
-  assert.deepEqual(result.after.editableSlideIds, [result.changedSlideId]);
-  assert.notEqual(
-    result.before.renderHashes[result.changedSlideId],
-    result.after.renderHashes[result.changedSlideId],
-  );
-  for (const [id, hash] of Object.entries(result.before.renderHashes)) {
-    if (id !== result.changedSlideId) assert.equal(result.after.renderHashes[id], hash);
-  }
+  assert.deepEqual(result.after.editableSlideIds, []);
+  assert.deepEqual(result.after.renderHashes, result.before.renderHashes);
 
   assert.equal(result.editOperation.kind, "replace-text");
   assert.notEqual(result.editOperation.before, result.editOperation.after);
@@ -82,10 +76,17 @@ test("runs intake through mixed-slide replacement without changing untouched ren
     for (const slide of acceptance.slides as Array<{ id: string; finalRenderSha256: string }>) {
       assert.equal(slide.finalRenderSha256, snapshot.renderHashes[slide.id]);
     }
-    for (const kind of ["pptx", "pdf", "montage"] as const) {
+    for (const kind of ["pptx"] as const) {
       const bytes = await readFile(snapshot.exports[kind]);
       assert.equal(acceptance.exports[kind].sha256, sha256(bytes));
     }
+  }
+  for (const path of [
+    join(result.root, "output/revisions/1/deck.pdf"),
+    join(result.root, "output/revisions/1/montage.jpg"),
+    join(result.root, "output/candidates/current/montage.jpg"),
+  ]) {
+    await assert.rejects(access(path), { code: "ENOENT" });
   }
 
   const jobsRoot = join(result.root, "generation", "jobs");

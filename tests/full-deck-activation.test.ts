@@ -15,8 +15,6 @@ import { inspectLocalPptx } from "../src/deck-revisions/inspect.js";
 import { scanOoxmlRanges } from "../src/deck-revisions/ooxml.js";
 import { finalizeSlideTopology } from "../src/deck-revisions/topology.js";
 import { assembleProjectCandidate, type FinalRender } from "../src/deck/assemble.js";
-import { buildMontage } from "../src/deck/montage.js";
-import { exportPdf } from "../src/deck/pdf.js";
 import { ConversionRecordSchema, RunLedgerV2Schema } from "../src/editable/schemas.js";
 import { prepareAgentEditDeck } from "../src/editable/route.js";
 import { configureGenerationAuthorizationTrustForTests } from "../src/generation/trusted-authorization.js";
@@ -236,7 +234,7 @@ async function writeConversionEvidence(options: { root: string; slideId: string;
   return { conversionRoot, outputRoot, sourcePng, recordPath };
 }
 
-async function fixtureCandidateOutputs(renders: FinalRender[], paths: { pptx: string; pdf: string; montage: string }): Promise<void> {
+async function fixtureCandidateOutputs(renders: FinalRender[], paths: { pptx: string }): Promise<void> {
   const zip = new JSZip();
   zip.file("[Content_Types].xml", "<Types/>");
   for (const [index, render] of renders.entries()) {
@@ -245,8 +243,6 @@ async function fixtureCandidateOutputs(renders: FinalRender[], paths: { pptx: st
     zip.file(`ppt/media/image${index + 1}.png`, render.bytes);
   }
   await writeFile(paths.pptx, await zip.generateAsync({ type: "nodebuffer" }), { flag: "wx" });
-  await exportPdf(renders, paths.pdf);
-  await buildMontage(renders, paths.montage);
 }
 
 async function prepareReviewedSelection(root: string, slideIds: string[]): Promise<{ finalRender: { path: string; sha256: string }; selection: { candidateId: string; reviewDescriptorSha256: string; actionEvidenceSha256: string } }> {

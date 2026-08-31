@@ -41,7 +41,7 @@ export type OrdinaryGate =
   | "generation-authorization"
   | "deck-review";
 export type ExecutionGate = "style-sample-generation";
-export type ConditionalGate = "revision-impact" | "slide-preview";
+export type ConditionalGate = "revision-impact";
 export type ProjectGate = OrdinaryGate | ExecutionGate | ConditionalGate;
 export type PlanningGate = OrdinaryGate;
 export type ApprovalCheckpoint = "snapshot-published" | "manifest-published";
@@ -136,8 +136,7 @@ async function gateArtifacts(
   if (gate === "deck-review") {
     const artifacts = Object.fromEntries(await Promise.all([
       "output/candidates/current/action.json",
-    "output/candidates/current/review.json",
-    "output/candidates/current/montage.jpg",
+      "output/candidates/current/review.json",
     ].map(async (path) => [path, await readOwnedRegularFile(root, path, operations)])));
     let action;
     try {

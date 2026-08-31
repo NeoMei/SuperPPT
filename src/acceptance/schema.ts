@@ -83,7 +83,7 @@ const DeckReviewActionEvidenceBaseSchema = z.object({
   projectId: z.string().uuid(),
   projectRevisionId: z.string().uuid(),
   reviewDescriptorSha256: Sha256Schema,
-  presentedMontageSha256: Sha256Schema,
+  presentedPptxSha256: Sha256Schema,
   actedAt: z.string().datetime(),
   actionEvidenceSha256: Sha256Schema,
 });
@@ -114,8 +114,6 @@ export const DeckReviewDescriptorSchema = z.object({
   }).strict(),
   artifacts: z.object({
     pptx: FileEvidenceSchema,
-    pdf: FileEvidenceSchema,
-    montage: FileEvidenceSchema,
     acceptance: FileEvidenceSchema,
   }).strict(),
   actions: z.tuple([
@@ -253,8 +251,6 @@ export const AcceptanceSchema = z.object({
   }).strict()).min(1),
   exports: z.object({
     pptx: FileEvidenceSchema,
-    pdf: FileEvidenceSchema,
-    montage: FileEvidenceSchema,
   }).strict(),
   gates: z.object({
     outline: z.string().uuid(),

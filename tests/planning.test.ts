@@ -234,7 +234,7 @@ async function approveAll(root: string): Promise<void> {
 async function approveDownstreamGates(root: string): Promise<{
   authorization: Buffer;
   review: Buffer;
-  montage: Buffer;
+  pptx: Buffer;
   action: Buffer;
 }> {
   const authorization = Buffer.from(JSON.stringify({
@@ -249,7 +249,7 @@ async function approveDownstreamGates(root: string): Promise<{
   await writeFile(join(root, "generation", "authorization-plan.json"), authorization);
   await approveGate(root, "generation-authorization");
 
-  const montage = Buffer.from("candidate montage\n");
+  const pptx = Buffer.from("candidate pptx\n");
   const manifest = await readProject(root);
   const generationGate = manifest.gates.at(-1)!;
   const reviewDescriptor = DeckReviewDescriptorSchema.parse(addDescriptorIntegrity({
@@ -268,9 +268,7 @@ async function approveDownstreamGates(root: string): Promise<{
       snapshotManifestSha256: generationGate.snapshotManifestSha256!,
     },
     artifacts: {
-      pptx: { path: "output/candidates/00000000-0000-4000-8000-000000000099/deck.pptx", sha256: "c".repeat(64) },
-      pdf: { path: "output/candidates/00000000-0000-4000-8000-000000000099/deck.pdf", sha256: "d".repeat(64) },
-      montage: { path: "output/candidates/00000000-0000-4000-8000-000000000099/montage.jpg", sha256: sha256Evidence(montage) },
+      pptx: { path: "output/candidates/00000000-0000-4000-8000-000000000099/deck.pptx", sha256: sha256Evidence(pptx) },
       acceptance: { path: "output/candidates/00000000-0000-4000-8000-000000000099/acceptance.json", sha256: "a".repeat(64) },
     },
     actions: ["edit-page", "return-upstream", "confirm-delivery"],
@@ -286,7 +284,7 @@ async function approveDownstreamGates(root: string): Promise<{
     projectId: manifest.projectId,
     projectRevisionId: manifest.currentRevision.id,
     reviewDescriptorSha256: reviewDescriptor.descriptorSha256,
-    presentedMontageSha256: sha256Evidence(montage),
+    presentedPptxSha256: sha256Evidence(pptx),
     actedAt: new Date().toISOString(),
   };
   const provisionalAction = DeckReviewActionEvidenceSchema.parse({
@@ -299,12 +297,13 @@ async function approveDownstreamGates(root: string): Promise<{
     actionEvidenceSha256: sha256Evidence(JSON.stringify(canonicalActionBase)),
   }), null, 2)}\n`);
   await mkdir(join(root, "output", "candidates", "current"), { recursive: true });
+  await mkdir(join(root, "output", "candidates", reviewDescriptor.candidateId), { recursive: true });
   await writeFile(join(root, "output", "candidates", "current", "review.json"), review);
-  await writeFile(join(root, "output", "candidates", "current", "montage.jpg"), montage);
+  await writeFile(join(root, reviewDescriptor.artifacts.pptx.path), pptx);
   await writeFile(join(root, "output", "candidates", "current", "action.json"), action);
   await assert.rejects(approveGate(root, "deck-review"), /action boundary/i);
   await approveDeckReviewActionGate(root);
-  return { authorization, review, montage, action };
+  return { authorization, review, pptx, action };
 }
 
 test("preserves text and Markdown bytes with strict runtime input validation", async (t) => {
@@ -481,11 +480,28 @@ test("generation authorization plan schema binds ordered prompts and a sufficien
       root: "/resolved/ai-image-to-ppt",
       skillSha256: "a".repeat(64),
       gitRevision: null,
+      capabilityManifestSha256: "9".repeat(64),
+      capabilitySchemaVersion: 1 as const,
+      contracts: { generationResult: 1 as const, serialStickyRouterReport: 1 as const, hostImageImport: 1 as const, editableInput: 1 as const },
+      routingOrder: [
+        { provider: "openai" as const, channel: "host" as const, modelSelection: "host-owned" as const },
+        { provider: "openai" as const, channel: "api" as const, defaultModel: "gpt-image-2" as const },
+        { provider: "gemini" as const, channel: "host" as const, modelSelection: "host-owned" as const },
+        { provider: "gemini" as const, channel: "api" as const, defaultModel: "gemini-3.1-flash-image" },
+        { provider: "doubao" as const, channel: "host" as const, modelSelection: "host-owned" as const },
+        { provider: "doubao" as const, channel: "api" as const, defaultModel: "doubao-seedream-5-0-260128" },
+      ],
+      outputs: {
+        normalizedSlide: { format: "image" as const, width: 1920 as const, height: 1080 as const },
+        editableInput: { format: "png" as const, width: 1280 as const, height: 720 as const },
+      },
       scripts: {
         generationResult: { path: "/resolved/ai-image-to-ppt/scripts/generation_result.py", sha256: "c".repeat(64) },
         hostRoutingPolicy: { path: "/resolved/ai-image-to-ppt/scripts/host_routing_policy.py", sha256: "d".repeat(64) },
         importHostImage: { path: "/resolved/ai-image-to-ppt/scripts/import_host_image.py", sha256: "e".repeat(64) },
         prepareEditableInput: { path: "/resolved/ai-image-to-ppt/scripts/prepare_editable_input.py", sha256: "f".repeat(64) },
+        apiGenerator: { path: "/resolved/ai-image-to-ppt/scripts/gen_slide.py", sha256: "1".repeat(64) },
+        normalizedExport: { path: "/resolved/ai-image-to-ppt/scripts/export_images.py", sha256: "2".repeat(64) },
       },
     },
     styleLockPath: "style/lock.json" as const,
@@ -529,7 +545,7 @@ test("generation authorization and deck review snapshots bind their published ar
   await writeValidStyleSample(root);
   await approveAll(root);
 
-  const { authorization, review, montage, action } = await approveDownstreamGates(root);
+  const { authorization, review, action } = await approveDownstreamGates(root);
   assert.equal(await assertGateCurrent(root, "generation-authorization"), true);
   assert.equal(await assertGateCurrent(root, "deck-review"), true);
 
@@ -539,7 +555,6 @@ test("generation authorization and deck review snapshots bind their published ar
   assert.deepEqual(reviewSnapshot.artifacts, {
     "output/candidates/current/action.json": action,
     "output/candidates/current/review.json": review,
-    "output/candidates/current/montage.jpg": montage,
   });
 });
 

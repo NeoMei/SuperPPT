@@ -29,14 +29,12 @@ import {
   runEditableConversion,
 } from "../src/editable/adapter.js";
 import { assembleProjectCandidate, type FinalRender } from "../src/deck/assemble.js";
-import { buildMontage } from "../src/deck/montage.js";
-import { exportPdf } from "../src/deck/pdf.js";
 import { configureGenerationAuthorizationTrustForTests } from "../src/generation/trusted-authorization.js";
 import { approveGate } from "../src/planning/confirm.js";
 import { publishPlanViews } from "../src/planning/views.js";
 import { applyDeckReviewAction, publishDeckReview } from "../src/project/promotion.js";
 import { finalizeDelegatedStyleSampleForTest } from "./helpers/delegated-style-sample.js";
-import { resolveAiImageSkillDependency } from "../src/dependencies/resolve.js";
+import { resolveSkillDependencies } from "../src/dependencies/resolve.js";
 import type { ResolvedDependencies } from "../src/dependencies/schemas.js";
 import {
   applyEditPlan,
@@ -111,15 +109,19 @@ async function resolvedDependencies(
 ): Promise<ResolvedDependencies> {
   const aiRoot = join(await temporary(t, "superppt-editable-ai-skill-"), "ai-image-to-ppt");
   await mkdir(join(aiRoot, "scripts"), { recursive: true });
+  await mkdir(join(aiRoot, "references"), { recursive: true });
   await writeFile(join(aiRoot, "SKILL.md"), "---\nname: ai-image-to-ppt\n---\n");
   for (const script of [
     "generation_result.py",
     "host_routing_policy.py",
     "import_host_image.py",
     "prepare_editable_input.py",
+    "gen_slide.py",
+    "export_images.py",
   ]) {
     await writeFile(join(aiRoot, "scripts", script), `# fixture ${script}\n`);
   }
+  await writeAiCapabilityManifest(aiRoot);
   return resolvedDependenciesFromRoots(aiRoot, editableRoot);
 }
 
@@ -142,41 +144,37 @@ async function convertProjectPage(options: FixtureConversionOptions) {
 async function resolvedDependenciesForPlugin(editableRoot: string): Promise<ResolvedDependencies> {
   const aiRoot = join(dirname(editableRoot), "ai-image-to-ppt-fixture");
   await mkdir(join(aiRoot, "scripts"), { recursive: true });
+  await mkdir(join(aiRoot, "references"), { recursive: true });
   await writeFile(join(aiRoot, "SKILL.md"), "---\nname: ai-image-to-ppt\n---\n");
-  for (const script of ["generation_result.py", "host_routing_policy.py", "import_host_image.py", "prepare_editable_input.py"]) {
+  for (const script of ["generation_result.py", "host_routing_policy.py", "import_host_image.py", "prepare_editable_input.py", "gen_slide.py", "export_images.py"]) {
     await writeFile(join(aiRoot, "scripts", script), `# fixture ${script}\n`);
   }
+  await writeAiCapabilityManifest(aiRoot);
   return resolvedDependenciesFromRoots(aiRoot, editableRoot);
+}
+
+async function writeAiCapabilityManifest(aiRoot: string): Promise<void> {
+  await writeFile(join(aiRoot, "references", "capabilities.json"), `${JSON.stringify({
+    schemaVersion: 1, skill: "ai-image-to-ppt",
+    contracts: { generationResult: 1, serialStickyRouterReport: 1, hostImageImport: 1, editableInput: 1 },
+    routingOrder: [
+      { provider: "openai", channel: "host", modelSelection: "host-owned" },
+      { provider: "openai", channel: "api", defaultModel: "gpt-image-2" },
+      { provider: "gemini", channel: "host", modelSelection: "host-owned" },
+      { provider: "gemini", channel: "api", defaultModel: "gemini-3.1-flash-image" },
+      { provider: "doubao", channel: "host", modelSelection: "host-owned" },
+      { provider: "doubao", channel: "api", defaultModel: "doubao-seedream-5-0-260128" },
+    ],
+    outputs: { normalizedSlide: { format: "image", width: 1920, height: 1080 }, editableInput: { format: "png", width: 1280, height: 720 } },
+    scripts: { generationResult: "scripts/generation_result.py", hostRoutingPolicy: "scripts/host_routing_policy.py", importHostImage: "scripts/import_host_image.py", prepareEditableInput: "scripts/prepare_editable_input.py", apiGenerator: "scripts/gen_slide.py", normalizedExport: "scripts/export_images.py" },
+  }, null, 2)}\n`);
 }
 
 async function resolvedDependenciesFromRoots(
   aiRoot: string,
   editableRoot: string,
 ): Promise<ResolvedDependencies> {
-  const ai = await resolveAiImageSkillDependency(aiRoot);
-  const editableCanonical = await realpath(editableRoot);
-  const packageFile = join(editableCanonical, "package.json");
-  const skillFile = join(editableCanonical, "skills", "image-to-editable-pptx", "SKILL.md");
-  const packageSha256 = projectSha256(await readFile(packageFile));
-  const skillSha256 = projectSha256(await readFile(skillFile));
-  return {
-    ai,
-    editable: {
-      kind: "image-to-editable-pptx",
-      root: editableCanonical,
-      packageFile,
-      packageSha256,
-      skillFile,
-      skillSha256,
-      version: "0.2.0",
-    },
-    integrity: {
-      aiSkillSha256: ai.skillSha256,
-      aiScripts: ai.scriptSha256,
-      editablePackageSha256: packageSha256,
-      editableSkillSha256: skillSha256,
-    },
-  };
+  return resolveSkillDependencies({ aiSkillRoot: aiRoot, editableSkillRoot: editableRoot });
 }
 
 async function png(width: number, height: number, alpha = false): Promise<Buffer> {
@@ -880,7 +878,7 @@ async function unreviewedProject(t: TestContext): Promise<EditableProjectFixture
 
 async function fixtureCandidateOutputs(
   renders: FinalRender[],
-  paths: { pptx: string; pdf: string; montage: string },
+  paths: { pptx: string },
 ): Promise<void> {
   const zip = new JSZip();
   zip.file("[Content_Types].xml", "<Types/>");
@@ -890,8 +888,6 @@ async function fixtureCandidateOutputs(
     zip.file(`ppt/media/image${index + 1}.png`, render.bytes);
   }
   await writeFile(paths.pptx, await zip.generateAsync({ type: "nodebuffer" }), { flag: "wx" });
-  await exportPdf(renders, paths.pdf);
-  await buildMontage(renders, paths.montage);
 }
 
 async function readyProject(t: TestContext): Promise<EditableProjectFixture> {
@@ -999,10 +995,6 @@ async function readyCurrentEditableProject(t: TestContext): Promise<{
   });
   const current = await readProject(project.root);
   const conversionRecord = JSON.parse(await readFile(source.conversionRecord, "utf8")) as { finalRender: { path: string; sha256: string } };
-  const previewPath = `previews/editable/${project.slideId}/${promoted.revisionId}.png`;
-  const previewBytes = await readFile(join(project.root, ...conversionRecord.finalRender.path.split("/")));
-  await mkdir(join(project.root, "previews", "editable", project.slideId), { recursive: true });
-  await writeFile(join(project.root, ...previewPath.split("/")), previewBytes);
   const recordPath = `editable/${project.slideId}/${promoted.revisionId}/modified-revision-record.json`;
   const manifestPath = `editable/${project.slideId}/${promoted.revisionId}/modified-manifest.json`;
   const recordBytes = await readFile(join(project.root, ...recordPath.split("/")));
@@ -1011,11 +1003,6 @@ async function readyCurrentEditableProject(t: TestContext): Promise<{
   await publishRevisionSnapshot(project.root, current);
   await updateProject(project.root, (manifest) => {
     const sourceFinalRender = { ...conversionRecord.finalRender, revisionId: manifest.currentRevision.id };
-    const preview = {
-      path: previewPath,
-      sha256: sha256(previewBytes),
-      revisionId: manifest.currentRevision.id,
-    };
     const modifiedManifest = {
       path: manifestPath,
       sha256: sha256(modifiedManifestBytes),
@@ -1027,7 +1014,7 @@ async function readyCurrentEditableProject(t: TestContext): Promise<{
         ...candidate,
         status: "editable" as const,
         editable: modifiedManifest,
-        finalRender: preview,
+        finalRender: sourceFinalRender,
         editableRevision: {
           projectId: manifest.projectId,
           slideId: project.slideId,
@@ -1038,7 +1025,6 @@ async function readyCurrentEditableProject(t: TestContext): Promise<{
           modifiedRevisionRecordPath: recordPath,
           sourceFinalRender,
           conversionFinalRender: sourceFinalRender,
-          preview,
           modifiedManifest,
         },
       } : candidate),

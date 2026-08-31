@@ -70,6 +70,12 @@ function dependencyFromJob(job: ImageGenerationJob): AiImageSkillDependency {
     skillFile: join(job.aiSkill.root, "SKILL.md"),
     skillSha256: job.aiSkill.skillSha256,
     gitRevision: job.aiSkill.gitRevision,
+    capabilityManifestFile: join(job.aiSkill.root, "references", "capabilities.json"),
+    capabilityManifestSha256: job.aiSkill.capabilityManifestSha256,
+    capabilitySchemaVersion: job.aiSkill.capabilitySchemaVersion,
+    contracts: job.aiSkill.contracts,
+    routingOrder: job.aiSkill.routingOrder,
+    outputs: job.aiSkill.outputs,
     scripts: Object.fromEntries(Object.entries(job.aiSkill.scripts).map(([name, script]) => [name, script.path])),
     scriptSha256: Object.fromEntries(Object.entries(job.aiSkill.scripts).map(([name, script]) => [name, script.sha256])),
   });

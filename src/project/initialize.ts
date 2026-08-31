@@ -22,7 +22,6 @@ const DIRECTORIES = [
   "style/sample",
   "images",
   "editable",
-  "previews",
   "output",
   "failed-runs",
   "revisions",
@@ -125,8 +124,6 @@ export async function initializeProject(options: {
     slides: [],
     exports: {
       pptx: null,
-      pdf: null,
-      montage: null,
       acceptance: null,
     },
   });

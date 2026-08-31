@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { lstat, readFile, realpath } from "node:fs/promises";
-import { relative, sep } from "node:path";
+import { dirname, relative, sep } from "node:path";
 
 import type { DependencyPreflight, ResolvedDependencies } from "./schemas.js";
 
@@ -36,6 +36,7 @@ export async function preflightDependencies(
     { path, sha256: observedScripts[name] ?? resolved.integrity.aiScripts[name as keyof typeof resolved.integrity.aiScripts] },
   ]));
   const aiFilesChanged = changed(resolved.integrity.aiSkillSha256, await currentSha256(resolved.ai.root, resolved.ai.skillFile))
+    || changed(resolved.integrity.aiCapabilityManifestSha256, await currentSha256(resolved.ai.root, resolved.ai.capabilityManifestFile))
     || Object.entries(resolved.ai.scripts).some(([name, path]) => changed(
       resolved.integrity.aiScripts[name as keyof typeof resolved.integrity.aiScripts],
       observedScripts[name] ?? null,
@@ -61,18 +62,33 @@ export async function preflightDependencies(
       safeMessage: "required Skill files changed after resolution",
     });
   }
+  if (changed(resolved.integrity.contractSha256, await currentSha256(dirname(resolved.contractFile), resolved.contractFile))) {
+    errors.push({
+      dependency: "superppt-dependency-contract",
+      code: "identity_changed",
+      safeMessage: "dependency authority changed after resolution",
+    });
+  }
   return {
     ok: errors.length === 0,
     aiImageToPpt: {
       root: resolved.ai.root,
       skillSha256: resolved.ai.skillSha256,
       gitRevision: resolved.ai.gitRevision,
+      capabilityManifestSha256: resolved.ai.capabilityManifestSha256,
+      capabilitySchemaVersion: resolved.ai.capabilitySchemaVersion,
+      contracts: resolved.ai.contracts,
+      routingOrder: resolved.ai.routingOrder,
+      outputs: resolved.ai.outputs,
       requiredScripts,
     },
     imageToEditablePptx: {
       root: resolved.editable.root,
       skillSha256: resolved.editable.skillSha256,
       version: resolved.editable.version,
+      manifestVersion: resolved.editable.manifestVersion,
+      officialDonor: resolved.editable.officialDonor,
+      objectNames: resolved.editable.objectNames,
     },
     errors,
   };

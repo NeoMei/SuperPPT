@@ -6,7 +6,7 @@ import { join, relative, sep } from "node:path";
 import { promisify } from "node:util";
 
 import type { AiImageSkillDependency } from "../dependencies/schemas.js";
-import { AiImageSkillDependencySchema } from "../dependencies/schemas.js";
+import { AiImageCapabilityManifestSchema, AiImageSkillDependencySchema } from "../dependencies/schemas.js";
 import { assertGateCurrent } from "../planning/confirm.js";
 import { loadValidatedPlan } from "../planning/load.js";
 import { SlideSpecSchema } from "../planning/schemas.js";
@@ -45,13 +45,6 @@ const DECK_PLAN_PATH = "generation/authorization-plan.json";
 const SAMPLE_PLAN_PATH = "style/sample/generation-plan.json";
 const execFileAsync = promisify(execFile);
 
-const REQUIRED_AI_SCRIPTS = {
-  generationResult: "generation_result.py",
-  hostRoutingPolicy: "host_routing_policy.py",
-  importHostImage: "import_host_image.py",
-  prepareEditableInput: "prepare_editable_input.py",
-} as const;
-
 type PlanPublicationRequest = {
   aiDependency: AiImageSkillDependency;
   callBudget: number;
@@ -80,12 +73,15 @@ function aiSkillBinding(ai: AiImageSkillDependency): ImageGenerationJob["aiSkill
     root: ai.root,
     skillSha256: ai.skillSha256,
     gitRevision: ai.gitRevision,
-    scripts: {
-      generationResult: { path: ai.scripts.generationResult, sha256: ai.scriptSha256.generationResult },
-      hostRoutingPolicy: { path: ai.scripts.hostRoutingPolicy, sha256: ai.scriptSha256.hostRoutingPolicy },
-      importHostImage: { path: ai.scripts.importHostImage, sha256: ai.scriptSha256.importHostImage },
-      prepareEditableInput: { path: ai.scripts.prepareEditableInput, sha256: ai.scriptSha256.prepareEditableInput },
-    },
+    capabilityManifestSha256: ai.capabilityManifestSha256,
+    capabilitySchemaVersion: ai.capabilitySchemaVersion,
+    contracts: ai.contracts,
+    routingOrder: ai.routingOrder,
+    outputs: ai.outputs,
+    scripts: Object.fromEntries(Object.entries(ai.scripts).map(([name, path]) => [name, {
+      path,
+      sha256: ai.scriptSha256[name as keyof typeof ai.scriptSha256],
+    }])) as ImageGenerationJob["aiSkill"]["scripts"],
   };
 }
 
@@ -127,12 +123,26 @@ export async function assertAiImageSkillDependencyCurrent(raw: AiImageSkillDepen
   if (ai.skillFile !== join(ai.root, "SKILL.md")) throw new Error("ai-image-to-ppt Skill identity changed");
   const skillBytes = await readRegularFileNoFollow(ai.skillFile);
   if (sha256(skillBytes) !== ai.skillSha256) throw new Error("ai-image-to-ppt Skill identity changed");
-  for (const [name, filename] of Object.entries(REQUIRED_AI_SCRIPTS) as Array<[
-    keyof typeof REQUIRED_AI_SCRIPTS,
-    string,
-  ]>) {
+  if (ai.capabilityManifestFile !== join(ai.root, "references", "capabilities.json")) {
+    throw new Error("ai-image-to-ppt capability manifest identity changed");
+  }
+  const manifestBytes = await readRegularFileNoFollow(ai.capabilityManifestFile);
+  if (sha256(manifestBytes) !== ai.capabilityManifestSha256) throw new Error("ai-image-to-ppt capability manifest identity changed");
+  let manifest;
+  try {
+    manifest = AiImageCapabilityManifestSchema.parse(JSON.parse(manifestBytes.toString("utf8")));
+  } catch (error) {
+    throw new Error("ai-image-to-ppt capability manifest identity changed", { cause: error });
+  }
+  if (
+    manifest.schemaVersion !== ai.capabilitySchemaVersion
+    || !sameJson(manifest.contracts, ai.contracts)
+    || !sameJson(manifest.routingOrder, ai.routingOrder)
+    || !sameJson(manifest.outputs, ai.outputs)
+  ) throw new Error("ai-image-to-ppt capability manifest identity changed");
+  for (const name of Object.keys(manifest.scripts) as Array<keyof typeof manifest.scripts>) {
     const script = ai.scripts[name];
-    if (script !== join(ai.root, "scripts", filename)) throw new Error("ai-image-to-ppt Skill identity changed");
+    if (script !== join(ai.root, ...manifest.scripts[name].split("/"))) throw new Error("ai-image-to-ppt Skill identity changed");
     await assertPhysicalFileIdentity(ai.root, script, ai.scriptSha256[name]);
   }
   await assertGitRevisionCurrent(ai.root, ai.gitRevision);
@@ -150,12 +160,20 @@ async function assertAiSkillBindingCurrent(binding: ImageGenerationJob["aiSkill"
   if (sha256(await readRegularFileNoFollow(skillFile)) !== binding.skillSha256) {
     throw new Error("ai-image-to-ppt Skill identity changed");
   }
-  for (const [name, filename] of Object.entries(REQUIRED_AI_SCRIPTS) as Array<[
-    keyof typeof REQUIRED_AI_SCRIPTS,
-    string,
-  ]>) {
+  const manifestBytes = await readRegularFileNoFollow(join(binding.root, "references", "capabilities.json"));
+  if (sha256(manifestBytes) !== binding.capabilityManifestSha256) {
+    throw new Error("ai-image-to-ppt capability manifest identity changed");
+  }
+  const manifest = AiImageCapabilityManifestSchema.parse(JSON.parse(manifestBytes.toString("utf8")));
+  if (
+    manifest.schemaVersion !== binding.capabilitySchemaVersion
+    || !sameJson(manifest.contracts, binding.contracts)
+    || !sameJson(manifest.routingOrder, binding.routingOrder)
+    || !sameJson(manifest.outputs, binding.outputs)
+  ) throw new Error("ai-image-to-ppt capability manifest identity changed");
+  for (const name of Object.keys(manifest.scripts) as Array<keyof typeof manifest.scripts>) {
     const script = binding.scripts[name];
-    if (script.path !== join(binding.root, "scripts", filename)) throw new Error("ai-image-to-ppt Skill identity changed");
+    if (script.path !== join(binding.root, ...manifest.scripts[name].split("/"))) throw new Error("ai-image-to-ppt Skill identity changed");
     await assertPhysicalFileIdentity(binding.root, script.path, script.sha256);
   }
   await assertGitRevisionCurrent(binding.root, binding.gitRevision);

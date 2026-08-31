@@ -334,7 +334,6 @@ function assertExactGateKeys(
   if (gate === "deck-review") {
     if (!sameJson(keys, [
       "output/candidates/current/action.json",
-      "output/candidates/current/montage.jpg",
       "output/candidates/current/review.json",
     ])) {
       throw new Error("ordinary gate evidence has invalid deck review keys");
@@ -430,8 +429,8 @@ export async function validateOrdinaryGateEvidence(
       || action.projectId !== review.projectId
       || action.projectRevisionId !== review.projectRevisionId
       || action.reviewDescriptorSha256 !== review.descriptorSha256
-      || action.presentedMontageSha256 !== review.artifacts.montage.sha256
-      || sha256Evidence(artifacts["output/candidates/current/montage.jpg"]!) !== review.artifacts.montage.sha256
+      || action.presentedPptxSha256 !== review.artifacts.pptx.sha256
+      || sha256Evidence(await readOwnedRegularFile(root, review.artifacts.pptx.path)) !== review.artifacts.pptx.sha256
     ) throw new Error("snapshot deck-review action does not bind the exact presentation");
   }
   const expectedTree = [

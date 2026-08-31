@@ -55,7 +55,6 @@ export type CurrentDeckEditSelection = {
   actionEvidenceSha256: string;
   currentPresentation: {
     actionSha256: string;
-    montageSha256: string;
     reviewSha256: string;
   };
 };
@@ -176,15 +175,14 @@ function verifiedDeckReviewAction(bytes: Buffer): DeckReviewActionEvidence {
 async function readCurrentReviewPresentation(root: string): Promise<{
   review: DeckReviewDescriptor;
   reviewBytes: Buffer;
-  montageBytes: Buffer;
 }> {
   const reviewBytes = await readOwnedRegularFile(root, "output/candidates/current/review.json");
   const review = verifiedDeckReviewDescriptor(reviewBytes);
-  const montageBytes = await readOwnedRegularFile(root, "output/candidates/current/montage.jpg");
-  if (sha256Evidence(montageBytes) !== review.artifacts.montage.sha256) {
-    throw new Error("current deck-review montage does not bind the authenticated descriptor");
+  const pptxBytes = await readOwnedRegularFile(root, review.artifacts.pptx.path);
+  if (sha256Evidence(pptxBytes) !== review.artifacts.pptx.sha256) {
+    throw new Error("current deck-review PPTX does not bind the authenticated descriptor");
   }
-  return { review, reviewBytes, montageBytes };
+  return { review, reviewBytes };
 }
 
 function assertReviewCandidateBinding(
@@ -217,7 +215,7 @@ export async function authenticateCurrentDeckEditSelection(
 ): Promise<CurrentDeckEditSelection> {
   const manifest = await readProject(root);
   if (manifest.stage !== "revising") throw new Error("editable conversion requires an edit-page selection from the current reviewed deck");
-  const { review, reviewBytes, montageBytes } = await readCurrentReviewPresentation(root);
+  const { review, reviewBytes } = await readCurrentReviewPresentation(root);
   const actionBytes = await readOwnedRegularFile(root, "output/candidates/current/action.json");
   const action = verifiedDeckReviewAction(actionBytes);
   if (
@@ -227,7 +225,7 @@ export async function authenticateCurrentDeckEditSelection(
     || action.projectId !== manifest.projectId
     || action.projectRevisionId !== manifest.currentRevision.id
     || action.reviewDescriptorSha256 !== review.descriptorSha256
-    || action.presentedMontageSha256 !== review.artifacts.montage.sha256
+    || action.presentedPptxSha256 !== review.artifacts.pptx.sha256
   ) throw new Error("editable conversion requires an authenticated edit-page selection from the current reviewed deck");
   const candidate = await readDeckCandidate(root, review.candidateId, manifest);
   assertReviewCandidateBinding(review, review.candidateId, manifest, candidate);
@@ -257,7 +255,6 @@ export async function authenticateCurrentDeckEditSelection(
     actionEvidenceSha256: action.actionEvidenceSha256,
     currentPresentation: {
       actionSha256: sha256Evidence(actionBytes),
-      montageSha256: sha256Evidence(montageBytes),
       reviewSha256: sha256Evidence(reviewBytes),
     },
   };
@@ -270,10 +267,9 @@ export async function invalidateCurrentDeckReviewPresentation(
   return withGenerationLease(root, async (generationRoot) => {
   await assertProjectMutationNotFrozen(generationRoot);
   const currentRoot = join(generationRoot, "output/candidates/current");
-  const names = ["action.json", "montage.jpg", "review.json"] as const;
+  const names = ["action.json", "review.json"] as const;
   const expectedHashes = {
     "action.json": expected.currentPresentation.actionSha256,
-    "montage.jpg": expected.currentPresentation.montageSha256,
     "review.json": expected.currentPresentation.reviewSha256,
   } as const;
   const entries = await readdir(currentRoot, { withFileTypes: true });
@@ -306,7 +302,7 @@ export async function publishDeckReview(root: string, candidateId: string): Prom
     const candidatePath = `output/candidates/${candidateId}`;
     const currentRoot = await ensureOwnedDirectory(canonicalRoot, "output/candidates/current");
     const existing = await readdir(currentRoot, { withFileTypes: true });
-    if (existing.some((entry) => !["action.json", "montage.jpg", "review.json"].includes(entry.name)
+    if (existing.some((entry) => !["action.json", "review.json"].includes(entry.name)
       || !entry.isFile() || entry.isSymbolicLink())) {
       throw new Error("deck-review publication directory is unsafe");
     }
@@ -328,12 +324,7 @@ export async function publishDeckReview(root: string, candidateId: string): Prom
       actions: ["edit-page", "return-upstream", "confirm-delivery"] as const,
       createdAt: new Date().toISOString(),
     }));
-    const montage = await readOwnedRegularFile(canonicalRoot, candidate.marker.artifacts.montage.path);
-    if (sha256Evidence(montage) !== candidate.marker.artifacts.montage.sha256) {
-      throw new Error("candidate montage changed during deck-review publication");
-    }
     if (existing.some((entry) => entry.name === "action.json")) await unlink(join(currentRoot, "action.json"));
-    await writeReplacementBytes(join(currentRoot, "montage.jpg"), montage);
     await writeReplacementBytes(join(currentRoot, "review.json"), Buffer.from(`${JSON.stringify(descriptor, null, 2)}\n`));
     await updateProject(canonicalRoot, (current) => {
       if (JSON.stringify(current) !== JSON.stringify(manifest)) {
@@ -370,7 +361,7 @@ async function recordDeckReviewAction(root: string, request: DeckReviewActionReq
       projectId: manifest.projectId,
       projectRevisionId: manifest.currentRevision.id,
       reviewDescriptorSha256: review.descriptorSha256,
-      presentedMontageSha256: review.artifacts.montage.sha256,
+      presentedPptxSha256: review.artifacts.pptx.sha256,
       actedAt: new Date().toISOString(),
     };
     const provisionalAction = DeckReviewActionEvidenceSchema.parse({
@@ -440,7 +431,7 @@ export async function promoteApprovedCandidate(
       || action.projectId !== manifest.projectId
       || action.projectRevisionId !== manifest.currentRevision.id
       || action.reviewDescriptorSha256 !== review.descriptorSha256
-      || action.presentedMontageSha256 !== review.artifacts.montage.sha256
+      || action.presentedPptxSha256 !== review.artifacts.pptx.sha256
     ) throw new Error("authenticated confirm-delivery action does not bind the current deck-review");
     if (!await assertGateCurrent(root, "deck-review")) {
       throw new Error("current deck-review approval is required before candidate promotion");
@@ -490,7 +481,7 @@ export async function promoteApprovedCandidate(
     }
     const staging = join(revisionsRoot, `.staging-${candidateId}-${randomUUID()}`);
     await mkdir(staging, { mode: 0o700 });
-    for (const [kind, name] of [["pptx", "deck.pptx"], ["pdf", "deck.pdf"], ["montage", "montage.jpg"]] as const) {
+    for (const [kind, name] of [["pptx", "deck.pptx"]] as const) {
       const bytes = await readOwnedRegularFile(root, candidate.marker.artifacts[kind].path);
       if (sha256Evidence(bytes) !== candidate.marker.artifacts[kind].sha256) {
         throw new Error("candidate artifact changed during promotion");
@@ -502,8 +493,6 @@ export async function promoteApprovedCandidate(
       ...candidate.acceptance,
       exports: {
         pptx: { ...candidate.acceptance.exports.pptx, path: refs.pptx },
-        pdf: { ...candidate.acceptance.exports.pdf, path: refs.pdf },
-        montage: { ...candidate.acceptance.exports.montage, path: refs.montage },
       },
     }), action);
     await writeDurableExclusive(join(staging, "acceptance.json"), `${JSON.stringify(acceptance, null, 2)}\n`);
@@ -514,8 +503,6 @@ export async function promoteApprovedCandidate(
     });
     const artifacts: OutputArtifacts = {
       pptx: await evidence("pptx", "deck.pptx"),
-      pdf: await evidence("pdf", "deck.pdf"),
-      montage: await evidence("montage", "montage.jpg"),
       acceptance: await evidence("acceptance", "acceptance.json"),
     };
     const marker = OutputMarkerSchema.parse({ ...expectedMarker, artifacts });

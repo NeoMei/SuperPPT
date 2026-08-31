@@ -9,6 +9,7 @@ import {
   rm,
   symlink,
   unlink,
+  readFile,
   writeFile,
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -27,38 +28,104 @@ const requiredScripts = {
   hostRoutingPolicy: "host_routing_policy.py",
   importHostImage: "import_host_image.py",
   prepareEditableInput: "prepare_editable_input.py",
+  apiGenerator: "gen_slide.py",
+  normalizedExport: "export_images.py",
 } as const;
 const requiredScriptBytes = "raise SystemExit('this script must never be executed by dependency resolution')\n";
 
-type Fixture = { root: string; ai: string; editable: string };
+const capabilityManifest = {
+  schemaVersion: 1,
+  skill: "ai-image-to-ppt",
+  contracts: {
+    generationResult: 1,
+    serialStickyRouterReport: 1,
+    hostImageImport: 1,
+    editableInput: 1,
+  },
+  routingOrder: [
+    { provider: "openai", channel: "host", modelSelection: "host-owned" },
+    { provider: "openai", channel: "api", defaultModel: "gpt-image-2" },
+    { provider: "gemini", channel: "host", modelSelection: "host-owned" },
+    { provider: "gemini", channel: "api", defaultModel: "gemini-3.1-flash-image" },
+    { provider: "doubao", channel: "host", modelSelection: "host-owned" },
+    { provider: "doubao", channel: "api", defaultModel: "doubao-seedream-5-0-260128" },
+  ],
+  outputs: {
+    normalizedSlide: { format: "image", width: 1920, height: 1080 },
+    editableInput: { format: "png", width: 1280, height: 720 },
+  },
+  scripts: Object.fromEntries(Object.entries(requiredScripts).map(([name, file]) => [name, `scripts/${file}`])),
+};
 
-async function fixture(t: TestContext, version = "0.1.0"): Promise<Fixture> {
+const dependencyContract = {
+  contractVersion: 2,
+  dependencies: [
+    {
+      skill: "ai-image-to-ppt",
+      cliFlag: "--ai-skill",
+      resolution: "explicit-only",
+      required: ["SKILL.md", "references/capabilities.json"],
+      capabilityManifest: {
+        path: "references/capabilities.json",
+        schemaVersion: 1,
+        contracts: capabilityManifest.contracts,
+        scripts: capabilityManifest.scripts,
+      },
+    },
+    {
+      skill: "image-to-editable-pptx",
+      cliFlag: "--editable-skill",
+      resolution: "explicit-only",
+      required: ["package.json", "skills/image-to-editable-pptx/SKILL.md"],
+      capabilities: {
+        version: ">=0.2.0 <0.3.0",
+        manifestVersion: 2,
+        officialDonor: "slide-editable.pptx",
+        objectNames: {
+          background: "asset-background",
+          text: "text-<id>",
+          shape: "shape-<id>-<label>",
+          asset: "asset-<id>",
+        },
+      },
+    },
+  ],
+};
+
+type Fixture = { root: string; ai: string; editable: string; contractFile: string };
+
+async function fixture(t: TestContext, version = "0.2.0"): Promise<Fixture> {
   const root = await mkdtemp(join(tmpdir(), "superppt-skill-deps-"));
   t.after(async () => rm(root, { recursive: true, force: true }));
   const ai = join(root, "provided-ai-skill");
   const editable = join(root, "provided-editable-skill");
+  const contractFile = join(root, "dependencies.json");
   await mkdir(join(ai, "scripts"), { recursive: true });
+  await mkdir(join(ai, "references"), { recursive: true });
   await mkdir(join(editable, "skills", "image-to-editable-pptx"), { recursive: true });
   await writeFile(join(ai, "SKILL.md"), "---\nname: ai-image-to-ppt\n---\n");
   await Promise.all(Object.values(requiredScripts).map((script) => writeFile(
     join(ai, "scripts", script),
     requiredScriptBytes,
   )));
+  await writeFile(join(ai, "references", "capabilities.json"), `${JSON.stringify(capabilityManifest, null, 2)}\n`);
   await writeFile(join(editable, "package.json"), JSON.stringify({
     name: "image-to-editable-pptx",
     version,
   }));
   await writeFile(
     join(editable, "skills", "image-to-editable-pptx", "SKILL.md"),
-    "---\nname: image-to-editable-pptx\n---\n",
+    "---\nname: image-to-editable-pptx\n---\nmanifestVersion: 2\nofficial donor: slide-editable.pptx\nobject names: asset-background, text-<id>, shape-<id>-<label>, asset-<id>\n",
   );
-  return { root, ai, editable };
+  await writeFile(contractFile, `${JSON.stringify(dependencyContract, null, 2)}\n`);
+  return { root, ai, editable, contractFile };
 }
 
 function request(fixture: Fixture) {
   return {
     aiSkillRoot: fixture.ai,
     editableSkillRoot: fixture.editable,
+    contractFile: fixture.contractFile,
   };
 }
 
@@ -76,11 +143,21 @@ test("resolves exactly the supplied Skill roots without provider discovery", asy
   assert.equal(ai.kind, "ai-image-to-ppt");
   assert.equal(ai.root, aiRoot);
   assert.equal(ai.skillFile, join(aiRoot, "SKILL.md"));
+  assert.equal(ai.capabilityManifestFile, join(aiRoot, "references", "capabilities.json"));
+  assert.equal(ai.capabilityManifestSha256, createHash("sha256").update(
+    await readFile(join(aiRoot, "references", "capabilities.json")),
+  ).digest("hex"));
+  assert.equal(ai.capabilitySchemaVersion, 1);
+  assert.deepEqual(ai.contracts, capabilityManifest.contracts);
+  assert.deepEqual(ai.outputs, capabilityManifest.outputs);
+  assert.deepEqual(ai.routingOrder, capabilityManifest.routingOrder);
   assert.deepEqual(ai.scripts, {
     generationResult: join(aiRoot, "scripts", "generation_result.py"),
     hostRoutingPolicy: join(aiRoot, "scripts", "host_routing_policy.py"),
     importHostImage: join(aiRoot, "scripts", "import_host_image.py"),
     prepareEditableInput: join(aiRoot, "scripts", "prepare_editable_input.py"),
+    apiGenerator: join(aiRoot, "scripts", "gen_slide.py"),
+    normalizedExport: join(aiRoot, "scripts", "export_images.py"),
   });
   assert.deepEqual(ai.scriptSha256, Object.fromEntries(
     Object.keys(requiredScripts).map((name) => [
@@ -89,7 +166,58 @@ test("resolves exactly the supplied Skill roots without provider discovery", asy
     ]),
   ));
   assert.equal(resolved.editable.root, editableRoot);
-  assert.equal(resolved.editable.version, "0.1.0");
+  assert.equal(resolved.editable.version, "0.2.0");
+  assert.equal(resolved.editable.manifestVersion, 2);
+  assert.equal(resolved.editable.officialDonor, "slide-editable.pptx");
+  assert.deepEqual(resolved.editable.objectNames, {
+    background: "asset-background",
+    text: "text-<id>",
+    shape: "shape-<id>-<label>",
+    asset: "asset-<id>",
+  });
+});
+
+test("rejects a missing or malformed ai-image-to-ppt capability manifest before resolving scripts", async (t) => {
+  for (const [name, mutate, pattern] of [
+    ["missing", async (current: Fixture) => unlink(join(current.ai, "references", "capabilities.json")), /capability manifest.*missing/i],
+    ["malformed", async (current: Fixture) => writeFile(join(current.ai, "references", "capabilities.json"), "{not-json"), /capability manifest.*invalid/i],
+  ] as const) {
+    await t.test(name, async (subtest) => {
+      const current = await fixture(subtest);
+      await mutate(current);
+      await assert.rejects(resolveSkillDependencies(request(current)), pattern);
+    });
+  }
+});
+
+test("rejects ai-image-to-ppt manifest and dependency-contract script disagreement", async (t) => {
+  const current = await fixture(t);
+  const manifestPath = join(current.ai, "references", "capabilities.json");
+  const manifest = JSON.parse(await readFile(manifestPath, "utf8"));
+  manifest.scripts.apiGenerator = "scripts/other.py";
+  await writeFile(join(current.ai, "scripts", "other.py"), requiredScriptBytes);
+  await writeFile(manifestPath, `${JSON.stringify(manifest)}\n`);
+
+  await assert.rejects(resolveSkillDependencies(request(current)), /capability.*script.*disagree|apiGenerator/i);
+});
+
+test("rejects converter 0.1, manifest v1, and missing official donor contracts", async (t) => {
+  await t.test("converter 0.1", async (subtest) => {
+    const current = await fixture(subtest, "0.1.9");
+    await assert.rejects(resolveSkillDependencies(request(current)), />=0\.2\.0 <0\.3\.0/);
+  });
+  for (const [name, mutate, pattern] of [
+    ["manifest v1", (contract: any) => { contract.dependencies[1].capabilities.manifestVersion = 1; }, /manifestVersion.*2|manifest.*v2/i],
+    ["missing donor", (contract: any) => { delete contract.dependencies[1].capabilities.officialDonor; }, /official donor|slide-editable\.pptx/i],
+  ] as const) {
+    await t.test(name, async (subtest) => {
+      const current = await fixture(subtest);
+      const contract = JSON.parse(await readFile(current.contractFile, "utf8"));
+      mutate(contract);
+      await writeFile(current.contractFile, `${JSON.stringify(contract)}\n`);
+      await assert.rejects(resolveSkillDependencies(request(current)), pattern);
+    });
+  }
 });
 
 test("rejects a symlinked Skill root", async (t) => {
@@ -270,7 +398,8 @@ test("preflight reports the resolved dependency identities without executing Ski
   assert.equal(report.aiImageToPpt.root, aiRoot);
   assert.equal(report.aiImageToPpt.skillSha256, resolved.ai.skillSha256);
   assert.equal(report.imageToEditablePptx.root, editableRoot);
-  assert.equal(report.imageToEditablePptx.version, "0.1.0");
+  assert.equal(report.imageToEditablePptx.version, "0.2.0");
+  assert.equal(report.aiImageToPpt.capabilityManifestSha256, resolved.ai.capabilityManifestSha256);
   assert.deepEqual(Object.keys(report.aiImageToPpt.requiredScripts).sort(), Object.keys(requiredScripts).sort());
   assert.deepEqual(report.errors, []);
 });

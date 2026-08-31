@@ -102,3 +102,59 @@ test("package allowlist and dry-run exclude build leftovers and removed provider
   ]);
   assert.doesNotMatch(JSON.stringify(dependencies), /SUPERPPT_.*_SOURCE|"override"/);
 });
+
+test("runtime package and dependency authority expose only the two full-deck capabilities", async () => {
+  const [pkg, contract] = await Promise.all([
+    json("package.json"),
+    json("references/dependencies.json"),
+  ]);
+
+  assert.deepEqual(Object.keys(pkg.dependencies).sort(), [
+    "jszip",
+    "koffi",
+    "saxes",
+    "sharp",
+    "zod",
+  ]);
+  assert.deepEqual(contract.dependencies.map((entry: Record<string, unknown>) => entry.skill), [
+    "ai-image-to-ppt",
+    "image-to-editable-pptx",
+  ]);
+  assert.deepEqual(contract.dependencies[0].capabilityManifest, {
+    path: "references/capabilities.json",
+    schemaVersion: 1,
+    contracts: {
+      generationResult: 1,
+      serialStickyRouterReport: 1,
+      hostImageImport: 1,
+      editableInput: 1,
+    },
+    scripts: {
+      generationResult: "scripts/generation_result.py",
+      hostRoutingPolicy: "scripts/host_routing_policy.py",
+      importHostImage: "scripts/import_host_image.py",
+      prepareEditableInput: "scripts/prepare_editable_input.py",
+      apiGenerator: "scripts/gen_slide.py",
+      normalizedExport: "scripts/export_images.py",
+    },
+  });
+  assert.deepEqual(contract.dependencies[1].capabilities, {
+    version: ">=0.2.0 <0.3.0",
+    manifestVersion: 2,
+    officialDonor: "slide-editable.pptx",
+    objectNames: {
+      background: "asset-background",
+      text: "text-<id>",
+      shape: "shape-<id>-<label>",
+      asset: "asset-<id>",
+    },
+  });
+  for (const path of [
+    "src/deck/pdf.ts",
+    "src/deck/montage.ts",
+    "src/editable/preview-image.ts",
+    "src/editable/render.ts",
+  ]) {
+    await assert.rejects(access(path), { code: "ENOENT" }, path);
+  }
+});

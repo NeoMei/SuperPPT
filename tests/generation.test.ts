@@ -44,8 +44,6 @@ import {
 import { resolveSkillDependencies } from "../src/dependencies/resolve.js";
 import type { AiImageSkillDependency } from "../src/dependencies/schemas.js";
 import { assembleProjectCandidate, type FinalRender } from "../src/deck/assemble.js";
-import { buildMontage } from "../src/deck/montage.js";
-import { exportPdf } from "../src/deck/pdf.js";
 import { approveExecutionGate, approveGate, assertGateCurrent } from "../src/planning/confirm.js";
 import { loadValidatedPlan } from "../src/planning/load.js";
 import { publishPlanViews, publishStyleSample } from "../src/planning/views.js";
@@ -209,15 +207,41 @@ async function approvedProject(
   await approveGate(root, "slide-specs");
   const aiRoot = join(parent, "ai-image-to-ppt");
   await mkdir(join(aiRoot, "scripts"), { recursive: true });
+  await mkdir(join(aiRoot, "references"), { recursive: true });
   await writeFile(join(aiRoot, "SKILL.md"), "---\nname: ai-image-to-ppt\n---\n");
-  for (const script of ["generation_result.py", "host_routing_policy.py", "import_host_image.py", "prepare_editable_input.py"]) {
+  for (const script of ["generation_result.py", "host_routing_policy.py", "import_host_image.py", "prepare_editable_input.py", "gen_slide.py", "export_images.py"]) {
     await writeFile(join(aiRoot, "scripts", script), "raise SystemExit('not executed by job preparation')\n");
   }
+  await writeFile(join(aiRoot, "references", "capabilities.json"), `${JSON.stringify({
+    schemaVersion: 1,
+    skill: "ai-image-to-ppt",
+    contracts: { generationResult: 1, serialStickyRouterReport: 1, hostImageImport: 1, editableInput: 1 },
+    routingOrder: [
+      { provider: "openai", channel: "host", modelSelection: "host-owned" },
+      { provider: "openai", channel: "api", defaultModel: "gpt-image-2" },
+      { provider: "gemini", channel: "host", modelSelection: "host-owned" },
+      { provider: "gemini", channel: "api", defaultModel: "gemini-3.1-flash-image" },
+      { provider: "doubao", channel: "host", modelSelection: "host-owned" },
+      { provider: "doubao", channel: "api", defaultModel: "doubao-seedream-5-0-260128" },
+    ],
+    outputs: {
+      normalizedSlide: { format: "image", width: 1920, height: 1080 },
+      editableInput: { format: "png", width: 1280, height: 720 },
+    },
+    scripts: {
+      generationResult: "scripts/generation_result.py",
+      hostRoutingPolicy: "scripts/host_routing_policy.py",
+      importHostImage: "scripts/import_host_image.py",
+      prepareEditableInput: "scripts/prepare_editable_input.py",
+      apiGenerator: "scripts/gen_slide.py",
+      normalizedExport: "scripts/export_images.py",
+    },
+  }, null, 2)}\n`);
   const editableRoot = join(parent, "image-to-editable-pptx");
   await mkdir(join(editableRoot, "skills", "image-to-editable-pptx"), { recursive: true });
-  await writeFile(join(editableRoot, "package.json"), JSON.stringify({ name: "image-to-editable-pptx", version: "0.1.0" }));
+  await writeFile(join(editableRoot, "package.json"), JSON.stringify({ name: "image-to-editable-pptx", version: "0.2.0" }));
   await writeFile(join(editableRoot, "package-lock.json"), JSON.stringify({ lockfileVersion: 3 }));
-  await writeFile(join(editableRoot, "skills", "image-to-editable-pptx", "SKILL.md"), "---\nname: image-to-editable-pptx\n---\n");
+  await writeFile(join(editableRoot, "skills", "image-to-editable-pptx", "SKILL.md"), "---\nname: image-to-editable-pptx\n---\nmanifestVersion: 2\nofficial donor: slide-editable.pptx\nobject names: asset-background, text-<id>, shape-<id>-<label>, asset-<id>\n");
   const aiDependency = (await resolveSkillDependencies({
     aiSkillRoot: aiRoot,
     editableSkillRoot: editableRoot,
@@ -386,7 +410,7 @@ async function authorizedDeckProject(t: TestContext, prefix: string) {
 
 async function fakeCandidateOutputs(
   renders: FinalRender[],
-  paths: { pptx: string; pdf: string; montage: string },
+  paths: { pptx: string },
 ): Promise<void> {
   const zip = new JSZip();
   zip.file("[Content_Types].xml", "<Types/>");
@@ -396,8 +420,6 @@ async function fakeCandidateOutputs(
     zip.file(`ppt/media/image${index + 1}.png`, render.bytes);
   }
   await writeFile(paths.pptx, await zip.generateAsync({ type: "nodebuffer" }), { flag: "wx" });
-  await exportPdf(renders, paths.pdf);
-  await buildMontage(renders, paths.montage);
 }
 
 async function installCompleteDeckRevision(root: string): Promise<{ revisionId: string; bytes: Buffer }> {

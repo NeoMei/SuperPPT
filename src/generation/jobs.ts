@@ -86,12 +86,15 @@ function dependencyBinding(ai: AiImageSkillDependency): ImageGenerationJob["aiSk
     root: ai.root,
     skillSha256: ai.skillSha256,
     gitRevision: ai.gitRevision,
-    scripts: {
-      generationResult: { path: ai.scripts.generationResult, sha256: ai.scriptSha256.generationResult },
-      hostRoutingPolicy: { path: ai.scripts.hostRoutingPolicy, sha256: ai.scriptSha256.hostRoutingPolicy },
-      importHostImage: { path: ai.scripts.importHostImage, sha256: ai.scriptSha256.importHostImage },
-      prepareEditableInput: { path: ai.scripts.prepareEditableInput, sha256: ai.scriptSha256.prepareEditableInput },
-    },
+    capabilityManifestSha256: ai.capabilityManifestSha256,
+    capabilitySchemaVersion: ai.capabilitySchemaVersion,
+    contracts: ai.contracts,
+    routingOrder: ai.routingOrder,
+    outputs: ai.outputs,
+    scripts: Object.fromEntries(Object.entries(ai.scripts).map(([name, path]) => [name, {
+      path,
+      sha256: ai.scriptSha256[name as keyof typeof ai.scriptSha256],
+    }])) as ImageGenerationJob["aiSkill"]["scripts"],
   };
 }
 

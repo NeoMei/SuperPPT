@@ -87,7 +87,7 @@ export async function validateAcceptanceManifestBinding(
   if (!sameJson(acceptance.editablePageIds, editablePageIds)) throw new Error("acceptance editable page identity is not current");
   if (providerIds.size !== 1 || !providerIds.has(acceptance.providerId)) throw new Error("acceptance provider evidence is not current");
 
-  for (const kind of ["pptx", "pdf", "montage"] as const) {
+  for (const kind of ["pptx"] as const) {
     const artifact = manifest.exports[kind];
     const evidence = acceptance.exports[kind];
     if (!artifact || evidence.path !== artifact.path || evidence.sha256 !== artifact.sha256) {

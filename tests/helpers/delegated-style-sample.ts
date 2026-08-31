@@ -5,6 +5,7 @@ import { dirname, join } from "node:path";
 import sharp from "sharp";
 
 import type { AiImageSkillDependency } from "../../src/dependencies/schemas.js";
+import { resolveAiImageSkillDependency } from "../../src/dependencies/resolve.js";
 import { admitDelegatedGenerationCall, publishStyleSampleGenerationPlan } from "../../src/generation/authorization.js";
 import { recordDelegatedResult } from "../../src/generation/delegation-result.js";
 import { finalizeStyleSample, prepareStyleSampleJob } from "../../src/generation/style-sample.js";
@@ -21,6 +22,7 @@ async function testAiDependency(root: string): Promise<AiImageSkillDependency> {
   const aiRoot = join(dirname(root), "delegated-style-sample-agent");
   const scriptsRoot = join(aiRoot, "scripts");
   await mkdir(scriptsRoot, { recursive: true });
+  await mkdir(join(aiRoot, "references"), { recursive: true });
   const skillFile = join(aiRoot, "SKILL.md");
   await writeFile(skillFile, "---\nname: ai-image-to-ppt\n---\n");
   const scripts = {
@@ -28,29 +30,26 @@ async function testAiDependency(root: string): Promise<AiImageSkillDependency> {
     hostRoutingPolicy: join(scriptsRoot, "host_routing_policy.py"),
     importHostImage: join(scriptsRoot, "import_host_image.py"),
     prepareEditableInput: join(scriptsRoot, "prepare_editable_input.py"),
+    apiGenerator: join(scriptsRoot, "gen_slide.py"),
+    normalizedExport: join(scriptsRoot, "export_images.py"),
   };
   await Promise.all(Object.values(scripts).map((path) => writeFile(path, "raise SystemExit('test fake is never executed')\n")));
-  const [skill, generationResult, hostRoutingPolicy, importHostImage, prepareEditableInput] = await Promise.all([
-    skillFile,
-    scripts.generationResult,
-    scripts.hostRoutingPolicy,
-    scripts.importHostImage,
-    scripts.prepareEditableInput,
-  ].map(async (path) => ({ bytes: await readFile(path) })));
-  return {
-    kind: "ai-image-to-ppt",
-    root: aiRoot,
-    skillFile,
-    skillSha256: sha256(skill.bytes),
-    gitRevision: null,
-    scripts,
-    scriptSha256: {
-      generationResult: sha256(generationResult.bytes),
-      hostRoutingPolicy: sha256(hostRoutingPolicy.bytes),
-      importHostImage: sha256(importHostImage.bytes),
-      prepareEditableInput: sha256(prepareEditableInput.bytes),
-    },
-  };
+  await writeFile(join(aiRoot, "references", "capabilities.json"), `${JSON.stringify({
+    schemaVersion: 1,
+    skill: "ai-image-to-ppt",
+    contracts: { generationResult: 1, serialStickyRouterReport: 1, hostImageImport: 1, editableInput: 1 },
+    routingOrder: [
+      { provider: "openai", channel: "host", modelSelection: "host-owned" },
+      { provider: "openai", channel: "api", defaultModel: "gpt-image-2" },
+      { provider: "gemini", channel: "host", modelSelection: "host-owned" },
+      { provider: "gemini", channel: "api", defaultModel: "gemini-3.1-flash-image" },
+      { provider: "doubao", channel: "host", modelSelection: "host-owned" },
+      { provider: "doubao", channel: "api", defaultModel: "doubao-seedream-5-0-260128" },
+    ],
+    outputs: { normalizedSlide: { format: "image", width: 1920, height: 1080 }, editableInput: { format: "png", width: 1280, height: 720 } },
+    scripts: Object.fromEntries(Object.entries(scripts).map(([name, path]) => [name, `scripts/${path.split("/").at(-1)}`])),
+  }, null, 2)}\n`);
+  return resolveAiImageSkillDependency(aiRoot);
 }
 
 /** Creates authenticated sample evidence as if the external Agent had completed its one admitted call. */

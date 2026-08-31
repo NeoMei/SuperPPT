@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { createHash, randomUUID } from "node:crypto";
-import { mkdir, mkdtemp, readFile, readdir, realpath, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, readdir, realpath, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test, { type TestContext } from "node:test";
@@ -213,12 +213,16 @@ test("manual flow exposes only one complete deck and adopts exact bytes only aft
   assert.equal(await sessionState(fixture, prepared.sessionId), "external-editing");
 
   const saved = await replaceSlideText(prepared.absolutePath, "ppt/slides/slide2.xml", "two", "user saved");
+  const savedStat = await stat(prepared.absolutePath);
   const adopted = await adoptManualSavedDeck({
     root: fixture.root,
     sessionId: prepared.sessionId,
     userSignal: "saved-and-closed",
   });
+  const adoptedStat = await stat(prepared.absolutePath);
   assert.deepEqual(await readFile(prepared.absolutePath), saved);
+  assert.equal(adoptedStat.ino, savedStat.ino);
+  assert.equal(adoptedStat.size, savedStat.size);
   assert.equal(adopted.absolutePath, prepared.absolutePath);
   assert.equal(adopted.sha256, digest(saved));
   assert.deepEqual(await readFile(fixture.absolutePath), fixture.deckBytes);

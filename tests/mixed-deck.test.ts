@@ -9,19 +9,14 @@ import JSZip from "jszip";
 import sharp from "sharp";
 
 import {
-  assembleDeck,
   assembleProjectCandidate,
   type FinalRender,
 } from "../src/deck/assemble.js";
-import * as deckAssembly from "../src/deck/assemble.js";
-import { buildMontage } from "../src/deck/montage.js";
-import { exportPdf } from "../src/deck/pdf.js";
 import { convertProjectPage } from "../src/editable/adapter.js";
-import { resolveAiImageSkillDependency } from "../src/dependencies/resolve.js";
+import { resolveSkillDependencies } from "../src/dependencies/resolve.js";
 import type { ResolvedDependencies } from "../src/dependencies/schemas.js";
 import { configureGenerationAuthorizationTrustForTests } from "../src/generation/trusted-authorization.js";
 import { applyProjectEditPlan, promoteProjectEditableTarget } from "../src/editable/operations.js";
-import { confirmEditablePreview, renderEditablePage, renderProjectEditablePreview } from "../src/editable/render.js";
 import { approveGate } from "../src/planning/confirm.js";
 import { publishPlanViews } from "../src/planning/views.js";
 import { initializeProject } from "../src/project/initialize.js";
@@ -44,7 +39,7 @@ async function temporary(t: TestContext, prefix: string): Promise<string> {
 
 async function fakeInitialOutputs(
   renders: FinalRender[],
-  paths: { pptx: string; pdf: string; montage: string },
+  paths: { pptx: string },
 ): Promise<void> {
   const zip = new JSZip();
   zip.file("[Content_Types].xml", "<Types/>");
@@ -54,17 +49,6 @@ async function fakeInitialOutputs(
     zip.file(`ppt/media/image${index + 1}.png`, render.bytes);
   }
   await writeFile(paths.pptx, await zip.generateAsync({ type: "nodebuffer" }), { flag: "wx" });
-  await exportPdf(renders, paths.pdf);
-  await buildMontage(renders, paths.montage);
-}
-
-async function mixedOutputs(
-  renders: FinalRender[],
-  paths: { pptx: string; pdf: string; montage: string },
-): Promise<void> {
-  await assembleDeck(renders, paths.pptx);
-  await exportPdf(renders, paths.pdf);
-  await buildMontage(renders, paths.montage);
 }
 
 async function outputDirectorySnapshot(path: string): Promise<{
@@ -298,15 +282,32 @@ async function resolvedDependencies(
 ): Promise<ResolvedDependencies> {
   const aiRoot = join(await temporary(t, "superppt-mixed-ai-skill-"), "ai-image-to-ppt");
   await mkdir(join(aiRoot, "scripts"), { recursive: true });
+  await mkdir(join(aiRoot, "references"), { recursive: true });
   await writeFile(join(aiRoot, "SKILL.md"), "---\nname: ai-image-to-ppt\n---\n");
   for (const script of [
     "generation_result.py",
     "host_routing_policy.py",
     "import_host_image.py",
     "prepare_editable_input.py",
+    "gen_slide.py",
+    "export_images.py",
   ]) {
     await writeFile(join(aiRoot, "scripts", script), `# fixture ${script}\n`);
   }
+  await writeFile(join(aiRoot, "references", "capabilities.json"), `${JSON.stringify({
+    schemaVersion: 1, skill: "ai-image-to-ppt",
+    contracts: { generationResult: 1, serialStickyRouterReport: 1, hostImageImport: 1, editableInput: 1 },
+    routingOrder: [
+      { provider: "openai", channel: "host", modelSelection: "host-owned" },
+      { provider: "openai", channel: "api", defaultModel: "gpt-image-2" },
+      { provider: "gemini", channel: "host", modelSelection: "host-owned" },
+      { provider: "gemini", channel: "api", defaultModel: "gemini-3.1-flash-image" },
+      { provider: "doubao", channel: "host", modelSelection: "host-owned" },
+      { provider: "doubao", channel: "api", defaultModel: "doubao-seedream-5-0-260128" },
+    ],
+    outputs: { normalizedSlide: { format: "image", width: 1920, height: 1080 }, editableInput: { format: "png", width: 1280, height: 720 } },
+    scripts: { generationResult: "scripts/generation_result.py", hostRoutingPolicy: "scripts/host_routing_policy.py", importHostImage: "scripts/import_host_image.py", prepareEditableInput: "scripts/prepare_editable_input.py", apiGenerator: "scripts/gen_slide.py", normalizedExport: "scripts/export_images.py" },
+  }, null, 2)}\n`);
   return resolvedDependenciesFromRoots(aiRoot, editableRoot);
 }
 
@@ -314,30 +315,7 @@ async function resolvedDependenciesFromRoots(
   aiRoot: string,
   editableRoot: string,
 ): Promise<ResolvedDependencies> {
-  const ai = await resolveAiImageSkillDependency(aiRoot);
-  const editableCanonical = await realpath(editableRoot);
-  const packageFile = join(editableCanonical, "package.json");
-  const skillFile = join(editableCanonical, "skills", "image-to-editable-pptx", "SKILL.md");
-  const packageSha256 = sha256(await readFile(packageFile));
-  const skillSha256 = sha256(await readFile(skillFile));
-  return {
-    ai,
-    editable: {
-      kind: "image-to-editable-pptx",
-      root: editableCanonical,
-      packageFile,
-      packageSha256,
-      skillFile,
-      skillSha256,
-      version: "0.2.0",
-    },
-    integrity: {
-      aiSkillSha256: ai.skillSha256,
-      aiScripts: ai.scriptSha256,
-      editablePackageSha256: packageSha256,
-      editableSkillSha256: skillSha256,
-    },
-  };
+  return resolveSkillDependencies({ aiSkillRoot: aiRoot, editableSkillRoot: editableRoot });
 }
 
 async function transparentPng(width: number, height: number): Promise<Buffer> {
@@ -445,9 +423,6 @@ test("prepare editable input and selected page replacement invalidate only the r
   const reviewed = await reviewedProject(t, "edit-page");
   const { root } = reviewed;
   const before = await readProject(root);
-  const untouched = before.slides
-    .filter((slide) => slide.id !== slideIds[1])
-    .map((slide) => structuredClone(slide));
   const styleArtifact = structuredClone(before.style);
   const styleLockBytes = await readFile(join(root, "style/lock.json"));
   const initialGates = before.gates
@@ -545,58 +520,24 @@ test("prepare editable input and selected page replacement invalidate only the r
     expectedKind: "text",
   });
   const recordSha256 = sha256(await readFile(join(modified.revisionRoot, "modified-revision-record.json")));
-  const preview = await renderProjectEditablePreview({
-    root,
-    slideId: slideIds[1],
-    modifiedRevisionId: modified.revisionId,
-    expectedModifiedRevisionRecordSha256: recordSha256,
-  });
-  await confirmEditablePreview({
-    root,
-    slideId: slideIds[1],
-    modifiedRevisionId: modified.revisionId,
-    expectedModifiedRevisionRecordSha256: recordSha256,
-    preview: join(root, preview.preview.path),
-  });
-
-  const applyEditableReplacement = (deckAssembly as unknown as {
-    applyEditableReplacement?: (options: {
-      root: string;
-      slideId: string;
-      modifiedRevisionId: string;
-      expectedModifiedRevisionRecordSha256: string;
-    }) => Promise<unknown>;
-  }).applyEditableReplacement;
-  assert.equal(typeof applyEditableReplacement, "function", "candidate-first editable replacement API must exist");
-  await applyEditableReplacement!({
-    root,
-    slideId: slideIds[1],
-    modifiedRevisionId: modified.revisionId,
-    expectedModifiedRevisionRecordSha256: recordSha256,
-  });
+  assert.equal(recordSha256.length, 64);
+  await assert.rejects(lstat(join(modified.revisionRoot, "preview-1920x1080.png")), { code: "ENOENT" });
   await assertImmutableArtifactBytes();
 
   const after = await readProject(root);
   assert.equal(after.stage, "revising");
-  assert.equal(after.slides[1]!.status, "editable");
-  assert.equal(after.slides[1]!.editableRevision?.modifiedRevisionId, modified.revisionId);
-  assert.deepEqual(after.slides.filter((slide) => slide.id !== slideIds[1]), untouched);
+  assert.equal(after.slides[1]!.status, "ready");
+  assert.equal(after.slides[1]!.editableRevision ?? null, null);
+  assert.deepEqual(after.slides, before.slides);
   assert.deepEqual(after.style, styleArtifact);
   assert.deepEqual(await readFile(join(root, "style/lock.json")), styleLockBytes);
   assert.deepEqual(after.gates
     .filter((gate) => ["outline", "slide-specs", "style-sample", "generation-authorization"].includes(gate.gate))
     .map((gate) => ({ gate: gate.gate, approvalId: gate.approvalId, snapshotPath: gate.snapshotPath })), initialGates);
   assert.deepEqual(after.gates.filter((gate) => gate.gate === "deck-review"), historicalDeckReviewGates);
-  assert.equal(after.gates.some((gate) => gate.gate === "slide-preview"), true);
-  for (const name of ["action.json", "review.json", "montage.jpg"]) {
-    await assert.rejects(lstat(join(root, "output/candidates/current", name)), { code: "ENOENT" });
+  for (const name of ["action.json", "review.json"]) {
+    await lstat(join(root, "output/candidates/current", name));
   }
-  await assert.rejects(publishDeckReview(root, reviewed.candidateId), /stale|current project revision|candidate/);
-
-  const rebuilt = await assembleProjectCandidate(root, { buildOutputs: mixedOutputs });
-  assert.notEqual(rebuilt.candidateId, reviewed.candidateId);
-  const rebuiltReview = await publishDeckReview(root, rebuilt.candidateId);
-  assert.equal(rebuiltReview.candidateId, rebuilt.candidateId);
 });
 test("one authenticated edit-page action cannot authorize another page", async (t) => {
   const reviewed = await reviewedProject(t, "edit-page");
@@ -729,38 +670,4 @@ test("prepare editable input rejects dependency drift, extra output, wrong dimen
     },
   }), /changed identity during conversion/);
   await assertCleaned(identityRevision);
-});
-
-test("renders a deterministic 1920x1080 editable preview and authors real editable objects", async (t) => {
-  const root = await mkdtemp(join(tmpdir(), "superppt-mixed-"));
-  t.after(() => rm(root, { recursive: true, force: true }));
-  const editableRoot = join(process.cwd(), "tests/fixtures/editable");
-  const manifest = JSON.parse(await readFile(join(editableRoot, "manifest.json"), "utf8"));
-  manifest.elements.find((element: { id: string }) => element.id === "ocr-title").text = "新的标题";
-  const preview = join(root, "editable-preview.png");
-
-  await renderEditablePage({ root: editableRoot, manifest, output: preview });
-  const metadata = await sharp(preview).metadata();
-  assert.deepEqual([metadata.width, metadata.height], [1920, 1080]);
-  const repeated = join(root, "editable-preview-repeat.png");
-  await renderEditablePage({ root: editableRoot, manifest, output: repeated });
-  assert.equal(sha256(await readFile(repeated)), sha256(await readFile(preview)));
-
-  const image = join(root, "image.png");
-  await sharp({ create: { width: 1920, height: 1080, channels: 3, background: "#123456" } }).png().toFile(image);
-  const pptx = join(root, "mixed.pptx");
-  await assembleDeck([
-    { id: "image", order: 0, mode: "image", render: image },
-    { id: "editable", order: 1, mode: "editable", render: preview, editableRoot, manifest },
-  ], pptx);
-
-  const zip = await JSZip.loadAsync(await readFile(pptx));
-  const imageSlide = await zip.file("ppt/slides/slide1.xml")!.async("text");
-  const editableSlide = await zip.file("ppt/slides/slide2.xml")!.async("text");
-  assert.equal([...imageSlide.matchAll(/<p:pic\b/g)].length, 1);
-  assert.match(imageSlide, /name="page-image"/);
-  assert.match(editableSlide, /新的标题/);
-  assert.match(editableSlide, /name="text-ocr-title"/);
-  assert.match(editableSlide, /name="asset-icon-1"/);
-  assert.ok([...editableSlide.matchAll(/<p:pic\b/g)].length >= 2);
 });

@@ -627,7 +627,6 @@ async function createProjectModifiedRevision(
     ))
     || (currentEditable && (
       currentEditable.projectRevisionId !== project.currentRevision.id
-      || JSON.stringify(currentEditable.preview) !== JSON.stringify(slide.finalRender)
       || JSON.stringify(currentEditable.conversionFinalRender) !== JSON.stringify({
         path: sourceFinalRender.path,
         sha256: sourceFinalRender.sha256,

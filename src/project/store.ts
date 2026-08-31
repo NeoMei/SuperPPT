@@ -12,7 +12,6 @@ import {
   type Acceptance,
   type ClientAcceptanceObservation,
 } from "../acceptance/schema.js";
-import { assertCompleteEditablePreview } from "../editable/preview-image.js";
 import { syncDirectory, writeDurableExclusive } from "./durable.js";
 import { promoteExclusive } from "./exclusive.js";
 import {
@@ -450,42 +449,6 @@ function assertGenerationHistoryUnchanged(previous: ProjectManifest, next: Proje
   }
 }
 
-async function validateSlidePreviewGateEvidence(
-  root: string,
-  manifest: ProjectManifest,
-  gate: ProjectManifest["gates"][number],
-): Promise<void> {
-  const binding = gate.slidePreview;
-  if (gate.gate !== "slide-preview" || !binding) throw new Error("slide preview binding is missing");
-  const slide = manifest.slides.find((candidate) => candidate.id === binding.slideId);
-  const appliedBinding = slide?.status === "editable" && slide.editableRevision
-    && sameJson(binding, slide.editableRevision)
-    ? slide.editableRevision.sourceFinalRender
-    : null;
-  let source = appliedBinding ?? slide?.finalRender ?? null;
-  if (!source && slide?.status === "ready" && slide.image) {
-    const selected = await (await import("./promotion.js")).authenticateCurrentDeckEditSelection(root, slide.id);
-    if (sameJson(selected.sourceMaster, binding.sourceFinalRender)) source = selected.sourceMaster;
-  }
-  if (
-    !source
-    || binding.projectId !== manifest.projectId
-    || binding.projectRevisionId !== manifest.currentRevision.id
-    || gate.revisionId !== manifest.currentRevision.id
-    || !sameJson(binding.sourceFinalRender, source)
-  ) throw new Error("slide preview binding is stale");
-  for (const [path, expected] of Object.entries(gate.artifactHashes)) {
-    const bytes = await readOwnedRegularFile(root, path);
-    if (path === binding.preview.path) await assertCompleteEditablePreview(bytes);
-    if (sha256Evidence(bytes) !== expected) {
-      throw new Error("slide preview gate artifact hash mismatch");
-    }
-  }
-  if (sha256Evidence(await readOwnedRegularFile(root, binding.modifiedManifest.path)) !== binding.modifiedManifest.sha256) {
-    throw new Error("slide preview modified manifest hash mismatch");
-  }
-}
-
 async function validateCompleteDeckReviewGateEvidence(
   root: string,
   manifest: ProjectManifest,
@@ -678,12 +641,6 @@ async function persistProject(
         await validateImpactGateEvidence(owned.root, owned.manifest, gate);
       } catch (error: unknown) {
         throw new Error("revision impact gate evidence is invalid", { cause: error });
-      }
-    } else if (gate.gate === "slide-preview") {
-      try {
-        await validateSlidePreviewGateEvidence(owned.root, valid, gate);
-      } catch (error: unknown) {
-        throw new Error("slide preview gate evidence is invalid", { cause: error });
       }
     }
   }
@@ -1668,8 +1625,6 @@ async function commitApprovedImpactRevisionLocked(
       } : slide),
       exports: plan.invalidateExports ? {
         pptx: null,
-        pdf: null,
-        montage: null,
         acceptance: null,
       } : current.manifest.exports,
     });

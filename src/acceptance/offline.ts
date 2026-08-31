@@ -5,13 +5,10 @@ import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "nod
 import JSZip from "jszip";
 import sharp from "sharp";
 
-import { applyEditableReplacement, assembleProjectCandidate, type FinalRender } from "../deck/assemble.js";
+import { assembleProjectCandidate, type FinalRender } from "../deck/assemble.js";
 import { prepareEditableSlide } from "../deck/editable-slide.js";
-import { buildMontage } from "../deck/montage.js";
-import { exportPdf } from "../deck/pdf.js";
 import { convertProjectPage } from "../editable/adapter.js";
 import { applyProjectEditPlan } from "../editable/operations.js";
-import { confirmEditablePreview, renderProjectEditablePreview } from "../editable/render.js";
 import { prepareDeckJob } from "../generation/batch.js";
 import {
   admitDelegatedGenerationCall,
@@ -30,7 +27,7 @@ import { publishOutlineViews, publishPlanViews, publishStyleSample } from "../pl
 import { initializeProject } from "../project/initialize.js";
 import { applyDeckReviewAction, publishDeckReview } from "../project/promotion.js";
 import { readProject, sha256 } from "../project/store.js";
-import { resolveAiImageSkillDependency } from "../dependencies/resolve.js";
+import { resolveSkillDependencies } from "../dependencies/resolve.js";
 import type { ResolvedDependencies } from "../dependencies/schemas.js";
 import { approveStyleLock, createProvisionalStyleLock } from "../styles/style-lock.js";
 
@@ -40,7 +37,7 @@ type AcceptanceSnapshot = {
   editableSlideIds: string[];
   renderHashes: Record<string, string>;
   acceptance: string;
-  exports: { pptx: string; pdf: string; montage: string };
+  exports: { pptx: string };
 };
 
 export type OfflineAcceptanceResult = {
@@ -90,7 +87,7 @@ function xml(value: string): string {
 
 async function offlineBuildOutputs(
   renders: FinalRender[],
-  paths: { pptx: string; pdf: string; montage: string },
+  paths: { pptx: string },
 ): Promise<void> {
   const zip = new JSZip();
   zip.file("[Content_Types].xml", "<Types/>");
@@ -130,8 +127,6 @@ async function offlineBuildOutputs(
     zip.file(relationshipsPath, `<Relationships>${relationships.join("")}</Relationships>`);
   }
   await writeFile(paths.pptx, await zip.generateAsync({ type: "nodebuffer" }), { flag: "wx" });
-  await exportPdf(renders, paths.pdf);
-  await buildMontage(renders, paths.montage);
 }
 
 async function parseFixture<T>(path: string, parse: (value: unknown) => T): Promise<{ value: T; bytes: Buffer }> {
@@ -164,10 +159,25 @@ async function copyPlanningFixtures(projectRoot: string, fixtures: string): Prom
 async function stagedAiDependency(parent: string): Promise<string> {
   const root = join(parent, "offline-ai-image-to-ppt");
   await mkdir(join(root, "scripts"), { recursive: true, mode: 0o700 });
+  await mkdir(join(root, "references"), { recursive: true, mode: 0o700 });
   await writeFile(join(root, "SKILL.md"), "---\nname: ai-image-to-ppt\n---\n", { flag: "wx", mode: 0o600 });
-  for (const script of ["generation_result.py", "host_routing_policy.py", "import_host_image.py", "prepare_editable_input.py"]) {
+  for (const script of ["generation_result.py", "host_routing_policy.py", "import_host_image.py", "prepare_editable_input.py", "gen_slide.py", "export_images.py"]) {
     await writeFile(join(root, "scripts", script), "raise SystemExit('not executed by offline delegated sample')\n", { flag: "wx", mode: 0o600 });
   }
+  await writeFile(join(root, "references", "capabilities.json"), `${JSON.stringify({
+    schemaVersion: 1, skill: "ai-image-to-ppt",
+    contracts: { generationResult: 1, serialStickyRouterReport: 1, hostImageImport: 1, editableInput: 1 },
+    routingOrder: [
+      { provider: "openai", channel: "host", modelSelection: "host-owned" },
+      { provider: "openai", channel: "api", defaultModel: "gpt-image-2" },
+      { provider: "gemini", channel: "host", modelSelection: "host-owned" },
+      { provider: "gemini", channel: "api", defaultModel: "gemini-3.1-flash-image" },
+      { provider: "doubao", channel: "host", modelSelection: "host-owned" },
+      { provider: "doubao", channel: "api", defaultModel: "doubao-seedream-5-0-260128" },
+    ],
+    outputs: { normalizedSlide: { format: "image", width: 1920, height: 1080 }, editableInput: { format: "png", width: 1280, height: 720 } },
+    scripts: { generationResult: "scripts/generation_result.py", hostRoutingPolicy: "scripts/host_routing_policy.py", importHostImage: "scripts/import_host_image.py", prepareEditableInput: "scripts/prepare_editable_input.py", apiGenerator: "scripts/gen_slide.py", normalizedExport: "scripts/export_images.py" },
+  }, null, 2)}\n`, { flag: "wx", mode: 0o600 });
   return realpath(root);
 }
 
@@ -208,29 +218,7 @@ async function offlineOfficialDonor(background: Buffer, icon: Buffer): Promise<B
 }
 
 async function offlineDependencies(aiRoot: string, editableRoot: string): Promise<ResolvedDependencies> {
-  const ai = await resolveAiImageSkillDependency(aiRoot);
-  const packageFile = join(editableRoot, "package.json");
-  const skillFile = join(editableRoot, "skills", "image-to-editable-pptx", "SKILL.md");
-  const packageSha256 = sha256(await readFile(packageFile));
-  const skillSha256 = sha256(await readFile(skillFile));
-  return {
-    ai,
-    editable: {
-      kind: "image-to-editable-pptx",
-      root: editableRoot,
-      packageFile,
-      packageSha256,
-      skillFile,
-      skillSha256,
-      version: "0.2.0",
-    },
-    integrity: {
-      aiSkillSha256: ai.skillSha256,
-      aiScripts: ai.scriptSha256,
-      editablePackageSha256: packageSha256,
-      editableSkillSha256: skillSha256,
-    },
-  };
+  return resolveSkillDependencies({ aiSkillRoot: aiRoot, editableSkillRoot: editableRoot });
 }
 
 async function writeConverterFixture(outDir: string, sourcePng: string, fixture: string): Promise<void> {
@@ -318,8 +306,8 @@ async function writeConverterFixture(outDir: string, sourcePng: string, fixture:
 async function snapshot(root: string): Promise<AcceptanceSnapshot> {
   const manifest = await readProject(root);
   const slides = [...manifest.slides].sort((left, right) => left.order - right.order);
-  if (!manifest.exports.pptx || !manifest.exports.pdf || !manifest.exports.montage || !manifest.exports.acceptance) {
-    throw new Error("offline acceptance requires all four output artifacts");
+  if (!manifest.exports.pptx || !manifest.exports.acceptance) {
+    throw new Error("offline acceptance requires complete PPTX and structural acceptance artifacts");
   }
   const absolute = (path: string): string => join(root, ...path.split("/"));
   return {
@@ -333,8 +321,6 @@ async function snapshot(root: string): Promise<AcceptanceSnapshot> {
     acceptance: absolute(manifest.exports.acceptance.path),
     exports: {
       pptx: absolute(manifest.exports.pptx.path),
-      pdf: absolute(manifest.exports.pdf.path),
-      montage: absolute(manifest.exports.montage.path),
     },
   };
 }
@@ -522,36 +508,7 @@ export async function runOfflineAcceptance(options: OfflineAcceptanceOptions): P
     sourceRevisionId: conversion.revisionId,
     rawPlan: { route: "editable", operations: [{ kind: "replace-text", elementId: sourceElement.id, text: changedText }] },
   });
-  const recordSha256 = sha256(await readFile(join(edit.revisionRoot, "modified-revision-record.json")));
-  const preview = await renderProjectEditablePreview({
-    root,
-    slideId: EDITABLE_SLIDE_ID,
-    modifiedRevisionId: edit.revisionId,
-    expectedModifiedRevisionRecordSha256: recordSha256,
-  });
-  await confirmEditablePreview({
-    root,
-    slideId: EDITABLE_SLIDE_ID,
-    modifiedRevisionId: edit.revisionId,
-    expectedModifiedRevisionRecordSha256: recordSha256,
-    preview: join(root, ...preview.preview.path.split("/")),
-  });
-  await applyEditableReplacement({
-    root,
-    slideId: EDITABLE_SLIDE_ID,
-    modifiedRevisionId: edit.revisionId,
-    expectedModifiedRevisionRecordSha256: recordSha256,
-  });
-  const replacementCandidate = await assembleProjectCandidate(root, { buildOutputs: offlineBuildOutputs });
-  const replacementReview = await publishDeckReview(root, replacementCandidate.candidateId);
-  const replacementAction = await applyDeckReviewAction(root, {
-    action: "confirm-delivery",
-    candidateId: replacementCandidate.candidateId,
-    descriptorSha256: replacementReview.descriptorSha256,
-  });
-  if (replacementAction.action !== "confirm-delivery" || !replacementAction.delivery) {
-    throw new Error("offline editable replacement was not confirmed for delivery");
-  }
+  await readFile(join(edit.revisionRoot, "modified-revision-record.json"));
   const after = await snapshot(root);
   const calls = await delegatedCalls(root, generation);
   const logs = [
@@ -569,8 +526,8 @@ export async function runOfflineAcceptance(options: OfflineAcceptanceOptions): P
     providerCalls: calls,
     logs,
     deckReview: {
-      action: replacementAction.action,
-      promotedRevision: replacementAction.delivery.revisionNumber,
+      action: deckReviewAction.action,
+      promotedRevision: deckReviewAction.delivery.revisionNumber,
     },
   };
 }

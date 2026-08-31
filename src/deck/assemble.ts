@@ -3,7 +3,6 @@ import { lstat, mkdir, readdir, realpath, rename, rmdir, unlink } from "node:fs/
 import { dirname, isAbsolute, join, posix, relative, sep } from "node:path";
 
 import JSZip from "jszip";
-import { PDFDocument } from "pdf-lib";
 import sharp from "sharp";
 import { z } from "zod";
 
@@ -19,7 +18,6 @@ import {
 import { AttemptLedgerSchema } from "../generation/schemas.js";
 import { withGenerationLease } from "../generation/lease.js";
 import { readAndReauthenticateDelegatedResult } from "../generation/delegation-result.js";
-import { validateAppliedEditableBinding, validateConfirmedEditablePreview } from "../editable/render.js";
 import { assertGateCurrent } from "../planning/confirm.js";
 import { sha256Evidence } from "../project/evidence.js";
 import { syncDirectory, writeDurableExclusive } from "../project/durable.js";
@@ -30,8 +28,6 @@ import { ArtifactSchema, type Artifact, type ProjectManifest } from "../project/
 import { assertProjectMutationNotFrozen, readProject, recordClientAcceptance, updateProject } from "../project/store.js";
 import { prepareEditableSlide, type EditablePage } from "./editable-slide.js";
 import { SOURCE_HEIGHT_PX, SOURCE_WIDTH_PX } from "./geometry.js";
-import { buildMontage, buildMontageBytes } from "./montage.js";
-import { buildPdfBytes, exportPdf } from "./pdf.js";
 import { createPresentation } from "./pptx.js";
 import { publishInitialSlideIdentities } from "../deck-revisions/identity.js";
 import { bootstrapInitialDeckRevision } from "../deck-revisions/store.js";
@@ -148,8 +144,6 @@ const OutputMarkerSchema = z.object({
   }).strict()).min(1),
   artifacts: z.object({
     pptx: ArtifactSchema,
-    pdf: ArtifactSchema,
-    montage: ArtifactSchema,
     acceptance: ArtifactSchema,
   }).strict(),
 }).strict();
@@ -190,7 +184,7 @@ export type AssembleProjectCheckpoint = "outputs-built";
 export type AssembleProjectOperations = {
   buildOutputs?: (
     renders: FinalRender[],
-    paths: { pptx: string; pdf: string; montage: string },
+    paths: { pptx: string },
   ) => Promise<void>;
   checkpoint?: (step: AssembleProjectCheckpoint) => Promise<void> | void;
   beforePromote?: () => Promise<void> | void;
@@ -216,8 +210,6 @@ function canonicalArtifactRefs(revisionNumber: number): Record<keyof OutputArtif
   const base = `output/revisions/${revisionNumber}`;
   return {
     pptx: `${base}/deck.pptx`,
-    pdf: `${base}/deck.pdf`,
-    montage: `${base}/montage.jpg`,
     acceptance: `${base}/acceptance.json`,
   };
 }
@@ -288,22 +280,7 @@ async function projectPages(root: string, manifest: ProjectManifest): Promise<{
     const absolute = await realpath(join(root, record.path.split("/").join(sep)));
     if (portable(root, absolute) !== record.path) throw new Error("final render path is not owned by the project");
     const slide = manifest.slides.find((candidate) => candidate.id === record.id)!;
-    if (record.mode === "editable") {
-      const editable = await validateAppliedEditableBinding(root, manifest, slide.id);
-      pages.push({
-        id: record.id,
-        order: record.order,
-        mode: "editable",
-        render: absolute,
-        expectedSha256: record.sha256,
-        editableRoot: editable.editableRoot,
-        manifest: editable.manifest,
-        modifiedRevisionId: editable.binding.modifiedRevisionId,
-        expectedModifiedRevisionRecordSha256: editable.binding.expectedModifiedRevisionRecordSha256,
-      });
-    } else {
-      pages.push({ id: record.id, order: record.order, mode: "image", render: absolute, expectedSha256: record.sha256 });
-    }
+    pages.push({ id: record.id, order: record.order, mode: "image", render: absolute, expectedSha256: record.sha256 });
     const imageArtifact = slide.image;
     if (!imageArtifact || imageArtifact.revisionId !== manifest.currentRevision.id) {
       throw new Error("every page must bind an accepted generation attempt");
@@ -451,7 +428,7 @@ async function mediaForObject(options: {
 
 async function verifyOutputs(
   renders: FinalRender[],
-  paths: { pptx: string; pdf: string; montage: string },
+  paths: { pptx: string },
 ): Promise<void> {
   const zip = await JSZip.loadAsync(await readRegularFileNoFollow(paths.pptx));
   const slides = Object.keys(zip.files).filter((name) => /^ppt\/slides\/slide\d+\.xml$/.test(name));
@@ -524,19 +501,6 @@ async function verifyOutputs(
       throw new Error("PPTX media bytes do not match final renders");
     }
   }
-  const pdfBytes = await readRegularFileNoFollow(paths.pdf);
-  if (!pdfBytes.equals(await buildPdfBytes(renders))) throw new Error("PDF bytes do not bind the ordered final renders");
-  if ((await PDFDocument.load(pdfBytes)).getPageCount() !== renders.length) {
-    throw new Error("PDF page count does not match final renders");
-  }
-  const montageBytes = await readRegularFileNoFollow(paths.montage);
-  if (!montageBytes.equals(await buildMontageBytes(renders))) throw new Error("montage bytes do not bind the ordered final renders");
-  const montage = await sharp(montageBytes).metadata();
-  const columns = Math.min(4, renders.length);
-  const rows = Math.ceil(renders.length / columns);
-  if (montage.width !== columns * 400 || montage.height !== rows * 225) {
-    throw new Error("montage geometry does not match final renders");
-  }
 }
 
 async function buildOutputArtifacts(
@@ -577,18 +541,14 @@ async function buildOutputArtifacts(
     })),
     exports: {
       pptx: join(staging, "deck.pptx"),
-      pdf: join(staging, "deck.pdf"),
-      montage: join(staging, "montage.jpg"),
     },
-    exportRefs: { pptx: refs.pptx, pdf: refs.pdf, montage: refs.montage },
+    exportRefs: { pptx: refs.pptx },
     candidateReview: options.candidateReview,
     warnings,
   });
   await writeDurableExclusive(join(staging, "acceptance.json"), `${JSON.stringify(acceptance, null, 2)}\n`);
   const artifacts = {
     pptx: await evidence("pptx"),
-    pdf: await evidence("pdf"),
-    montage: await evidence("montage"),
     acceptance: await evidence("acceptance"),
   };
   return OutputMarkerSchema.parse({ ...marker, artifacts });
@@ -596,13 +556,11 @@ async function buildOutputArtifacts(
 
 async function defaultBuildOutputs(
   renders: FinalRender[],
-  paths: { pptx: string; pdf: string; montage: string },
+  paths: { pptx: string },
 ): Promise<void> {
   await createPresentation(await Promise.all(renders.map(async (page) => page.mode === "editable"
     ? { ...page, editable: await prepareEditableSlide(page) }
     : page)), paths.pptx, dirname(paths.pptx));
-  await exportPdf(renders, paths.pdf);
-  await buildMontage(renders, paths.montage);
 }
 
 async function readOutputMarker(destination: string): Promise<OutputMarker> {
@@ -653,8 +611,6 @@ async function validateOwnedOutput(
     const renders = await validateFinalRenders(prepared.pages);
     await verifyOutputs(renders, {
       pptx: join(root, marker.artifacts.pptx.path.split("/").join(sep)),
-      pdf: join(root, marker.artifacts.pdf.path.split("/").join(sep)),
-      montage: join(root, marker.artifacts.montage.path.split("/").join(sep)),
     });
     const acceptance = AcceptanceSchema.parse(JSON.parse((await readOwnedRegularFile(root, marker.artifacts.acceptance.path)).toString("utf8")));
     if (
@@ -668,8 +624,6 @@ async function validateOwnedOutput(
       })))
       || JSON.stringify(acceptance.exports) !== JSON.stringify({
         pptx: { path: marker.artifacts.pptx.path, sha256: marker.artifacts.pptx.sha256 },
-        pdf: { path: marker.artifacts.pdf.path, sha256: marker.artifacts.pdf.sha256 },
-        montage: { path: marker.artifacts.montage.path, sha256: marker.artifacts.montage.sha256 },
       })
     ) throw new Error("acceptance record does not match owned output evidence");
   } catch (error: unknown) {
@@ -704,8 +658,6 @@ function candidateArtifactRefs(candidateId: string): Record<keyof OutputArtifact
   const base = `output/candidates/${candidateId}`;
   return {
     pptx: `${base}/deck.pptx`,
-    pdf: `${base}/deck.pdf`,
-    montage: `${base}/montage.jpg`,
     acceptance: `${base}/acceptance.json`,
   };
 }
@@ -742,9 +694,7 @@ async function readDeckCandidate(
   await requireExactRegularFiles(candidateRoot, [
     ".superppt-candidate.json",
     "acceptance.json",
-    "deck.pdf",
     "deck.pptx",
-    "montage.jpg",
   ], "deck candidate");
   const markerBytes = await readOwnedRegularFile(root, `${candidatePath}/.superppt-candidate.json`);
   let marker: DeckCandidateMarker;
@@ -779,8 +729,6 @@ async function readDeckCandidate(
   const renders = await validateFinalRenders(prepared.pages);
   await verifyOutputs(renders, {
     pptx: join(root, ...marker.artifacts.pptx.path.split("/")),
-    pdf: join(root, ...marker.artifacts.pdf.path.split("/")),
-    montage: join(root, ...marker.artifacts.montage.path.split("/")),
   });
   const acceptance = AcceptanceSchema.parse(JSON.parse(
     (await readOwnedRegularFile(root, marker.artifacts.acceptance.path)).toString("utf8"),
@@ -795,8 +743,6 @@ async function readDeckCandidate(
     })
     || JSON.stringify(acceptance.exports) !== JSON.stringify({
       pptx: { path: refs.pptx, sha256: marker.artifacts.pptx.sha256 },
-      pdf: { path: refs.pdf, sha256: marker.artifacts.pdf.sha256 },
-      montage: { path: refs.montage, sha256: marker.artifacts.montage.sha256 },
     })
   ) throw new Error("candidate acceptance evidence is invalid");
   return { marker, markerBytes, acceptance };
@@ -837,8 +783,6 @@ export async function assembleProjectCandidate(
     await mkdir(staging, { mode: 0o700 });
     const paths = {
       pptx: join(staging, "deck.pptx"),
-      pdf: join(staging, "deck.pdf"),
-      montage: join(staging, "montage.jpg"),
     };
     await (operations.buildOutputs ?? defaultBuildOutputs)(ordered, paths);
     const initialTopology = operations.buildOutputs
@@ -911,74 +855,6 @@ export async function assembleProjectCandidate(
   });
 }
 
-function completedExports(manifest: ProjectManifest): manifest is ProjectManifest & {
-  exports: { pptx: Artifact; pdf: Artifact; montage: Artifact; acceptance: Artifact };
-} {
-  return Boolean(manifest.exports.pptx && manifest.exports.pdf && manifest.exports.montage && manifest.exports.acceptance);
-}
-
-function archivedCurrentOutput(manifest: ProjectManifest): NonNullable<ProjectManifest["outputRevisions"]>[number] | null {
-  if (!completedExports(manifest) || manifest.slides.some((slide) => !slide.finalRender)) return null;
-  return {
-    number: deckRevisionNumber(manifest),
-    projectRevisionId: manifest.currentRevision.id,
-    createdAt: new Date().toISOString(),
-    slides: [...manifest.slides].sort((left, right) => left.order - right.order).map((slide) => ({
-      id: slide.id,
-      order: slide.order,
-      mode: currentSlideMode(slide),
-      finalRender: slide.finalRender!,
-      editable: slide.editable,
-    })),
-    exports: manifest.exports,
-  };
-}
-
-function replacementCandidate(
-  before: ProjectManifest,
-  slideId: string,
-  binding: NonNullable<ProjectManifest["slides"][number]["editableRevision"]>,
-): ProjectManifest {
-  const archived = archivedCurrentOutput(before);
-  const outputRevisions = [...(before.outputRevisions ?? [])];
-  if (archived && !outputRevisions.some((revision) => revision.number === archived.number)) {
-    outputRevisions.push(archived);
-  }
-  const previousSlideState = new Map(before.slides.map((slide) => [slide.id, JSON.stringify(slide)]));
-  const slides = before.slides.map((slide) => slide.id === slideId ? {
-    ...slide,
-    status: "editable" as const,
-    editable: binding.modifiedManifest,
-    editableRevision: binding,
-    finalRender: binding.preview,
-    staleReasons: [],
-  } : slide);
-  for (const slide of slides) {
-    if (slide.id !== slideId && JSON.stringify(slide) !== previousSlideState.get(slide.id)) {
-      throw new Error("slide replacement changed an untouched page");
-    }
-  }
-  return {
-    ...before,
-    stage: "revising",
-    deckRevision: deckRevisionNumber(before) + 1,
-    outputRevisions,
-    slides,
-    exports: { pptx: null, pdf: null, montage: null, acceptance: null },
-  };
-}
-
-function outputRevisionReferenced(manifest: ProjectManifest, revisionNumber: number): boolean {
-  const prefix = `output/revisions/${revisionNumber}/`;
-  const containsPath = (value: unknown): boolean => {
-    if (typeof value === "string") return value.startsWith(prefix);
-    if (Array.isArray(value)) return value.some(containsPath);
-    return Boolean(value && typeof value === "object" && Object.values(value).some(containsPath));
-  };
-  return (manifest.outputRevisions ?? []).some((revision) => revision.number === revisionNumber)
-    || containsPath(manifest);
-}
-
 async function requireExactRegularFiles(directory: string, expected: readonly string[], label: string): Promise<void> {
   const entries = await readdir(directory, { withFileTypes: true });
   const actual = entries.map((entry) => entry.name).sort();
@@ -991,93 +867,6 @@ async function requireExactRegularFiles(directory: string, expected: readonly st
       throw new Error(`${label} must contain only exact regular files`);
     }
   }
-}
-
-type OwnedDescriptorIdentity = { dev: number; ino: number; sha256: string };
-
-async function ownedDescriptorIdentity(path: string, expectedSha256: string): Promise<OwnedDescriptorIdentity> {
-  const info = await lstat(path);
-  if (info.isSymbolicLink() || !info.isFile()) throw new Error("quarantine descriptor staging identity is unsafe");
-  const actual = createHash("sha256").update(await readRegularFileNoFollow(path)).digest("hex");
-  if (actual !== expectedSha256) throw new Error("quarantine descriptor staging hash mismatch");
-  return { dev: info.dev, ino: info.ino, sha256: actual };
-}
-
-async function unlinkOwnedDescriptor(path: string, identity: OwnedDescriptorIdentity): Promise<void> {
-  let info;
-  try {
-    info = await lstat(path);
-  } catch (error: unknown) {
-    if ((error as NodeJS.ErrnoException).code === "ENOENT") return;
-    throw error;
-  }
-  if (info.isSymbolicLink() || !info.isFile() || info.dev !== identity.dev || info.ino !== identity.ino) {
-    throw new Error("refusing to unlink an unowned quarantine descriptor");
-  }
-  const actual = createHash("sha256").update(await readRegularFileNoFollow(path)).digest("hex");
-  if (actual !== identity.sha256) throw new Error("refusing to unlink a changed quarantine descriptor");
-  await unlink(path);
-}
-
-export type ApplyEditableReplacementResult = {
-  candidateId: string;
-  slideId: string;
-  modifiedRevisionId: string;
-  deckRevision: number;
-};
-
-export async function applyEditableReplacement(options: {
-  root: string;
-  slideId: string;
-  modifiedRevisionId: string;
-  expectedModifiedRevisionRecordSha256: string;
-}): Promise<ApplyEditableReplacementResult> {
-  return withGenerationLease(options.root, async (generationRoot) => {
-    await assertProjectMutationNotFrozen(generationRoot);
-    return withPlanningLock(generationRoot, async (planningRoot) =>
-      withProjectLease(planningRoot, "slide-replacement", async (root) => {
-      const promotion = await import("../project/promotion.js");
-      const selection = await promotion.authenticateCurrentDeckEditSelection(root, options.slideId);
-      const before = await readProject(root);
-      const binding = await validateConfirmedEditablePreview(
-        root,
-        before,
-        options.slideId,
-        options.modifiedRevisionId,
-        options.expectedModifiedRevisionRecordSha256,
-      );
-      if (JSON.stringify(binding.sourceFinalRender) !== JSON.stringify(selection.sourceMaster)) {
-        throw new Error("confirmed editable preview does not bind the selected reviewed page master");
-      }
-      const candidate = replacementCandidate(before, options.slideId, binding);
-      const invalidated = await promotion.invalidateCurrentDeckReviewPresentation(root, selection);
-      try {
-        await updateProject(root, (current) => {
-          if (JSON.stringify(current) !== JSON.stringify(before)) {
-            throw new Error("project changed during editable candidate invalidation");
-          }
-          return candidate;
-        });
-      } catch (error: unknown) {
-        const currentPresentation = join(root, "output/candidates/current");
-        try {
-          await rmdir(currentPresentation);
-          await rename(invalidated, currentPresentation);
-          await syncDirectory(join(root, "output/candidates"));
-        } catch (rollbackError: unknown) {
-          throw new AggregateError([error, rollbackError], "editable replacement failed and deck-review invalidation rollback failed");
-        }
-        throw error;
-      }
-      return {
-        candidateId: selection.candidateId,
-        slideId: options.slideId,
-        modifiedRevisionId: options.modifiedRevisionId,
-        deckRevision: deckRevisionNumber(candidate),
-      };
-      })
-    );
-  });
 }
 
 async function validateAcceptanceCurrent(root: string, manifest: ProjectManifest, acceptance: Acceptance): Promise<void> {

@@ -424,7 +424,6 @@ async function requireCurrentArtifactPresentation(
     ? ["generation/authorization-plan.json"]
     : [
       "output/candidates/current/action.json",
-      "output/candidates/current/montage.jpg",
       "output/candidates/current/review.json",
     ];
   if (!sameJson(Object.keys(artifactHashes).sort(), expected)) {

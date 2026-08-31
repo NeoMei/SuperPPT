@@ -1,19 +1,46 @@
 {
-  "contractVersion": 1,
+  "contractVersion": 2,
   "dependencies": [
     {
       "skill": "ai-image-to-ppt",
       "cliFlag": "--ai-skill",
       "resolution": "explicit-only",
-      "required": ["SKILL.md", "scripts"],
-      "capabilityManifest": "references/capabilities.json"
+      "required": ["SKILL.md", "references/capabilities.json"],
+      "capabilityManifest": {
+        "path": "references/capabilities.json",
+        "schemaVersion": 1,
+        "contracts": {
+          "generationResult": 1,
+          "serialStickyRouterReport": 1,
+          "hostImageImport": 1,
+          "editableInput": 1
+        },
+        "scripts": {
+          "generationResult": "scripts/generation_result.py",
+          "hostRoutingPolicy": "scripts/host_routing_policy.py",
+          "importHostImage": "scripts/import_host_image.py",
+          "prepareEditableInput": "scripts/prepare_editable_input.py",
+          "apiGenerator": "scripts/gen_slide.py",
+          "normalizedExport": "scripts/export_images.py"
+        }
+      }
     },
     {
       "skill": "image-to-editable-pptx",
       "cliFlag": "--editable-skill",
       "resolution": "explicit-only",
-      "minimumVersion": "0.1.0",
-      "required": ["package.json", "skills/image-to-editable-pptx/SKILL.md"]
+      "required": ["package.json", "skills/image-to-editable-pptx/SKILL.md"],
+      "capabilities": {
+        "version": ">=0.2.0 <0.3.0",
+        "manifestVersion": 2,
+        "officialDonor": "slide-editable.pptx",
+        "objectNames": {
+          "background": "asset-background",
+          "text": "text-<id>",
+          "shape": "shape-<id>-<label>",
+          "asset": "asset-<id>"
+        }
+      }
     }
   ]
 }

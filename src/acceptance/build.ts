@@ -33,8 +33,8 @@ export type AcceptanceInput = {
     finalRender: string;
     finalRenderSha256: string;
   }>;
-  exports: { pptx: string; pdf: string; montage: string };
-  exportRefs?: { pptx: string; pdf: string; montage: string };
+  exports: { pptx: string };
+  exportRefs?: { pptx: string };
   candidateReview?: {
     candidateId: string;
     projectRevisionId: string;
@@ -84,8 +84,6 @@ export async function buildAcceptance(input: AcceptanceInput): Promise<Acceptanc
     slides,
     exports: {
       pptx: { ...await fileEvidence(input.exports.pptx), path: input.exportRefs?.pptx ?? input.exports.pptx },
-      pdf: { ...await fileEvidence(input.exports.pdf), path: input.exportRefs?.pdf ?? input.exports.pdf },
-      montage: { ...await fileEvidence(input.exports.montage), path: input.exportRefs?.montage ?? input.exports.montage },
     },
     gates: input.gateRevisionIds,
     providerId: input.providerId,

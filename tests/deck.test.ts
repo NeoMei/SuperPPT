@@ -8,7 +8,6 @@ import test, { type TestContext } from "node:test";
 import { promisify } from "node:util";
 
 import JSZip from "jszip";
-import { PDFDocument } from "pdf-lib";
 import sharp from "sharp";
 
 import { buildAcceptance } from "../src/acceptance/build.js";
@@ -28,8 +27,6 @@ import {
   type FinalRender,
 } from "../src/deck/assemble.js";
 import { createDeckCandidate, readCurrentDeckPointer } from "../src/deck-revisions/store.js";
-import { exportPdf } from "../src/deck/pdf.js";
-import { buildMontage } from "../src/deck/montage.js";
 import { approveGate, assertGateCurrent } from "../src/planning/confirm.js";
 import { publishPlanViews } from "../src/planning/views.js";
 import { normalizeInput } from "../src/planning/intake.js";
@@ -192,7 +189,7 @@ async function readyProject(t: TestContext): Promise<{ root: string; revisionId:
   return { root, revisionId: manifest.currentRevision.id };
 }
 
-async function fakeOutputs(renders: FinalRender[], paths: { pptx: string; pdf: string; montage: string }): Promise<void> {
+async function fakeOutputs(renders: FinalRender[], paths: { pptx: string }): Promise<void> {
   const zip = new JSZip();
   zip.file("[Content_Types].xml", "<Types/>");
   for (const [index, render] of renders.entries()) {
@@ -201,8 +198,6 @@ async function fakeOutputs(renders: FinalRender[], paths: { pptx: string; pdf: s
     zip.file(`ppt/media/image${index + 1}.png`, render.bytes);
   }
   await writeFile(paths.pptx, await zip.generateAsync({ type: "nodebuffer" }), { flag: "wx" });
-  await exportPdf(renders, paths.pdf);
-  await buildMontage(renders, paths.montage);
 }
 
 async function authorizeDeckGeneration(root: string): Promise<void> {
@@ -431,18 +426,16 @@ async function rewriteAcceptanceHistoryAsLegacyV1(root: string): Promise<void> {
   await rm(join(trustRoot, "project-registrations", projectId, "authority"), { recursive: true, force: true });
 }
 
-async function fakeUnboundOutputs(renders: FinalRender[], paths: { pptx: string; pdf: string; montage: string }): Promise<void> {
+async function fakeUnboundOutputs(renders: FinalRender[], paths: { pptx: string }): Promise<void> {
   const zip = new JSZip();
   zip.file("[Content_Types].xml", "<Types/>");
   for (const [index, render] of renders.entries()) {
     zip.file(`ppt/slides/slide${index + 1}.xml`, `<p:sld><p:pic><p:cNvPr name=\"page-${render.id}\"/></p:pic></p:sld>`);
   }
   await writeFile(paths.pptx, await zip.generateAsync({ type: "nodebuffer" }), { flag: "wx" });
-  await exportPdf(renders, paths.pdf);
-  await buildMontage(renders, paths.montage);
 }
 
-test("uses the same ordered final renders for PPTX, PDF, and montage", async (t) => {
+test("uses the ordered final renders for the complete PPTX", async (t) => {
   const root = await directory(t);
   const first = await image(join(root, "first.png"), "#dc503c");
   const second = await image(join(root, "second.png"), "#1e64c8");
@@ -451,12 +444,8 @@ test("uses the same ordered final renders for PPTX, PDF, and montage", async (t)
     { id: "first", order: 0, mode: "image" as const, render: first.path, expectedSha256: first.sha256 },
   ];
   const pptx = join(root, "deck.pptx");
-  const pdf = join(root, "deck.pdf");
-  const montage = join(root, "montage.jpg");
 
-  const ordered = await assembleDeck(pages, pptx);
-  await exportPdf(ordered, pdf);
-  await buildMontage(ordered, montage);
+  await assembleDeck(pages, pptx);
 
   const zip = await JSZip.loadAsync(await readFile(pptx));
   const slideNames = Object.keys(zip.files).filter((name) => /^ppt\/slides\/slide\d+\.xml$/.test(name));
@@ -465,10 +454,6 @@ test("uses the same ordered final renders for PPTX, PDF, and montage", async (t)
   const slide2 = await zip.file("ppt/slides/slide2.xml")!.async("string");
   assert.match(slide1, /name="page-first"/);
   assert.match(slide2, /name="page-second"/);
-  assert.equal((await PDFDocument.load(await readFile(pdf))).getPageCount(), 2);
-  const montageInfo = await sharp(montage).metadata();
-  assert.equal(montageInfo.width, 800);
-  assert.equal(montageInfo.height, 225);
 });
 
 test("rejects empty, duplicate, or non-contiguous deck orders", async (t) => {
@@ -549,11 +534,7 @@ test("builds revision-bound initial acceptance with physical artifact hashes", a
   const root = await directory(t);
   const render = await image(join(root, "page.png"), "#123456");
   const pptx = join(root, "deck.pptx");
-  const pdf = join(root, "deck.pdf");
-  const montage = join(root, "montage.jpg");
   await writeFile(pptx, "pptx");
-  await writeFile(pdf, "pdf");
-  await writeFile(montage, "montage");
   const revisionId = "00000000-0000-4000-8000-000000000801";
   const acceptance = await buildAcceptance({
     projectId: "00000000-0000-4000-8000-000000000800",
@@ -573,7 +554,7 @@ test("builds revision-bound initial acceptance with physical artifact hashes", a
       finalRender: render.path,
       finalRenderSha256: render.sha256,
     }],
-    exports: { pptx, pdf, montage },
+    exports: { pptx },
   });
 
   assert.equal(AcceptanceSchema.parse(acceptance).deliveryComplete, false);
@@ -590,11 +571,8 @@ test("builds revision-bound initial acceptance with physical artifact hashes", a
     confirmedAt: null,
   });
   assert.equal(acceptance.slides[0]!.finalRenderSha256, render.sha256);
-  for (const [kind, path] of Object.entries({ pptx, pdf, montage })) {
-    const evidence = acceptance.exports[kind as keyof typeof acceptance.exports];
-    assert.equal(evidence.path, path);
-    assert.equal(evidence.sha256, createHash("sha256").update(await readFile(path)).digest("hex"));
-  }
+  assert.equal(acceptance.exports.pptx.path, pptx);
+  assert.equal(acceptance.exports.pptx.sha256, createHash("sha256").update(await readFile(pptx)).digest("hex"));
   assert.throws(() => AcceptanceSchema.parse({
     ...acceptance,
     slides: acceptance.slides.map((slide) => ({ ...slide, mode: "editable" as const })),
@@ -619,7 +597,7 @@ test("refuses stale gates, non-ready pages, duplicate order, and render tamperin
       finalRender: render.path,
       finalRenderSha256: render.sha256,
     }],
-    exports: { pptx: render.path, pdf: render.path, montage: render.path },
+    exports: { pptx: render.path },
   };
   await assert.rejects(buildAcceptance({ ...base, gatesCurrent: false }), /planning gates must be current/);
   await assert.rejects(buildAcceptance({
@@ -711,6 +689,18 @@ test("production candidate assembly bootstraps the initial immutable deck revisi
   assert.equal(edit.parentRevisionId, current.revisionId);
 });
 
+test("candidate assembly emits only a complete PPTX and structural acceptance evidence", async (t) => {
+  const fixture = await readyProject(t);
+  await authorizeDeckGeneration(fixture.root);
+
+  const candidate = await assembleProjectCandidate(fixture.root, { buildOutputs: fakeOutputs });
+
+  assert.deepEqual(Object.keys(candidate.artifacts).sort(), ["acceptance", "pptx"]);
+  await assert.rejects(access(join(candidate.destination, "deck.pdf")), { code: "ENOENT" });
+  await assert.rejects(access(join(candidate.destination, "montage.jpg")), { code: "ENOENT" });
+  await assert.rejects(access(join(candidate.destination, "slides")), { code: "ENOENT" });
+});
+
 test("deck review return and edit actions are real non-promotion transitions", async (t) => {
   for (const [action, expectedStage] of [
     ["return-upstream", "generation-authorization"],
@@ -743,17 +733,17 @@ test("promotion fails closed for candidate tampering and stale project revisions
   await authorizeDeckGeneration(tampered.root);
   const candidate = await assembleProjectCandidate(tampered.root, { buildOutputs: fakeOutputs });
   const review = await publishDeckReview(tampered.root, candidate.candidateId);
-  await writeFile(join(tampered.root, "output/candidates/current/montage.jpg"), "wrong candidate montage");
+  await writeFile(join(tampered.root, candidate.artifacts.pptx.path), "wrong candidate pptx");
   await assert.rejects(
     applyDeckReviewAction(tampered.root, {
       action: "confirm-delivery",
       candidateId: candidate.candidateId,
       descriptorSha256: review.descriptorSha256,
     }),
-    /montage|hash|evidence|tamper/i,
+    /PPTX|hash|evidence|tamper|candidate/i,
   );
   assert.equal(await assertGateCurrent(tampered.root, "deck-review"), false);
-  await assert.rejects(promoteApprovedCandidate(tampered.root, candidate.candidateId), /action|deck-review|montage/i);
+  await assert.rejects(promoteApprovedCandidate(tampered.root, candidate.candidateId), /action|deck-review|PPTX|candidate/i);
   assert.equal((await readProject(tampered.root)).exports.pptx, null);
 
   const stale = await readyProject(t);

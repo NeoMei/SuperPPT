@@ -44,7 +44,6 @@ const DIRECTORIES = [
   "style/sample",
   "images",
   "editable",
-  "previews",
   "output",
   "failed-runs",
 ];
@@ -80,6 +79,7 @@ test("initializes the complete owned workspace and reopens it", async (t) => {
     "# AI Agent 协作系统\n\n当前阶段：内容接收\n",
   );
   await Promise.all(DIRECTORIES.map((directory) => access(join(root, directory))));
+  await assert.rejects(access(join(root, "previews")), { code: "ENOENT" });
   assert.equal((await lstat(join(root, "superppt.json"))).mode & 0o777, 0o600);
 });
 
@@ -324,6 +324,7 @@ test("retains a complete failed run when initialization promotion fails", async 
     access(join(failedRoot, "项目状态.md")),
     ...DIRECTORIES.map((directory) => access(join(failedRoot, directory))),
   ]);
+  await assert.rejects(access(join(failedRoot, "previews")), { code: "ENOENT" });
 
   const retry = await initializeProject({ root, title: "Retry" });
   assert.equal(retry.title, "Retry");
