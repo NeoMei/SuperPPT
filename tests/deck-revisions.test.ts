@@ -382,6 +382,115 @@ test("validated adoption journal recovers unchanged manual and Agent candidates 
   }
 });
 
+test("validated adoption snapshot digest rejects grouped authority rewrites on recovery and direct retry", async (t) => {
+  for (const mode of ["manual", "agent"] as const) {
+    for (const entry of ["recovery", "retry"] as const) {
+      await t.test(`${mode}-${entry}`, async (st) => {
+        const value = await fixture(st);
+        const parentPath = join(
+          value.root,
+          "output",
+          "deck-revisions",
+          value.current.revisionId,
+          "revision.json",
+        );
+        const parent = JSON.parse(await readFile(parentPath, "utf8")) as {
+          editableSlideIds: string[];
+          reviewRequiredObjectsBySlideId?: Record<string, Array<{ elementId: string; label: string; role: string }>>;
+        };
+        parent.editableSlideIds = [...value.slideIds];
+        parent.reviewRequiredObjectsBySlideId = {
+          [value.slideIds[0]!]: [{ elementId: "chart", label: "Authenticated chart", role: "data-visual" }],
+        };
+        await writeFile(parentPath, `${JSON.stringify(parent, null, 2)}\n`);
+
+        const candidate = await createDeckCandidate(value.root, {
+          sourceRevisionId: value.current.revisionId,
+          reason: mode === "manual" ? "manual-edit" : "agent-edit",
+          changedSlideIds: [value.slideIds[0]!],
+          editableSlideIds: [...value.slideIds],
+          targetSlideId: value.slideIds[0]!,
+          mode,
+        });
+        if (mode === "manual") {
+          await presentManualCandidate(value.root, candidate);
+        } else {
+          await presentDeckCandidate(value.root, {
+            sessionId: candidate.sessionId,
+            mode: "agent",
+            targetSlideId: candidate.targetSlideId,
+            state: "awaiting-confirmation",
+          });
+        }
+        await assert.rejects(adoptDeckCandidate(value.root, {
+          sessionId: candidate.sessionId,
+          mode,
+          ...(mode === "manual"
+            ? { userSignal: "saved-and-closed" as const }
+            : { confirmedSha256: candidate.preparedSha256 }),
+          operations: {
+            checkpoint: (phase) => {
+              if (phase === "validated") throw new Error("injected validated adoption crash");
+            },
+          },
+        }), /injected validated adoption crash/);
+
+        const journalPath = join(
+          value.root,
+          "output",
+          "deck-edit-sessions",
+          candidate.sessionId,
+          "journal.json",
+        );
+        const journal = JSON.parse(await readFile(journalPath, "utf8")) as {
+          reason: "manual-edit" | "agent-edit";
+          changedSlideIds: string[];
+          editableSlideIds: string[];
+          adoption: Record<string, unknown> & {
+            validatedRevision: {
+              reason: "manual-edit" | "agent-edit";
+              changedSlideIds: string[];
+              editableSlideIds: string[];
+              reviewRequiredObjectsBySlideId: Record<string, unknown>;
+            };
+          };
+        };
+        const rewrittenReason = mode === "manual" ? "agent-edit" : "manual-edit";
+        journal.reason = rewrittenReason;
+        journal.changedSlideIds = [value.slideIds[1]!];
+        journal.editableSlideIds = [];
+        journal.adoption.validatedRevision.reason = rewrittenReason;
+        journal.adoption.validatedRevision.changedSlideIds = [value.slideIds[1]!];
+        journal.adoption.validatedRevision.editableSlideIds = [];
+        journal.adoption.validatedRevision.reviewRequiredObjectsBySlideId = {};
+        if ("reason" in journal.adoption) journal.adoption.reason = rewrittenReason;
+        if ("changedSlideIds" in journal.adoption) journal.adoption.changedSlideIds = [value.slideIds[1]!];
+        if ("editableSlideIds" in journal.adoption) journal.adoption.editableSlideIds = [];
+        if ("reviewRequiredObjectsBySlideId" in journal.adoption) {
+          journal.adoption.reviewRequiredObjectsBySlideId = {};
+        }
+        await writeFile(journalPath, `${JSON.stringify(journal, null, 2)}\n`);
+
+        const attempt = entry === "recovery"
+          ? recoverDeckAdoption(value.root)
+          : adoptDeckCandidate(value.root, {
+            sessionId: candidate.sessionId,
+            mode,
+            ...(mode === "manual"
+              ? { userSignal: "saved-and-closed" as const }
+              : { confirmedSha256: candidate.preparedSha256 }),
+          });
+        await assert.rejects(attempt, /validated|snapshot|digest|integrity|sha256|authentic/i);
+        assert.equal((await readCurrentDeckPointer(value.root)).revisionId, value.current.revisionId);
+        await assert.rejects(
+          readFile(join(value.root, "output", "deck-revisions", candidate.candidateRevisionId, "revision.json")),
+          { code: "ENOENT" },
+        );
+      });
+    }
+  }
+});
+
 test("recovery skips a historical adopted session after rollback", async (t) => {
   const value = await fixture(t);
   const candidate = await createDeckCandidate(value.root, {

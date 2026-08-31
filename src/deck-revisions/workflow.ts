@@ -58,7 +58,7 @@ function preparedResult(
 
 function completeReviewRequiredObjects(
   parent: LocalDeckRevision,
-  session: DeckEditSession,
+  session: Pick<DeckEditSession, "targetSlideId" | "reviewRequiredObjects">,
 ): PreparedReviewRequiredObject[] {
   const bySlideId = { ...parent.reviewRequiredObjectsBySlideId };
   if (session.reviewRequiredObjects.length > 0 || !parent.editableSlideIds.includes(session.targetSlideId)) {
@@ -95,6 +95,10 @@ export async function prepareManualEditDeck(options: {
   const target = parent.slideTopology.entries.find((entry) => entry.stableSlideId === valid.slideId);
   if (!target) throw new Error("manual edit target is not in the reconciled current deck topology");
   const alreadyEditable = parent.editableSlideIds.includes(valid.slideId);
+  completeReviewRequiredObjects(parent, {
+    targetSlideId: valid.slideId,
+    reviewRequiredObjects: parent.reviewRequiredObjectsBySlideId[valid.slideId] ?? [],
+  });
   const candidate = await createDeckCandidate(valid.root, {
     sourceRevisionId: current.revisionId,
     reason: "manual-edit",
@@ -116,6 +120,8 @@ export async function prepareManualEditDeck(options: {
         conversionRoot: valid.conversionRoot,
       });
     }
+    const preparedSession = await readDeckEditSession(valid.root, candidate.sessionId);
+    const reviewRequiredObjects = completeReviewRequiredObjects(parent, preparedSession);
     const presented = await presentDeckCandidate(valid.root, {
       sessionId: candidate.sessionId,
       mode: "manual",
@@ -126,7 +132,7 @@ export async function prepareManualEditDeck(options: {
       "manual",
       target.position,
       presented,
-      completeReviewRequiredObjects(parent, presented.session),
+      reviewRequiredObjects,
     );
   } catch (error: unknown) {
     try {
@@ -169,9 +175,25 @@ export async function beginAgentCandidateConfirmation(options: {
   const valid = AgentCandidateOptionsSchema.parse(options);
   const session = await readDeckEditSession(valid.root, valid.sessionId);
   if (session.mode !== "agent") throw new Error("Agent confirmation cannot target a manual external-editing session");
+  if (session.state !== "prepared") throw new Error(`Agent confirmation requires a prepared candidate, not ${session.state}`);
   const parent = await readLocalDeckRevision(valid.root, session.parentRevisionId);
   const target = parent.slideTopology.entries.find((entry) => entry.stableSlideId === valid.slideId);
   if (!target) throw new Error("Agent edit target is not in the reconciled current deck topology");
+  let reviewRequiredObjects: PreparedReviewRequiredObject[];
+  try {
+    reviewRequiredObjects = completeReviewRequiredObjects(parent, session);
+  } catch (error: unknown) {
+    try {
+      await rejectDeckCandidate(valid.root, {
+        sessionId: valid.sessionId,
+        mode: "agent",
+        requiredState: "prepared",
+      });
+    } catch (cleanupError: unknown) {
+      throw new AggregateError([error, cleanupError], "Agent deck preparation failed and its session could not be closed");
+    }
+    throw error;
+  }
   const presented = await presentDeckCandidate(valid.root, {
     sessionId: valid.sessionId,
     mode: "agent",
@@ -182,7 +204,7 @@ export async function beginAgentCandidateConfirmation(options: {
     "agent",
     target.position,
     presented,
-    completeReviewRequiredObjects(parent, presented.session),
+    reviewRequiredObjects,
   );
 }
 

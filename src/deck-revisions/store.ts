@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { lstat, mkdir, rename } from "node:fs/promises";
 import { dirname, join, relative, sep } from "node:path";
 
@@ -37,14 +37,27 @@ const CreateDeckCandidateOptionsSchema = z.object({
   mode: z.enum(["manual", "agent"]).optional(),
 }).strict();
 const ValidatedAdoptionSchema = z.object({
+  schemaVersion: z.literal(1),
   adoptionId: z.string().uuid(),
   adoptedAt: z.string().datetime(),
+  sessionId: z.string().uuid(),
+  mode: z.enum(["manual", "agent"]),
+  targetSlideId: z.string().uuid(),
+  candidateRevisionId: z.string().uuid(),
+  parentRevisionId: z.string().uuid(),
+  candidateRelativePath: z.string().regex(/^output\/deck-revisions\/[0-9a-f-]{36}\/deck\.pptx$/),
+  projectId: z.string().uuid(),
+  projectRevisionId: z.string().uuid(),
   userSignal: z.literal("saved-and-closed").nullable(),
   confirmedSha256: Sha256Schema.nullable(),
   validatedSha256: Sha256Schema,
   reconciledSlideTopology: SlideTopologySchema,
   validatedRevision: LocalDeckRevisionSchema,
+  validatedSnapshotSha256: Sha256Schema,
 }).strict().superRefine((adoption, context) => {
+  if (validatedAdoptionDigest(adoption) !== adoption.validatedSnapshotSha256) {
+    context.addIssue({ code: "custom", path: ["validatedSnapshotSha256"], message: "validated adoption snapshot digest does not match its complete canonical content" });
+  }
   if (adoption.validatedRevision.sha256 !== adoption.validatedSha256) {
     context.addIssue({ code: "custom", path: ["validatedRevision", "sha256"], message: "validated revision must bind the stable-read SHA-256" });
   }
@@ -143,6 +156,25 @@ export type BootstrapInitialDeckRevisionOperations = {
 
 function json(value: unknown): string {
   return `${JSON.stringify(value, null, 2)}\n`;
+}
+
+function canonicalJson(value: unknown): string {
+  if (value === null || typeof value !== "object") return JSON.stringify(value);
+  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(",")}]`;
+  const record = value as Record<string, unknown>;
+  return `{${Object.keys(record)
+    .filter((key) => record[key] !== undefined)
+    .sort()
+    .map((key) => `${JSON.stringify(key)}:${canonicalJson(record[key])}`)
+    .join(",")}}`;
+}
+
+function validatedAdoptionDigest(value: Record<string, unknown>): string {
+  const { validatedSnapshotSha256: _selfDigest, ...snapshot } = value;
+  return createHash("sha256")
+    .update("superppt:validated-deck-adoption:v1\n")
+    .update(canonicalJson(snapshot))
+    .digest("hex");
 }
 
 async function ensureDirectory(path: string): Promise<void> {
@@ -589,18 +621,18 @@ export async function createDeckCandidate(
 function adoptedRevisionMetadata(
   parent: ResolvedLocalDeckRevision,
   session: DeckEditSession,
-  journal: AdoptionJournal,
+  authority: Pick<AdoptionJournal, "changedSlideIds" | "editableSlideIds">,
   topology: SlideTopology,
 ): Pick<ReturnType<typeof LocalDeckRevisionSchema.parse>, "editableSlideIds" | "changedSlideIds" | "reviewRequiredObjectsBySlideId"> {
   const activeSlideIds = new Set(topology.entries.map((entry) => entry.stableSlideId));
-  const editableSlideIds = journal.editableSlideIds.filter((slideId) => activeSlideIds.has(slideId));
+  const editableSlideIds = authority.editableSlideIds.filter((slideId) => activeSlideIds.has(slideId));
   const reviewRequiredObjectsBySlideId = Object.fromEntries(Object.entries(parent.reviewRequiredObjectsBySlideId)
     .filter(([slideId]) => editableSlideIds.includes(slideId)));
   if (editableSlideIds.includes(session.targetSlideId)
     && (!parent.editableSlideIds.includes(session.targetSlideId) || session.reviewRequiredObjects.length > 0)) {
     reviewRequiredObjectsBySlideId[session.targetSlideId] = session.reviewRequiredObjects;
   }
-  return { editableSlideIds, changedSlideIds: journal.changedSlideIds, reviewRequiredObjectsBySlideId };
+  return { editableSlideIds, changedSlideIds: authority.changedSlideIds, reviewRequiredObjectsBySlideId };
 }
 
 function assertTopologyBindsInspection(topology: SlideTopology, inspected: InspectedLocalPptx): void {
@@ -640,12 +672,24 @@ async function validatedRevisionForJournal(
   const revision = LocalDeckRevisionSchema.parse(adoption.validatedRevision);
   const manifest = await readProject(root);
   if (
-    revision.revisionId !== session.candidateRevisionId
-    || revision.parentRevisionId !== session.parentRevisionId
-    || revision.projectId !== manifest.projectId
-    || revision.projectRevisionId !== manifest.currentRevision.id
+    adoption.sessionId !== journal.sessionId
+    || adoption.sessionId !== session.sessionId
+    || adoption.mode !== session.mode
+    || adoption.targetSlideId !== session.targetSlideId
+    || adoption.candidateRevisionId !== session.candidateRevisionId
+    || adoption.parentRevisionId !== session.parentRevisionId
+    || adoption.candidateRelativePath !== session.candidateRelativePath
+    || adoption.projectId !== manifest.projectId
+    || adoption.projectRevisionId !== manifest.currentRevision.id
+    || revision.revisionId !== adoption.candidateRevisionId
+    || revision.parentRevisionId !== adoption.parentRevisionId
+    || revision.projectId !== adoption.projectId
+    || revision.projectRevisionId !== adoption.projectRevisionId
     || revision.reason !== journal.reason
     || revision.relativePath !== session.candidateRelativePath
+    || JSON.stringify(revision.changedSlideIds) !== JSON.stringify(journal.changedSlideIds)
+    || JSON.stringify(revision.editableSlideIds) !== JSON.stringify(journal.editableSlideIds.filter((slideId) =>
+      adoption.reconciledSlideTopology.entries.some((entry) => entry.stableSlideId === slideId)))
   ) throw new Error("validated revision snapshot does not bind its active adoption session");
   const candidateRelativePath = revisionRelativePath(session.candidateRevisionId);
   if (session.candidateRelativePath !== candidateRelativePath) {
@@ -657,7 +701,10 @@ async function validatedRevisionForJournal(
   }
   assertTopologyBindsInspection(adoption.reconciledSlideTopology, inspected);
   const parent = await readLocalDeckRevision(root, session.parentRevisionId);
-  const metadata = adoptedRevisionMetadata(parent, session, journal, adoption.reconciledSlideTopology);
+  const metadata = adoptedRevisionMetadata(parent, session, {
+    changedSlideIds: revision.changedSlideIds,
+    editableSlideIds: revision.editableSlideIds,
+  }, adoption.reconciledSlideTopology);
   if (
     JSON.stringify(revision.editableSlideIds) !== JSON.stringify(metadata.editableSlideIds)
     || JSON.stringify(revision.changedSlideIds) !== JSON.stringify(metadata.changedSlideIds)
@@ -705,6 +752,11 @@ async function finalizeAdoption(
   await operations.checkpoint?.("evidence-written");
   if (!journal.entries.some((entry) => entry.phase === "pointer-writing")) {
     journal = await appendJournal(root, session.sessionId, "pointer-writing");
+  }
+  journal = await readJournal(root, session.sessionId);
+  const pointerRevisionRecord = await validatedRevisionForJournal(root, session, journal);
+  if (JSON.stringify(pointerRevisionRecord) !== JSON.stringify(revisionRecord)) {
+    throw new Error("pointer publication revision differs from its validated adoption snapshot");
   }
   const authenticatedRevision = await readLocalDeckRevision(root, revisionRecord.revisionId);
   const { absolutePath: _absolutePath, ...persistedAuthenticatedRevision } = authenticatedRevision;
@@ -816,16 +868,29 @@ export async function adoptDeckCandidate(
       ...metadata,
       createdAt: adoptedAt,
     });
+    const validatedSnapshot = {
+      schemaVersion: 1 as const,
+      adoptionId: randomUUID(),
+      adoptedAt,
+      sessionId: session.sessionId,
+      mode: session.mode,
+      targetSlideId: session.targetSlideId,
+      candidateRevisionId: session.candidateRevisionId,
+      parentRevisionId: session.parentRevisionId,
+      candidateRelativePath: session.candidateRelativePath,
+      projectId: manifest.projectId,
+      projectRevisionId: manifest.currentRevision.id,
+      userSignal: options.mode === "manual" ? "saved-and-closed" as const : null,
+      confirmedSha256: options.mode === "agent" ? inspected.sha256 : null,
+      validatedSha256: inspected.sha256,
+      reconciledSlideTopology: reconciled.topology,
+      validatedRevision: revision,
+    };
     journal = await updateJournal(canonicalRoot, session.sessionId, (value) => ({
       ...value,
       adoption: {
-        adoptionId: randomUUID(),
-        adoptedAt,
-        userSignal: options.mode === "manual" ? "saved-and-closed" : null,
-        confirmedSha256: options.mode === "agent" ? inspected.sha256 : null,
-        validatedSha256: inspected.sha256,
-        reconciledSlideTopology: reconciled.topology,
-        validatedRevision: revision,
+        ...validatedSnapshot,
+        validatedSnapshotSha256: validatedAdoptionDigest(validatedSnapshot),
       },
       entries: [...value.entries, { phase: "validated", at: adoptedAt }],
     }));

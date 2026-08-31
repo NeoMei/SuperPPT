@@ -127,6 +127,43 @@ async function sessionState(fixture: WorkflowFixture, sessionId: string): Promis
   return raw.state;
 }
 
+async function installConflictingReviewMetadata(fixture: WorkflowFixture): Promise<void> {
+  const path = join(fixture.root, "output", "deck-revisions", fixture.revisionId, "revision.json");
+  const revision = JSON.parse(await readFile(path, "utf8")) as {
+    reviewRequiredObjectsBySlideId: Record<string, Array<{ elementId: string; label: string; role: string }>>;
+  };
+  revision.reviewRequiredObjectsBySlideId[fixture.slideIds[0]!] = [
+    { elementId: "chart", label: "First authenticated label", role: "data-visual" },
+    { elementId: "chart", label: "Conflicting authenticated label", role: "data-visual" },
+  ];
+  await writeFile(path, `${JSON.stringify(revision, null, 2)}\n`);
+}
+
+async function leaseEvidence(fixture: WorkflowFixture): Promise<string[]> {
+  const root = join(fixture.root, ".superppt-leases");
+  const result: string[] = [];
+  let leaseNames: string[];
+  try {
+    leaseNames = await readdir(root);
+  } catch (error: unknown) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return [];
+    throw error;
+  }
+  for (const leaseName of leaseNames.sort()) {
+    for (const name of (await readdir(join(root, leaseName))).sort()) result.push(`${leaseName}/${name}`);
+  }
+  return result;
+}
+
+async function deckEditSessionDirectories(fixture: WorkflowFixture): Promise<string[]> {
+  try {
+    return await readdir(join(fixture.root, "output", "deck-edit-sessions"));
+  } catch (error: unknown) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return [];
+    throw error;
+  }
+}
+
 test("manual flow exposes only one complete deck and adopts exact bytes only after saved-and-closed", async (t) => {
   const fixture = await workflowFixture(t);
   const before = await readCurrentDeckPointer(fixture.root);
@@ -174,6 +211,62 @@ test("manual flow exposes only one complete deck and adopts exact bytes only aft
   assert.equal(adopted.absolutePath, prepared.absolutePath);
   assert.equal(adopted.sha256, digest(saved));
   assert.deepEqual(await readFile(fixture.absolutePath), fixture.deckBytes);
+});
+
+test("review identity conflicts fail before manual or Agent presentation without an active freeze", async (t) => {
+  await t.test("manual concurrent and repeated preparation", async (st) => {
+    const fixture = await workflowFixture(st);
+    await installConflictingReviewMetadata(fixture);
+    const before = await readCurrentDeckPointer(fixture.root);
+    const leasesBefore = await leaseEvidence(fixture);
+    const attempts = await Promise.allSettled([
+      prepareManualEditDeck({ root: fixture.root, slideId: fixture.slideIds[1]! }),
+      prepareManualEditDeck({ root: fixture.root, slideId: fixture.slideIds[1]! }),
+    ]);
+    assert.deepEqual(attempts.map((result) => result.status), ["rejected", "rejected"]);
+    for (const result of attempts) {
+      if (result.status === "rejected") assert.match(String(result.reason), /conflicting object identity/i);
+    }
+    assert.equal((await readProject(fixture.root)).activeDeckEditSessionId, null);
+    assert.equal((await readCurrentDeckPointer(fixture.root)).revisionId, before.revisionId);
+    assert.deepEqual(await deckEditSessionDirectories(fixture), []);
+    assert.deepEqual(await leaseEvidence(fixture), leasesBefore);
+
+    await assert.rejects(
+      prepareManualEditDeck({ root: fixture.root, slideId: fixture.slideIds[1]! }),
+      /conflicting object identity/i,
+    );
+    assert.equal((await readProject(fixture.root)).activeDeckEditSessionId, null);
+    assert.deepEqual(await deckEditSessionDirectories(fixture), []);
+  });
+
+  await t.test("Agent preparation and repeated signal", async (st) => {
+    const fixture = await workflowFixture(st);
+    await installConflictingReviewMetadata(fixture);
+    const before = await readCurrentDeckPointer(fixture.root);
+    const candidate = await createDeckCandidate(fixture.root, {
+      sourceRevisionId: before.revisionId,
+      reason: "agent-edit",
+      changedSlideIds: [fixture.slideIds[1]!],
+      editableSlideIds: fixture.slideIds,
+      targetSlideId: fixture.slideIds[1]!,
+      mode: "agent",
+    });
+    await assert.rejects(beginAgentCandidateConfirmation({
+      root: fixture.root,
+      sessionId: candidate.sessionId,
+      slideId: fixture.slideIds[1]!,
+    }), /conflicting object identity/i);
+    assert.equal((await readProject(fixture.root)).activeDeckEditSessionId, null);
+    assert.equal(await sessionState(fixture, candidate.sessionId), "rejected");
+    assert.equal((await readCurrentDeckPointer(fixture.root)).revisionId, before.revisionId);
+    assert.equal((await leaseEvidence(fixture)).some((name) => /\.(?:pending|active)\.json$/.test(name)), false);
+    await assert.rejects(beginAgentCandidateConfirmation({
+      root: fixture.root,
+      sessionId: candidate.sessionId,
+      slideId: fixture.slideIds[1]!,
+    }), /stale|active|rejected/i);
+  });
 });
 
 test("serializes external editing and rejects Agent access to an open candidate", async (t) => {
