@@ -7,9 +7,10 @@ import { z } from "zod";
 import { withGenerationLease } from "../generation/lease.js";
 import { syncDirectory, writeDurableExclusive } from "../project/durable.js";
 import { withProjectLease } from "../project/lock.js";
+import { validateProjectRoot } from "../project/paths.js";
 import { readRegularFileNoFollow } from "../project/safe-file.js";
 import { readProject, updateProject } from "../project/store.js";
-import { inspectLocalPptx } from "./inspect.js";
+import { inspectLocalPptx, type InspectedLocalPptx } from "./inspect.js";
 import { reconcileSlideTopology } from "./topology.js";
 import {
   CurrentDeckPointerSchema,
@@ -85,6 +86,25 @@ type AdoptDeckCandidateOptions = {
   userSignal?: "saved-and-closed";
   confirmedSha256?: string;
   operations?: DeckAdoptionOperations;
+};
+
+type PresentDeckCandidateOptions = {
+  sessionId: string;
+  mode: "manual" | "agent";
+  targetSlideId: string;
+  state: "external-editing" | "awaiting-confirmation";
+};
+
+type RejectDeckCandidateOptions = {
+  sessionId: string;
+  mode?: "manual" | "agent";
+  requiredState?: "prepared" | "awaiting-confirmation";
+};
+
+export type PresentedDeckCandidate = {
+  session: ResolvedDeckEditSession;
+  inspected: InspectedLocalPptx;
+  editableSlideIds: string[];
 };
 
 type BootstrapInitialDeckRevisionOptions = {
@@ -246,6 +266,111 @@ export async function readCurrentDeckPointer(root: string): Promise<ResolvedCurr
   return readCurrentDeckPointerUnlocked(root);
 }
 
+export async function readDeckEditSession(root: string, sessionId: string): Promise<ResolvedDeckEditSession> {
+  const canonicalRoot = await validateProjectRoot(root);
+  await readProject(canonicalRoot);
+  const session = await readSession(canonicalRoot, sessionId);
+  return { ...session, absolutePath: join(canonicalRoot, ...session.candidateRelativePath.split("/")) };
+}
+
+export async function presentDeckCandidate(
+  root: string,
+  options: PresentDeckCandidateOptions,
+): Promise<PresentedDeckCandidate> {
+  const validSessionId = UuidSchema.parse(options.sessionId);
+  const validTargetSlideId = UuidSchema.parse(options.targetSlideId);
+  if (
+    (options.mode === "manual" && options.state !== "external-editing")
+    || (options.mode === "agent" && options.state !== "awaiting-confirmation")
+  ) throw new Error("deck candidate presentation state does not match its mode");
+  return withGenerationLease(root, (generationRoot) => withProjectLease(generationRoot, "deck-revisions", async (canonicalRoot) => {
+    const manifest = await readProject(canonicalRoot);
+    if (manifest.activeDeckEditSessionId !== validSessionId) throw new Error("deck candidate session is stale or not the exact active session");
+    const session = await readSession(canonicalRoot, validSessionId);
+    if (session.state !== "prepared") throw new Error(`deck candidate presentation requires prepared state, not ${session.state}`);
+    if (session.mode !== options.mode) throw new Error("deck candidate presentation mode does not match its session");
+    if (session.targetSlideId !== validTargetSlideId) throw new Error("deck candidate target slide does not match its session");
+    const current = await readCurrentDeckPointerUnlocked(canonicalRoot);
+    if (current.revisionId !== session.parentRevisionId) throw new Error("deck candidate parent is no longer current");
+    const candidateRelativePath = revisionRelativePath(session.candidateRevisionId);
+    if (session.candidateRelativePath !== candidateRelativePath) throw new Error("candidate deck path does not match its revision identity");
+    const absolutePath = join(canonicalRoot, ...candidateRelativePath.split("/"));
+    const inspected = await inspectLocalPptx(absolutePath);
+    if (options.mode === "manual" && inspected.sha256 !== session.preparedSha256) {
+      throw new Error("manual candidate changed before external editing began");
+    }
+    const journal = await readJournal(canonicalRoot, session.sessionId);
+    const presentedSha256 = options.mode === "agent" ? inspected.sha256 : null;
+    const next = DeckEditSessionSchema.parse({
+      ...session,
+      state: options.state,
+      preparedSha256: inspected.sha256,
+      presentedSha256,
+    });
+    await writeSession(canonicalRoot, next);
+    return {
+      session: { ...next, absolutePath },
+      inspected,
+      editableSlideIds: journal.editableSlideIds,
+    };
+  }));
+}
+
+export async function assertAgentDeckCandidateWritable(
+  root: string,
+  options: { sessionId: string; candidatePath: string },
+): Promise<ResolvedDeckEditSession> {
+  const validSessionId = UuidSchema.parse(options.sessionId);
+  return withGenerationLease(root, (generationRoot) => withProjectLease(generationRoot, "deck-revisions", async (canonicalRoot) => {
+    const manifest = await readProject(canonicalRoot);
+    if (manifest.activeDeckEditSessionId !== validSessionId) throw new Error("Agent candidate session is stale or not active");
+    const session = await readSession(canonicalRoot, validSessionId);
+    if (session.mode !== "agent" || session.state !== "prepared") {
+      throw new Error("Agent operations require their own prepared candidate and cannot target an open candidate");
+    }
+    const absolutePath = join(canonicalRoot, ...session.candidateRelativePath.split("/"));
+    if (absolutePath !== options.candidatePath) throw new Error("Agent candidate path does not match its active session");
+    const inspected = await inspectLocalPptx(absolutePath);
+    if (inspected.sha256 !== session.preparedSha256) throw new Error("Agent candidate bytes changed outside the authorized operation boundary");
+    return { ...session, absolutePath };
+  }));
+}
+
+export async function rejectDeckCandidate(
+  root: string,
+  options: RejectDeckCandidateOptions,
+): Promise<void> {
+  const validSessionId = UuidSchema.parse(options.sessionId);
+  return withGenerationLease(root, (generationRoot) => withProjectLease(generationRoot, "deck-revisions", async (canonicalRoot) => {
+    const manifest = await readProject(canonicalRoot);
+    if (manifest.activeDeckEditSessionId !== validSessionId) throw new Error("deck candidate session is stale or not the exact active session");
+    const session = await readSession(canonicalRoot, validSessionId);
+    if (options.mode && session.mode !== options.mode) throw new Error("deck rejection mode does not match its session");
+    if (session.state === "rejected") {
+      await updateProject(canonicalRoot, (project) => {
+        if (project.activeDeckEditSessionId !== session.sessionId) throw new Error("deck rejection cleanup lost active session authority");
+        return { ...project, activeDeckEditSessionId: null };
+      });
+      return;
+    }
+    if (options.requiredState && session.state !== options.requiredState) {
+      throw new Error(`deck rejection requires ${options.requiredState}, not ${session.state}`);
+    }
+    if (session.state !== "prepared" && session.state !== "awaiting-confirmation") {
+      throw new Error(`deck candidate cannot be rejected from ${session.state}`);
+    }
+    await writeSession(canonicalRoot, {
+      ...session,
+      state: "rejected",
+      completedAt: new Date().toISOString(),
+    });
+    await updateProject(canonicalRoot, (project) => {
+      if (project.activeDeckEditSessionId !== session.sessionId) throw new Error("deck rejection lost active session authority");
+      return { ...project, activeDeckEditSessionId: null };
+    });
+  }));
+}
+
 export async function bootstrapInitialDeckRevision(
   root: string,
   options: BootstrapInitialDeckRevisionOptions,
@@ -337,6 +462,7 @@ export async function bootstrapInitialDeckRevision(
       slideTopology,
       editableSlideIds: [],
       changedSlideIds,
+      reviewRequiredObjectsBySlideId: {},
       createdAt: journal.createdAt,
     });
     await writeExclusiveJson(join(directory, "revision.json"), revision);
@@ -424,6 +550,7 @@ export async function createDeckCandidate(
       candidateRelativePath,
       preparedSha256: parent.sha256,
       presentedSha256: null,
+      reviewRequiredObjects: parent.reviewRequiredObjectsBySlideId[targetSlideId] ?? [],
       createdAt: now,
       completedAt: null,
     });
@@ -500,7 +627,7 @@ async function finalizeAdoption(
   await writeSession(root, {
     ...session,
     state: "adopted",
-    presentedSha256: revisionRecord.sha256,
+    presentedSha256: session.mode === "agent" ? revisionRecord.sha256 : null,
     completedAt: new Date().toISOString(),
   });
   await operations.checkpoint?.("session-adopted");
@@ -527,13 +654,17 @@ export async function adoptDeckCandidate(
 ): Promise<ResolvedCurrentDeckPointer> {
   const validSessionId = UuidSchema.parse(options.sessionId);
   return withGenerationLease(root, (generationRoot) => withProjectLease(generationRoot, "deck-revisions", async (canonicalRoot) => {
+    const manifestBefore = await readProject(canonicalRoot);
+    if (manifestBefore.activeDeckEditSessionId !== validSessionId) {
+      throw new Error("deck adoption session is stale or not the exact active session");
+    }
     const session = await readSession(canonicalRoot, validSessionId);
     if (session.mode !== options.mode) throw new Error("deck adoption mode does not match its session");
     if (session.state === "adopted") {
-      const manifest = await readProject(canonicalRoot);
-      if (manifest.activeDeckEditSessionId !== session.sessionId) return readCurrentDeckPointerUnlocked(canonicalRoot);
       return finishAdoptedSessionCleanup(canonicalRoot, session);
     }
+    const requiredState = options.mode === "manual" ? "external-editing" : "awaiting-confirmation";
+    if (session.state !== requiredState) throw new Error(`deck adoption requires ${requiredState}, not ${session.state}`);
     const current = await readCurrentDeckPointerUnlocked(canonicalRoot);
     if (current.revisionId !== session.parentRevisionId) throw new Error("deck adoption parent is no longer current");
     if (options.mode === "manual" && options.userSignal !== "saved-and-closed") {
@@ -543,8 +674,12 @@ export async function adoptDeckCandidate(
     if (session.candidateRelativePath !== candidateRelativePath) throw new Error("candidate deck path does not match its revision identity");
     const absolutePath = join(canonicalRoot, ...candidateRelativePath.split("/"));
     const inspected = await inspectLocalPptx(absolutePath);
-    if (options.mode === "agent" && options.confirmedSha256 !== inspected.sha256) {
-      throw new Error("agent confirmation does not bind the current candidate bytes");
+    if (options.mode === "agent" && (
+      session.presentedSha256 === null
+      || session.presentedSha256 !== inspected.sha256
+      || options.confirmedSha256 !== session.presentedSha256
+    )) {
+      throw new Error("agent confirmation does not bind the exact candidate presented bytes");
     }
     const parent = await readLocalDeckRevision(canonicalRoot, session.parentRevisionId);
     const reconciled = reconcileSlideTopology(parent.slideTopology, inspected);
@@ -559,6 +694,14 @@ export async function adoptDeckCandidate(
       },
       entries: [...value.entries, { phase: "validated", at: new Date().toISOString() }],
     }));
+    const activeSlideIds = new Set(reconciled.topology.entries.map((entry) => entry.stableSlideId));
+    const editableSlideIds = journal.editableSlideIds.filter((slideId) => activeSlideIds.has(slideId));
+    const reviewRequiredObjectsBySlideId = Object.fromEntries(Object.entries(parent.reviewRequiredObjectsBySlideId)
+      .filter(([slideId]) => editableSlideIds.includes(slideId)));
+    if (editableSlideIds.includes(session.targetSlideId)
+      && (!parent.editableSlideIds.includes(session.targetSlideId) || session.reviewRequiredObjects.length > 0)) {
+      reviewRequiredObjectsBySlideId[session.targetSlideId] = session.reviewRequiredObjects;
+    }
     const manifest = await readProject(canonicalRoot);
     const revision = LocalDeckRevisionSchema.parse({
       schemaVersion: 1,
@@ -570,8 +713,9 @@ export async function adoptDeckCandidate(
       relativePath: session.candidateRelativePath,
       sha256: inspected.sha256,
       slideTopology: reconciled.topology,
-      editableSlideIds: journal.editableSlideIds,
+      editableSlideIds,
       changedSlideIds: journal.changedSlideIds,
+      reviewRequiredObjectsBySlideId,
       createdAt: new Date().toISOString(),
     });
     await writeSession(canonicalRoot, { ...session, state: "adopting" });
@@ -624,6 +768,14 @@ async function recoveryCandidate(root: string, sessionId: string): Promise<Resol
     const parent = await readLocalDeckRevision(root, session.parentRevisionId);
     const reconciled = reconcileSlideTopology(parent.slideTopology, inspected);
     if (reconciled.conflicts.length > 0) throw new Error("recovered deck has ambiguous slide identities");
+    const activeSlideIds = new Set(reconciled.topology.entries.map((entry) => entry.stableSlideId));
+    const editableSlideIds = journal.editableSlideIds.filter((slideId) => activeSlideIds.has(slideId));
+    const reviewRequiredObjectsBySlideId = Object.fromEntries(Object.entries(parent.reviewRequiredObjectsBySlideId)
+      .filter(([slideId]) => editableSlideIds.includes(slideId)));
+    if (editableSlideIds.includes(session.targetSlideId)
+      && (!parent.editableSlideIds.includes(session.targetSlideId) || session.reviewRequiredObjects.length > 0)) {
+      reviewRequiredObjectsBySlideId[session.targetSlideId] = session.reviewRequiredObjects;
+    }
     const manifest = await readProject(root);
     revision = LocalDeckRevisionSchema.parse({
       schemaVersion: 1,
@@ -635,8 +787,9 @@ async function recoveryCandidate(root: string, sessionId: string): Promise<Resol
       relativePath: session.candidateRelativePath,
       sha256: inspected.sha256,
       slideTopology: reconciled.topology,
-      editableSlideIds: journal.editableSlideIds,
+      editableSlideIds,
       changedSlideIds: journal.changedSlideIds,
+      reviewRequiredObjectsBySlideId,
       createdAt: journal.entries.find((entry) => entry.phase === "validated")!.at,
     });
   }

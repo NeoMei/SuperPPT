@@ -69,6 +69,11 @@ import type { RevisionEvidenceOperations } from "../revisions/anchored-fs.js";
 export const MARKER = ".superppt-project.json";
 export const MANIFEST = "superppt.json";
 
+const PresentedDeckEditSessionSchema = z.object({
+  sessionId: z.string().uuid(),
+  state: z.enum(["prepared", "external-editing", "awaiting-confirmation", "adopting", "adopted", "rejected"]),
+}).passthrough();
+
 export const OwnershipMarkerSchema = z.object({
   markerVersion: z.literal(1),
   appId: z.literal("superppt"),
@@ -108,6 +113,26 @@ function sameJson(left: unknown, right: unknown): boolean {
   return JSON.stringify(left) === JSON.stringify(right);
 }
 
+async function assertNoPresentedDeckEditSessionForManifest(
+  root: string,
+  manifest: ProjectManifest,
+): Promise<void> {
+  if (manifest.activeDeckEditSessionId === null) return;
+  let session: z.infer<typeof PresentedDeckEditSessionSchema>;
+  try {
+    const path = join(root, "output", "deck-edit-sessions", manifest.activeDeckEditSessionId, "session.json");
+    session = PresentedDeckEditSessionSchema.parse(JSON.parse((await readRegularFileNoFollow(path)).toString("utf8")));
+  } catch (error: unknown) {
+    throw new Error("project mutations are frozen by an unreadable active deck edit session", { cause: error });
+  }
+  if (session.sessionId !== manifest.activeDeckEditSessionId) {
+    throw new Error("project mutations are frozen by an inconsistent active deck edit session");
+  }
+  if (session.state === "external-editing" || session.state === "awaiting-confirmation") {
+    throw new Error(`project mutations are frozen while the complete deck candidate is ${session.state}`);
+  }
+}
+
 async function assertProjectMutationAllowed(
   root: string,
   allowCompletedRevisionTransition = false,
@@ -116,6 +141,7 @@ async function assertProjectMutationAllowed(
   if (current.manifest.clientAcceptanceTransaction) {
     throw new Error("project mutations are frozen while client acceptance is pending");
   }
+  await assertNoPresentedDeckEditSessionForManifest(current.root, current.manifest);
   const trust = await import("../generation/trusted-authorization.js");
   if (allowCompletedRevisionTransition) {
     await trust.assertTrustedClientAcceptanceAllowsRevisionTransition(
@@ -132,6 +158,11 @@ async function assertProjectMutationAllowed(
 
 export async function assertProjectMutationNotFrozen(root: string): Promise<void> {
   await assertProjectMutationAllowed(root);
+}
+
+export async function assertNoPresentedDeckEditSession(root: string): Promise<void> {
+  const current = await ownedProject(root);
+  await assertNoPresentedDeckEditSessionForManifest(current.root, current.manifest);
 }
 
 export async function assertProjectRevisionTransitionNotFrozen(root: string): Promise<void> {

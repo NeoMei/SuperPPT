@@ -2,6 +2,8 @@ import { createHash } from "node:crypto";
 
 import { z } from "zod";
 
+import { ReviewRequiredObjectSchema } from "../editable/schemas.js";
+
 const Sha256Schema = z.string().regex(/^[a-f0-9]{64}$/);
 const RevisionDeckPathSchema = z.string().regex(/^output\/deck-revisions\/[0-9a-f-]{36}\/deck\.pptx$/);
 
@@ -85,10 +87,25 @@ export const LocalDeckRevisionSchema = z.object({
   slideTopology: SlideTopologySchema,
   editableSlideIds: z.array(z.string().uuid()),
   changedSlideIds: z.array(z.string().uuid()),
+  reviewRequiredObjectsBySlideId: z.record(
+    z.string().uuid(),
+    z.array(ReviewRequiredObjectSchema),
+  ).default({}),
   createdAt: z.string().datetime(),
 }).strict().superRefine((revision, context) => {
   if (pathRevisionId(revision.relativePath) !== revision.revisionId) {
     context.addIssue({ code: "custom", path: ["relativePath"], message: "revision deck path must match revisionId" });
+  }
+  const activeSlideIds = new Set(revision.slideTopology.entries.map((entry) => entry.stableSlideId));
+  for (const slideId of revision.editableSlideIds) {
+    if (!activeSlideIds.has(slideId)) {
+      context.addIssue({ code: "custom", path: ["editableSlideIds"], message: "editable slide IDs must exist in the current topology" });
+    }
+  }
+  for (const slideId of Object.keys(revision.reviewRequiredObjectsBySlideId)) {
+    if (!revision.editableSlideIds.includes(slideId)) {
+      context.addIssue({ code: "custom", path: ["reviewRequiredObjectsBySlideId", slideId], message: "review-required objects must bind an editable slide" });
+    }
   }
 });
 
@@ -103,6 +120,7 @@ export const DeckEditSessionSchema = z.object({
   candidateRelativePath: RevisionDeckPathSchema,
   preparedSha256: Sha256Schema,
   presentedSha256: Sha256Schema.nullable(),
+  reviewRequiredObjects: z.array(ReviewRequiredObjectSchema).default([]),
   createdAt: z.string().datetime(),
   completedAt: z.string().datetime().nullable(),
 }).strict().superRefine((session, context) => {

@@ -11,6 +11,7 @@ import {
   adoptDeckCandidate,
   bootstrapInitialDeckRevision,
   createDeckCandidate,
+  presentDeckCandidate,
   readCurrentDeckPointer,
   readLocalDeckRevision,
   recoverDeckAdoption,
@@ -102,6 +103,18 @@ async function userEditedFixture(source: Buffer): Promise<Buffer> {
   return zip.generateAsync({ type: "nodebuffer" });
 }
 
+async function presentManualCandidate(
+  root: string,
+  candidate: { sessionId: string; targetSlideId: string },
+): Promise<void> {
+  await presentDeckCandidate(root, {
+    sessionId: candidate.sessionId,
+    mode: "manual",
+    targetSlideId: candidate.targetSlideId,
+    state: "external-editing",
+  });
+}
+
 test("project manifest tracks only the current deck pointer and active session identity", async (t) => {
   const value = await fixture(t);
   const manifest = await readProject(value.root);
@@ -162,6 +175,7 @@ test("manual adoption moves only the current pointer and preserves saved bytes",
     targetSlideId: value.slideIds[1]!,
     mode: "manual",
   });
+  await presentManualCandidate(value.root, candidate);
   await assert.rejects(readFile(join(value.root, "output", "deck-revisions", candidate.candidateRevisionId, "revision.json")), { code: "ENOENT" });
   assert.equal((await readCurrentDeckPointer(value.root)).revisionId, value.current.revisionId);
   const userSavedBytes = await userEditedFixture(await readFile(candidate.absolutePath));
@@ -197,6 +211,12 @@ test("agent adoption requires confirmation of the exact candidate bytes", async 
     targetSlideId: value.slideIds[0]!,
     mode: "agent",
   });
+  await presentDeckCandidate(value.root, {
+    sessionId: candidate.sessionId,
+    mode: "agent",
+    targetSlideId: candidate.targetSlideId,
+    state: "awaiting-confirmation",
+  });
   await assert.rejects(adoptDeckCandidate(value.root, {
     sessionId: candidate.sessionId,
     mode: "agent",
@@ -215,6 +235,7 @@ test("rollback changes the pointer without rewriting either deck", async (t) => 
     targetSlideId: value.slideIds[1]!,
     mode: "manual",
   });
+  await presentManualCandidate(value.root, candidate);
   const edited = await userEditedFixture(await readFile(candidate.absolutePath));
   await writeFile(candidate.absolutePath, edited);
   await adoptDeckCandidate(value.root, { sessionId: candidate.sessionId, mode: "manual", userSignal: "saved-and-closed" });
@@ -238,6 +259,7 @@ test("interrupted adoption recovery keeps revision records immutable and finishe
         targetSlideId: value.slideIds[0]!,
         mode: "manual",
       });
+      await presentManualCandidate(value.root, candidate);
       await assert.rejects(adoptDeckCandidate(value.root, {
         sessionId: candidate.sessionId,
         mode: "manual",
@@ -270,6 +292,7 @@ test("recovery skips a historical adopted session after rollback", async (t) => 
     targetSlideId: value.slideIds[0]!,
     mode: "manual",
   });
+  await presentManualCandidate(value.root, candidate);
   await adoptDeckCandidate(value.root, { sessionId: candidate.sessionId, mode: "manual", userSignal: "saved-and-closed" });
   await rollbackCurrentDeck(value.root, value.current.revisionId);
   assert.equal(await recoverDeckAdoption(value.root), null);
@@ -289,6 +312,7 @@ test("recovery ignores multiple historical sessions and completes only the activ
       targetSlideId: value.slideIds[index]!,
       mode: "manual",
     });
+    await presentManualCandidate(value.root, historical);
     const adopted = await adoptDeckCandidate(value.root, { sessionId: historical.sessionId, mode: "manual", userSignal: "saved-and-closed" });
     sourceRevisionId = adopted.revisionId;
   }
@@ -300,6 +324,7 @@ test("recovery ignores multiple historical sessions and completes only the activ
     targetSlideId: value.slideIds[0]!,
     mode: "manual",
   });
+  await presentManualCandidate(value.root, active);
   await assert.rejects(adoptDeckCandidate(value.root, {
     sessionId: active.sessionId,
     mode: "manual",
@@ -322,6 +347,7 @@ test("adopted fast-path idempotently finishes its active manifest mirror", async
     targetSlideId: value.slideIds[0]!,
     mode: "manual",
   });
+  await presentManualCandidate(value.root, candidate);
   await assert.rejects(adoptDeckCandidate(value.root, {
     sessionId: candidate.sessionId,
     mode: "manual",

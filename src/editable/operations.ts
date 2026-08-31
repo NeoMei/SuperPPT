@@ -8,7 +8,7 @@ import { validateProjectRoot } from "../project/paths.js";
 import { promoteExclusive } from "../project/exclusive.js";
 import { readOwnedRegularFile, readRegularFileNoFollow } from "../project/safe-file.js";
 import { readProject } from "../project/store.js";
-import { assertProjectMutationNotFrozen } from "../project/store.js";
+import { assertNoPresentedDeckEditSession, assertProjectMutationNotFrozen } from "../project/store.js";
 import { withGenerationLease } from "../generation/lease.js";
 import { validateEditableConversionOutput } from "./adapter.js";
 import {
@@ -470,6 +470,9 @@ async function createProjectModifiedRevision(
   request: ModifiedRevisionRequest,
   mutationLeaseHeld = false,
 ): Promise<AppliedEditRevision> {
+  // This read-only guard rejects operations against a candidate already shown
+  // to a user. The mutation path rechecks under the generation lease below.
+  await assertNoPresentedDeckEditSession(options.root);
   const project = await readProject(options.root);
   const root = await validateProjectRoot(options.root);
   const slide = project.slides.find((candidate) => candidate.id === options.slideId);

@@ -546,7 +546,11 @@ export async function activateEditableSlideInDeck(options: {
     }
     intent = await appendIntentPhase(intentPath, intent, "candidate-replaced");
     if (metadata.session.preparedSha256 === intent.oldCandidateSha256) {
-      const session = DeckEditSessionSchema.parse({ ...metadata.session, preparedSha256: intent.newCandidateSha256 });
+      const session = DeckEditSessionSchema.parse({
+        ...metadata.session,
+        preparedSha256: intent.newCandidateSha256,
+        reviewRequiredObjects: authenticated.reviewRequiredObjects,
+      });
       await replaceJson(join(metadata.sessionRoot, "session.json"), session);
       await options.operations?.checkpoint?.("session-updated");
     }

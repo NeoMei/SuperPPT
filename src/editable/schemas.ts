@@ -3,6 +3,31 @@ import { z } from "zod";
 
 export const Sha256Schema = z.string().regex(/^[a-f0-9]{64}$/);
 
+export const ReviewRequiredObjectSchema = z.object({
+  elementId: z.string().min(1),
+  label: z.string().min(1),
+  role: z.string().min(1),
+}).strict();
+
+export const PreparedDeckEditSchema = z.object({
+  kind: z.literal("complete-local-pptx"),
+  mode: z.enum(["manual", "agent"]),
+  revisionId: z.string().uuid(),
+  sessionId: z.string().uuid(),
+  targetSlideId: z.string().uuid(),
+  targetSlideIndex: z.number().int().nonnegative(),
+  absolutePath: z.string().min(1).refine(isAbsolute, "complete deck path must be absolute"),
+  localLink: z.string().min(1).refine(isAbsolute, "complete deck local link must be absolute"),
+  sha256: Sha256Schema,
+  slideCount: z.number().int().positive(),
+  editableSlideIds: z.array(z.string().uuid()),
+  reviewRequiredObjects: z.array(ReviewRequiredObjectSchema),
+}).strict().superRefine((prepared, context) => {
+  if (prepared.localLink !== prepared.absolutePath) {
+    context.addIssue({ code: "custom", path: ["localLink"], message: "complete deck local link must equal its absolute path" });
+  }
+});
+
 export const EditableBBoxSchema = z.object({
   x: z.number().finite().min(0).max(1280),
   y: z.number().finite().min(0).max(720),
@@ -294,11 +319,7 @@ export const AuthenticatedEditableConversionSchema = z.object({
   donorPptxPath: EditableProjectPathSchema.refine((path) => path.endsWith("/slide-editable.pptx")),
   donorPptxSha256: Sha256Schema,
   assets: z.record(EditableProjectPathSchema, Sha256Schema),
-  reviewRequiredObjects: z.array(z.object({
-    elementId: z.string().min(1),
-    label: z.string().min(1),
-    role: z.string().min(1),
-  }).strict()),
+  reviewRequiredObjects: z.array(ReviewRequiredObjectSchema),
 }).strict();
 
 export const ConverterOwnershipMarkerSchema = z.object({
@@ -473,6 +494,8 @@ export type EditableManifest = z.infer<typeof EditableManifestSchema>;
 export type EditableManifestV2 = z.infer<typeof EditableManifestV2Schema>;
 export type RunLedgerV2 = z.infer<typeof RunLedgerV2Schema>;
 export type AuthenticatedEditableConversion = z.infer<typeof AuthenticatedEditableConversionSchema>;
+export type PreparedDeckEdit = z.infer<typeof PreparedDeckEditSchema>;
+export type ReviewRequiredObject = z.infer<typeof ReviewRequiredObjectSchema>;
 export type EditPlan = z.infer<typeof EditPlanSchema>;
 export type EditableRevisionMarker = z.infer<typeof EditableRevisionMarkerSchema>;
 export type EditableStagingMarker = z.infer<typeof EditableStagingMarkerSchema>;
