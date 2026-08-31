@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { createHash, randomUUID } from "node:crypto";
-import { mkdir, mkdtemp, readFile, realpath, rm, unlink, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, readdir, realpath, rm, unlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import test, { type TestContext } from "node:test";
@@ -9,7 +9,8 @@ import JSZip from "jszip";
 import sharp from "sharp";
 
 import { activateEditableSlideInDeck } from "../src/deck-revisions/activate-slide.js";
-import { bootstrapInitialDeckRevision, createDeckCandidate } from "../src/deck-revisions/store.js";
+import { beginAgentCandidateConfirmation } from "../src/deck-revisions/workflow.js";
+import { bootstrapInitialDeckRevision, createDeckCandidate, presentDeckCandidate } from "../src/deck-revisions/store.js";
 import { inspectLocalPptx } from "../src/deck-revisions/inspect.js";
 import { scanOoxmlRanges } from "../src/deck-revisions/ooxml.js";
 import { finalizeSlideTopology } from "../src/deck-revisions/topology.js";
@@ -278,7 +279,7 @@ async function prepareReviewedSelection(root: string, slideIds: string[]): Promi
   return { finalRender: { path: `images/${slideIds[1]}/attempt-1/slide.png`, sha256: generated[1]!.digest }, selection: { candidateId: candidate.candidateId, reviewDescriptorSha256: review.descriptorSha256, actionEvidenceSha256: action.actionEvidenceSha256 } };
 }
 
-async function activationFixture(t: TestContext) {
+async function activationFixture(t: TestContext, mode: "manual" | "agent" = "agent") {
   const root = await temporaryProject(t);
   const slideIds = [randomUUID(), randomUUID(), randomUUID()];
   const reviewed = await prepareReviewedSelection(root, slideIds);
@@ -289,7 +290,7 @@ async function activationFixture(t: TestContext) {
   const topology = finalizeSlideTopology(inspection.slides.map((slide, position) => ({ stableSlideId: slideIds[position]!, slidePart: slide.slidePart, position, management: "managed" as const, presentationSlideId: slide.presentationSlideId, creationId: slide.creationId! })), []);
   const parentRevisionId = randomUUID();
   await bootstrapInitialDeckRevision(root, { revisionId: parentRevisionId, projectRevisionId: project.currentRevision.id, sourceAbsolutePath: source, slideTopology: topology, changedSlideIds: slideIds });
-  const session = await createDeckCandidate(root, { sourceRevisionId: parentRevisionId, reason: "agent-edit", changedSlideIds: [slideIds[1]!], editableSlideIds: [], targetSlideId: slideIds[1]!, mode: "agent" });
+  const session = await createDeckCandidate(root, { sourceRevisionId: parentRevisionId, reason: mode === "manual" ? "manual-edit" : "agent-edit", changedSlideIds: [slideIds[1]!], editableSlideIds: [], targetSlideId: slideIds[1]!, mode });
   const conversion = await writeConversionEvidence({ root, slideId: slideIds[1]!, projectId: project.projectId, projectRevisionId: project.currentRevision.id, ...reviewed });
   return { root, slideIds, candidatePath: session.absolutePath, sessionId: session.sessionId, ...conversion };
 }
@@ -367,6 +368,19 @@ async function replaceCandidateFixture(fixture: Fixture, mutate: (zip: JSZip) =>
 async function zipMemberHashes(path: string): Promise<Map<string, string>> {
   const zip = await JSZip.loadAsync(await readFile(path));
   return new Map(await Promise.all(Object.keys(zip.files).filter((name) => !zip.files[name]!.dir).map(async (name) => [name, digest(await zip.file(name)!.async("nodebuffer"))] as const)));
+}
+
+async function waitForPendingGenerationLease(root: string): Promise<void> {
+  const leaseRoot = join(root, ".superppt-leases", "generation");
+  for (let attempt = 0; attempt < 500; attempt += 1) {
+    const names = await readdir(leaseRoot).catch((error: unknown) => {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") return [];
+      throw error;
+    });
+    if (names.some((name) => name.endsWith(".pending.json"))) return;
+    await new Promise<void>((resolve) => setTimeout(resolve, 10));
+  }
+  throw new Error("presentation did not queue behind the active generation lease");
 }
 
 function outsideShapeTree(xml: string): string {
@@ -666,6 +680,64 @@ test("serializes authoritative project mutation through final candidate publicat
   releasePublication();
   await Promise.all([activation, authorityMutation]);
   assert.deepEqual(events, ["activation-published", "authority-changed"]);
+});
+
+test("presentation returns the authenticated review union from the same locked candidate snapshot", async (t) => {
+  for (const mode of ["manual", "agent"] as const) {
+    await t.test(mode, async (st) => {
+      const fixture = await activationFixture(st, mode);
+      let reachedStaging!: () => void;
+      let releaseActivation!: () => void;
+      const staging = new Promise<void>((resolve) => { reachedStaging = resolve; });
+      const release = new Promise<void>((resolve) => { releaseActivation = resolve; });
+      const activation = activateEditableSlideInDeck({
+        projectRoot: fixture.root,
+        candidatePath: fixture.candidatePath,
+        slideIndex: 1,
+        slideId: fixture.slideIds[1]!,
+        conversionRoot: fixture.conversionRoot,
+        operations: { beforeAtomicReplace: async () => { reachedStaging(); await release; } },
+      });
+      await staging;
+      const presentation = mode === "agent"
+        ? beginAgentCandidateConfirmation({
+          root: fixture.root,
+          sessionId: fixture.sessionId,
+          slideId: fixture.slideIds[1]!,
+        })
+        : presentDeckCandidate(fixture.root, {
+          sessionId: fixture.sessionId,
+          mode: "manual",
+          targetSlideId: fixture.slideIds[1]!,
+          state: "external-editing",
+        });
+      try {
+        await waitForPendingGenerationLease(fixture.root);
+      } finally {
+        releaseActivation();
+      }
+      await activation;
+      const presented = await presentation;
+      const reviewRequiredObjects = "reviewRequiredObjects" in presented
+        ? presented.reviewRequiredObjects
+        : undefined;
+      assert.deepEqual(reviewRequiredObjects, [{
+        stableSlideId: fixture.slideIds[1],
+        elementId: "icon",
+        label: "Review icon",
+        role: "foreground-object",
+      }]);
+      const presentedSha256 = "sha256" in presented ? presented.sha256 : presented.inspected.sha256;
+      assert.equal(presentedSha256, (await inspectLocalPptx(fixture.candidatePath)).sha256);
+      const leaseNames = await readdir(join(fixture.root, ".superppt-leases", "generation"));
+      assert.equal(leaseNames.some((name) => /\.(?:pending|active)\.json$/.test(name)), false);
+
+      const repeated = mode === "agent"
+        ? beginAgentCandidateConfirmation({ root: fixture.root, sessionId: fixture.sessionId, slideId: fixture.slideIds[1]! })
+        : presentDeckCandidate(fixture.root, { sessionId: fixture.sessionId, mode: "manual", targetSlideId: fixture.slideIds[1]!, state: "external-editing" });
+      await assert.rejects(repeated, /prepared|awaiting-confirmation|external-editing/i);
+    });
+  }
 });
 
 test("merges only namespaces used by the donor shape tree and accepts a local override", async (t) => {

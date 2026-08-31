@@ -3,10 +3,10 @@ import { z } from "zod";
 import {
   PreparedDeckEditSchema,
   type PreparedDeckEdit,
-  type PreparedReviewRequiredObject,
 } from "../editable/schemas.js";
 import { activateEditableSlideInDeck } from "./activate-slide.js";
-import type { DeckEditSession, LocalDeckRevision, ResolvedCurrentDeckPointer } from "./schemas.js";
+import { completeReviewRequiredObjects } from "./review-required.js";
+import type { ResolvedCurrentDeckPointer } from "./schemas.js";
 import {
   adoptDeckCandidate,
   createDeckCandidate,
@@ -38,7 +38,6 @@ function preparedResult(
   mode: "manual" | "agent",
   targetSlideIndex: number,
   presented: Awaited<ReturnType<typeof presentDeckCandidate>>,
-  reviewRequiredObjects: PreparedReviewRequiredObject[],
 ): PreparedDeckEdit {
   return PreparedDeckEditSchema.parse({
     kind: "complete-local-pptx",
@@ -52,36 +51,8 @@ function preparedResult(
     sha256: presented.inspected.sha256,
     slideCount: presented.inspected.slideCount,
     editableSlideIds: presented.editableSlideIds,
-    reviewRequiredObjects,
+    reviewRequiredObjects: presented.reviewRequiredObjects,
   });
-}
-
-function completeReviewRequiredObjects(
-  parent: LocalDeckRevision,
-  session: Pick<DeckEditSession, "targetSlideId" | "reviewRequiredObjects">,
-): PreparedReviewRequiredObject[] {
-  const bySlideId = { ...parent.reviewRequiredObjectsBySlideId };
-  if (session.reviewRequiredObjects.length > 0 || !parent.editableSlideIds.includes(session.targetSlideId)) {
-    bySlideId[session.targetSlideId] = session.reviewRequiredObjects;
-  }
-  const results: PreparedReviewRequiredObject[] = [];
-  const identities = new Map<string, PreparedReviewRequiredObject>();
-  for (const entry of [...parent.slideTopology.entries].sort((left, right) => left.position - right.position)) {
-    for (const object of bySlideId[entry.stableSlideId] ?? []) {
-      const prepared = { stableSlideId: entry.stableSlideId, ...object };
-      const identity = `${prepared.stableSlideId}\u0000${prepared.elementId}`;
-      const prior = identities.get(identity);
-      if (prior) {
-        if (JSON.stringify(prior) !== JSON.stringify(prepared)) {
-          throw new Error("authenticated review-required metadata has a conflicting object identity");
-        }
-        continue;
-      }
-      identities.set(identity, prepared);
-      results.push(prepared);
-    }
-  }
-  return results;
 }
 
 export async function prepareManualEditDeck(options: {
@@ -120,8 +91,6 @@ export async function prepareManualEditDeck(options: {
         conversionRoot: valid.conversionRoot,
       });
     }
-    const preparedSession = await readDeckEditSession(valid.root, candidate.sessionId);
-    const reviewRequiredObjects = completeReviewRequiredObjects(parent, preparedSession);
     const presented = await presentDeckCandidate(valid.root, {
       sessionId: candidate.sessionId,
       mode: "manual",
@@ -132,7 +101,6 @@ export async function prepareManualEditDeck(options: {
       "manual",
       target.position,
       presented,
-      reviewRequiredObjects,
     );
   } catch (error: unknown) {
     try {
@@ -179,21 +147,6 @@ export async function beginAgentCandidateConfirmation(options: {
   const parent = await readLocalDeckRevision(valid.root, session.parentRevisionId);
   const target = parent.slideTopology.entries.find((entry) => entry.stableSlideId === valid.slideId);
   if (!target) throw new Error("Agent edit target is not in the reconciled current deck topology");
-  let reviewRequiredObjects: PreparedReviewRequiredObject[];
-  try {
-    reviewRequiredObjects = completeReviewRequiredObjects(parent, session);
-  } catch (error: unknown) {
-    try {
-      await rejectDeckCandidate(valid.root, {
-        sessionId: valid.sessionId,
-        mode: "agent",
-        requiredState: "prepared",
-      });
-    } catch (cleanupError: unknown) {
-      throw new AggregateError([error, cleanupError], "Agent deck preparation failed and its session could not be closed");
-    }
-    throw error;
-  }
   const presented = await presentDeckCandidate(valid.root, {
     sessionId: valid.sessionId,
     mode: "agent",
@@ -204,7 +157,6 @@ export async function beginAgentCandidateConfirmation(options: {
     "agent",
     target.position,
     presented,
-    reviewRequiredObjects,
   );
 }
 

@@ -11,6 +11,7 @@ import { validateProjectRoot } from "../project/paths.js";
 import { readRegularFileNoFollow } from "../project/safe-file.js";
 import { readProject, updateProject } from "../project/store.js";
 import { inspectLocalPptx, type InspectedLocalPptx } from "./inspect.js";
+import { completeReviewRequiredObjects } from "./review-required.js";
 import { reconcileSlideTopology } from "./topology.js";
 import {
   CurrentDeckPointerSchema,
@@ -133,6 +134,7 @@ export type PresentedDeckCandidate = {
   session: ResolvedDeckEditSession;
   inspected: InspectedLocalPptx;
   editableSlideIds: string[];
+  reviewRequiredObjects: ReturnType<typeof completeReviewRequiredObjects>;
 };
 
 type BootstrapInitialDeckRevisionOptions = {
@@ -347,6 +349,28 @@ export async function presentDeckCandidate(
       throw new Error("manual candidate changed before external editing began");
     }
     const journal = await readJournal(canonicalRoot, session.sessionId);
+    const parent = await readLocalDeckRevision(canonicalRoot, session.parentRevisionId);
+    let reviewRequiredObjects: ReturnType<typeof completeReviewRequiredObjects>;
+    try {
+      reviewRequiredObjects = completeReviewRequiredObjects(parent, session);
+    } catch (error: unknown) {
+      try {
+        await writeSession(canonicalRoot, {
+          ...session,
+          state: "rejected",
+          completedAt: new Date().toISOString(),
+        });
+        await updateProject(canonicalRoot, (project) => {
+          if (project.activeDeckEditSessionId !== session.sessionId) {
+            throw new Error("review conflict cleanup lost active session authority");
+          }
+          return { ...project, activeDeckEditSessionId: null };
+        });
+      } catch (cleanupError: unknown) {
+        throw new AggregateError([error, cleanupError], "deck candidate review validation failed and its session could not be closed");
+      }
+      throw error;
+    }
     const presentedSha256 = options.mode === "agent" ? inspected.sha256 : null;
     const next = DeckEditSessionSchema.parse({
       ...session,
@@ -359,6 +383,7 @@ export async function presentDeckCandidate(
       session: { ...next, absolutePath },
       inspected,
       editableSlideIds: journal.editableSlideIds,
+      reviewRequiredObjects,
     };
   }));
 }
