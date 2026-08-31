@@ -20,6 +20,7 @@ import {
   readCurrentDeckPointer,
   readLocalDeckRevision,
 } from "../src/deck-revisions/store.js";
+import { editActualSlideObjects } from "../src/deck-revisions/edit-slide.js";
 import { finalizeSlideTopology } from "../src/deck-revisions/topology.js";
 import { initializeProject } from "../src/project/initialize.js";
 import { readProject, updateProject } from "../src/project/store.js";
@@ -32,7 +33,7 @@ const P14 = "http://schemas.microsoft.com/office/powerpoint/2010/main";
 const digest = (value: Buffer | string): string => createHash("sha256").update(value).digest("hex");
 
 function slideXml(creationId: number, label: string): string {
-  return `<p:sld xmlns:p="${P}" xmlns:p14="${P14}"><p:cSld><p:spTree><p:nvGrpSpPr/><p:sp><p:nvSpPr><p:cNvPr id="2" name="text-${label}"/></p:nvSpPr><p:txBody><a:p xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main"><a:r><a:t>${label}</a:t></a:r></a:p></p:txBody></p:sp></p:spTree><p:extLst><p:ext uri="{BB962C8B-B14F-4D97-AF65-F5344CB8AC3E}"><p14:creationId val="${creationId}"/></p:ext></p:extLst></p:cSld></p:sld>`;
+  return `<p:sld xmlns:p="${P}" xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" xmlns:p14="${P14}"><p:cSld><p:spTree><p:nvGrpSpPr/><p:sp><p:nvSpPr><p:cNvPr id="2" name="text-${label}"/></p:nvSpPr><p:spPr><a:xfrm rot="0"><a:off x="952500" y="762000"/><a:ext cx="5715000" cy="762000"/></a:xfrm></p:spPr><p:txBody><a:p><a:pPr algn="ctr"/><a:r><a:rPr lang="zh-CN" sz="3200" b="1"><a:solidFill><a:srgbClr val="FFFFFF"/></a:solidFill><a:latin typeface="Aptos"/></a:rPr><a:t>${label}</a:t></a:r></a:p></p:txBody></p:sp><p:sp><p:nvSpPr><p:cNvPr id="3" name="shape-card-Card"/></p:nvSpPr><p:spPr><a:xfrm><a:off x="762000" y="1714500"/><a:ext cx="6096000" cy="3048000"/></a:xfrm><a:prstGeom prst="roundRect"/><a:solidFill><a:srgbClr val="112233"/></a:solidFill><a:ln w="19050"><a:solidFill><a:srgbClr val="445566"/></a:solidFill></a:ln></p:spPr></p:sp></p:spTree><p:extLst><p:ext uri="{BB962C8B-B14F-4D97-AF65-F5344CB8AC3E}"><p14:creationId val="${creationId}"/></p:ext></p:extLst></p:cSld></p:sld>`;
 }
 
 async function makeDeck(labels: string[]): Promise<Buffer> {
@@ -385,6 +386,110 @@ test("Agent candidate is not current until presented and confirmed hashes both m
 
   const next = await prepareManualEditDeck({ root: fixture.root, slideId: fixture.slideIds[0]! });
   assert.deepEqual(await readFile(next.absolutePath), agentBytes);
+});
+
+test("Agent text edits patch the current OOXML object while preserving WPS formatting and every other slide", async (t) => {
+  const fixture = await workflowFixture(t);
+  const before = await readCurrentDeckPointer(fixture.root);
+  const candidate = await createDeckCandidate(fixture.root, {
+    sourceRevisionId: before.revisionId,
+    reason: "agent-edit",
+    changedSlideIds: [fixture.slideIds[1]!],
+    editableSlideIds: fixture.slideIds,
+    targetSlideId: fixture.slideIds[1]!,
+    mode: "agent",
+  });
+  const beforeZip = await JSZip.loadAsync(await readFile(candidate.absolutePath));
+  const beforeTarget = await beforeZip.file("ppt/slides/slide2.xml")!.async("string");
+  const beforeUntouched = await beforeZip.file("ppt/slides/slide1.xml")!.async("nodebuffer");
+
+  const edited = await editActualSlideObjects({
+    root: fixture.root,
+    currentRevisionId: before.revisionId,
+    sessionId: candidate.sessionId,
+    candidatePath: candidate.absolutePath,
+    slideId: fixture.slideIds[1]!,
+    manifest: {
+      manifestVersion: 2,
+      canvas: { width: 1280, height: 720 },
+      warnings: [],
+      elements: [{
+        kind: "text",
+        id: "two",
+        text: "two",
+        bbox: { x: 100, y: 80, width: 600, height: 80 },
+        rotation: 0,
+        color: "#ffffff",
+        fontSizePx: 48,
+        bold: true,
+        align: "center",
+        zIndex: 1,
+      }],
+    },
+    operations: [{ kind: "replace-text", elementId: "two", text: "Agent updated title" }],
+  });
+
+  const afterZip = await JSZip.loadAsync(await readFile(candidate.absolutePath));
+  const afterTarget = await afterZip.file("ppt/slides/slide2.xml")!.async("string");
+  assert.equal(edited.slideId, fixture.slideIds[1]);
+  assert.equal(edited.currentRevisionId, before.revisionId);
+  assert.match(afterTarget, /<a:t>Agent updated title<\/a:t>/);
+  for (const retained of [
+    '<a:pPr algn="ctr"/>',
+    '<a:xfrm rot="0"><a:off x="952500" y="762000"/><a:ext cx="5715000" cy="762000"/></a:xfrm>',
+    '<a:rPr lang="zh-CN" sz="3200" b="1"><a:solidFill><a:srgbClr val="FFFFFF"/></a:solidFill><a:latin typeface="Aptos"/></a:rPr>',
+    'name="shape-card-Card"',
+  ]) assert.equal(afterTarget.includes(retained), true, retained);
+  assert.equal(afterTarget, beforeTarget.replace(">two</a:t>", ">Agent updated title</a:t>"));
+  assert.deepEqual(await afterZip.file("ppt/slides/slide1.xml")!.async("nodebuffer"), beforeUntouched);
+  assert.deepEqual(await readFile(fixture.absolutePath), fixture.deckBytes);
+});
+
+test("supported simple-shape edits target the named current shape without rebuilding the slide", async (t) => {
+  const fixture = await workflowFixture(t);
+  const current = await readCurrentDeckPointer(fixture.root);
+  const candidate = await createDeckCandidate(fixture.root, {
+    sourceRevisionId: current.revisionId,
+    reason: "agent-edit",
+    changedSlideIds: [fixture.slideIds[0]!],
+    editableSlideIds: fixture.slideIds,
+    targetSlideId: fixture.slideIds[0]!,
+    mode: "agent",
+  });
+  const beforeZip = await JSZip.loadAsync(await readFile(candidate.absolutePath));
+  const beforeTarget = await beforeZip.file("ppt/slides/slide1.xml")!.async("string");
+
+  await editActualSlideObjects({
+    root: fixture.root,
+    currentRevisionId: current.revisionId,
+    sessionId: candidate.sessionId,
+    candidatePath: candidate.absolutePath,
+    slideId: fixture.slideIds[0]!,
+    manifest: {
+      manifestVersion: 2,
+      canvas: { width: 1280, height: 720 },
+      warnings: [],
+      elements: [{
+        kind: "shape",
+        id: "card",
+        label: "Card",
+        shape: "roundRect",
+        bbox: { x: 80, y: 180, width: 640, height: 320 },
+        fillColor: "#112233",
+        strokeColor: "#445566",
+        strokeWidthPx: 2,
+        cornerRadiusPx: 16,
+        zIndex: 0,
+      }],
+    },
+    operations: [{ kind: "set-shape-style", elementId: "card", fillColor: "#ABCDEF" }],
+  });
+
+  const afterZip = await JSZip.loadAsync(await readFile(candidate.absolutePath));
+  const afterTarget = await afterZip.file("ppt/slides/slide1.xml")!.async("string");
+  assert.equal(afterTarget, beforeTarget.replace('val="112233"', 'val="ABCDEF"'));
+  assert.equal(afterTarget.includes('name="shape-card-Card"'), true);
+  assert.equal(afterTarget.includes('<a:ln w="19050"><a:solidFill><a:srgbClr val="445566"/>'), true);
 });
 
 test("changing an Agent candidate after presentation invalidates confirmation and rejection leaves current unchanged", async (t) => {

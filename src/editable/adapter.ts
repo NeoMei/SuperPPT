@@ -1168,6 +1168,12 @@ export type ProjectConversionResult = EditableConversionResult & {
   conversionRecord: string;
 };
 
+export async function prepareAgentEditDeck(
+  options: import("./route.js").PrepareAgentEditDeckOptions,
+) {
+  return (await import("./route.js")).prepareAgentEditDeck(options);
+}
+
 export async function convertProjectPage(options: {
   root: string;
   slideId: string;

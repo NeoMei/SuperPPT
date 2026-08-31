@@ -352,7 +352,7 @@ export async function presentDeckCandidate(
     const parent = await readLocalDeckRevision(canonicalRoot, session.parentRevisionId);
     let reviewRequiredObjects: ReturnType<typeof completeReviewRequiredObjects>;
     try {
-      reviewRequiredObjects = completeReviewRequiredObjects(parent, session);
+      reviewRequiredObjects = completeReviewRequiredObjects(parent, session, journal.editableSlideIds);
     } catch (error: unknown) {
       try {
         await writeSession(canonicalRoot, {

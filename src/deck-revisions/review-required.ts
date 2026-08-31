@@ -4,6 +4,7 @@ import type { DeckEditSession, LocalDeckRevision } from "./schemas.js";
 export function completeReviewRequiredObjects(
   parent: LocalDeckRevision,
   session: Pick<DeckEditSession, "targetSlideId" | "reviewRequiredObjects">,
+  editableSlideIds: string[] = parent.editableSlideIds,
 ): PreparedReviewRequiredObject[] {
   const bySlideId = { ...parent.reviewRequiredObjectsBySlideId };
   if (session.reviewRequiredObjects.length > 0 || !parent.editableSlideIds.includes(session.targetSlideId)) {
@@ -12,6 +13,7 @@ export function completeReviewRequiredObjects(
   const results: PreparedReviewRequiredObject[] = [];
   const identities = new Map<string, PreparedReviewRequiredObject>();
   for (const entry of [...parent.slideTopology.entries].sort((left, right) => left.position - right.position)) {
+    if (!editableSlideIds.includes(entry.stableSlideId)) continue;
     for (const object of bySlideId[entry.stableSlideId] ?? []) {
       const prepared = { stableSlideId: entry.stableSlideId, ...object };
       const identity = `${prepared.stableSlideId}\u0000${prepared.elementId}`;

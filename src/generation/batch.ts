@@ -6,9 +6,12 @@ import {
   AiImageSkillDependencySchema,
   type AiImageSkillDependency,
 } from "../dependencies/schemas.js";
+import { DeckEditRouteSchema, type DeckEditRoute } from "../editable/route.js";
 import { assertGateCurrent } from "../planning/confirm.js";
+import { loadValidatedPlan } from "../planning/load.js";
 import { readProject } from "../project/store.js";
 import { compileSlidePrompt } from "../styles/prompt-compiler.js";
+import { readApprovedStyleLock } from "../styles/style-lock.js";
 import {
   generationCallBudgetUnderGenerationLease,
   readCallLedgerUnderGenerationLease,
@@ -16,7 +19,7 @@ import {
 import { readAndReauthenticateDelegatedResult } from "./delegation-result.js";
 import { type ImageGenerationJob } from "./job-schemas.js";
 import { withGenerationLease } from "./lease.js";
-import { assertJobAuthorized, prepareImageGenerationJob, readImageGenerationJob } from "./jobs.js";
+import { assertJobAuthorized, assertRegeneratedSlideJobBinding, prepareImageGenerationJob, readImageGenerationJob } from "./jobs.js";
 import { type ImagePageResult } from "./schemas.js";
 
 const DeckGateSchema = z.enum(["outline", "slide-specs", "style-sample", "generation-authorization"]);
@@ -137,6 +140,49 @@ export async function prepareDeckJob(
     return existing;
   }
   return prepareImageGenerationJob(root, { kind: "deck", aiDependency });
+}
+
+export async function prepareRegeneratedSlideJob(
+  rawRoute: DeckEditRoute,
+  options: {
+    root: string;
+    currentRevisionId: string;
+    aiDependency: AiImageSkillDependency;
+    previousPromptSha256: string;
+  },
+): Promise<ImageGenerationJob> {
+  const route = DeckEditRouteSchema.parse(rawRoute);
+  if (route.route !== "regenerate-slide") throw new Error("regenerated slide jobs require the regenerate-slide route");
+  const [manifest, lock, validated] = await Promise.all([
+    readProject(options.root),
+    readApprovedStyleLock(options.root),
+    loadValidatedPlan(options.root),
+  ]);
+  if (manifest.currentRevision.id !== options.currentRevisionId) {
+    throw new Error("regenerated slide route does not bind the current project revision");
+  }
+  if (lock.styleLockSha256 !== route.styleLockSha256) {
+    throw new Error("regenerated slide route does not bind the approved Style Lock");
+  }
+  const spec = validated.specs.find(({ slideId }) => slideId === route.slideId);
+  if (!spec) throw new Error("regenerated slide route target is not in the current plan");
+  const finalPrompt = compileSlidePrompt({
+    spec,
+    styleLock: lock,
+    correction: { issues: [route.reason] },
+  }).text;
+  const job = await prepareImageGenerationJob(options.root, {
+    kind: "page-regeneration",
+    aiDependency: options.aiDependency,
+    slideId: route.slideId,
+    previousPromptSha256: options.previousPromptSha256,
+    finalPrompt,
+  });
+  return assertRegeneratedSlideJobBinding(job, {
+    slideId: route.slideId,
+    projectRevisionId: options.currentRevisionId,
+    styleLockSha256: route.styleLockSha256,
+  });
 }
 
 /**

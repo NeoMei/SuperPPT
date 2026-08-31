@@ -227,6 +227,12 @@ export const GenerationCallTupleSchema = z.object({
   requestOrdinal: z.number().int().nonnegative(),
 }).strict();
 
+export const RegeneratedSlideJobBindingSchema = z.object({
+  slideId: z.string().uuid(),
+  projectRevisionId: z.string().uuid(),
+  styleLockSha256: Sha256Schema,
+}).strict();
+
 const CallLedgerTupleShape = GenerationCallTupleSchema.shape;
 
 export const CallLedgerEntrySchema = z.discriminatedUnion("entryKind", [
@@ -281,3 +287,4 @@ export type GenerationAuthorizationPlan = z.infer<typeof GenerationAuthorization
 export type ImageGenerationJob = z.infer<typeof ImageGenerationJobSchema>;
 export type GenerationCallTuple = z.infer<typeof GenerationCallTupleSchema>;
 export type CallLedgerEntry = z.infer<typeof CallLedgerEntrySchema>;
+export type RegeneratedSlideJobBinding = z.infer<typeof RegeneratedSlideJobBindingSchema>;

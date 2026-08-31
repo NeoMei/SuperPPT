@@ -51,6 +51,10 @@ import {
   EditableManifestSchema,
   RunLedgerV2Schema,
 } from "../src/editable/schemas.js";
+import {
+  classifyDeckEdit,
+  classifyDeckEditMode,
+} from "../src/editable/route.js";
 import { initializeProject } from "../src/project/initialize.js";
 import { readProject, sha256 as projectSha256, updateProject } from "../src/project/store.js";
 import { publishRevisionSnapshot } from "../src/revisions/snapshot.js";
@@ -629,6 +633,104 @@ test("routes missing, background-only, and mismatched targets to regeneration", 
   ]) {
     assert.throws(() => applyEditPlan(manifest, plan), UnsupportedEditableTargetError);
   }
+});
+
+test("routes direct edits before activation before regeneration without overstating editability", async () => {
+  const slideId = "00000000-0000-4000-8000-000000000721";
+  const currentRevisionId = "00000000-0000-4000-8000-000000000722";
+  const styleLockSha256 = "a".repeat(64);
+  const manifest = {
+    manifestVersion: 2 as const,
+    canvas: { width: 1280 as const, height: 720 as const },
+    warnings: [],
+    elements: [
+      {
+        kind: "text" as const,
+        id: "title",
+        text: "Old title",
+        bbox: { x: 100, y: 80, width: 600, height: 80 },
+        rotation: 0,
+        color: "#ffffff",
+        fontSizePx: 48,
+        align: "center" as const,
+        zIndex: 1,
+      },
+      {
+        kind: "shape" as const,
+        id: "card",
+        label: "Card",
+        shape: "roundRect" as const,
+        bbox: { x: 80, y: 180, width: 640, height: 320 },
+        fillColor: "#112233",
+        strokeColor: "#445566",
+        strokeWidthPx: 2,
+        cornerRadiusPx: 16,
+        zIndex: 0,
+      },
+    ],
+  };
+  const context = {
+    slideId,
+    currentRevisionId,
+    editableSlideIds: [slideId],
+    manifest,
+    pageDescription: "A title above a rounded card",
+    styleLockSha256,
+  };
+  const textRequest = {
+    change: "text" as const,
+    operations: [{ kind: "replace-text" as const, elementId: "title", text: "New title" }],
+  };
+
+  assert.equal(classifyDeckEdit(textRequest, context).route, "direct-edit");
+  assert.equal(classifyDeckEdit(textRequest, { ...context, editableSlideIds: [] }).route, "activate-editable");
+  assert.deepEqual(classifyDeckEdit({ change: "layout", instruction: "Recompose this page" }, context), {
+    route: "regenerate-slide",
+    slideId,
+    reason: "Recompose this page",
+    styleLockSha256,
+  });
+  assert.equal(classifyDeckEdit({
+    ...textRequest,
+    instruction: "不要转可编辑，直接重做这一页",
+  }, context).route, "regenerate-slide");
+  assert.equal(classifyDeckEdit({
+    change: "text",
+    operations: [{ kind: "replace-text", elementId: "background-label", text: "X" }],
+  }, context).route, "regenerate-slide");
+});
+
+test("manual and Agent wording selects presentation mode without changing the technical route", () => {
+  const context = {
+    slideId: "00000000-0000-4000-8000-000000000723",
+    currentRevisionId: "00000000-0000-4000-8000-000000000724",
+    editableSlideIds: ["00000000-0000-4000-8000-000000000723"],
+    manifest: {
+      manifestVersion: 2 as const,
+      canvas: { width: 1280 as const, height: 720 as const },
+      warnings: [],
+      elements: [{
+        kind: "text" as const,
+        id: "title",
+        text: "Old",
+        bbox: { x: 0, y: 0, width: 100, height: 40 },
+        rotation: 0,
+        color: "#ffffff",
+        fontSizePx: 24,
+        align: "left" as const,
+        zIndex: 1,
+      }],
+    },
+    pageDescription: "Title",
+    styleLockSha256: "b".repeat(64),
+  };
+  const operation = [{ kind: "replace-text" as const, elementId: "title", text: "New" }];
+  const manual = { change: "text" as const, instruction: "我自己改", operations: operation };
+  const agent = { change: "text" as const, instruction: "帮我改", operations: operation };
+
+  assert.equal(classifyDeckEditMode(manual), "manual");
+  assert.equal(classifyDeckEditMode(agent), "agent");
+  assert.deepEqual(classifyDeckEdit(manual, context), classifyDeckEdit(agent, context));
 });
 
 test("copies replacement assets into an owned revision and never returns the user path", async (t) => {

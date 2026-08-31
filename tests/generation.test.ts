@@ -13,6 +13,7 @@ import {
   describeProjectGeneration,
   prepareDeckJob,
   preparePageRegenerationJob,
+  prepareRegeneratedSlideJob,
 } from "../src/generation/batch.js";
 import {
   admitDelegatedGenerationCall,
@@ -64,6 +65,9 @@ import { compileSlidePrompt } from "../src/styles/prompt-compiler.js";
 import { approveStyleLock, createProvisionalStyleLock, readApprovedStyleLock } from "../src/styles/style-lock.js";
 import { writeCanonicalStyleSample } from "./helpers/style-sample.js";
 import { finalizeDelegatedStyleSampleForTest } from "./helpers/delegated-style-sample.js";
+import { bootstrapInitialDeckRevision } from "../src/deck-revisions/store.js";
+import { finalizeSlideTopology } from "../src/deck-revisions/topology.js";
+import { prepareAgentEditDeck } from "../src/editable/route.js";
 
 const execFileAsync = promisify(execFile);
 const SLIDE_IDS = [
@@ -71,6 +75,10 @@ const SLIDE_IDS = [
   "00000000-0000-4000-8000-000000000712",
   "00000000-0000-4000-8000-000000000713",
 ] as const;
+const PRESENTATION = "http://schemas.openxmlformats.org/presentationml/2006/main";
+const DOCUMENT_RELATIONSHIPS = "http://schemas.openxmlformats.org/officeDocument/2006/relationships";
+const PACKAGE_RELATIONSHIPS = "http://schemas.openxmlformats.org/package/2006/relationships";
+const POWERPOINT_2010 = "http://schemas.microsoft.com/office/powerpoint/2010/main";
 
 async function directory(t: TestContext, prefix: string): Promise<string> {
   const root = await mkdtemp(join(tmpdir(), prefix));
@@ -390,6 +398,40 @@ async function fakeCandidateOutputs(
   await writeFile(paths.pptx, await zip.generateAsync({ type: "nodebuffer" }), { flag: "wx" });
   await exportPdf(renders, paths.pdf);
   await buildMontage(renders, paths.montage);
+}
+
+async function installCompleteDeckRevision(root: string): Promise<{ revisionId: string; bytes: Buffer }> {
+  const zip = new JSZip();
+  zip.file("[Content_Types].xml", '<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"/>');
+  zip.file("ppt/presentation.xml", `<p:presentation xmlns:p="${PRESENTATION}" xmlns:r="${DOCUMENT_RELATIONSHIPS}"><p:sldIdLst>${SLIDE_IDS.map((_id, index) => `<p:sldId id="${256 + index}" r:id="rId${index + 1}"/>`).join("")}</p:sldIdLst></p:presentation>`);
+  zip.file("ppt/_rels/presentation.xml.rels", `<Relationships xmlns="${PACKAGE_RELATIONSHIPS}">${SLIDE_IDS.map((_id, index) => `<Relationship Id="rId${index + 1}" Type="${DOCUMENT_RELATIONSHIPS}/slide" Target="slides/slide${index + 1}.xml"/>`).join("")}</Relationships>`);
+  for (const [index, slideId] of SLIDE_IDS.entries()) {
+    zip.file(`ppt/slides/slide${index + 1}.xml`, `<p:sld xmlns:p="${PRESENTATION}" xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" xmlns:p14="${POWERPOINT_2010}"><p:cSld><p:spTree><p:nvGrpSpPr/><p:grpSpPr/><p:sp><p:nvSpPr><p:cNvPr id="2" name="text-title"/></p:nvSpPr><p:txBody><a:p><a:r><a:t>${slideId}</a:t></a:r></a:p></p:txBody></p:sp></p:spTree><p:extLst><p:ext uri="{BB962C8B-B14F-4D97-AF65-F5344CB8AC3E}"><p14:creationId val="${3001 + index}"/></p:ext></p:extLst></p:cSld></p:sld>`);
+    zip.file(`ppt/slides/_rels/slide${index + 1}.xml.rels`, `<Relationships xmlns="${PACKAGE_RELATIONSHIPS}"/>`);
+  }
+  const bytes = await zip.generateAsync({ type: "nodebuffer" });
+  const sourceId = randomUUID();
+  const sourceRoot = join(root, "output", "candidates", sourceId);
+  await mkdir(sourceRoot, { recursive: true });
+  const source = join(sourceRoot, "deck.pptx");
+  await writeFile(source, bytes);
+  const revisionId = randomUUID();
+  const project = await readProject(root);
+  await bootstrapInitialDeckRevision(root, {
+    revisionId,
+    projectRevisionId: project.currentRevision.id,
+    sourceAbsolutePath: source,
+    slideTopology: finalizeSlideTopology(SLIDE_IDS.map((stableSlideId, position) => ({
+      stableSlideId,
+      slidePart: `ppt/slides/slide${position + 1}.xml`,
+      position,
+      management: "managed" as const,
+      presentationSlideId: 256 + position,
+      creationId: 3001 + position,
+    })), []),
+    changedSlideIds: [...SLIDE_IDS],
+  });
+  return { revisionId, bytes };
 }
 
 test("older delegated replay stays read-only and rollback restores the exact authenticated target history", async (t) => {
@@ -981,6 +1023,86 @@ test("page regeneration preserves the Style Lock and derives a new sanitized pro
   assert.notEqual(regeneration.pages[0]!.promptSha256, page.promptSha256);
   assert.match(regeneration.pages[0]!.finalPrompt, /PAGE-SPECIFIC QUALITY CORRECTIONS ONLY/);
   await access(join(fixture.root, ...rejectedResultPath.split("/")));
+});
+
+test("an edit-route regeneration job contains only the target slide and the approved Style Lock", async (t) => {
+  const fixture = await authorizedDeckProject(t, "superppt-edit-route-regeneration-");
+  const deck = await prepareDeckJob(fixture.root, fixture.aiDependency);
+  const page = deck.pages[1]!;
+  const route = {
+    route: "regenerate-slide" as const,
+    slideId: page.slideId,
+    reason: "Replace the composition while retaining the approved art direction",
+    styleLockSha256: deck.styleLockSha256,
+  };
+
+  const regeneration = await prepareRegeneratedSlideJob(route, {
+    root: fixture.root,
+    currentRevisionId: deck.projectRevisionId,
+    aiDependency: fixture.aiDependency,
+    previousPromptSha256: page.promptSha256,
+  });
+
+  assert.equal(regeneration.kind, "page-regeneration");
+  assert.equal(regeneration.pages.length, 1);
+  assert.equal(regeneration.pages[0]!.slideId, route.slideId);
+  assert.equal(regeneration.styleLockSha256, route.styleLockSha256);
+  assert.equal(regeneration.authorizationPlan.pages.length, 3, "the immutable approved deck authorization remains intact");
+});
+
+test("a successful regenerated page becomes one complete Agent candidate and leaves every non-target slide part intact", async (t) => {
+  const fixture = await authorizedDeckProject(t, "superppt-regenerated-complete-candidate-");
+  const initial = await installCompleteDeckRevision(fixture.root);
+  const deck = await prepareDeckJob(fixture.root, fixture.aiDependency);
+  const originalPage = deck.pages[0]!;
+  const route = {
+    route: "regenerate-slide" as const,
+    slideId: originalPage.slideId,
+    reason: "Replace only this slide composition",
+    styleLockSha256: deck.styleLockSha256,
+  };
+  const job = await prepareRegeneratedSlideJob(route, {
+    root: fixture.root,
+    currentRevisionId: deck.projectRevisionId,
+    aiDependency: fixture.aiDependency,
+    previousPromptSha256: originalPage.promptSha256,
+  });
+  const report = {
+    batch_mode: "serial-sticky-monotonic" as const,
+    stopped: false,
+    search_candidate: "api-openai" as const,
+    sticky_candidate: "api-openai" as const,
+    pages: [{ page: 1, outcome: "success" as const, candidate: "api-openai" as const, summary: "" }],
+    switches: [],
+  };
+  await recordDelegatedResult(fixture.root, await admittedApiSuccessIntake(
+    fixture.root,
+    job,
+    job.pages[0]!,
+    1,
+    report,
+    "#654321",
+  ));
+
+  const prepared = await prepareAgentEditDeck({
+    root: fixture.root,
+    currentRevisionId: initial.revisionId,
+    route,
+    generationJobId: job.jobId,
+  });
+
+  assert.equal(prepared.kind, "complete-local-pptx");
+  assert.equal(prepared.mode, "agent");
+  assert.equal(prepared.slideCount, 3);
+  assert.equal(prepared.targetSlideId, route.slideId);
+  assert.equal(prepared.editableSlideIds.includes(route.slideId), false);
+  const beforeZip = await JSZip.loadAsync(initial.bytes);
+  const afterZip = await JSZip.loadAsync(await readFile(prepared.absolutePath));
+  const target = await afterZip.file("ppt/slides/slide1.xml")!.async("string");
+  assert.match(target, /asset-regenerated-/);
+  for (const part of ["ppt/slides/slide2.xml", "ppt/slides/slide3.xml"]) {
+    assert.deepEqual(await afterZip.file(part)!.async("nodebuffer"), await beforeZip.file(part)!.async("nodebuffer"));
+  }
 });
 
 test("historical rejected deck evidence survives incremental authorization through regeneration progress", async (t) => {

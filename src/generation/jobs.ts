@@ -25,9 +25,11 @@ import { openGenerationDirectory, type GenerationDirectory } from "./anchored-di
 import { withGenerationLease } from "./lease.js";
 import {
   ImageGenerationJobSchema,
+  RegeneratedSlideJobBindingSchema,
   canonicalContractFile,
   type GenerationAuthorizationPlan,
   type ImageGenerationJob,
+  type RegeneratedSlideJobBinding,
 } from "./job-schemas.js";
 
 const DeckRequestSchema = z.object({
@@ -522,6 +524,22 @@ export async function readImageGenerationJob(root: string, jobId: string): Promi
   } catch (error: unknown) {
     throw new Error("immutable image generation job is invalid", { cause: error });
   }
+}
+
+export function assertRegeneratedSlideJobBinding(
+  rawJob: ImageGenerationJob,
+  rawBinding: RegeneratedSlideJobBinding,
+): ImageGenerationJob {
+  const job = ImageGenerationJobSchema.parse(rawJob);
+  const binding = RegeneratedSlideJobBindingSchema.parse(rawBinding);
+  if (job.kind !== "page-regeneration"
+    || job.pages.length !== 1
+    || job.pages[0]!.slideId !== binding.slideId
+    || job.projectRevisionId !== binding.projectRevisionId
+    || job.styleLockSha256 !== binding.styleLockSha256) {
+    throw new Error("page-regeneration job does not bind the routed slide, current project revision, and approved Style Lock");
+  }
+  return job;
 }
 
 export async function assertJobAuthorized(root: string, job: ImageGenerationJob): Promise<void> {
