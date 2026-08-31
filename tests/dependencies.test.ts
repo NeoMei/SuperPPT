@@ -294,6 +294,77 @@ test("rejects non-Zod and unreachable editable AST evidence", async (t) => {
   }
 });
 
+test("rejects statically unreachable donor calls in expressions and loops", async (t) => {
+  const outputName = 'function outputName(imagePath?: string): string { if (imagePath === undefined) return "slide-editable.pptx"; return "other.pptx"; }\n';
+  for (const [name, body] of [
+    ["false && donor", 'false && outputName(); return "other.pptx";'],
+    ["true || donor", 'true || outputName(); return "other.pptx";'],
+    ["false ?? donor", 'false ?? outputName(); return "other.pptx";'],
+    ["nested false && donor", '((false)) && outputName(); return "other.pptx";'],
+    ["truthy object || donor", '({}) || outputName(); return "other.pptx";'],
+    ["non-nullish object ?? donor", '({}) ?? outputName(); return "other.pptx";'],
+    ["static conditional donor", 'return true ? "other.pptx" : outputName();'],
+    ["truthy object conditional donor", 'return ({}) ? "other.pptx" : outputName();'],
+    ["while false donor", 'while (false) outputName(); return "other.pptx";'],
+    ["for false donor", 'for (; false;) outputName(); return "other.pptx";'],
+    ["for unreachable increment donor", 'for (; false; outputName()) {} return "other.pptx";'],
+    ["do-while short-circuit donor", 'do {} while (false && outputName()); return "other.pptx";'],
+    ["do-while condition after return donor", 'do { return "other.pptx"; } while (outputName());'],
+    ["for increment after return donor", 'for (;; outputName()) { return "other.pptx"; }'],
+  ] as const) {
+    await t.test(name, async (subtest) => {
+      const current = await fixture(subtest);
+      await writeFile(
+        join(current.editable, "src", "pipeline.ts"),
+        `${outputName}export function buildSlide(): string { ${body} }\n`,
+      );
+      await assert.rejects(resolveSkillDependencies(request(current)), /official donor|semantic.*evidence/i);
+    });
+  }
+});
+
+test("accepts donor calls on statically executed expression and loop paths", async (t) => {
+  const outputName = 'function outputName(imagePath?: string): string { if (imagePath === undefined) return "slide-editable.pptx"; return "other.pptx"; }\n';
+  for (const [name, body] of [
+    ["null ?? donor", 'return null ?? outputName();'],
+    ["selected conditional donor", 'return false ? "other.pptx" : outputName();'],
+    ["do-while body donor", 'do { return outputName(); } while (false);'],
+    ["for initializer donor", 'for (outputName(); false;) {} return "other.pptx";'],
+    ["variable initializer donor", 'const donor = outputName(); return donor;'],
+  ] as const) {
+    await t.test(name, async (subtest) => {
+      const current = await fixture(subtest);
+      await writeFile(
+        join(current.editable, "src", "pipeline.ts"),
+        `${outputName}export function buildSlide(): string { ${body} }\n`,
+      );
+      const resolved = await resolveSkillDependencies(request(current));
+      assert.equal(resolved.editable.officialDonor, "slide-editable.pptx");
+    });
+  }
+});
+
+test("rejects statically unreachable object-name and writeFile calls", async (t) => {
+  const prefix = "export async function exportPptx(element: any): Promise<void> { const pptx = new PptxGenConstructor(); const slide = pptx.addSlide(); ";
+  const names = 'slide.addImage({ objectName: "asset-background" }); slide.addText("", { objectName: `text-${element.id}` }); slide.addShape("", { objectName: `shape-${element.id}-${element.label}` }); slide.addImage({ objectName: `asset-${element.id}` }); ';
+  const write = 'await pptx.writeFile({ fileName: "out.pptx" });';
+  for (const [name, body] of [
+    ["false && object-name calls", 'false && slide.addImage({ objectName: "asset-background" }); false && slide.addText("", { objectName: `text-${element.id}` }); false && slide.addShape("", { objectName: `shape-${element.id}-${element.label}` }); false && slide.addImage({ objectName: `asset-${element.id}` }); await pptx.writeFile({ fileName: "out.pptx" });'],
+    ["true || object-name calls", 'true || slide.addImage({ objectName: "asset-background" }); true || slide.addText("", { objectName: `text-${element.id}` }); true || slide.addShape("", { objectName: `shape-${element.id}-${element.label}` }); true || slide.addImage({ objectName: `asset-${element.id}` }); await pptx.writeFile({ fileName: "out.pptx" });'],
+    ["false conditional object-name calls", `false ? (${names.replaceAll("; ", ", ")} undefined) : undefined; ${write}`],
+    ["while false object-name and writeFile calls", `while (false) { ${names}${write} }`],
+    ["false && writeFile", `${names}false && pptx.writeFile({ fileName: "out.pptx" });`],
+    ["true || writeFile", `${names}true || pptx.writeFile({ fileName: "out.pptx" });`],
+    ["false ?? writeFile", `${names}false ?? pptx.writeFile({ fileName: "out.pptx" });`],
+  ] as const) {
+    await t.test(name, async (subtest) => {
+      const current = await fixture(subtest);
+      await writeFile(join(current.editable, "src", "export", "pptx.ts"), `${prefix}${body} }\n`);
+      await assert.rejects(resolveSkillDependencies(request(current)), /object.name|semantic.*evidence/i);
+    });
+  }
+});
+
 test("rejects converter 0.1, manifest v1, and missing official donor contracts", async (t) => {
   await t.test("converter 0.1", async (subtest) => {
     const current = await fixture(subtest, "0.1.9");

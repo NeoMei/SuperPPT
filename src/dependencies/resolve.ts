@@ -138,9 +138,11 @@ function baseFluentCall(expression: ts.Expression): ts.Expression {
 }
 
 function staticTruth(expression: ts.Expression): boolean | undefined {
-  const value = ts.isParenthesizedExpression(expression) ? expression.expression : expression;
+  let value = expression;
+  while (ts.isParenthesizedExpression(value)) value = value.expression;
   if (value.kind === ts.SyntaxKind.FalseKeyword || value.kind === ts.SyntaxKind.NullKeyword) return false;
   if (value.kind === ts.SyntaxKind.TrueKeyword) return true;
+  if (ts.isObjectLiteralExpression(value) || ts.isArrayLiteralExpression(value) || ts.isFunctionExpression(value) || ts.isArrowFunction(value) || ts.isClassExpression(value) || ts.isNewExpression(value)) return true;
   if (ts.isNumericLiteral(value)) return Number(value.text) !== 0;
   if (ts.isStringLiteral(value) || ts.isNoSubstitutionTemplateLiteral(value)) return value.text.length > 0;
   if (ts.isPrefixUnaryExpression(value) && value.operator === ts.SyntaxKind.ExclamationToken) {
@@ -150,25 +152,82 @@ function staticTruth(expression: ts.Expression): boolean | undefined {
   return undefined;
 }
 
+function staticNullish(expression: ts.Expression): boolean | undefined {
+  let value = expression;
+  while (ts.isParenthesizedExpression(value)) value = value.expression;
+  if (value.kind === ts.SyntaxKind.NullKeyword) return true;
+  if (staticTruth(value) !== undefined) return false;
+  return undefined;
+}
+
 type ExecutableVisitor = {
   call?: (node: ts.CallExpression) => void;
   variable?: (node: ts.VariableDeclaration) => void;
 };
 
-function walkExecutable(node: ts.Node, visitor: ExecutableVisitor, callbackOwner?: string): void {
-  if (ts.isFunctionDeclaration(node) || ts.isFunctionExpression(node) || ts.isArrowFunction(node)) return;
+function walkExecutable(node: ts.Node, visitor: ExecutableVisitor, callbackOwner?: string): boolean {
+  if (ts.isFunctionDeclaration(node) || ts.isFunctionExpression(node) || ts.isArrowFunction(node)) return true;
   if (ts.isBlock(node)) {
     for (const statement of node.statements) {
-      walkExecutable(statement, visitor, callbackOwner);
-      if (ts.isReturnStatement(statement) || ts.isThrowStatement(statement)) break;
+      if (!walkExecutable(statement, visitor, callbackOwner)) return false;
     }
-    return;
+    return true;
+  }
+  if (ts.isReturnStatement(node) || ts.isThrowStatement(node)) {
+    if (node.expression) walkExecutable(node.expression, visitor, callbackOwner);
+    return false;
   }
   if (ts.isIfStatement(node)) {
+    walkExecutable(node.expression, visitor, callbackOwner);
     const truth = staticTruth(node.expression);
-    if (truth !== false) walkExecutable(node.thenStatement, visitor, callbackOwner);
-    if (truth !== true && node.elseStatement) walkExecutable(node.elseStatement, visitor, callbackOwner);
-    return;
+    if (truth === true) return walkExecutable(node.thenStatement, visitor, callbackOwner);
+    if (truth === false) return node.elseStatement ? walkExecutable(node.elseStatement, visitor, callbackOwner) : true;
+    const thenCompletes = walkExecutable(node.thenStatement, visitor, callbackOwner);
+    const elseCompletes = node.elseStatement ? walkExecutable(node.elseStatement, visitor, callbackOwner) : true;
+    return thenCompletes || elseCompletes;
+  }
+  if (ts.isBinaryExpression(node)) {
+    const operator = node.operatorToken.kind;
+    if (
+      operator === ts.SyntaxKind.AmpersandAmpersandToken
+      || operator === ts.SyntaxKind.BarBarToken
+      || operator === ts.SyntaxKind.QuestionQuestionToken
+    ) {
+      walkExecutable(node.left, visitor, callbackOwner);
+      const reachesRight = operator === ts.SyntaxKind.AmpersandAmpersandToken
+        ? staticTruth(node.left) !== false
+        : operator === ts.SyntaxKind.BarBarToken
+          ? staticTruth(node.left) !== true
+          : staticNullish(node.left) !== false;
+      if (reachesRight) walkExecutable(node.right, visitor, callbackOwner);
+      return true;
+    }
+  }
+  if (ts.isConditionalExpression(node)) {
+    walkExecutable(node.condition, visitor, callbackOwner);
+    const truth = staticTruth(node.condition);
+    if (truth !== false) walkExecutable(node.whenTrue, visitor, callbackOwner);
+    if (truth !== true) walkExecutable(node.whenFalse, visitor, callbackOwner);
+    return true;
+  }
+  if (ts.isWhileStatement(node)) {
+    walkExecutable(node.expression, visitor, callbackOwner);
+    if (staticTruth(node.expression) !== false) walkExecutable(node.statement, visitor, callbackOwner);
+    return true;
+  }
+  if (ts.isDoStatement(node)) {
+    const bodyCompletes = walkExecutable(node.statement, visitor, callbackOwner);
+    if (bodyCompletes) walkExecutable(node.expression, visitor, callbackOwner);
+    return bodyCompletes;
+  }
+  if (ts.isForStatement(node)) {
+    if (node.initializer) walkExecutable(node.initializer, visitor, callbackOwner);
+    if (node.condition) walkExecutable(node.condition, visitor, callbackOwner);
+    const truth = node.condition ? staticTruth(node.condition) : true;
+    if (truth === false) return true;
+    const bodyCompletes = walkExecutable(node.statement, visitor, callbackOwner);
+    if (bodyCompletes && node.incrementor) walkExecutable(node.incrementor, visitor, callbackOwner);
+    return bodyCompletes || truth !== true;
   }
   if (ts.isVariableDeclaration(node)) visitor.variable?.(node);
   if (ts.isCallExpression(node)) {
@@ -190,7 +249,10 @@ function walkExecutable(node: ts.Node, visitor: ExecutableVisitor, callbackOwner
       }
     }
   }
-  ts.forEachChild(node, (child) => walkExecutable(child, visitor, callbackOwner));
+  ts.forEachChild(node, (child) => {
+    walkExecutable(child, visitor, callbackOwner);
+  });
+  return true;
 }
 
 function manifestV2Exported(source: ts.SourceFile, version: number): boolean {
@@ -287,7 +349,8 @@ function officialDonorIsExecutable(source: ts.SourceFile, donor: string): boolea
     reachable.add(name);
     const declaration = functions.get(name);
     if (!declaration) continue;
-    for (const called of callsFrom(declaration)) if (functions.has(called)) pending.push(called);
+    const calls = callsFrom(declaration);
+    for (const called of calls) if (functions.has(called)) pending.push(called);
   }
   return hasDefaultReturn && reachable.has("outputName");
 }
