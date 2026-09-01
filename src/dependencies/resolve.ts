@@ -201,15 +201,15 @@ async function inspectEditableSourceEntry(
   path: string,
   relativePath: string,
 ): Promise<EditableSourceEntrySnapshot> {
-  let info: BigIntStats;
+  let beginInfo: BigIntStats;
   try {
-    info = await lstat(path, { bigint: true });
+    beginInfo = await lstat(path, { bigint: true });
   } catch (error) {
     throw new Error("image-to-editable-pptx source tree is unsafe", { cause: error });
   }
-  if (info.isSymbolicLink()) throw new Error("image-to-editable-pptx source tree must not contain symbolic links");
-  const kind = info.isDirectory() ? "directory" : info.isFile() ? "file" : null;
-  if (kind === null) throw new Error("image-to-editable-pptx source tree contains an unsupported entry");
+  if (beginInfo.isSymbolicLink()) throw new Error("image-to-editable-pptx source tree must not contain symbolic links");
+  const beginKind = beginInfo.isDirectory() ? "directory" : beginInfo.isFile() ? "file" : null;
+  if (beginKind === null) throw new Error("image-to-editable-pptx source tree contains an unsupported entry");
   let physicalPath: string;
   try {
     physicalPath = await realpath(path);
@@ -220,7 +220,18 @@ async function inspectEditableSourceEntry(
     physicalPath !== path
     || (path === sourceRoot ? physicalPath !== sourceRoot : !staysInside(sourceRoot, physicalPath))
   ) throw new Error("image-to-editable-pptx source tree path is unsafe");
-  return sourceEntrySnapshot(path, relativePath, kind, info);
+  let endInfo: BigIntStats;
+  try {
+    endInfo = await lstat(path, { bigint: true });
+  } catch (error) {
+    throw sourceTreeChanged(error);
+  }
+  const endKind = endInfo.isDirectory() ? "directory" : endInfo.isFile() ? "file" : null;
+  if (endInfo.isSymbolicLink() || endKind === null) throw sourceTreeChanged();
+  const begin = sourceEntrySnapshot(path, relativePath, beginKind, beginInfo);
+  const end = sourceEntrySnapshot(path, relativePath, endKind, endInfo);
+  if (!sameEditableSourceEntry(begin, end)) throw sourceTreeChanged();
+  return end;
 }
 
 async function enumerateEditableSourceTopology(sourceRoot: string): Promise<EditableSourceTopologySnapshot> {

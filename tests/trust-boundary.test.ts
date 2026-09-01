@@ -1,4 +1,7 @@
-import { withSourceTreeScanRace } from "./helpers/source-tree-scan-race.js";
+import {
+  sourceTreeScanRaceBuiltinsRestored,
+  withSourceTreeScanRace,
+} from "./helpers/source-tree-scan-race.js";
 import assert from "node:assert/strict";
 import { mkdtemp, mkdir, readFile, rename, rm, symlink, truncate, unlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -316,6 +319,89 @@ test("editable preflight fails closed when an early source file changes during i
   }, () => preflightDependencies(resolved));
   assert.equal(report.ok, false);
   assert.ok(report.errors.some((error) => error.dependency === "image-to-editable-pptx" && error.code === "identity_changed"));
+});
+
+test("editable resolution rejects a final-topology entry rewrite after realpath", async (t) => {
+  const current = await fixture(t);
+  const { early } = await sourceScanRaceFixture(current);
+  const baseline = await resolveSkillDependencies(request(current));
+  let rewrites = 0;
+  await assert.rejects(async () => {
+    const observed = await withSourceTreeScanRace({
+      sourceRoot: join(current.editable, "src"),
+      targetEntry: early,
+      afterEntryRealpath: async ({ sourceRootReads }) => {
+        if (sourceRootReads === 3 && rewrites === 0) {
+          rewrites += 1;
+          await writeFile(early, CHANGED_SOURCE_BYTES);
+        }
+      },
+    }, () => resolveSkillDependencies(request(current)));
+    const currentBytes = await readFile(early, "utf8");
+    throw new Error(
+      `stale identity returned: sameDigest=${observed.editable.sourceTree.sha256 === baseline.editable.sourceTree.sha256}; currentBytes=${JSON.stringify(currentBytes)}`,
+    );
+  }, /source tree.*changed.*snapshot/i);
+  assert.equal(rewrites, 1);
+});
+
+test("editable preflight rejects a final-topology entry rewrite after realpath", async (t) => {
+  const current = await fixture(t);
+  const { early } = await sourceScanRaceFixture(current);
+  const resolved = await resolveSkillDependencies(request(current));
+  let rewrites = 0;
+  const report = await withSourceTreeScanRace({
+    sourceRoot: join(current.editable, "src"),
+    targetEntry: early,
+    afterEntryRealpath: async ({ sourceRootReads }) => {
+      if (sourceRootReads === 3 && rewrites === 0) {
+        rewrites += 1;
+        await writeFile(early, CHANGED_SOURCE_BYTES);
+      }
+    },
+  }, () => preflightDependencies(resolved));
+  assert.equal(rewrites, 1);
+  assert.equal(report.ok, false);
+  assert.ok(report.errors.some((error) => error.dependency === "image-to-editable-pptx" && error.code === "identity_changed"));
+});
+
+test("source-tree race helper restores builtin exports after completed and repeated scopes", async (t) => {
+  const current = await fixture(t);
+  const invoke = () => withSourceTreeScanRace({
+    sourceRoot: join(current.editable, "src"),
+  }, async () => undefined);
+  await invoke();
+  assert.equal(sourceTreeScanRaceBuiltinsRestored(), true);
+  await invoke();
+  assert.equal(sourceTreeScanRaceBuiltinsRestored(), true);
+  await assert.rejects(withSourceTreeScanRace({
+    sourceRoot: join(current.editable, "src"),
+  }, async () => {
+    throw new Error("scoped race failure");
+  }), /scoped race failure/);
+  assert.equal(sourceTreeScanRaceBuiltinsRestored(), true);
+});
+
+test("source-tree race helper supports parallel independent scopes and restores afterward", async (t) => {
+  const left = await fixture(t);
+  const right = await fixture(t);
+  let entered = 0;
+  let release!: () => void;
+  const bothEntered = new Promise<void>((resolveEntered) => { release = resolveEntered; });
+  const run = (current: Fixture) => withSourceTreeScanRace({
+    sourceRoot: join(current.editable, "src"),
+  }, async () => {
+    entered += 1;
+    if (entered === 2) release();
+    await bothEntered;
+  });
+  const first = run(left);
+  const second = run(right).catch((error: unknown) => {
+    release();
+    throw error;
+  });
+  await Promise.all([first, second]);
+  assert.equal(sourceTreeScanRaceBuiltinsRestored(), true);
 });
 
 test("editable source syntax is outside admission and is only a TOCTOU identity", async (t) => {

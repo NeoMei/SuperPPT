@@ -1090,6 +1090,46 @@ test("project conversion rejects a scan-window source replacement before editabl
   assert.equal(preparationCalls, 0);
 });
 
+test("project conversion rejects a final-entry inspection race before editable-input execution", async (t) => {
+  const project = await readyProject(t);
+  const plugin = await converterRoot(t);
+  const { early } = await converterScanRaceFiles(plugin);
+  const dependencies = await resolvedDependencies(t, plugin);
+  let raceEnabled = false;
+  let rewrites = 0;
+  let preparationCalls = 0;
+  await assert.rejects(withSourceTreeScanRace({
+    sourceRoot: join(plugin, "src"),
+    targetEntry: early,
+    enabled: () => raceEnabled,
+    beforeSourceRootRead: async (scan) => {
+      if ((scan - 1) % 3 === 0) await writeFile(early, SCAN_BASELINE_SOURCE);
+    },
+    afterEntryRealpath: async ({ sourceRootReads }) => {
+      if (sourceRootReads > 0 && sourceRootReads % 3 === 0) {
+        rewrites += 1;
+        await writeFile(early, SCAN_CHANGED_SOURCE);
+      }
+    },
+  }, () => strictConvertProjectPage({
+    ...project,
+    dependencies,
+    get prepareExecute() {
+      raceEnabled = true;
+      return async () => {
+        preparationCalls += 1;
+        throw new Error("preparation executed after a stale final-entry inspection");
+      };
+    },
+    execute: async () => {
+      throw new Error("converter must not execute after workflow identity drift");
+    },
+    idFactory: () => "00000000-0000-4000-8000-000000000126",
+  })), /source tree.*changed.*snapshot|attestation.*current|identity changed/i);
+  assert.ok(rewrites >= 1);
+  assert.equal(preparationCalls, 0);
+});
+
 test("project conversion reattests editable identity at the final executor boundary", async (t) => {
   const project = await readyProject(t);
   const plugin = await converterRoot(t);
@@ -1144,6 +1184,47 @@ test("project conversion rejects a scan-window source replacement before convert
     },
     idFactory: () => "00000000-0000-4000-8000-000000000125",
   })), /source tree.*changed.*snapshot|attestation.*current|identity changed/i);
+  assert.equal(converterCalls, 0);
+});
+
+test("project conversion rejects a final-entry inspection race before converter execution", async (t) => {
+  const project = await readyProject(t);
+  const plugin = await converterRoot(t);
+  const { early } = await converterScanRaceFiles(plugin);
+  const dependencies = await resolvedDependencies(t, plugin);
+  let raceEnabled = false;
+  let rewrites = 0;
+  let converterCalls = 0;
+  await assert.rejects(withSourceTreeScanRace({
+    sourceRoot: join(plugin, "src"),
+    targetEntry: early,
+    enabled: () => raceEnabled,
+    beforeSourceRootRead: async (scan) => {
+      if ((scan - 1) % 3 === 0) await writeFile(early, SCAN_BASELINE_SOURCE);
+    },
+    afterEntryRealpath: async ({ sourceRootReads }) => {
+      if (sourceRootReads > 0 && sourceRootReads % 3 === 0) {
+        rewrites += 1;
+        await writeFile(early, SCAN_CHANGED_SOURCE);
+      }
+    },
+  }, () => strictConvertProjectPage({
+    ...project,
+    dependencies,
+    prepareExecute: async (_command, args) => {
+      await sharp(await readFile(args[1]!)).resize(1280, 720).png().toFile(args[2]!);
+      return { stdout: `  OK: ${args[2]} (1280x720 PNG, editable-converter input)\n`, stderr: "" };
+    },
+    get execute() {
+      raceEnabled = true;
+      return async () => {
+        converterCalls += 1;
+        throw new Error("converter executed after a stale final-entry inspection");
+      };
+    },
+    idFactory: () => "00000000-0000-4000-8000-000000000127",
+  })), /source tree.*changed.*snapshot|attestation.*current|identity changed/i);
+  assert.ok(rewrites >= 1);
   assert.equal(converterCalls, 0);
 });
 
