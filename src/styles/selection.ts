@@ -7,6 +7,7 @@ import { withGenerationLease } from "../generation/lease.js";
 import { assertGateCurrent } from "../planning/confirm.js";
 import { loadValidatedPlan } from "../planning/load.js";
 import { readProject, updateProject } from "../project/store.js";
+import { readRevisionSnapshot } from "../revisions/snapshot.js";
 import {
   StyleLockSchema,
   StyleReferenceSchema,
@@ -103,8 +104,11 @@ function assertLegacySelectionMatchesBeforeRecovery(root: string, request: Style
   }
 }
 
-/** Retire only internally consistent evidence already preserved by an old revision snapshot. */
-function retireCoherentStaleEvidence(root: string, currentRevisionId: string): void {
+/** Retire only exact evidence authenticated by an anchored old-revision snapshot. */
+async function retireCoherentStaleEvidence(
+  root: string,
+  manifest: Awaited<ReturnType<typeof readProject>>,
+): Promise<void> {
   const project = openGenerationDirectory(root);
   const style = project.child("style", false);
   try {
@@ -119,7 +123,21 @@ function retireCoherentStaleEvidence(root: string, currentRevisionId: string): v
     if (lockBytes.toString("utf8") !== canonicalFile(lock)) {
       throw new Error("style lock evidence is not canonical");
     }
-    if (lock.revisionId === currentRevisionId) return;
+    if (lock.revisionId === manifest.currentRevision.id) return;
+    if (lock.projectId !== manifest.projectId) {
+      throw new Error("stale style lock belongs to another project");
+    }
+    const staleIndex = manifest.revisions.findIndex(({ id }) => id === lock.revisionId);
+    const currentIndex = manifest.revisions.findIndex(({ id }) => id === manifest.currentRevision.id);
+    const child = staleIndex >= 0 ? manifest.revisions[staleIndex + 1] : undefined;
+    if (
+      staleIndex < 0
+      || currentIndex < 0
+      || staleIndex >= currentIndex
+      || !child
+      || child.parentId !== lock.revisionId
+      || !child.parentSnapshotDescriptorSha256
+    ) throw new Error("stale style lock revision is not a strictly older authenticated project revision");
 
     const recipeBytes = readOptional(style, "recipe.json");
     if (recipeBytes && (
@@ -133,9 +151,29 @@ function retireCoherentStaleEvidence(root: string, currentRevisionId: string): v
       selection.projectRevisionId !== lock.revisionId
       || selection.styleLockSha256 !== sha256(lockBytes)
     )) throw new Error("stale style selection conflicts with its lock");
+    if (selection?.schemaVersion !== 2 || !selectionBytes || !recipeBytes) {
+      throw new Error("stale style evidence is incomplete and cannot be retired");
+    }
 
-    if (selection?.schemaVersion === 2) style.remove("selection.json");
-    if (recipeBytes) style.remove("recipe.json");
+    const snapshot = await readRevisionSnapshot(root, lock.revisionId);
+    const snapshotStyle = snapshot.manifest.style;
+    if (
+      snapshot.descriptor.projectId !== manifest.projectId
+      || snapshot.manifest.projectId !== manifest.projectId
+      || snapshot.descriptor.descriptorSha256 !== child.parentSnapshotDescriptorSha256
+      || !snapshotStyle
+      || snapshotStyle.path !== "style/selection.json"
+      || snapshotStyle.revisionId !== lock.revisionId
+      || snapshotStyle.sha256 !== sha256(selectionBytes)
+    ) throw new Error("stale style evidence is not bound by its immutable revision snapshot");
+    if (
+      !readOptional(style, "selection.json")?.equals(selectionBytes)
+      || !readOptional(style, "lock.json")?.equals(lockBytes)
+      || !readOptional(style, "recipe.json")?.equals(recipeBytes)
+    ) throw new Error("stale style evidence changed after snapshot authentication");
+
+    style.remove("selection.json");
+    style.remove("recipe.json");
     style.remove("lock.json");
   } finally {
     style.close();
@@ -214,7 +252,7 @@ export async function authenticateStyleSelection(
     }
 
     assertLegacySelectionMatchesBeforeRecovery(canonicalRoot, request);
-    retireCoherentStaleEvidence(canonicalRoot, request.projectRevisionId);
+    await retireCoherentStaleEvidence(canonicalRoot, manifest);
     const existing = readAndValidateExistingSelection(canonicalRoot, request);
     const lock = await createProvisionalStyleLock(canonicalRoot, {
       selection: request.selection,
@@ -243,12 +281,19 @@ export async function authenticateStyleSelection(
     if (manifest.currentRevision.id !== request.projectRevisionId) {
       throw new Error("style selection became stale before stage publication");
     }
-    if (manifest.stage !== "style-selection") {
+    const selectionBytes = readAndValidateExistingSelection(canonicalRoot, request)?.bytes;
+    if (!selectionBytes) throw new Error("authenticated style selection publication is missing");
+    const styleArtifact = {
+      path: "style/selection.json",
+      sha256: sha256(selectionBytes),
+      revisionId: request.projectRevisionId,
+    };
+    if (manifest.stage !== "style-selection" || !sameJson(manifest.style, styleArtifact)) {
       await updateProject(canonicalRoot, (current) => {
         if (current.currentRevision.id !== request.projectRevisionId) {
           throw new Error("style selection became stale before stage publication");
         }
-        return { ...current, stage: "style-selection" };
+        return { ...current, stage: "style-selection", style: styleArtifact };
       });
     }
     return {

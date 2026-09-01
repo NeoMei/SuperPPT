@@ -902,6 +902,7 @@ async function commitApprovedImpactRevisionLocked(
       ...current.manifest,
       title: change.kind === "brief" && change.title ? change.title : current.manifest.title,
       stage: plan.restartStage,
+      style: null,
       currentRevision: revision,
       revisions: [...current.manifest.revisions, revision],
       slides: current.manifest.slides.map((slide) => stale.has(slide.id) ? {

@@ -182,6 +182,10 @@ export async function finalizeStyleSample(root: string, jobId: string): Promise<
       normalized,
       `${result.pages[0]!.dependency.channel}-${result.pages[0]!.dependency.provider}`,
     );
+    values[STYLE_SAMPLE_ARTIFACTS[0]] = await readOwnedRegularFile(
+      canonicalRoot,
+      STYLE_SAMPLE_ARTIFACTS[0],
+    );
     await validateCanonicalStyleSample(canonicalRoot, values);
     const existingReceipt = await readReceipt(canonicalRoot)
       .then((receipt) => receipt)
@@ -199,11 +203,6 @@ export async function finalizeStyleSample(root: string, jobId: string): Promise<
     try {
       cleanupOwnedStyleTemps(style);
       cleanupOwnedSampleTemps(sample);
-      style.replace(
-        "selection.json",
-        values[STYLE_SAMPLE_ARTIFACTS[0]],
-        `.style-sample-finalize-${randomUUID()}-selection.json`,
-      );
       for (const path of STYLE_SAMPLE_ARTIFACTS.slice(1)) {
         sample.replace(
           path.slice("style/sample/".length),

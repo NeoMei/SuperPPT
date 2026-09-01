@@ -6,7 +6,7 @@ SuperPPT 把主题描述、粘贴文本或 Markdown 变成一套高细节、图�
 
 1. 保留原始输入，只追问会真正改变成品的内容。
 2. 依次展示并等待用户决定：完整大纲、逐页描述、`style-selection` 内容相关的紧凑风格单选、样页调用授权、真实样页、整套生成授权、完整 deck 审阅。
-3. 风格在内容推荐之后从 10 种紧凑选项中选择；推荐只依据前序内容，风格只能单选。`style-selection --input` 把用户选择、代表页 stable ID 和 current project revision 一起认证为 v2 evidence，并绑定同源 Style Lock hash；未选择不得进入样页授权。匹配 current revision 的旧 v1 选择会由该公开路由原子迁移为 canonical v2，但 v1 本身绝不能发布样页生成计划。完全相同的重试可恢复 lock/selection/manifest 三阶段中断；任何不匹配证据均保持原字节并 fail closed。一个经样页确认的 Style Lock 以字节和哈希不变的方式交给 `ai-image-to-ppt`，保持整套一致。
+3. 风格在内容推荐之后从 10 种紧凑选项中选择；推荐只依据前序内容，风格只能单选。`style-selection --input` 把用户选择、代表页 stable ID 和 current project revision 一起认证为 v2 evidence，并绑定同源 Style Lock hash；未选择不得进入样页授权。匹配 current revision 的旧 v1 选择会由该公开路由原子迁移为 canonical v2，但 v1 本身绝不能发布样页生成计划。完全相同的重试可恢复 lock/selection/manifest 三阶段中断；任何不匹配证据均保持原字节并 fail closed。版本变化后也只能退役属于当前项目、严格旧 revision，且由子 revision descriptor anchor 与 immutable manifest snapshot 精确绑定的 selection→lock→recipe 字节；仅互相自洽或未知 revision 的 stale 证据绝不删除。一个经样页确认的 Style Lock 以字节和哈希不变的方式交给 `ai-image-to-ppt`，保持整套一致。
 
 其中恰好 3 个普通确认是大纲、逐页描述和真实样页。样页生成与整套生成另有执行授权，完整 deck 另有审阅决定；任何一项都不能替代或推断另一项。
 4. 每个决定点都必须停下来等待；不从输入静默跑到最终 PPTX。

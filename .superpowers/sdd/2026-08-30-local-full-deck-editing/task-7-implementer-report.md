@@ -330,3 +330,33 @@ The next action is explicitly the main agent opening the complete manual candida
 
 - Intended independent commit message: `fix: recover authenticated style selection`.
 - The exact commit and scoped `fe1e721..<newHEAD>` review-package SHA/line/byte evidence are generated after this report is committed; this report does not predict its own commit identity.
+
+## Authenticated stale-style retirement fix round 5 (2026-09-01)
+
+### RED and trust-boundary finding
+
+- Review baseline: `f6dc107`. The sole Important finding was that stale style retirement trusted mutually coherent canonical files without authenticating their ownership or immutable revision provenance.
+- The initial hand-derived matrix was intentionally **RED**, 4 total / 1 passed / 3 failed, `6.12s`: wrong-project evidence, an unknown revision, and coherent bytes differing from the known old revision snapshot were all silently deleted and replaced. Only the legal exact-snapshot race happened to pass.
+- Rejected cases assert byte-exact preservation of `selection.json`, `lock.json`, `recipe.json`, and `superppt.json`, and no additional business files. Lease audit records are intentionally excluded from that business-artifact assertion.
+
+### Minimal closure
+
+- `retireCoherentStaleEvidence` now requires the lock project to equal the current project; its revision to be a strictly older manifest revision; and the direct child revision's `parentSnapshotDescriptorSha256` to authenticate that old revision's immutable descriptor.
+- The authenticated immutable manifest snapshot must bind the exact canonical `style/selection.json` SHA and old revision. The v2 selection then binds the exact lock SHA, and the lock binds the exact recipe SHA. Project/revision membership or internal file coherence alone never authorizes removal.
+- The path uses the existing authenticated snapshot reader plus owned/no-follow style reads. It rereads all three exact byte sequences immediately before anchored removal while the existing generation lease serializes the operation; missing, changed, wrong-project, unknown, unanchored, or mismatched evidence fails closed.
+- Authenticated style publication records `manifest.style` against the actual selection bytes. A project revision invalidates the live style binding while its immutable parent snapshot retains the retirement proof.
+- Style-sample finalization now preserves the authenticated selection bytes instead of reformatting them, so the manifest binding remains valid while sample artifacts are finalized.
+- Active Skill, all five references, README, main plan, and the machine workflow policy state the same project/old-revision/child-anchor/immutable-byte requirements.
+
+### Focused verification and evidence boundary
+
+- Frozen source public/stale matrix: **PASS**, 10/10, `18.15s`; source planning + workflow: **PASS**, 70/70, `62.90s`; generation/style: **PASS**, 4/4, `16.73s`; complete-deck E2E: **PASS**, 2/2, `21.01s`.
+- `npm run lint:types && npm run build`: **PASS**.
+- Compiled public/stale matrix 10/10, workflow 11/11, generation/style 4/4, and E2E 2/2: **PASS**, 27/27 total.
+- `npm pack --dry-run --json`: **PASS**, 101 files, 4,650,225 bytes packed / 5,641,963 bytes unpacked; no generated/user PPTX, PDF, montage, staging, or legacy smoke-copy entry is packaged.
+- The long full source and compiled suites were intentionally **not run**; controller freeze remains pending. This round did not open WPS or touch any user/controlled PPTX, and prior real WPS evidence remains unchanged.
+
+### Commit and review handoff
+
+- Intended independent commit message: `fix: authenticate stale style retirement`.
+- The exact commit and scoped `f6dc107..<newHEAD>` review-package SHA/line/byte evidence are generated after this report is committed; this report does not predict its own commit identity.
