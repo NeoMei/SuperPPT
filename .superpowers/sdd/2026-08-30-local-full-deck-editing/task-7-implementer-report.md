@@ -156,3 +156,28 @@ The next action is explicitly the main agent opening the complete manual candida
 
 - Intended independent commit message: `docs: bind manual plan examples to revision`.
 - The exact fix commit and scoped `d821788..<newHEAD>` review-package hash/line/byte evidence are generated after this report is committed and reported in the handoff; this report does not predict its own commit identity.
+
+## Review-fix round 3 (2026-09-01)
+
+### Scope and TDD evidence
+
+- Review baseline: `90b7e75a7226160f529b482a6687d543baa12c86`.
+- The remaining Minor was documentation-only: the Task 3 interface summary claimed `resolveCurrentDeckPage()` returned `slideIndex`, while the runtime contract returns `revisionId`, `pageNumber`, `stableSlideId`, and `management`.
+- The workflow-contract test was first extended to require the exact resolver summary and reject any `resolveCurrentDeckPage` summary containing `slideIndex` anywhere in the full plan.
+- Old documentation result: **RED**, 0/1, `808.365125ms`; it failed on the mismatched interface summary.
+- Minimal correction: replace only the Task 3 return summary with `Promise<{ revisionId; pageNumber; stableSlideId; management }>`.
+- Focused corrected result: **GREEN**, 1/1, `1341.718834ms`.
+
+### Round-3 verification
+
+- Complete source workflow-contract suite: **PASS**, 10/10, `805.908666ms`.
+- `npm run lint:types && npm run build`: **PASS**.
+- Complete compiled workflow-contract suite: **PASS**, 10/10, `365.730458ms`.
+- Full-plan scan: no resolver interface or description still associates `slideIndex` with `resolveCurrentDeckPage`.
+- `git diff --check`: **PASS**.
+- Only the main plan, its machine-contract test, and this report changed. Runtime, active Skill/references, package contract, controlled candidate, and real WPS state were not touched; real GUI statuses remain **PENDING**.
+
+### Round-3 commit and review handoff
+
+- Intended independent commit message: `docs: correct resolver return contract`.
+- The exact fix commit and scoped `90b7e75..<newHEAD>` review-package hash/line/byte evidence are generated after this report is committed and reported in the handoff; this report does not predict its own commit identity.

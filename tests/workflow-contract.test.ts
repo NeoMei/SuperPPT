@@ -388,6 +388,12 @@ test("main plan binds every manual preparation example to one resolver snapshot 
   assert.ok(task3Start >= 0 && task4Start > task3Start, "Task 3 plan section");
   const task3 = plan.slice(task3Start, task4Start);
 
+  assert.match(
+    task3,
+    /Produces `resolveCurrentDeckPage\(\{ root, pageNumber \}\): Promise<\{ revisionId; pageNumber; stableSlideId; management \}>`\./,
+  );
+  assert.doesNotMatch(plan, /resolveCurrentDeckPage[^\n]*slideIndex/);
+
   const resolveIndex = task3.indexOf("resolveCurrentDeckPage({");
   const prepareIndex = task3.indexOf("prepareManualEditDeck({");
   assert.ok(resolveIndex >= 0 && resolveIndex < prepareIndex, "resolve the current page before manual preparation");

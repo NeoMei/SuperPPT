@@ -504,7 +504,7 @@ git commit -m "feat: activate official editable donors in full decks"
 - Modify: `src/project/store.ts`
 
 **Interfaces:**
-- Produces `resolveCurrentDeckPage({ root, pageNumber }): Promise<{ revisionId; stableSlideId; slideIndex }>`.
+- Produces `resolveCurrentDeckPage({ root, pageNumber }): Promise<{ revisionId; pageNumber; stableSlideId; management }>`.
 - Produces `prepareManualEditDeck(options): Promise<PreparedDeckEdit>`.
 - Produces `adoptManualSavedDeck(options): Promise<ResolvedCurrentDeckPointer>`.
 - Produces `beginAgentCandidateConfirmation(options): Promise<PreparedDeckEdit>`.
