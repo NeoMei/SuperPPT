@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { createHash, randomUUID } from "node:crypto";
-import { mkdir, mkdtemp, readFile, readdir, realpath, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, readdir, realpath, rename, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test, { type TestContext } from "node:test";
@@ -20,6 +20,7 @@ import {
 import { DeckEditSessionSchema, LocalDeckRevisionSchema } from "../src/deck-revisions/schemas.js";
 import { initializeProject } from "../src/project/initialize.js";
 import { readProject, updateProject } from "../src/project/store.js";
+import { applyCompleteDeckReviewAction } from "../src/project/promotion.js";
 import { authorizeCompleteDeckEdit } from "./helpers/deck-edit.js";
 
 const P = "http://schemas.openxmlformats.org/presentationml/2006/main";
@@ -622,6 +623,168 @@ test("initial bootstrap retry converges from every durable publication checkpoin
       const manifest = await readProject(value.root);
       assert.equal(manifest.currentDeck?.revisionId, value.options.revisionId);
       assert.equal((await readLocalDeckRevision(value.root, value.options.revisionId)).sha256, pointer.sha256);
+    });
+  }
+});
+
+test("completed initial bootstrap retry preserves a later exact edit-page binding byte-for-byte", async (t) => {
+  const value = await initialBootstrapFixture(t);
+  const initial = await bootstrapInitialDeckRevision(value.root, value.options);
+  await authorizeCompleteDeckEdit(value.root, value.slideIds[0]!);
+  const manifestPath = join(value.root, "superppt.json");
+  const before = await readFile(manifestPath);
+
+  const retried = await bootstrapInitialDeckRevision(value.root, value.options);
+
+  assert.equal(retried.revisionId, initial.revisionId);
+  assert.deepEqual(await readFile(manifestPath), before);
+  const manifest = await readProject(value.root);
+  assert.equal(manifest.stage, "revising");
+  assert.deepEqual(manifest.pendingDeckEdit, {
+    revisionId: initial.revisionId,
+    sha256: initial.sha256,
+    slideId: value.slideIds[0],
+  });
+});
+
+test("completed initial bootstrap retry preserves exact delivered evidence byte-for-byte", async (t) => {
+  const value = await initialBootstrapFixture(t);
+  const initial = await bootstrapInitialDeckRevision(value.root, value.options);
+  await applyCompleteDeckReviewAction(value.root, {
+    action: "confirm-delivery",
+    revisionId: initial.revisionId,
+    deckSha256: initial.sha256,
+  });
+  const manifestPath = join(value.root, "superppt.json");
+  const acceptancePath = join(
+    value.root,
+    "output",
+    "deck-revisions",
+    initial.revisionId,
+    "acceptance.json",
+  );
+  const [manifestBefore, acceptanceBefore] = await Promise.all([
+    readFile(manifestPath),
+    readFile(acceptancePath),
+  ]);
+
+  const retried = await bootstrapInitialDeckRevision(value.root, value.options);
+
+  assert.equal(retried.revisionId, initial.revisionId);
+  assert.deepEqual(await readFile(manifestPath), manifestBefore);
+  assert.deepEqual(await readFile(acceptancePath), acceptanceBefore);
+  const manifest = await readProject(value.root);
+  assert.equal(manifest.stage, "delivered");
+  assert.equal(manifest.formalDelivery?.revisionId, initial.revisionId);
+  assert.equal(manifest.exports.pptx?.sha256, initial.sha256);
+});
+
+test("completed initial bootstrap retry returns a later authenticated current descendant without rollback", async (t) => {
+  const value = await initialBootstrapFixture(t);
+  const initial = await bootstrapInitialDeckRevision(value.root, value.options);
+  const candidate = await createDeckCandidate(value.root, {
+    sourceRevisionId: initial.revisionId,
+    reason: "manual-edit",
+    changedSlideIds: [value.slideIds[0]!],
+    editableSlideIds: [],
+    targetSlideId: value.slideIds[0]!,
+    mode: "manual",
+  });
+  await presentManualCandidate(value.root, candidate);
+  const adopted = await adoptDeckCandidate(value.root, {
+    sessionId: candidate.sessionId,
+    mode: "manual",
+    userSignal: "saved-and-closed",
+  });
+  const manifestPath = join(value.root, "superppt.json");
+  const before = await readFile(manifestPath);
+
+  const retried = await bootstrapInitialDeckRevision(value.root, value.options);
+
+  assert.equal(retried.revisionId, adopted.revisionId);
+  assert.notEqual(retried.revisionId, initial.revisionId);
+  assert.deepEqual(await readFile(manifestPath), before);
+  assert.equal((await readProject(value.root)).stage, "deck-review");
+});
+
+test("completed initial bootstrap retry rejects unrelated, broken, cyclic, and linked current ancestry without writes", async (t) => {
+  for (const kind of ["unrelated-root", "missing-parent", "cycle", "second-root", "linked-ancestor"] as const) {
+    await t.test(kind, async (st) => {
+      const value = await initialBootstrapFixture(st);
+      const initial = await bootstrapInitialDeckRevision(value.root, value.options);
+      const firstCandidate = await createDeckCandidate(value.root, {
+        sourceRevisionId: initial.revisionId,
+        reason: "manual-edit",
+        changedSlideIds: [value.slideIds[0]!],
+        editableSlideIds: [],
+        targetSlideId: value.slideIds[0]!,
+        mode: "manual",
+      });
+      await presentManualCandidate(value.root, firstCandidate);
+      const first = await adoptDeckCandidate(value.root, {
+        sessionId: firstCandidate.sessionId,
+        mode: "manual",
+        userSignal: "saved-and-closed",
+      });
+      let current = first;
+      if (kind === "linked-ancestor") {
+        const secondCandidate = await createDeckCandidate(value.root, {
+          sourceRevisionId: first.revisionId,
+          reason: "manual-edit",
+          changedSlideIds: [value.slideIds[0]!],
+          editableSlideIds: [],
+          targetSlideId: value.slideIds[0]!,
+          mode: "manual",
+        });
+        await presentManualCandidate(value.root, secondCandidate);
+        current = await adoptDeckCandidate(value.root, {
+          sessionId: secondCandidate.sessionId,
+          mode: "manual",
+          userSignal: "saved-and-closed",
+        });
+      }
+
+      if (kind === "unrelated-root") {
+        const unrelated = value.revision;
+        const pointer = {
+          schemaVersion: 1,
+          revisionId: unrelated.revisionId,
+          relativePath: unrelated.relativePath,
+          sha256: unrelated.sha256,
+          updatedAt: new Date().toISOString(),
+        };
+        await writeFile(join(value.root, "output", "current.json"), `${JSON.stringify(pointer, null, 2)}\n`);
+        const manifestPath = join(value.root, "superppt.json");
+        const manifest = JSON.parse(await readFile(manifestPath, "utf8"));
+        await writeFile(manifestPath, `${JSON.stringify({ ...manifest, currentDeck: pointer }, null, 2)}\n`);
+      } else if (kind === "linked-ancestor") {
+        const ancestorRoot = join(value.root, "output", "deck-revisions", first.revisionId);
+        const preserved = join(value.root, "output", "deck-edit-sessions", `preserved-${first.revisionId}`);
+        await rename(ancestorRoot, preserved);
+        await symlink(preserved, ancestorRoot);
+      } else {
+        const revisionPath = join(value.root, "output", "deck-revisions", current.revisionId, "revision.json");
+        const revision = JSON.parse(await readFile(revisionPath, "utf8"));
+        const parentRevisionId = kind === "missing-parent"
+          ? randomUUID()
+          : kind === "cycle"
+            ? current.revisionId
+            : null;
+        await writeFile(revisionPath, `${JSON.stringify({ ...revision, parentRevisionId }, null, 2)}\n`);
+      }
+
+      const manifestPath = join(value.root, "superppt.json");
+      const currentPath = join(value.root, "output", "current.json");
+      const [manifestBefore, currentBefore] = await Promise.all([
+        readFile(manifestPath),
+        readFile(currentPath),
+      ]);
+      await assert.rejects(
+        bootstrapInitialDeckRevision(value.root, value.options),
+        /descended|ancestry|unrelated|missing|unsafe|symlink|cycle|revision/i,
+      );
+      assert.deepEqual(await readFile(manifestPath), manifestBefore);
+      assert.deepEqual(await readFile(currentPath), currentBefore);
     });
   }
 });

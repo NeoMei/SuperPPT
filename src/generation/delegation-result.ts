@@ -565,6 +565,19 @@ function compareAttachmentPrecedence(left: AttachmentPrecedence, right: Attachme
   return left.authorizationSequence - right.authorizationSequence || left.attempt - right.attempt;
 }
 
+function stageAfterAcceptedPageAttachment(
+  manifest: ProjectManifest,
+  page: ImagePageResult,
+): ProjectManifest["stage"] {
+  const pending = manifest.pendingDeckEdit;
+  return manifest.stage === "revising"
+    && pending?.slideId === page.slideId
+    && manifest.currentDeck?.revisionId === pending.revisionId
+    && manifest.currentDeck.sha256 === pending.sha256
+    ? "revising"
+    : "generating";
+}
+
 function attachAcceptedPage(
   manifest: ProjectManifest,
   page: ImagePageResult,
@@ -595,7 +608,7 @@ function attachAcceptedPage(
       finalRender: page.artifacts.normalized,
       staleReasons: [],
     }].sort((left, right) => left.order - right.order);
-    return { ...manifest, stage: "generating", slides };
+    return { ...manifest, stage: stageAfterAcceptedPageAttachment(manifest, page), slides };
   }
   const slides = [...manifest.slides];
   const previous = slides[index]!;
@@ -617,7 +630,7 @@ function attachAcceptedPage(
     image: page.artifacts.normalized,
     finalRender: page.artifacts.normalized,
   };
-  return { ...manifest, stage: "generating", slides };
+  return { ...manifest, stage: stageAfterAcceptedPageAttachment(manifest, page), slides };
 }
 
 function attachAcceptedPages(

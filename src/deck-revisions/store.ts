@@ -513,6 +513,46 @@ export async function bootstrapInitialDeckRevision(
       await writeDurableExclusive(journalPath, json(journal));
       await syncDirectory(journalRoot);
     }
+    const intendedRevision = LocalDeckRevisionSchema.parse({
+      schemaVersion: 1,
+      revisionId,
+      parentRevisionId: null,
+      projectId: manifest.projectId,
+      projectRevisionId,
+      reason: "initial",
+      relativePath: revisionRelativePath(revisionId),
+      sha256: source.sha256,
+      slideTopology,
+      editableSlideIds: [],
+      changedSlideIds,
+      reviewRequiredObjectsBySlideId: {},
+      createdAt: journal.createdAt,
+    });
+    const intendedPointer = CurrentDeckPointerSchema.parse({
+      schemaVersion: 1,
+      revisionId,
+      relativePath: intendedRevision.relativePath,
+      sha256: source.sha256,
+      updatedAt: journal.createdAt,
+    });
+    if (journal.phases.includes("manifest-updated") || journal.phases.includes("complete")) {
+      const existingRevision = await readLocalDeckRevision(canonicalRoot, revisionId);
+      const { absolutePath: _absolutePath, ...persistedRevision } = existingRevision;
+      if (JSON.stringify(persistedRevision) !== JSON.stringify(intendedRevision)) {
+        throw new Error("completed initial bootstrap revision does not match its journal");
+      }
+      const current = await readCurrentDeckPointerUnlocked(canonicalRoot);
+      const { absolutePath: _currentAbsolutePath, ...persistedCurrent } = current;
+      if (!manifest.currentDeck || JSON.stringify(manifest.currentDeck) !== JSON.stringify(persistedCurrent)) {
+        throw new Error("completed initial bootstrap current pointer does not match the project manifest");
+      }
+      try {
+        await assertDeckRevisionDescendsFrom(canonicalRoot, current.revisionId, revisionId);
+      } catch (error: unknown) {
+        throw new Error("completed initial bootstrap current revision is not descended from its initial revision", { cause: error });
+      }
+      return current;
+    }
     const directory = revisionPath(canonicalRoot, revisionId);
     await ensureDirectory(directory);
     journal = await appendBootstrapPhase(journalPath, journal, "directory-created");
@@ -530,31 +570,12 @@ export async function bootstrapInitialDeckRevision(
     if (copied.sha256 !== source.sha256) throw new Error("initial immutable revision copy changed bytes");
     journal = await appendBootstrapPhase(journalPath, journal, "deck-copied");
     await options.operations?.checkpoint?.("deck-copied");
-    const revision = LocalDeckRevisionSchema.parse({
-      schemaVersion: 1,
-      revisionId,
-      parentRevisionId: null,
-      projectId: manifest.projectId,
-      projectRevisionId,
-      reason: "initial",
-      relativePath,
-      sha256: copied.sha256,
-      slideTopology,
-      editableSlideIds: [],
-      changedSlideIds,
-      reviewRequiredObjectsBySlideId: {},
-      createdAt: journal.createdAt,
-    });
-    await writeExclusiveJson(join(directory, "revision.json"), revision);
+    if (copied.sha256 !== intendedRevision.sha256 || relativePath !== intendedRevision.relativePath) {
+      throw new Error("initial bootstrap copied deck does not match its intended revision");
+    }
+    await writeExclusiveJson(join(directory, "revision.json"), intendedRevision);
     journal = await appendBootstrapPhase(journalPath, journal, "revision-written");
     await options.operations?.checkpoint?.("revision-written");
-    const intendedPointer = CurrentDeckPointerSchema.parse({
-      schemaVersion: 1,
-      revisionId,
-      relativePath,
-      sha256: copied.sha256,
-      updatedAt: journal.createdAt,
-    });
     let pointer: ResolvedCurrentDeckPointer;
     if (await regularFileExists(join(canonicalRoot, "output", "current.json"))) {
       pointer = await readCurrentDeckPointerUnlocked(canonicalRoot);
@@ -573,7 +594,10 @@ export async function bootstrapInitialDeckRevision(
       }
       return {
         ...project,
+        stage: "deck-review",
         currentDeck: intendedPointer,
+        pendingDeckEdit: null,
+        exports: { pptx: null, acceptance: null },
       };
     });
     journal = await appendBootstrapPhase(journalPath, journal, "manifest-updated");
@@ -587,6 +611,25 @@ async function writeCurrentPointerOnly(root: string, value: CurrentDeckPointer):
   const pointer = CurrentDeckPointerSchema.parse(value);
   await replaceJson(join(root, "output", "current.json"), pointer);
   return { ...pointer, absolutePath: join(root, ...pointer.relativePath.split("/")) };
+}
+
+async function assertDeckRevisionDescendsFrom(
+  root: string,
+  currentRevisionId: string,
+  initialRevisionId: string,
+): Promise<void> {
+  const seen = new Set<string>();
+  let revisionId = currentRevisionId;
+  while (true) {
+    if (seen.has(revisionId)) throw new Error("deck revision ancestry contains a cycle");
+    seen.add(revisionId);
+    const revision = await readLocalDeckRevision(root, revisionId);
+    if (revision.revisionId === initialRevisionId) return;
+    if (!revision.parentRevisionId) {
+      throw new Error("current deck revision belongs to an unrelated initial lineage");
+    }
+    revisionId = revision.parentRevisionId;
+  }
 }
 
 function resetToCurrentDeckReview(project: ProjectManifest, currentDeck: CurrentDeckPointer): ProjectManifest {

@@ -62,12 +62,14 @@ import {
 import { loadBuiltInStyleCatalog } from "../src/styles/catalog.js";
 import { compileSlidePrompt } from "../src/styles/prompt-compiler.js";
 import { approveStyleLock, createProvisionalStyleLock, readApprovedStyleLock } from "../src/styles/style-lock.js";
+import { authenticateStyleSelection } from "../src/styles/selection.js";
 import { writeCanonicalStyleSample } from "./helpers/style-sample.js";
 import { authenticateStyleSelectionForTest, finalizeDelegatedStyleSampleForTest } from "./helpers/delegated-style-sample.js";
 import { bootstrapInitialDeckRevision, readCurrentDeckPointer } from "../src/deck-revisions/store.js";
 import { finalizeSlideTopology } from "../src/deck-revisions/topology.js";
 import { prepareAgentEditDeck } from "../src/editable/route.js";
 import { convertProjectPage } from "../src/editable/adapter.js";
+import { authorizeCompleteDeckEdit } from "./helpers/deck-edit.js";
 
 const execFileAsync = promisify(execFile);
 const SLIDE_IDS = [
@@ -678,9 +680,13 @@ test("older delegated replay stays read-only and rollback restores the exact aut
   await publishPlanViews(fixture.root);
   await approveGate(fixture.root, "outline");
   await approveGate(fixture.root, "slide-specs");
-  await unlink(join(fixture.root, "style", "lock.json"));
-  await unlink(join(fixture.root, "style", "recipe.json"));
-  await createProvisionalStyleLock(fixture.root, lockedStyle);
+  const revised = await readProject(fixture.root);
+  await authenticateStyleSelection(fixture.root, {
+    projectRevisionId: revised.currentRevision.id,
+    representativeSlideId: original.slideId,
+    selection: lockedStyle.selection,
+    referenceArtifacts: [],
+  });
   await finalizeDelegatedStyleSampleForTest(fixture.root);
   await approveStyleLock(fixture.root);
   await publishGenerationAuthorizationPlan(fixture.root, {
@@ -1183,6 +1189,7 @@ test("a successful regenerated page becomes one complete Agent candidate and lea
     reason: "Replace only this slide composition",
     styleLockSha256: deck.styleLockSha256,
   };
+  await authorizeCompleteDeckEdit(fixture.root, route.slideId);
   const job = await prepareRegeneratedSlideJob(route, {
     root: fixture.root,
     aiDependency: fixture.aiDependency,
@@ -1287,6 +1294,7 @@ test("a historical accepted regeneration result cannot be rebound to a newer com
     styleLockSha256: historicalJob.styleLockSha256,
   };
 
+  await authorizeCompleteDeckEdit(fixture.root, route.slideId);
   await assert.rejects(prepareAgentEditDeck({
     root: fixture.root,
     route,
