@@ -7,14 +7,7 @@ import sharp from "sharp";
 import { z } from "zod";
 
 import { buildAcceptance } from "../acceptance/build.js";
-import { validateAcceptanceManifestBinding } from "../acceptance/current.js";
-import {
-  AcceptanceSchema,
-  type Acceptance,
-} from "../acceptance/schema.js";
-import {
-  validateRecordedClientSmokeCopy,
-} from "../acceptance/smoke-copy.js";
+import { AcceptanceSchema, type Acceptance } from "../acceptance/schema.js";
 import { AttemptLedgerSchema } from "../generation/schemas.js";
 import { withGenerationLease } from "../generation/lease.js";
 import { readAndReauthenticateDelegatedResult } from "../generation/delegation-result.js";
@@ -25,7 +18,7 @@ import { withPlanningLock, withProjectLease } from "../project/lock.js";
 import { promoteExclusive } from "../project/exclusive.js";
 import { readOwnedRegularFile, readRegularFileNoFollow, type SafeReadOperations } from "../project/safe-file.js";
 import { ArtifactSchema, type Artifact, type ProjectManifest } from "../project/schemas.js";
-import { assertProjectMutationNotFrozen, readProject, recordClientAcceptance, updateProject } from "../project/store.js";
+import { assertProjectMutationNotFrozen, readProject, updateProject } from "../project/store.js";
 import { prepareEditableSlide, type EditablePage } from "./editable-slide.js";
 import { SOURCE_HEIGHT_PX, SOURCE_WIDTH_PX } from "./geometry.js";
 import { createPresentation } from "./pptx.js";
@@ -868,40 +861,3 @@ async function requireExactRegularFiles(directory: string, expected: readonly st
     }
   }
 }
-
-async function validateAcceptanceCurrent(root: string, manifest: ProjectManifest, acceptance: Acceptance): Promise<void> {
-  await validateAcceptanceManifestBinding(root, manifest, acceptance);
-  if (acceptance.deliveryComplete) {
-    await validateRecordedClientSmokeCopy(root, manifest, acceptance.clientAcceptance);
-  }
-}
-
-function acceptanceRecordPaths(root: string, revisionNumber: number): {
-  directory: string;
-  record: string;
-  recordRef: string;
-} {
-  const directory = join(root, "output", "revisions", String(revisionNumber));
-  return {
-    directory,
-    record: join(directory, "acceptance-record.json"),
-    recordRef: `output/revisions/${revisionNumber}/acceptance-record.json`,
-  };
-}
-
-export async function readProjectAcceptance(root: string): Promise<Acceptance> {
-  const manifest = await readProject(root);
-  const artifact = manifest.exports.acceptance;
-  if (!artifact || artifact.revisionId !== manifest.currentRevision.id) throw new Error("acceptance evidence is not current");
-  const expectedPath = manifest.stage === "delivered"
-    ? acceptanceRecordPaths(root, deckRevisionNumber(manifest)).recordRef
-    : canonicalArtifactRefs(deckRevisionNumber(manifest)).acceptance;
-  if (artifact.path !== expectedPath) throw new Error("acceptance evidence must use the canonical artifact path");
-  const bytes = await readOwnedRegularFile(root, artifact.path);
-  if (createHash("sha256").update(bytes).digest("hex") !== artifact.sha256) throw new Error("acceptance evidence is not current");
-  const acceptance = AcceptanceSchema.parse(JSON.parse(bytes.toString("utf8")));
-  await validateAcceptanceCurrent(root, manifest, acceptance);
-  return acceptance;
-}
-
-export { recordClientAcceptance };

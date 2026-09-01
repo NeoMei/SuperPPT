@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { mkdir, readFile, unlink, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 
 import sharp from "sharp";
@@ -14,6 +14,8 @@ import { approveExecutionGate, approveGate } from "../../src/planning/confirm.js
 import { publishStyleSample } from "../../src/planning/views.js";
 import { createProvisionalStyleLock, readStyleLockIfPresent } from "../../src/styles/style-lock.js";
 import { StyleSampleSelectionSchema } from "../../src/styles/schemas.js";
+import { authenticateStyleSelection } from "../../src/styles/selection.js";
+import { readProject } from "../../src/project/store.js";
 
 function sha256(value: string | Buffer): string {
   return createHash("sha256").update(value).digest("hex");
@@ -76,19 +78,44 @@ async function testAiDependency(root: string): Promise<AiImageSkillDependency> {
   }), { source: "agent-host", localFilesystem: true, localFileLinks: true }).ai;
 }
 
+/** Migrates old fixture selection input through the public authenticated v2 selection boundary. */
+export async function authenticateStyleSelectionForTest(root: string): Promise<void> {
+  let selection = StyleSampleSelectionSchema.parse(JSON.parse(await readFile(join(root, "style", "selection.json"), "utf8")));
+  if (selection.schemaVersion === 1) {
+    const manifest = await readProject(root);
+    const existingLock = await readStyleLockIfPresent(root);
+    const authenticatedSelection = existingLock
+      ? { kind: "catalog" as const, styleId: existingLock.recipe.id }
+      : "styleId" in selection
+      ? { kind: "catalog" as const, styleId: selection.styleId }
+      : selection.selection;
+    await unlink(join(root, "style", "selection.json"));
+    await authenticateStyleSelection(root, {
+      projectRevisionId: manifest.currentRevision.id,
+      representativeSlideId: selection.representativeSlideId,
+      selection: authenticatedSelection,
+      referenceArtifacts: existingLock?.referenceArtifacts.map(({ path, role }) => ({ path, role })) ?? [],
+    });
+    selection = StyleSampleSelectionSchema.parse(JSON.parse(await readFile(join(root, "style", "selection.json"), "utf8")));
+  }
+  const styleLock = await readStyleLockIfPresent(root);
+  if (!styleLock) {
+    if (selection.schemaVersion !== 2) throw new Error("test fake requires authenticated style selection evidence");
+    await createProvisionalStyleLock(root, {
+      selection: selection.selection,
+      referenceArtifacts: [],
+    });
+  } else if (selection.schemaVersion !== 2 || selection.styleLockSha256 !== styleLock.styleLockSha256) {
+    throw new Error("test fake style selection and Style Lock must share one authenticated source");
+  }
+}
+
 /** Creates authenticated sample evidence as if the external Agent had completed its one admitted call. */
 export async function finalizeDelegatedStyleSampleForTest(
   root: string,
   options: { publish?: boolean; approveGate?: boolean } = {},
 ): Promise<{ jobId: string }> {
-  if (!await readStyleLockIfPresent(root)) {
-    const selection = StyleSampleSelectionSchema.parse(JSON.parse(await readFile(join(root, "style", "selection.json"), "utf8")));
-    if (!("styleId" in selection)) throw new Error("test fake needs an explicit Style Lock for custom sample selection");
-    await createProvisionalStyleLock(root, {
-      selection: { kind: "catalog", styleId: selection.styleId },
-      referenceArtifacts: [],
-    });
-  }
+  await authenticateStyleSelectionForTest(root);
   const aiDependency = await testAiDependency(root);
   await publishStyleSampleGenerationPlan(root, { aiDependency, callBudget: 1 });
   await approveExecutionGate(root, "style-sample-generation", "style/sample/generation-plan.json");

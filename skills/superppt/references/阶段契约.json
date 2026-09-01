@@ -31,8 +31,8 @@
       "interaction": "human",
       "action": "wait",
       "mustWaitForUser": true,
-      "inputs": ["approved slide specs", "compact real-preview recommendations", "representative stable slide ID", "current project revision ID"],
-      "userVisibleArtifact": "内容相关的紧凑真实预览与高信息配方单选，绑定代表页和当前 project revision",
+      "inputs": ["approved slide specs", "compact real-preview recommendations", "representative stable slide ID", "current project revision ID", "authenticated v2 selection and same-source Style Lock SHA; v1 is read/migration-only"],
+      "userVisibleArtifact": "内容相关的紧凑真实预览与高信息配方单选，以 v2 绑定代表页、当前 project revision 和同源 Style Lock SHA",
       "allowedNextActions": ["select-one-style", "revise-style-recommendations", "return-to-slide-specs"],
       "invalidationDependencies": ["style-sample-generation", "style-sample", "generation-authorization", "deck-review", "formal-delivery", "acceptance-evidence"],
       "canSpendImageCalls": false
@@ -67,7 +67,7 @@
       "interaction": "human",
       "action": "wait",
       "mustWaitForUser": true,
-      "inputs": ["exact current complete local PPTX revision", "current deck SHA-256", "page QA evidence", "reviewRequired object labels"],
+      "inputs": ["exact current complete local PPTX revision", "current deck SHA-256", "page QA evidence", "reviewRequired object labels", "edit-page creates one atomically consumed pending revision/SHA/stable-slide binding with zero-residue failure"],
       "userVisibleArtifact": "唯一完整本地 PPTX 可点击链接、SHA-256、逐页审阅证据和人工复核对象标签",
       "allowedNextActions": ["edit-page", "return-upstream", "confirm-delivery"],
       "invalidationDependencies": ["formal-delivery", "acceptance-evidence"],
@@ -108,7 +108,9 @@
       "selectionMode": "single",
       "defaultAllowed": false,
       "catalog": "assets/styles/catalog.json",
-      "previewMode": "compact-real-preview-grid"
+      "previewMode": "compact-real-preview-grid",
+      "selectionEvidence": "v2-current-revision-representative-slide-and-same-source-style-lock-sha",
+      "legacyEvidence": "v1-read-migration-only-cannot-authorize-sample-plan"
     },
     "generation": {
       "executor": "agent-invokes-resolved-ai-image-to-ppt-skill",
@@ -126,6 +128,12 @@
       "localPptxLinksPerResponse": 1,
       "previewAndEditor": "wps-or-powerpoint",
       "pageResolution": "current-reconciled-topology",
+      "authorization": {
+        "action": "complete-deck-review-edit-page",
+        "binding": "exact-current-revision-sha256-stable-slide-id",
+        "consumption": "one-time-atomic-before-candidate-session-creation",
+        "failure": "missing-wrong-slide-stale-replay-fail-closed-zero-residue"
+      },
       "manual": {
         "revisionBinding": "resolver-revision-id-must-still-be-current",
         "waitForUserText": "已保存并关闭",

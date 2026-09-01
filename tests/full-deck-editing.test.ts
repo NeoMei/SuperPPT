@@ -18,7 +18,7 @@ import {
 } from "../src/deck-revisions/workflow.js";
 import { promoteProjectEditableTarget } from "../src/editable/operations.js";
 import {
-  createDeckCandidate,
+  createDeckCandidate as createRawDeckCandidate,
   readCurrentDeckPointer,
   readLocalDeckRevision,
   rollbackCurrentDeck,
@@ -28,6 +28,7 @@ import { inspectLocalPptx } from "../src/deck-revisions/inspect.js";
 import { finalizeSlideTopology } from "../src/deck-revisions/topology.js";
 import { initializeProject } from "../src/project/initialize.js";
 import { readProject, updateProject } from "../src/project/store.js";
+import { authorizeCompleteDeckEdit } from "./helpers/deck-edit.js";
 
 const P = "http://schemas.openxmlformats.org/presentationml/2006/main";
 const A = "http://schemas.openxmlformats.org/drawingml/2006/main";
@@ -36,6 +37,14 @@ const REL = "http://schemas.openxmlformats.org/package/2006/relationships";
 const P14 = "http://schemas.microsoft.com/office/powerpoint/2010/main";
 
 const digest = (value: Buffer | string): string => createHash("sha256").update(value).digest("hex");
+
+async function createDeckCandidate(
+  root: string,
+  options: Parameters<typeof createRawDeckCandidate>[1],
+) {
+  await authorizeCompleteDeckEdit(root, options.targetSlideId ?? options.changedSlideIds[0]!);
+  return createRawDeckCandidate(root, options);
+}
 
 function slideXml(creationId: number, label: string): string {
   return `<p:sld xmlns:p="${P}" xmlns:a="${A}" xmlns:p14="${P14}"><p:cSld><p:spTree><p:nvGrpSpPr/><p:sp><p:nvSpPr><p:cNvPr id="2" name="text-${label}"/></p:nvSpPr><p:spPr><a:xfrm rot="0"><a:off x="952500" y="762000"/><a:ext cx="5715000" cy="762000"/></a:xfrm></p:spPr><p:txBody><a:p><a:pPr algn="ctr"/><a:r><a:rPr lang="zh-CN" sz="3200" b="1"><a:solidFill><a:srgbClr val="FFFFFF"/></a:solidFill><a:latin typeface="Aptos"/></a:rPr><a:t>${label}</a:t></a:r></a:p></p:txBody></p:sp><p:sp><p:nvSpPr><p:cNvPr id="3" name="shape-card-Card"/></p:nvSpPr><p:spPr><a:xfrm><a:off x="762000" y="1714500"/><a:ext cx="6096000" cy="3048000"/></a:xfrm><a:prstGeom prst="roundRect"/><a:solidFill><a:srgbClr val="112233"/></a:solidFill><a:ln w="19050"><a:solidFill><a:srgbClr val="445566"/></a:solidFill></a:ln></p:spPr></p:sp></p:spTree><p:extLst><p:ext uri="{BB962C8B-B14F-4D97-AF65-F5344CB8AC3E}"><p14:creationId val="${creationId}"/></p:ext></p:extLst></p:cSld></p:sld>`;
@@ -110,7 +119,12 @@ async function workflowFixture(t: TestContext, slideFactory: (creationId: number
     updatedAt: new Date().toISOString(),
   };
   await writeFile(join(root, "output", "current.json"), `${JSON.stringify(current, null, 2)}\n`);
-  await updateProject(root, (manifest) => ({ ...manifest, currentDeck: current, activeDeckEditSessionId: null }));
+  await updateProject(root, (manifest) => ({
+    ...manifest,
+    stage: "deck-review",
+    currentDeck: current,
+    activeDeckEditSessionId: null,
+  }));
   return { root, slideIds, revisionId, absolutePath, deckBytes };
 }
 
@@ -207,6 +221,7 @@ async function deckEditSessionDirectories(fixture: WorkflowFixture): Promise<str
 test("manual flow exposes only one complete deck and adopts exact bytes only after saved-and-closed", async (t) => {
   const fixture = await workflowFixture(t);
   const before = await readCurrentDeckPointer(fixture.root);
+  await authorizeCompleteDeckEdit(fixture.root, fixture.slideIds[1]!);
   const prepared = await prepareManualEditDeck({ root: fixture.root, revisionId: before.revisionId, slideId: fixture.slideIds[1]! });
 
   assert.equal(prepared.kind, "complete-local-pptx");
@@ -300,19 +315,19 @@ test("review identity conflicts fail before manual or Agent presentation without
     const fixture = await workflowFixture(st);
     await installConflictingReviewMetadata(fixture);
     const before = await readCurrentDeckPointer(fixture.root);
-    const leasesBefore = await leaseEvidence(fixture);
+    await authorizeCompleteDeckEdit(fixture.root, fixture.slideIds[1]!);
     const attempts = await Promise.allSettled([
       prepareManualEditDeck({ root: fixture.root, revisionId: fixture.revisionId, slideId: fixture.slideIds[1]! }),
       prepareManualEditDeck({ root: fixture.root, revisionId: fixture.revisionId, slideId: fixture.slideIds[1]! }),
     ]);
     assert.deepEqual(attempts.map((result) => result.status), ["rejected", "rejected"]);
     for (const result of attempts) {
-      if (result.status === "rejected") assert.match(String(result.reason), /conflicting object identity/i);
+      if (result.status === "rejected") assert.match(String(result.reason), /conflicting object identity|authorization is required/i);
     }
     assert.equal((await readProject(fixture.root)).activeDeckEditSessionId, null);
     assert.equal((await readCurrentDeckPointer(fixture.root)).revisionId, before.revisionId);
     assert.deepEqual(await deckEditSessionDirectories(fixture), []);
-    assert.deepEqual(await leaseEvidence(fixture), leasesBefore);
+    assert.equal((await leaseEvidence(fixture)).some((name) => /\.(?:pending|active)\.json$/.test(name)), false);
 
     await assert.rejects(
       prepareManualEditDeck({ root: fixture.root, revisionId: fixture.revisionId, slideId: fixture.slideIds[1]! }),
@@ -353,6 +368,7 @@ test("review identity conflicts fail before manual or Agent presentation without
 
 test("serializes external editing and rejects Agent access to an open candidate", async (t) => {
   const fixture = await workflowFixture(t);
+  await authorizeCompleteDeckEdit(fixture.root, fixture.slideIds[0]!);
   const prepared = await prepareManualEditDeck({ root: fixture.root, revisionId: fixture.revisionId, slideId: fixture.slideIds[0]! });
   await assert.rejects(
     prepareManualEditDeck({ root: fixture.root, revisionId: fixture.revisionId, slideId: fixture.slideIds[1]! }),
@@ -379,6 +395,7 @@ test("serializes external editing and rejects Agent access to an open candidate"
 
 test("manual adoption reconciles reorder, insertion, and deletion and the next edit starts from those exact bytes", async (t) => {
   const fixture = await workflowFixture(t);
+  await authorizeCompleteDeckEdit(fixture.root, fixture.slideIds[1]!);
   const prepared = await prepareManualEditDeck({ root: fixture.root, revisionId: fixture.revisionId, slideId: fixture.slideIds[1]! });
   const saved = await reorderInsertDelete(prepared.absolutePath);
   const adopted = await adoptManualSavedDeck({
@@ -405,6 +422,7 @@ test("manual adoption reconciles reorder, insertion, and deletion and the next e
   ], "manual adoption records moved, inserted, non-target XML changed, and deleted stable IDs");
 
   const unmanaged = revision.slideTopology.entries[1]!;
+  await authorizeCompleteDeckEdit(fixture.root, unmanaged.stableSlideId);
   const next = await prepareManualEditDeck({ root: fixture.root, revisionId: adopted.revisionId, slideId: unmanaged.stableSlideId });
   assert.equal(next.targetSlideIndex, 1);
   assert.deepEqual(await readFile(next.absolutePath), saved);
@@ -426,6 +444,7 @@ test("manual adoption reconciles reorder, insertion, and deletion and the next e
 
 test("manual adoption accepts WPS presentation identities after creation IDs are removed and the next Agent edit still binds", async (t) => {
   const fixture = await workflowFixture(t);
+  await authorizeCompleteDeckEdit(fixture.root, fixture.slideIds[1]!);
   const prepared = await prepareManualEditDeck({
     root: fixture.root,
     revisionId: fixture.revisionId,
@@ -558,6 +577,7 @@ test("manual adoption accepts WPS presentation identities after creation IDs are
 
 test("blocking identity ambiguity preserves the previous current pointer and saved candidate bytes", async (t) => {
   const fixture = await workflowFixture(t);
+  await authorizeCompleteDeckEdit(fixture.root, fixture.slideIds[1]!);
   const prepared = await prepareManualEditDeck({ root: fixture.root, revisionId: fixture.revisionId, slideId: fixture.slideIds[1]! });
   const before = await readCurrentDeckPointer(fixture.root);
   const zip = await JSZip.loadAsync(await readFile(prepared.absolutePath));
@@ -612,6 +632,7 @@ test("Agent candidate is not current until presented and confirmed hashes both m
   assert.equal(adopted.revisionId, prepared.revisionId);
   assert.deepEqual(await readFile(adopted.absolutePath), agentBytes);
 
+  await authorizeCompleteDeckEdit(fixture.root, fixture.slideIds[0]!);
   const next = await prepareManualEditDeck({ root: fixture.root, revisionId: adopted.revisionId, slideId: fixture.slideIds[0]! });
   assert.deepEqual(await readFile(next.absolutePath), agentBytes);
 });

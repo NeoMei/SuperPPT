@@ -64,6 +64,7 @@ export const StyleSampleSelectionSchema = z.union([
     projectRevisionId: z.string().uuid(),
     representativeSlideId: z.string().uuid(),
     selection: StyleSelectionSchema,
+    styleLockSha256: Sha256Schema,
   }).strict(),
   z.object({
     schemaVersion: z.literal(1),

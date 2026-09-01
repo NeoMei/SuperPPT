@@ -27,7 +27,8 @@ import {
 import { finalizeSlideTopology } from "../src/deck-revisions/topology.js";
 import { translateManualDeckSignal } from "../src/editable/route.js";
 import { initializeProject } from "../src/project/initialize.js";
-import { sha256 } from "../src/project/store.js";
+import { sha256, updateProject } from "../src/project/store.js";
+import { authorizeCompleteDeckEdit } from "./helpers/deck-edit.js";
 
 const P = "http://schemas.openxmlformats.org/presentationml/2006/main";
 const A = "http://schemas.openxmlformats.org/drawingml/2006/main";
@@ -213,6 +214,8 @@ test("continues from exact WPS-saved deck bytes through current-page Agent confi
   assert.equal(initial.sha256, digest(generatedBytes));
   assert.equal((await readCurrentDeckPointer(root)).revisionId, initialRevisionId);
 
+  await updateProject(root, (manifest) => ({ ...manifest, stage: "deck-review" }));
+  await authorizeCompleteDeckEdit(root, slideIds[1]!);
   const manual = await prepareManualEditDeck({ root, revisionId: initialRevisionId, slideId: slideIds[1]! });
   assert.equal(manual.slideCount, 3);
   assert.equal(manual.targetSlideIndex, 1);
@@ -246,6 +249,7 @@ test("continues from exact WPS-saved deck bytes through current-page Agent confi
     management: "managed",
   });
 
+  await authorizeCompleteDeckEdit(root, nextTarget.stableSlideId);
   const agentCandidate = await createDeckCandidate(root, {
     sourceRevisionId: adoptedManual.revisionId,
     reason: "agent-edit",

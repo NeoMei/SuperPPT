@@ -63,7 +63,7 @@ import { loadBuiltInStyleCatalog } from "../src/styles/catalog.js";
 import { compileSlidePrompt } from "../src/styles/prompt-compiler.js";
 import { approveStyleLock, createProvisionalStyleLock, readApprovedStyleLock } from "../src/styles/style-lock.js";
 import { writeCanonicalStyleSample } from "./helpers/style-sample.js";
-import { finalizeDelegatedStyleSampleForTest } from "./helpers/delegated-style-sample.js";
+import { authenticateStyleSelectionForTest, finalizeDelegatedStyleSampleForTest } from "./helpers/delegated-style-sample.js";
 import { bootstrapInitialDeckRevision, readCurrentDeckPointer } from "../src/deck-revisions/store.js";
 import { finalizeSlideTopology } from "../src/deck-revisions/topology.js";
 import { prepareAgentEditDeck } from "../src/editable/route.js";
@@ -492,6 +492,15 @@ test("full workflow preflight blocks generation before project access and revali
     requestOrdinal: 1,
   }), /workflow preflight attestation is no longer current/i);
   assert.deepEqual(await readCallLedger(fixture.root), ledgerBefore);
+});
+
+test("style-sample authorization rejects legacy or unauthenticated style selection evidence", async (t) => {
+  const fixture = await approvedProject(t, "superppt-style-selection-v2-required-", undefined, false);
+  await createProvisionalStyleLock(fixture.root, lockedStyle);
+  await assert.rejects(
+    publishStyleSampleGenerationPlan(fixture.root, { aiDependency: fixture.aiDependency, callBudget: 1 }),
+    /style-selection|schemaVersion 2|authenticated.*selection|current project revision/i,
+  );
 });
 
 async function fakeCandidateOutputs(
@@ -2011,6 +2020,7 @@ test("delegated style sample requires execution authorization, finalizes its aut
     ...lockedStyle,
     referenceArtifacts: [{ path: referencePath, role: "art-direction" }],
   });
+  await authenticateStyleSelectionForTest(fixture.root);
   await writeCanonicalStyleSample(fixture.root);
   await assert.rejects(
     publishStyleSampleGenerationPlan(fixture.root, { aiDependency: fixture.aiDependency, callBudget: 2 }),
@@ -2156,6 +2166,7 @@ test("a newly authorized delegated style sample supersedes a prior receipt", asy
 test("delegated style sample cannot finalize or retry after its one authorized call fails", async (t) => {
   const fixture = await approvedProject(t, "superppt-image-job-sample-failure-", undefined, false);
   await createProvisionalStyleLock(fixture.root, lockedStyle);
+  await authenticateStyleSelectionForTest(fixture.root);
   await publishStyleSampleGenerationPlan(fixture.root, { aiDependency: fixture.aiDependency, callBudget: 1 });
   await approveExecutionGate(fixture.root, "style-sample-generation", "style/sample/generation-plan.json");
   const job = await prepareStyleSampleJob(fixture.root, fixture.aiDependency);

@@ -107,8 +107,24 @@ test("package allowlist and dry-run exclude build leftovers and removed provider
   };
   assert.deepEqual(paths.filter(generatedArtifact), [], "package must exclude generated/user edit and review artifacts");
   assert.equal(paths.includes("scripts/acceptance-smoke.sh"), false, "legacy smoke-copy script must not ship");
+  assert.equal(paths.includes("src/acceptance/smoke-copy.ts"), false, "legacy smoke-copy implementation must not ship");
   const cli = await readFile("src/cli.ts", "utf8");
   assert.doesNotMatch(cli, /command === "acceptance(?:-(?:smoke-copy|record))?"/);
+  const [store, deck, trusted] = await Promise.all([
+    import("../src/project/store.js"),
+    import("../src/deck/assemble.js"),
+    import("../src/generation/trusted-authorization.js"),
+  ]);
+  for (const legacy of [
+    "createClientSmokeCopyAnchor",
+    "recordClientAcceptance",
+    "readProjectAcceptance",
+    "commitTrustedClientAcceptancePending",
+    "completeTrustedClientAcceptance",
+    "readTrustedClientAcceptanceCommitment",
+  ]) {
+    assert.equal(legacy in store || legacy in deck || legacy in trusted, false, `legacy acceptance API ${legacy} must not be public`);
+  }
   assert.deepEqual(dependencies.dependencies.map((dependency: Record<string, unknown>) => ({
     skill: dependency.skill,
     cliFlag: dependency.cliFlag,

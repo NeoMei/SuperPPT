@@ -10,7 +10,7 @@ import JSZip from "jszip";
 import {
   adoptDeckCandidate,
   bootstrapInitialDeckRevision,
-  createDeckCandidate,
+  createDeckCandidate as createRawDeckCandidate,
   presentDeckCandidate,
   readCurrentDeckPointer,
   readLocalDeckRevision,
@@ -20,6 +20,7 @@ import {
 import { DeckEditSessionSchema, LocalDeckRevisionSchema } from "../src/deck-revisions/schemas.js";
 import { initializeProject } from "../src/project/initialize.js";
 import { readProject, updateProject } from "../src/project/store.js";
+import { authorizeCompleteDeckEdit } from "./helpers/deck-edit.js";
 
 const P = "http://schemas.openxmlformats.org/presentationml/2006/main";
 const R = "http://schemas.openxmlformats.org/officeDocument/2006/relationships";
@@ -27,6 +28,14 @@ const REL = "http://schemas.openxmlformats.org/package/2006/relationships";
 const P14 = "http://schemas.microsoft.com/office/powerpoint/2010/main";
 
 const digest = (value: Buffer | string): string => createHash("sha256").update(value).digest("hex");
+
+async function createDeckCandidate(
+  root: string,
+  options: Parameters<typeof createRawDeckCandidate>[1],
+) {
+  await authorizeCompleteDeckEdit(root, options.targetSlideId ?? options.changedSlideIds[0]!);
+  return createRawDeckCandidate(root, options);
+}
 
 async function fixture(t: TestContext) {
   const parent = await realpath(await mkdtemp(join(tmpdir(), "superppt-deck-revisions-")));
@@ -92,7 +101,12 @@ async function fixture(t: TestContext) {
     updatedAt: new Date().toISOString(),
   };
   await writeFile(join(root, "output", "current.json"), `${JSON.stringify(current, null, 2)}\n`);
-  await updateProject(root, (project) => ({ ...project, currentDeck: current, activeDeckEditSessionId: null }));
+  await updateProject(root, (project) => ({
+    ...project,
+    stage: "deck-review",
+    currentDeck: current,
+    activeDeckEditSessionId: null,
+  }));
   return { root, slideIds, revision, current: { ...current, absolutePath }, deckBytes };
 }
 

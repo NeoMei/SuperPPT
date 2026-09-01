@@ -265,3 +265,39 @@ The next action is explicitly the main agent opening the complete manual candida
 
 - Intended independent commit message: `fix: close exact complete-deck delivery contract`.
 - The exact commit and scoped `248a3be..<newHEAD>` review-package hash/line/byte evidence are generated after this report is committed; this report does not predict its own commit identity.
+
+## Whole-branch review fix round 2 (2026-09-01)
+
+### Scope and RED-first evidence
+
+- Review baseline: `ddd5b12`. This round closes all three Important and two Minor findings; no finding was deferred.
+- The first focused source run was intentionally **RED**, 5/5 failed in `1.62s`: manual preparation accepted a missing edit binding, delivery ignored the injected fixed-artifact crash checkpoint, legacy v1 style selection could publish a sample plan, the package still contained `src/acceptance/smoke-copy.ts`, and the outline downstream checklist omitted `style-selection`.
+- The product boundary stayed strict. Old fixtures were migrated to create/consume authenticated bindings and v2 style evidence instead of weakening candidate creation or sample authorization.
+
+### Minimal closure
+
+- `complete-deck-review edit-page` now persists one pending binding to the exact current deck revision, SHA-256, and stable slide ID. Manual/Agent preparation atomically consumes it; missing, wrong-slide, stale, and replayed bindings fail before candidate/session creation with zero residue. Terminal adoption, confirmation, rejection, recovery, and rollback clear it and restore exact-current `deck-review` state.
+- Style-sample plan publication now requires current project stage `style-selection`, authenticated schema v2 selection evidence, exact current project revision, and the Style Lock SHA/recipe produced from that same selection. Legacy v1 evidence remains parseable for explicit migration but cannot authorize external generation.
+- The fixed `output/deck-revisions/<revision>/acceptance.json` path now recovers both artifact-written and manifest-before-update crashes, reuses byte-identical evidence across deliver/rollback/redeliver, rejects malformed/conflicting evidence, refuses an external symlink trust root, and never deletes or rewrites the complete deck.
+- Removed the packaged `src/acceptance/smoke-copy.ts` implementation and the old create/record/read APIs. Legacy client-acceptance trust helpers are no longer exported from the deep generation module; useful crash, replay, conflict, byte-preservation, and no-follow trust-root coverage now targets exact-current acceptance.
+- `outline` invalidation now includes `style-selection` in the human checklist exactly as the machine contract already required. The active Skill, all five references, README, main plan, stage-machine fields, tests, and this report describe the same one-time edit, v2 style, exact acceptance, and removed legacy-package boundaries.
+
+### Focused verification
+
+- Initial five-finding GREEN: **PASS**, 5/5, `20.66s`.
+- Full `deck-revisions` source regression after fixture migration: **PASS**, 33/33, `16.04s`.
+- Whole `full-deck-activation` source run: 114/116 passed; the two failures identified the two remaining old Agent fixtures. After migrating those fixtures through `complete-deck-review edit-page`, exact rerun: **PASS**, 2/2, `8.77s`. No product relaxation was made.
+- Whole `full-deck-editing` source run exposed one obsolete completed-lease-list assertion after the new review action; the corrected no-active/no-pending assertion reran **PASS**, 3/3. The focused complete-deck source matrix otherwise passed 13/14, and its sole failure was an omitted test-process `RUNTIME_*` environment; exact rerun with the required workspace runtime passed 1/1.
+- Source workflow/package contract: **PASS**, 15/15. Frozen affected compiled matrix: **PASS**, 17/17 plus complete compiled deck revisions 33/33, for 50/50.
+- `npm run lint:types && npm run build`: **PASS**. `npm pack --dry-run --json`: **PASS**, 101 files, package size 4,647,335 bytes, unpacked 5,628,648 bytes. `git diff --check`: **PASS**.
+- The long full source and `test:compiled` suites were intentionally **not run**; final full-suite freeze remains controller-owned.
+
+### Real WPS evidence boundary
+
+- This round did not open WPS or touch the ignored controlled project. It preserves the already-recorded real GUI result `PASSED_REAL_WPS_MANUAL_AND_AGENT`: real manual save/adoption/reopen, next-page reconciliation, Agent exact-SHA confirmation, and pointer-only rollback all passed, with saved source/candidate bytes preserved and zero derived review artifacts.
+- Fixture results above are not substituted for that real GUI evidence. The ignored acceptance record remains the authority for the real WPS hashes and observations.
+
+### Commit and review handoff
+
+- Intended independent commit message: `fix: enforce exact complete-deck review bindings`.
+- The exact commit and scoped `ddd5b12..<newHEAD>` review-package hash/line/byte evidence are generated after this report is committed; this report does not predict its own commit identity.

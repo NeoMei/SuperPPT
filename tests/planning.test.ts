@@ -10,7 +10,6 @@ import sharp from "sharp";
 import { DeckReviewActionEvidenceSchema, DeckReviewDescriptorSchema } from "../src/acceptance/schema.js";
 import { GenerationAuthorizationPlanSchema } from "../src/generation/job-schemas.js";
 import {
-  assertNoPendingTrustedClientAcceptance,
   configureGenerationAuthorizationTrustForTests,
 } from "../src/generation/trusted-authorization.js";
 import {
@@ -324,20 +323,6 @@ test("preserves text and Markdown bytes with strict runtime input validation", a
   await initializeProject({ root: third, title: "Third" });
   await assert.rejects(normalizeInput(third, { kind: "url", value: "https://example.com" } as never), /invalid input request/);
   await assert.rejects(normalizeInput(third, { kind: "text", value: "x", extra: true } as never), /invalid input request/);
-});
-
-test("read-only acceptance guard creates no trust files for an unregistered project", async (t) => {
-  const parent = await temporaryParent(t, "superppt-read-only-acceptance-guard-");
-  const root = join(parent, "project");
-  const trustRoot = join(parent, "authorization-trust");
-  await initializeProject({ root, title: "Read only guard" });
-  await configureGenerationAuthorizationTrustForTests(root, {
-    root: trustRoot,
-    deterministicKeySeed: "read-only-acceptance-guard",
-  });
-
-  await assertNoPendingTrustedClientAcceptance(root);
-  await assert.rejects(access(trustRoot), { code: "ENOENT" });
 });
 
 test("fails closed when a Markdown pathname is swapped after its handle opens", async (t) => {

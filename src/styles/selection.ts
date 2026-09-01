@@ -44,6 +44,7 @@ export async function authenticateStyleSelection(root: string, rawRequest: unkno
     projectRevisionId: request.projectRevisionId,
     representativeSlideId: request.representativeSlideId,
     selection: request.selection,
+    styleLockSha256: lock.styleLockSha256,
   };
   await writeDurableExclusive(join(root, "style", "selection.json"), `${JSON.stringify(selection, null, 2)}\n`);
   await syncDirectory(join(root, "style"));

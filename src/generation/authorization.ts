@@ -17,6 +17,8 @@ import { assertProjectMutationNotFrozen, readProject } from "../project/store.js
 import { canonicalStyleSample } from "../styles/sample-contract.js";
 import { compileSlidePrompt } from "../styles/prompt-compiler.js";
 import { readApprovedStyleLock, readStyleLock, type LockedStyle } from "../styles/style-lock.js";
+import { lockSelection } from "../styles/sample-contract.js";
+import { resolveStyleRecipe } from "../styles/catalog.js";
 import { StyleLockSchema, StyleRecipeSchema } from "../styles/schemas.js";
 import { openGenerationDirectory } from "./anchored-dir.js";
 import { assertGenerationLeaseHeld, withGenerationLease } from "./lease.js";
@@ -307,6 +309,18 @@ export async function publishStyleSampleGenerationPlan(
       canonicalStyleSample(canonicalRoot),
       loadValidatedPlan(canonicalRoot),
     ]);
+    if (
+      manifest.stage !== "style-selection"
+      || sample.selection.schemaVersion !== 2
+      || sample.selection.projectRevisionId !== manifest.currentRevision.id
+      || sample.selection.styleLockSha256 !== lock.styleLockSha256
+    ) {
+      throw new Error("style-sample authorization requires authenticated schemaVersion 2 style-selection evidence for the current project revision");
+    }
+    const selectedRecipe = await resolveStyleRecipe(lockSelection(sample.selection));
+    if (!sameJson(selectedRecipe, lock.recipe)) {
+      throw new Error("authenticated style selection and provisional Style Lock do not share one source");
+    }
     if (lock.approvalState !== "provisional") throw new Error("style-sample generation requires a provisional style lock");
     const order = plan.outline.slides.find(({ id }) => id === sample.spec.slideId)?.order;
     if (order === undefined) throw new Error("representative slide is not ordered in the current plan");

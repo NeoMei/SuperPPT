@@ -1,9 +1,9 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
-import { mkdir, mkdtemp, readFile, readdir, realpath, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, readdir, realpath, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import test, { type TestContext } from "node:test";
 import { promisify } from "node:util";
 
@@ -11,7 +11,7 @@ import JSZip from "jszip";
 
 import { formatLocalPptxLink, requireLocalDeckHandoff } from "../src/host/capabilities.js";
 import { beginAgentCandidateConfirmation, confirmAgentEditDeck } from "../src/deck-revisions/workflow.js";
-import { createDeckCandidate, readCurrentDeckPointer, readLocalDeckRevision } from "../src/deck-revisions/store.js";
+import { createDeckCandidate, readCurrentDeckPointer, readLocalDeckRevision, rollbackCurrentDeck } from "../src/deck-revisions/store.js";
 import { finalizeSlideTopology } from "../src/deck-revisions/topology.js";
 import {
   bindAgentDeckConfirmation,
@@ -237,6 +237,165 @@ test("complete-deck-review CLI authenticates all three choices and confirm-deliv
   ]), /stale|current|sha-256/i);
 });
 
+test("one pending edit binding is required, exact, atomically consumed, and not replayable", async (t) => {
+  const project = await cliProject(t);
+  const sessionsRoot = join(project.root, "output", "deck-edit-sessions");
+  const revisionsRoot = join(project.root, "output", "deck-revisions");
+  const beforeSessions = await readdir(sessionsRoot).catch(() => []);
+  const beforeRevisions = await readdir(revisionsRoot);
+
+  await assert.rejects(runCli([
+    "prepare-manual-deck", "--project", project.root, "--revision-id", project.revisionId,
+    "--slide-id", project.slideIds[0]!,
+  ]), /pending edit|edit-page.*required|authorization/i);
+  await assert.rejects(createDeckCandidate(project.root, {
+    sourceRevisionId: project.revisionId,
+    reason: "agent-edit",
+    changedSlideIds: [project.slideIds[0]!],
+    editableSlideIds: project.slideIds,
+    targetSlideId: project.slideIds[0]!,
+    mode: "agent",
+  }), /pending edit|edit-page.*required|authorization/i);
+  assert.deepEqual(await readdir(sessionsRoot).catch(() => []), beforeSessions);
+  assert.deepEqual(await readdir(revisionsRoot), beforeRevisions);
+
+  const current = await readCurrentDeckPointer(project.root);
+  await runCliJson([
+    "complete-deck-review", "--project", project.root, "--action", "edit-page",
+    "--revision-id", current.revisionId, "--sha256", current.sha256,
+    "--slide-id", project.slideIds[1]!,
+  ]);
+  assert.deepEqual((await readProject(project.root)).pendingDeckEdit, {
+    revisionId: current.revisionId,
+    sha256: current.sha256,
+    slideId: project.slideIds[1],
+  });
+
+  await assert.rejects(runCli([
+    "prepare-manual-deck", "--project", project.root, "--revision-id", project.revisionId,
+    "--slide-id", project.slideIds[0]!,
+  ]), /pending edit.*slide|does not match|wrong.*slide/i);
+  assert.deepEqual(await readdir(sessionsRoot).catch(() => []), beforeSessions);
+  assert.deepEqual(await readdir(revisionsRoot), beforeRevisions);
+  assert.equal((await readProject(project.root)).pendingDeckEdit?.slideId, project.slideIds[1]);
+
+  const prepared = await runCliJson([
+    "prepare-manual-deck", "--project", project.root, "--revision-id", project.revisionId,
+    "--slide-id", project.slideIds[1]!,
+  ]);
+  assert.equal((await readProject(project.root)).pendingDeckEdit, null);
+  const adopted = await runCliJson([
+    "adopt-saved-deck", "--project", project.root, "--session-id", prepared.sessionId,
+    "--user-signal", "saved-and-closed",
+  ]);
+  assert.equal((await readProject(project.root)).pendingDeckEdit, null);
+  await assert.rejects(runCli([
+    "prepare-manual-deck", "--project", project.root, "--revision-id", adopted.currentRevisionId,
+    "--slide-id", project.slideIds[1]!,
+  ]), /pending edit|edit-page.*required|authorization/i, "consumed binding cannot be replayed");
+
+  await updateProject(project.root, (manifest) => ({
+    ...manifest,
+    stage: "revising",
+    pendingDeckEdit: {
+      revisionId: project.revisionId,
+      sha256: current.sha256,
+      slideId: project.slideIds[1]!,
+    },
+  }));
+  const staleSessions = await readdir(sessionsRoot);
+  const staleRevisions = await readdir(revisionsRoot);
+  await assert.rejects(createDeckCandidate(project.root, {
+    sourceRevisionId: adopted.currentRevisionId,
+    reason: "agent-edit",
+    changedSlideIds: [project.slideIds[1]!],
+    editableSlideIds: project.slideIds,
+    targetSlideId: project.slideIds[1]!,
+    mode: "agent",
+  }), /pending edit.*stale|revision|SHA-256/i);
+  assert.deepEqual(await readdir(sessionsRoot), staleSessions);
+  assert.deepEqual(await readdir(revisionsRoot), staleRevisions);
+});
+
+test("fixed exact-current acceptance recovers crashes and replays identical delivery without rewriting deck bytes", async (t) => {
+  for (const phase of ["acceptance-artifact-written", "manifest-before-update"] as const) {
+    const project = await cliProject(t);
+    const current = await readCurrentDeckPointer(project.root);
+    const deckBytes = await readFile(current.absolutePath);
+    await assert.rejects(applyCompleteDeckReviewAction(project.root, {
+      action: "confirm-delivery",
+      revisionId: current.revisionId,
+      deckSha256: current.sha256,
+    }, {
+      checkpoint(step) {
+        if (step === phase) throw new Error(`injected ${phase}`);
+      },
+    }), new RegExp(`injected ${phase}`));
+    assert.equal((await readProject(project.root)).stage, "deck-review");
+    const acceptancePath = join(project.root, "output", "deck-revisions", current.revisionId, "acceptance.json");
+    const written = await readFile(acceptancePath);
+    const recovered = await applyCompleteDeckReviewAction(project.root, {
+      action: "confirm-delivery",
+      revisionId: current.revisionId,
+      deckSha256: current.sha256,
+    });
+    assert.equal(recovered.stage, "delivered");
+    assert.deepEqual(await readFile(acceptancePath), written);
+    assert.deepEqual(await readFile(current.absolutePath), deckBytes);
+  }
+
+  const linked = await cliProject(t);
+  const linkedCurrent = await readCurrentDeckPointer(linked.root);
+  const outsideAcceptance = join(dirname(linked.root), "outside-acceptance.json");
+  const outsideBytes = Buffer.from("outside trust root must remain untouched\n");
+  await writeFile(outsideAcceptance, outsideBytes);
+  await symlink(outsideAcceptance, join(linked.root, "output", "deck-revisions", linkedCurrent.revisionId, "acceptance.json"));
+  await assert.rejects(applyCompleteDeckReviewAction(linked.root, {
+    action: "confirm-delivery",
+    revisionId: linkedCurrent.revisionId,
+    deckSha256: linkedCurrent.sha256,
+  }), /acceptance.*conflict|owned|symbolic|regular/i);
+  assert.deepEqual(await readFile(outsideAcceptance), outsideBytes, "fixed acceptance never follows or removes an external trust-root symlink");
+
+  const project = await cliProject(t);
+  const initial = await readCurrentDeckPointer(project.root);
+  await runCliJson([
+    "complete-deck-review", "--project", project.root, "--action", "edit-page",
+    "--revision-id", initial.revisionId, "--sha256", initial.sha256, "--slide-id", project.slideIds[1]!,
+  ]);
+  const prepared = await runCliJson([
+    "prepare-manual-deck", "--project", project.root, "--revision-id", initial.revisionId,
+    "--slide-id", project.slideIds[1]!,
+  ]);
+  const adopted = await runCliJson([
+    "adopt-saved-deck", "--project", project.root, "--session-id", prepared.sessionId,
+    "--user-signal", "saved-and-closed",
+  ]);
+  const adoptedBytes = await readFile(prepared.absolutePath);
+  await applyCompleteDeckReviewAction(project.root, {
+    action: "confirm-delivery", revisionId: adopted.currentRevisionId, deckSha256: adopted.sha256,
+  });
+  const acceptancePath = join(project.root, "output", "deck-revisions", adopted.currentRevisionId, "acceptance.json");
+  const acceptedBytes = await readFile(acceptancePath);
+  await rollbackCurrentDeck(project.root, initial.revisionId);
+  await rollbackCurrentDeck(project.root, adopted.currentRevisionId);
+  await applyCompleteDeckReviewAction(project.root, {
+    action: "confirm-delivery", revisionId: adopted.currentRevisionId, deckSha256: adopted.sha256,
+  });
+  assert.deepEqual(await readFile(acceptancePath), acceptedBytes, "redelivery reuses identical acceptance bytes");
+  assert.deepEqual(await readFile(prepared.absolutePath), adoptedBytes, "redelivery never rewrites the user deck");
+
+  await rollbackCurrentDeck(project.root, initial.revisionId);
+  await rollbackCurrentDeck(project.root, adopted.currentRevisionId);
+  const conflict = JSON.parse(acceptedBytes.toString("utf8"));
+  conflict.completeDeck.sha256 = "0".repeat(64);
+  await writeFile(acceptancePath, `${JSON.stringify(conflict, null, 2)}\n`);
+  await assert.rejects(applyCompleteDeckReviewAction(project.root, {
+    action: "confirm-delivery", revisionId: adopted.currentRevisionId, deckSha256: adopted.sha256,
+  }), /acceptance.*conflict|existing.*acceptance|exact current/i);
+  assert.deepEqual(await readFile(prepared.absolutePath), adoptedBytes, "conflict does not delete or rewrite the user deck");
+});
+
 test("resolves repeated page-number edits from the current reconciled deck topology", async (t) => {
   const project = await cliProject(t);
   const resolved = await runCliJson([
@@ -258,6 +417,13 @@ test("prepare-manual-deck binds the resolver revision and leaves no candidate wh
   const resolved = await runCliJson([
     "resolve-current-deck-page", "--project", project.root, "--page-number", "2",
   ]);
+  const resolvedCurrent = await readCurrentDeckPointer(project.root);
+  await applyCompleteDeckReviewAction(project.root, {
+    action: "edit-page",
+    revisionId: resolvedCurrent.revisionId,
+    deckSha256: resolvedCurrent.sha256,
+    slideId: resolved.stableSlideId,
+  });
   const candidate = await createDeckCandidate(project.root, {
     sourceRevisionId: resolved.revisionId,
     reason: "agent-edit",

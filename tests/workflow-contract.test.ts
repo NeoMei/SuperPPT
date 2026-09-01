@@ -46,6 +46,8 @@ type WorkflowPolicy = {
     defaultAllowed: boolean;
     catalog: string;
     previewMode: string;
+    selectionEvidence: string;
+    legacyEvidence: string;
   };
   generation: {
     executor: string;
@@ -63,6 +65,12 @@ type WorkflowPolicy = {
     localPptxLinksPerResponse: number;
     previewAndEditor: string;
     pageResolution: string;
+    authorization: {
+      action: string;
+      binding: string;
+      consumption: string;
+      failure: string;
+    };
     manual: {
       revisionBinding: string;
       waitForUserText: string;
@@ -148,6 +156,8 @@ function validateStageContract(contract: StageContract): void {
   assert.equal(policy.style.defaultAllowed, false);
   assert.equal(policy.style.catalog, "assets/styles/catalog.json");
   assert.equal(policy.style.previewMode, "compact-real-preview-grid");
+  assert.equal(policy.style.selectionEvidence, "v2-current-revision-representative-slide-and-same-source-style-lock-sha");
+  assert.equal(policy.style.legacyEvidence, "v1-read-migration-only-cannot-authorize-sample-plan");
   assert.equal(policy.generation.executor, "agent-invokes-resolved-ai-image-to-ppt-skill");
   assert.equal(policy.generation.cliExecutesDependency, false);
   assert.equal(policy.generation.scheduling, "serial");
@@ -159,6 +169,12 @@ function validateStageContract(contract: StageContract): void {
   assert.equal(policy.editing.localPptxLinksPerResponse, 1);
   assert.equal(policy.editing.previewAndEditor, "wps-or-powerpoint");
   assert.equal(policy.editing.pageResolution, "current-reconciled-topology");
+  assert.deepEqual(policy.editing.authorization, {
+    action: "complete-deck-review-edit-page",
+    binding: "exact-current-revision-sha256-stable-slide-id",
+    consumption: "one-time-atomic-before-candidate-session-creation",
+    failure: "missing-wrong-slide-stale-replay-fail-closed-zero-residue",
+  });
   assert.deepEqual(policy.editing.manual, {
     revisionBinding: "resolver-revision-id-must-still-be-current",
     waitForUserText: "已保存并关闭",
@@ -212,6 +228,21 @@ test("machine contract encodes all user decisions and rejects unsafe workflow va
   };
   assert.ok(declaredCount, "门禁清单 must declare the machine contract stage-entry count");
   assert.equal(chineseCounts[declaredCount] ?? Number(declaredCount), contract.stages.length);
+  const checklistInvalidations = new Map(
+    [...gateChecklist.matchAll(/^- `([^`]+)` → ([^。]+)。$/gm)].map((match) => [match[1]!, match[2]!.split(" → ")]),
+  );
+  for (const entry of contract.stages) {
+    const documented = checklistInvalidations.get(entry.id);
+    if (!documented) continue;
+    assert.deepEqual(
+      documented.map((rawValue) => {
+        const value = rawValue.replaceAll("`", "");
+        return value === "formal delivery" ? "formal-delivery" : value === "acceptance evidence" ? "acceptance-evidence" : value;
+      }),
+      entry.invalidationDependencies,
+      `${entry.id} checklist invalidation order`,
+    );
+  }
 
   const invalid: Array<[string, (fixture: StageContract) => void]> = [
     ["silent completion", (fixture) => { fixture.workflowPolicy.conversation.silentEndToEndAllowed = true; }],

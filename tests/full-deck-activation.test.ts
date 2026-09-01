@@ -24,6 +24,7 @@ import { initializeProject } from "../src/project/initialize.js";
 import { applyDeckReviewAction, publishDeckReview } from "../src/project/promotion.js";
 import { readProject, updateProject } from "../src/project/store.js";
 import { finalizeDelegatedStyleSampleForTest } from "./helpers/delegated-style-sample.js";
+import { authorizeCompleteDeckEdit } from "./helpers/deck-edit.js";
 
 const P = "http://schemas.openxmlformats.org/presentationml/2006/main";
 const A = "http://schemas.openxmlformats.org/drawingml/2006/main";
@@ -287,12 +288,19 @@ async function activationRouteFixture(t: TestContext) {
   const topology = finalizeSlideTopology(inspection.slides.map((slide, position) => ({ stableSlideId: slideIds[position]!, slidePart: slide.slidePart, position, management: "managed" as const, presentationSlideId: slide.presentationSlideId, creationId: slide.creationId! })), []);
   const parentRevisionId = randomUUID();
   await bootstrapInitialDeckRevision(root, { revisionId: parentRevisionId, projectRevisionId: project.currentRevision.id, sourceAbsolutePath: source, slideTopology: topology, changedSlideIds: slideIds });
+  await updateProject(root, (current) => ({
+    ...current,
+    stage: "deck-review",
+    pendingDeckEdit: null,
+    exports: { pptx: null, acceptance: null },
+  }));
   const conversion = await writeConversionEvidence({ root, slideId: slideIds[1]!, projectId: project.projectId, projectRevisionId: project.currentRevision.id, ...reviewed });
   return { root, slideIds, parentRevisionId, ...conversion };
 }
 
 async function activationFixture(t: TestContext, mode: "manual" | "agent" = "agent") {
   const fixture = await activationRouteFixture(t);
+  await authorizeCompleteDeckEdit(fixture.root, fixture.slideIds[1]!);
   const session = await createDeckCandidate(fixture.root, { sourceRevisionId: fixture.parentRevisionId, reason: mode === "manual" ? "manual-edit" : "agent-edit", changedSlideIds: [fixture.slideIds[1]!], editableSlideIds: [], targetSlideId: fixture.slideIds[1]!, mode });
   return { ...fixture, candidatePath: session.absolutePath, sessionId: session.sessionId };
 }
@@ -418,6 +426,7 @@ test("activates only the selected slide and returns the complete deck candidate"
 
 test("prepareAgentEditDeck activates then directly edits authenticated complete candidates through confirmation", async (t) => {
   const fixture = await activationRouteFixture(t);
+  await authorizeCompleteDeckEdit(fixture.root, fixture.slideIds[1]!);
   const activated = await prepareAgentEditDeck({
     root: fixture.root,
     route: {
@@ -448,6 +457,7 @@ test("prepareAgentEditDeck activates then directly edits authenticated complete 
   });
   assert.equal(adopted.revisionId, activated.revisionId);
 
+  await authorizeCompleteDeckEdit(fixture.root, fixture.slideIds[1]!);
   const direct = await prepareAgentEditDeck({
     root: fixture.root,
     route: {
@@ -471,6 +481,7 @@ test("prepareAgentEditDeck activates then directly edits authenticated complete 
 test("prepareAgentEditDeck rejects and cleans up an activation candidate when conversion authentication fails", async (t) => {
   const fixture = await activationRouteFixture(t);
   const original = await readCurrentDeckPointer(fixture.root);
+  await authorizeCompleteDeckEdit(fixture.root, fixture.slideIds[1]!);
   await writeFile(join(fixture.outputRoot, "manifest.json"), "{}\n");
 
   await assert.rejects(prepareAgentEditDeck({

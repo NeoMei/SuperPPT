@@ -2520,7 +2520,7 @@ async function readSynchronizedClientAcceptanceChain(
   return chain;
 }
 
-export async function migrateLegacyTrustedClientAcceptance(projectRoot: string): Promise<void> {
+async function migrateLegacyTrustedClientAcceptance(projectRoot: string): Promise<void> {
   await withGenerationLease(projectRoot, async (canonicalRoot) => {
     const project = await readProject(canonicalRoot);
     const store = await existingTrustRoot(canonicalRoot);
@@ -2909,7 +2909,7 @@ async function appendClientAcceptanceEvent(
   return published;
 }
 
-export async function commitTrustedClientAcceptancePending(
+async function commitTrustedClientAcceptancePending(
   projectRoot: string,
   transaction: ClientAcceptanceTransaction,
 ): Promise<void> {
@@ -2918,7 +2918,7 @@ export async function commitTrustedClientAcceptancePending(
   });
 }
 
-export async function completeTrustedClientAcceptance(
+async function completeTrustedClientAcceptance(
   projectRoot: string,
   transaction: ClientAcceptanceTransaction,
   completedAnchor: ClientSmokeCopyAnchor,
@@ -2941,7 +2941,7 @@ export async function completeTrustedClientAcceptance(
   });
 }
 
-export async function assertTrustedClientAcceptanceCommitment(
+async function assertTrustedClientAcceptanceCommitment(
   projectRoot: string,
   transaction: ClientAcceptanceTransaction,
 ): Promise<"pending" | "completed"> {
@@ -2955,7 +2955,7 @@ export async function assertTrustedClientAcceptanceCommitment(
   });
 }
 
-export async function readTrustedClientAcceptanceCommitment(
+async function readTrustedClientAcceptanceCommitment(
   projectRoot: string,
 ): Promise<{ transaction: ClientAcceptanceTransaction; state: "pending" | "completed" } | null> {
   return withGenerationLease(projectRoot, async (canonicalRoot) => {
@@ -3123,7 +3123,7 @@ export async function readTrustedClientAcceptanceCommitment(
   });
 }
 
-export async function assertNoPendingTrustedClientAcceptance(projectRoot: string): Promise<void> {
+async function assertNoPendingTrustedClientAcceptance(projectRoot: string): Promise<void> {
   await withGenerationLease(projectRoot, async (canonicalRoot) => {
     const project = await readProject(canonicalRoot);
     await assertNoPendingTrustedClientAcceptanceForProjectUnderLease(canonicalRoot, project.projectId);
@@ -3158,7 +3158,7 @@ async function assertNoPendingTrustedClientAcceptanceForProjectUnderLease(
   }
 }
 
-export async function assertNoPendingTrustedClientAcceptanceForProject(
+async function assertNoPendingTrustedClientAcceptanceForProject(
   projectRoot: string,
   projectId: string,
 ): Promise<void> {
@@ -3170,7 +3170,7 @@ export async function assertNoPendingTrustedClientAcceptanceForProject(
   });
 }
 
-export async function assertTrustedClientAcceptanceAllowsRevisionTransition(
+async function assertTrustedClientAcceptanceAllowsRevisionTransition(
   projectRoot: string,
   projectId: string,
 ): Promise<void> {

@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
-import { lstat, mkdir, rename } from "node:fs/promises";
+import { lstat, mkdir, rename, rm } from "node:fs/promises";
 import { dirname, join, relative, sep } from "node:path";
 
 import { z } from "zod";
@@ -600,6 +600,7 @@ function resetToCurrentDeckReview(project: ProjectManifest, currentDeck: Current
     ...base,
     stage: "deck-review" as const,
     currentDeck,
+    pendingDeckEdit: null,
     exports: { pptx: null, acceptance: null },
   };
 }
@@ -610,31 +611,43 @@ export async function createDeckCandidate(
 ): Promise<ResolvedDeckEditSession> {
   const validOptions = CreateDeckCandidateOptionsSchema.parse(options);
   return withGenerationLease(root, (generationRoot) => withProjectLease(generationRoot, "deck-revisions", async (canonicalRoot) => {
-    await ensureDeckRoots(canonicalRoot);
     const manifest = await readProject(canonicalRoot);
     if (manifest.activeDeckEditSessionId !== null) throw new Error("another deck edit session is active");
     const current = await readCurrentDeckPointerUnlocked(canonicalRoot);
     if (current.revisionId !== validOptions.sourceRevisionId) throw new Error("deck candidate source is not current");
+    const targetSlideId = validOptions.targetSlideId ?? validOptions.changedSlideIds[0];
+    if (!targetSlideId) throw new Error("deck candidate requires one target slide identity");
+    const pending = manifest.pendingDeckEdit;
+    if (!pending || manifest.stage !== "revising") {
+      throw new Error("complete-deck edit-page authorization is required before preparing a candidate");
+    }
+    if (pending.revisionId !== current.revisionId || pending.sha256 !== current.sha256) {
+      throw new Error("pending edit binding is stale for the exact current revision and SHA-256");
+    }
+    if (pending.revisionId !== validOptions.sourceRevisionId || pending.slideId !== targetSlideId) {
+      throw new Error("pending edit binding does not match the requested revision and slide");
+    }
+    await ensureDeckRoots(canonicalRoot);
     const parent = await readLocalDeckRevision(canonicalRoot, validOptions.sourceRevisionId);
     const candidateRevisionId = randomUUID();
     const sessionId = randomUUID();
     const candidateRelativePath = revisionRelativePath(candidateRevisionId);
     const candidateRoot = revisionPath(canonicalRoot, candidateRevisionId);
     const editSessionRoot = sessionPath(canonicalRoot, sessionId);
-    await mkdir(candidateRoot, { mode: 0o700 });
-    await mkdir(editSessionRoot, { mode: 0o700 });
-    const source = await readRegularFileNoFollow(parent.absolutePath);
-    await writeDurableExclusive(join(candidateRoot, "deck.pptx"), source);
-    await syncDirectory(candidateRoot);
-    const authenticatedCandidate = await inspectLocalPptx(join(candidateRoot, "deck.pptx"));
-    if (authenticatedCandidate.sha256 !== parent.sha256) {
-      throw new Error("deck candidate copy does not match its source revision");
-    }
-    const mode = validOptions.mode ?? (validOptions.reason === "manual-edit" ? "manual" : "agent");
-    const targetSlideId = validOptions.targetSlideId ?? validOptions.changedSlideIds[0];
-    if (!targetSlideId) throw new Error("deck candidate requires one target slide identity");
-    const now = new Date().toISOString();
-    const session = DeckEditSessionSchema.parse({
+    let committed = false;
+    try {
+      await mkdir(candidateRoot, { mode: 0o700 });
+      await mkdir(editSessionRoot, { mode: 0o700 });
+      const source = await readRegularFileNoFollow(parent.absolutePath);
+      await writeDurableExclusive(join(candidateRoot, "deck.pptx"), source);
+      await syncDirectory(candidateRoot);
+      const authenticatedCandidate = await inspectLocalPptx(join(candidateRoot, "deck.pptx"));
+      if (authenticatedCandidate.sha256 !== parent.sha256) {
+        throw new Error("deck candidate copy does not match its source revision");
+      }
+      const mode = validOptions.mode ?? (validOptions.reason === "manual-edit" ? "manual" : "agent");
+      const now = new Date().toISOString();
+      const session = DeckEditSessionSchema.parse({
       schemaVersion: 1,
       sessionId,
       candidateRevisionId,
@@ -649,7 +662,7 @@ export async function createDeckCandidate(
       createdAt: now,
       completedAt: null,
     });
-    const journal = AdoptionJournalSchema.parse({
+      const journal = AdoptionJournalSchema.parse({
       schemaVersion: 1,
       sessionId,
       reason: validOptions.reason,
@@ -658,11 +671,25 @@ export async function createDeckCandidate(
       adoption: null,
       entries: [{ phase: "prepared", at: now }],
     });
-    await writeDurableExclusive(join(editSessionRoot, "session.json"), json(session));
-    await writeDurableExclusive(join(editSessionRoot, "journal.json"), json(journal));
-    await syncDirectory(editSessionRoot);
-    await updateProject(canonicalRoot, (project) => ({ ...project, activeDeckEditSessionId: sessionId }));
-    return { ...session, absolutePath: join(canonicalRoot, ...candidateRelativePath.split("/")) };
+      await writeDurableExclusive(join(editSessionRoot, "session.json"), json(session));
+      await writeDurableExclusive(join(editSessionRoot, "journal.json"), json(journal));
+      await syncDirectory(editSessionRoot);
+      await updateProject(canonicalRoot, (project) => {
+        if (JSON.stringify(project.pendingDeckEdit) !== JSON.stringify(pending) || project.stage !== "revising") {
+          throw new Error("pending edit binding changed before atomic consumption");
+        }
+        return { ...project, pendingDeckEdit: null, activeDeckEditSessionId: sessionId };
+      });
+      committed = true;
+      return { ...session, absolutePath: join(canonicalRoot, ...candidateRelativePath.split("/")) };
+    } finally {
+      if (!committed) {
+        await Promise.all([
+          rm(candidateRoot, { recursive: true, force: true }),
+          rm(editSessionRoot, { recursive: true, force: true }),
+        ]);
+      }
+    }
   }));
 }
 

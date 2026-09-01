@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { lstat, mkdir, readdir, rename, unlink } from "node:fs/promises";
 import { dirname, join } from "node:path";
+import { z } from "zod";
 
 import {
   AcceptanceSchema,
@@ -47,6 +48,32 @@ export type CompleteDeckReviewActionOutcome = {
   evidence: CompleteDeckReviewActionEvidence;
 };
 
+export type CompleteDeckReviewActionCheckpoint = "acceptance-artifact-written" | "manifest-before-update";
+
+export type CompleteDeckReviewActionOperations = {
+  checkpoint?: (step: CompleteDeckReviewActionCheckpoint) => Promise<void> | void;
+};
+
+const ExactCurrentDeckBindingSchema = z.object({
+  revisionId: z.string().uuid(),
+  absolutePath: z.string().min(1),
+  sha256: z.string().regex(/^[a-f0-9]{64}$/),
+}).strict();
+
+const ExactCurrentDeckAcceptanceSchema = z.object({
+  schemaVersion: z.literal(1),
+  kind: z.literal("exact-current-complete-deck-acceptance"),
+  projectId: z.string().uuid(),
+  projectRevisionId: z.string().uuid(),
+  completeDeck: ExactCurrentDeckBindingSchema,
+  formalDelivery: ExactCurrentDeckBindingSchema,
+  exports: z.object({ pptx: ExactCurrentDeckBindingSchema }).strict(),
+  client: z.object({ completeDeck: ExactCurrentDeckBindingSchema }).strict(),
+  reviewAction: CompleteDeckReviewActionEvidenceSchema,
+  actionEvidenceSha256: z.string().regex(/^[a-f0-9]{64}$/),
+  confirmedAt: z.string().datetime(),
+}).strict();
+
 export type CurrentDeckEditSelection = {
   candidateId: string;
   slideId: string;
@@ -79,6 +106,7 @@ async function writeReplacementBytes(path: string, bytes: Buffer): Promise<void>
 export async function applyCompleteDeckReviewAction(
   root: string,
   rawRequest: unknown,
+  operations: CompleteDeckReviewActionOperations = {},
 ): Promise<CompleteDeckReviewActionOutcome> {
   const request = CompleteDeckReviewActionRequestSchema.parse(rawRequest);
   return withGenerationLease(root, async (generationRoot) => {
@@ -113,7 +141,7 @@ export async function applyCompleteDeckReviewAction(
         projectRevisionId: manifest.currentRevision.id,
         actedAt: new Date().toISOString(),
       };
-      const evidence = CompleteDeckReviewActionEvidenceSchema.parse({
+      let evidence = CompleteDeckReviewActionEvidenceSchema.parse({
         ...actionBase,
         actionEvidenceSha256: sha256Evidence(JSON.stringify(actionBase)),
       });
@@ -130,26 +158,58 @@ export async function applyCompleteDeckReviewAction(
       let acceptanceArtifact: { path: string; sha256: string; revisionId: string } | null = null;
       if (request.action === "confirm-delivery") {
         const acceptancePath = `output/deck-revisions/${current.revisionId}/acceptance.json`;
-        const acceptance = {
-          schemaVersion: 1,
-          kind: "exact-current-complete-deck-acceptance",
-          projectId: manifest.projectId,
-          projectRevisionId: manifest.currentRevision.id,
-          completeDeck: delivery,
-          formalDelivery: delivery,
-          exports: { pptx: delivery },
-          client: { completeDeck: delivery },
-          actionEvidenceSha256: evidence.actionEvidenceSha256,
-          confirmedAt: evidence.actedAt,
-        };
-        const bytes = Buffer.from(`${JSON.stringify(acceptance, null, 2)}\n`);
-        await writeDurableExclusive(join(canonicalRoot, ...acceptancePath.split("/")), bytes);
-        await syncDirectory(dirname(join(canonicalRoot, ...acceptancePath.split("/"))));
+        const absoluteAcceptancePath = join(canonicalRoot, ...acceptancePath.split("/"));
+        let bytes: Buffer;
+        try {
+          bytes = await readOwnedRegularFile(canonicalRoot, acceptancePath);
+          const existing = ExactCurrentDeckAcceptanceSchema.parse(JSON.parse(bytes.toString("utf8")));
+          if (
+            bytes.toString("utf8") !== `${JSON.stringify(existing, null, 2)}\n`
+            || existing.projectId !== manifest.projectId
+            || existing.projectRevisionId !== manifest.currentRevision.id
+            || JSON.stringify(existing.completeDeck) !== JSON.stringify(delivery)
+            || JSON.stringify(existing.formalDelivery) !== JSON.stringify(delivery)
+            || JSON.stringify(existing.exports.pptx) !== JSON.stringify(delivery)
+            || JSON.stringify(existing.client.completeDeck) !== JSON.stringify(delivery)
+            || existing.reviewAction.action !== "confirm-delivery"
+            || existing.reviewAction.revisionId !== current.revisionId
+            || existing.reviewAction.deckSha256 !== current.sha256
+            || existing.reviewAction.absolutePath !== current.absolutePath
+            || existing.actionEvidenceSha256 !== existing.reviewAction.actionEvidenceSha256
+            || existing.confirmedAt !== existing.reviewAction.actedAt
+          ) throw new Error("existing acceptance conflicts with the exact current complete deck");
+          evidence = existing.reviewAction;
+        } catch (error: unknown) {
+          const code = (error as NodeJS.ErrnoException).code
+            ?? ((error as { cause?: NodeJS.ErrnoException }).cause?.code);
+          if (code !== "ENOENT") {
+            if (error instanceof Error && /existing acceptance conflicts/.test(error.message)) throw error;
+            throw new Error("existing acceptance conflicts with the exact current complete deck", { cause: error });
+          }
+          const acceptance = ExactCurrentDeckAcceptanceSchema.parse({
+            schemaVersion: 1,
+            kind: "exact-current-complete-deck-acceptance",
+            projectId: manifest.projectId,
+            projectRevisionId: manifest.currentRevision.id,
+            completeDeck: delivery,
+            formalDelivery: delivery,
+            exports: { pptx: delivery },
+            client: { completeDeck: delivery },
+            reviewAction: evidence,
+            actionEvidenceSha256: evidence.actionEvidenceSha256,
+            confirmedAt: evidence.actedAt,
+          });
+          bytes = Buffer.from(`${JSON.stringify(acceptance, null, 2)}\n`);
+          await writeDurableExclusive(absoluteAcceptancePath, bytes);
+          await syncDirectory(dirname(absoluteAcceptancePath));
+        }
+        await operations.checkpoint?.("acceptance-artifact-written");
         acceptanceArtifact = {
           path: acceptancePath,
           sha256: sha256Evidence(bytes),
           revisionId: manifest.currentRevision.id,
         };
+        await operations.checkpoint?.("manifest-before-update");
       }
       await updateProject(canonicalRoot, (live) => {
         if (JSON.stringify(live) !== JSON.stringify(manifest)) {
@@ -159,6 +219,11 @@ export async function applyCompleteDeckReviewAction(
         return {
           ...base,
           stage,
+          pendingDeckEdit: request.action === "edit-page" ? {
+            revisionId: current.revisionId,
+            sha256: current.sha256,
+            slideId: request.slideId,
+          } : null,
           ...(request.action === "confirm-delivery" ? {
             formalDelivery: delivery,
             exports: {

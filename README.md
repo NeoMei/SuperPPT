@@ -6,7 +6,7 @@ SuperPPT 把主题描述、粘贴文本或 Markdown 变成一套高细节、图�
 
 1. 保留原始输入，只追问会真正改变成品的内容。
 2. 依次展示并等待用户决定：完整大纲、逐页描述、`style-selection` 内容相关的紧凑风格单选、样页调用授权、真实样页、整套生成授权、完整 deck 审阅。
-3. 风格在内容推荐之后从 10 种紧凑选项中选择；推荐只依据前序内容，风格只能单选。`style-selection --input` 把用户选择、代表页 stable ID 和 current project revision 一起认证；未选择不得进入样页授权。一个经样页确认的 Style Lock 以字节和哈希不变的方式交给 `ai-image-to-ppt`，保持整套一致。
+3. 风格在内容推荐之后从 10 种紧凑选项中选择；推荐只依据前序内容，风格只能单选。`style-selection --input` 把用户选择、代表页 stable ID 和 current project revision 一起认证为 v2 evidence，并绑定同源 Style Lock hash；未选择不得进入样页授权。旧 v1 选择只能读取/迁移，不能发布样页生成计划。一个经样页确认的 Style Lock 以字节和哈希不变的方式交给 `ai-image-to-ppt`，保持整套一致。
 
 其中恰好 3 个普通确认是大纲、逐页描述和真实样页。样页生成与整套生成另有执行授权，完整 deck 另有审阅决定；任何一项都不能替代或推断另一项。
 4. 每个决定点都必须停下来等待；不从输入静默跑到最终 PPTX。
@@ -22,7 +22,7 @@ WPS 或 PowerPoint 是预览与编辑界面。每次编辑响应只交付一个�
 - 连续修改：“再改第 N 页”始终按最新对账 topology 解析，下一个 candidate 从上一次采纳的精确字节创建。
 - 恢复：“恢复上一版”只移动 current pointer，不重写任何历史 PPTX。手动采纳、Agent 确认/拒绝和 rollback 都回到 `deck-review`，重绑 exact current revision/SHA 并清除旧交付绑定。
 
-完整 deck 审阅的三选一使用 `complete-deck-review --action <edit-page|return-upstream|confirm-delivery> --revision-id --sha256 [--slide-id]`。只有 `confirm-delivery` 进入 `delivered`；formal delivery、exports、acceptance 和 client metadata 全部引用同一 exact current revision/absolute path/SHA，不复制或重写 PPTX。旧 `acceptance-smoke-copy`、`acceptance-record` 入口不再发布。
+完整 deck 审阅的三选一使用 `complete-deck-review --action <edit-page|return-upstream|confirm-delivery> --revision-id --sha256 [--slide-id]`。`edit-page` 会持久化一个只能消费一次的 exact current revision/SHA/stable slide binding；manual/Agent prepare 缺失、错页、stale 或重放时必须在创建 candidate/session 前拒绝并且零残留。只有 `confirm-delivery` 进入 `delivered`；formal delivery、exports、acceptance 和 client metadata 全部引用同一 exact current revision/absolute path/SHA，不复制或重写 PPTX。固定 revision acceptance 路径可幂等重放与崩溃恢复；已有相同 evidence 重用，冲突则 fail closed 且不删除用户文件。旧 `acceptance-smoke-copy`、`acceptance-record` 实现与入口不再发布。
 
 可编辑边界依旧取决于 `image-to-editable-pptx` 的可验证提取结果：只有指定对象成功提取后才可编辑；可靠文字与透明素材走 editable 路由，主插画、背景、整体布局和未提取对象走定向重生路由。这不是整套全可编辑。
 

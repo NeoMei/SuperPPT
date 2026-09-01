@@ -37,6 +37,12 @@ export const FormalDeckDeliveryBindingSchema = z.object({
   sha256: Sha256Schema,
 }).strict();
 
+export const PendingDeckEditBindingSchema = z.object({
+  revisionId: z.string().uuid(),
+  sha256: Sha256Schema,
+  slideId: z.string().uuid(),
+}).strict();
+
 export const ClientSmokeCopyAnchorSchema = z.object({
   anchorVersion: z.literal(1),
   anchorId: z.string().uuid(),
@@ -279,6 +285,7 @@ export const ProjectManifestSchema = z.object({
     updatedAt: z.string().datetime(),
   }).strict().nullable().default(null),
   formalDelivery: FormalDeckDeliveryBindingSchema.optional(),
+  pendingDeckEdit: PendingDeckEditBindingSchema.nullable().default(null),
   activeDeckEditSessionId: z.string().uuid().nullable().default(null),
   deckRevision: z.number().int().positive().optional(),
   clientSmokeCopyAnchor: ClientSmokeCopyAnchorSchema.optional(),
@@ -337,3 +344,4 @@ export type ClientSmokeCopyAnchor = z.infer<typeof ClientSmokeCopyAnchorSchema>;
 export type ClientAcceptanceTransaction = z.infer<typeof ClientAcceptanceTransactionSchema>;
 export type EditableRevisionBinding = z.infer<typeof EditableRevisionBindingSchema>;
 export type FormalDeckDeliveryBinding = z.infer<typeof FormalDeckDeliveryBindingSchema>;
+export type PendingDeckEditBinding = z.infer<typeof PendingDeckEditBindingSchema>;
