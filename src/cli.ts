@@ -3,11 +3,6 @@ import { resolve } from "node:path";
 import { attestWorkflowDependencies, preflightDependencies } from "./dependencies/preflight.js";
 import { resolveSkillDependencies } from "./dependencies/resolve.js";
 import {
-  readProjectAcceptance,
-  recordClientAcceptance,
-} from "./deck/assemble.js";
-import { createClientSmokeCopy } from "./acceptance/smoke-copy.js";
-import {
   describeProjectGeneration,
   PageRegenerationRequestSchema,
   prepareDeckJob,
@@ -38,6 +33,8 @@ import { publishOutlineViews, publishPlanViews, publishStyleSample } from "./pla
 import { initializeProject } from "./project/initialize.js";
 import { readRegularFileNoFollow } from "./project/safe-file.js";
 import { readProject } from "./project/store.js";
+import { applyCompleteDeckReviewAction } from "./project/promotion.js";
+import { authenticateStyleSelection, StyleSelectionRequestSchema } from "./styles/selection.js";
 import { readCliJsonInput } from "./cli-input.js";
 import {
   applyRevision,
@@ -251,6 +248,25 @@ async function main(argv: string[]): Promise<void> {
     return;
   }
 
+  if (command === "complete-deck-review") {
+    const parsed = flags(argv.slice(1));
+    const action = parsed.get("--action");
+    const required = action === "edit-page"
+      ? ["--project", "--action", "--revision-id", "--sha256", "--slide-id"]
+      : ["--project", "--action", "--revision-id", "--sha256"];
+    const options = exactFlags(argv.slice(1), required);
+    if (!action || !["edit-page", "return-upstream", "confirm-delivery"].includes(action)) {
+      throw new Error("complete-deck-review action must be edit-page, return-upstream, or confirm-delivery");
+    }
+    outputJson(await applyCompleteDeckReviewAction(options.get("--project")!, {
+      action,
+      revisionId: options.get("--revision-id")!,
+      deckSha256: options.get("--sha256")!,
+      ...(action === "edit-page" ? { slideId: options.get("--slide-id")! } : {}),
+    }));
+    return;
+  }
+
   if (command === "current-deck-link") {
     requireInjectedLocalHandoff();
     const options = exactFlags(argv.slice(1), ["--project"]);
@@ -410,6 +426,15 @@ async function main(argv: string[]): Promise<void> {
       ...await publishStyleSample(options.get("--project")!),
       nextRequiredAction: "show the published sample and ask the user to approve style-sample",
     });
+    return;
+  }
+
+  if (command === "style-selection") {
+    const options = exactFlags(argv.slice(1), ["--project", "--input"]);
+    outputJson(await authenticateStyleSelection(
+      options.get("--project")!,
+      await readCliJsonInput(options.get("--input")!, "style selection", StyleSelectionRequestSchema, { privateInput: true }),
+    ));
     return;
   }
 
@@ -682,27 +707,6 @@ async function main(argv: string[]): Promise<void> {
     return;
   }
 
-
-  if (command === "acceptance") {
-    const options = exactFlags(argv.slice(1), ["--project"]);
-    outputJson(await readProjectAcceptance(options.get("--project")!));
-    return;
-  }
-
-  if (command === "acceptance-smoke-copy") {
-    const options = exactFlags(argv.slice(1), ["--project"]);
-    outputJson(await createClientSmokeCopy(options.get("--project")!));
-    return;
-  }
-
-  if (command === "acceptance-record") {
-    const options = exactFlags(argv.slice(1), ["--project", "--input"]);
-    outputJson(await recordClientAcceptance(
-      options.get("--project")!,
-      options.get("--input")!,
-    ));
-    return;
-  }
 
   throw new Error(`unknown command: ${command ?? ""}`);
 }

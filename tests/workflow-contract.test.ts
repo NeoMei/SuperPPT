@@ -106,7 +106,7 @@ async function text(path: string): Promise<string> {
 
 function validateStageContract(contract: StageContract): void {
   const expectedByKind: Record<GateKind, string[]> = {
-    ordinary: ["outline", "slide-specs", "style-sample", "generation-authorization", "deck-review"],
+    ordinary: ["outline", "slide-specs", "style-selection", "style-sample", "generation-authorization", "deck-review"],
     "execution-authorization": ["style-sample-generation"],
     conditional: ["revision-impact"],
   };
@@ -115,8 +115,9 @@ function validateStageContract(contract: StageContract): void {
   }
   assert.equal(new Set(contract.stages.map(({ id }) => id)).size, contract.stages.length);
   const expectedInvalidation: Record<string, string[]> = {
-    outline: ["slide-specs", "style-sample-generation", "style-sample", "generation-authorization", "deck-review", "formal-delivery", "acceptance-evidence"],
-    "slide-specs": ["style-sample-generation", "style-sample", "generation-authorization", "deck-review", "formal-delivery", "acceptance-evidence"],
+    outline: ["slide-specs", "style-selection", "style-sample-generation", "style-sample", "generation-authorization", "deck-review", "formal-delivery", "acceptance-evidence"],
+    "slide-specs": ["style-selection", "style-sample-generation", "style-sample", "generation-authorization", "deck-review", "formal-delivery", "acceptance-evidence"],
+    "style-selection": ["style-sample-generation", "style-sample", "generation-authorization", "deck-review", "formal-delivery", "acceptance-evidence"],
     "style-sample": ["generation-authorization", "deck-review", "formal-delivery", "acceptance-evidence"],
     "generation-authorization": ["deck-review", "formal-delivery", "acceptance-evidence"],
     "deck-review": ["formal-delivery", "acceptance-evidence"],
@@ -327,6 +328,7 @@ test("delegation discloses exact outbound inputs and preserves current Task 10 r
 
   const requiredRoutes = [
     "publish-sample-generation-plan",
+    "style-selection",
     "approve --project --gate style-sample-generation",
     "prepare-style-sample-job",
     "publish-generation-plan",
@@ -342,6 +344,7 @@ test("delegation discloses exact outbound inputs and preserves current Task 10 r
     "confirm-agent-deck",
     "reject-deck-candidate",
     "rollback-deck",
+    "complete-deck-review",
   ];
   for (const route of requiredRoutes) assert.match(dependencies, new RegExp(route.replaceAll("-", "\\-")));
   assert.doesNotMatch(dependencies, /approve --project .*deck-review/);
@@ -377,6 +380,7 @@ test("active workflow hands off only one complete local PPTX and names exact wai
     "slide-preview",
     "montage",
   ]) assert.doesNotMatch(workflow, new RegExp(obsolete, "i"), obsolete);
+  assert.match(workflow, /(?:former|legacy|旧)[^\n]*acceptance-smoke-copy[^\n]*acceptance-record[^\n]*(?:not|removed|移除|不)/i);
   assert.doesNotMatch(workflow, /(?:交付|展示|链接|handoff)[^\n]*(?:PNG|PDF|单页 PPTX|browser|cloud|upload)/i);
   assert.match(workflow, /不能把整页图片描述为可编辑/);
 });

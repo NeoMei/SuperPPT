@@ -60,6 +60,12 @@ export const StyleSelectionSchema = z.discriminatedUnion("kind", [
 
 export const StyleSampleSelectionSchema = z.union([
   z.object({
+    schemaVersion: z.literal(2),
+    projectRevisionId: z.string().uuid(),
+    representativeSlideId: z.string().uuid(),
+    selection: StyleSelectionSchema,
+  }).strict(),
+  z.object({
     schemaVersion: z.literal(1),
     representativeSlideId: z.string().uuid(),
     selection: StyleSelectionSchema,

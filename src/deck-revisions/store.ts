@@ -3,6 +3,7 @@ import { lstat, mkdir, rename } from "node:fs/promises";
 import { dirname, join, relative, sep } from "node:path";
 
 import { z } from "zod";
+import JSZip from "jszip";
 
 import { withGenerationLease } from "../generation/lease.js";
 import { syncDirectory, writeDurableExclusive } from "../project/durable.js";
@@ -10,6 +11,7 @@ import { withProjectLease } from "../project/lock.js";
 import { validateProjectRoot } from "../project/paths.js";
 import { readRegularFileNoFollow } from "../project/safe-file.js";
 import { readProject, updateProject } from "../project/store.js";
+import type { ProjectManifest } from "../project/schemas.js";
 import { inspectLocalPptx, type InspectedLocalPptx } from "./inspect.js";
 import { completeReviewRequiredObjects } from "./review-required.js";
 import { reconcileSlideTopology } from "./topology.js";
@@ -419,9 +421,12 @@ export async function rejectDeckCandidate(
     const session = await readSession(canonicalRoot, validSessionId);
     if (options.mode && session.mode !== options.mode) throw new Error("deck rejection mode does not match its session");
     if (session.state === "rejected") {
+      const pointer = await readCurrentDeckPointerUnlocked(canonicalRoot);
+      const { absolutePath: _absolutePath, ...currentDeckPointer } = pointer;
+      const currentDeck = CurrentDeckPointerSchema.parse(currentDeckPointer);
       await updateProject(canonicalRoot, (project) => {
         if (project.activeDeckEditSessionId !== session.sessionId) throw new Error("deck rejection cleanup lost active session authority");
-        return { ...project, activeDeckEditSessionId: null };
+        return { ...resetToCurrentDeckReview(project, currentDeck), activeDeckEditSessionId: null };
       });
       return;
     }
@@ -436,9 +441,12 @@ export async function rejectDeckCandidate(
       state: "rejected",
       completedAt: new Date().toISOString(),
     });
+    const pointer = await readCurrentDeckPointerUnlocked(canonicalRoot);
+    const { absolutePath: _absolutePath, ...currentDeckPointer } = pointer;
+    const currentDeck = CurrentDeckPointerSchema.parse(currentDeckPointer);
     await updateProject(canonicalRoot, (project) => {
       if (project.activeDeckEditSessionId !== session.sessionId) throw new Error("deck rejection lost active session authority");
-      return { ...project, activeDeckEditSessionId: null };
+      return { ...resetToCurrentDeckReview(project, currentDeck), activeDeckEditSessionId: null };
     });
   }));
 }
@@ -581,6 +589,21 @@ async function writeCurrentPointerOnly(root: string, value: CurrentDeckPointer):
   return { ...pointer, absolutePath: join(root, ...pointer.relativePath.split("/")) };
 }
 
+function resetToCurrentDeckReview(project: ProjectManifest, currentDeck: CurrentDeckPointer): ProjectManifest {
+  const {
+    formalDelivery: _formalDelivery,
+    clientSmokeCopyAnchor: _clientSmokeCopyAnchor,
+    clientAcceptanceTransaction: _clientAcceptanceTransaction,
+    ...base
+  } = project;
+  return {
+    ...base,
+    stage: "deck-review" as const,
+    currentDeck,
+    exports: { pptx: null, acceptance: null },
+  };
+}
+
 export async function createDeckCandidate(
   root: string,
   options: CreateDeckCandidateOptions,
@@ -658,6 +681,54 @@ function adoptedRevisionMetadata(
     reviewRequiredObjectsBySlideId[session.targetSlideId] = session.reviewRequiredObjects;
   }
   return { editableSlideIds, changedSlideIds: authority.changedSlideIds, reviewRequiredObjectsBySlideId };
+}
+
+function slideRelationshipsPart(slidePart: string): string {
+  return `ppt/slides/_rels/${slidePart.split("/").at(-1)!}.rels`;
+}
+
+async function zipMemberBytes(zip: JSZip, path: string): Promise<Buffer | null> {
+  const file = zip.file(path);
+  return file ? file.async("nodebuffer") : null;
+}
+
+async function actualManualChangedSlideIds(
+  parent: ResolvedLocalDeckRevision,
+  candidatePath: string,
+  topology: SlideTopology,
+): Promise<string[]> {
+  const [before, after] = await Promise.all([
+    JSZip.loadAsync(await readRegularFileNoFollow(parent.absolutePath)),
+    JSZip.loadAsync(await readRegularFileNoFollow(candidatePath)),
+  ]);
+  const priorByStableId = new Map(parent.slideTopology.entries.map((entry) => [entry.stableSlideId, entry]));
+  const changed: string[] = [];
+  for (const entry of topology.entries) {
+    const prior = priorByStableId.get(entry.stableSlideId);
+    if (!prior) {
+      changed.push(entry.stableSlideId);
+      continue;
+    }
+    const [beforeXml, afterXml, beforeRels, afterRels] = await Promise.all([
+      zipMemberBytes(before, prior.slidePart),
+      zipMemberBytes(after, entry.slidePart),
+      zipMemberBytes(before, slideRelationshipsPart(prior.slidePart)),
+      zipMemberBytes(after, slideRelationshipsPart(entry.slidePart)),
+    ]);
+    if (
+      prior.position !== entry.position
+      || beforeXml === null
+      || afterXml === null
+      || !beforeXml.equals(afterXml)
+      || (beforeRels === null) !== (afterRels === null)
+      || (beforeRels !== null && !beforeRels.equals(afterRels!))
+    ) changed.push(entry.stableSlideId);
+  }
+  const active = new Set(topology.entries.map((entry) => entry.stableSlideId));
+  for (const entry of parent.slideTopology.entries) {
+    if (!active.has(entry.stableSlideId)) changed.push(entry.stableSlideId);
+  }
+  return changed;
 }
 
 function assertTopologyBindsInspection(topology: SlideTopology, inspected: InspectedLocalPptx): void {
@@ -814,8 +885,7 @@ async function finalizeAdoption(
     updatedAt: pointer.updatedAt,
   });
   await updateProject(root, (project) => ({
-    ...project,
-    currentDeck,
+    ...resetToCurrentDeckReview(project, currentDeck),
     activeDeckEditSessionId: project.activeDeckEditSessionId === session.sessionId
       ? null
       : project.activeDeckEditSessionId,
@@ -877,6 +947,13 @@ export async function adoptDeckCandidate(
     const parent = await readLocalDeckRevision(canonicalRoot, session.parentRevisionId);
     const reconciled = reconcileSlideTopology(parent.slideTopology, inspected);
     if (reconciled.conflicts.length > 0) throw new Error("saved deck has ambiguous slide identities");
+    if (options.mode === "manual") {
+      const changedSlideIds = await actualManualChangedSlideIds(parent, absolutePath, reconciled.topology);
+      journal = await updateJournal(canonicalRoot, session.sessionId, (value) => ({
+        ...value,
+        changedSlideIds,
+      }));
+    }
     const adoptedAt = new Date().toISOString();
     const metadata = adoptedRevisionMetadata(parent, session, journal, reconciled.topology);
     const manifest = await readProject(canonicalRoot);
@@ -945,7 +1022,7 @@ async function finishAdoptedSessionCleanup(
     if (project.activeDeckEditSessionId !== session.sessionId) {
       throw new Error("active adopted deck cleanup lost its session authority");
     }
-    return { ...project, currentDeck, activeDeckEditSessionId: null };
+    return { ...resetToCurrentDeckReview(project, currentDeck), activeDeckEditSessionId: null };
   });
   return pointer;
 }
@@ -984,16 +1061,13 @@ export async function rollbackCurrentDeck(
       sha256: revision.sha256,
       updatedAt: new Date().toISOString(),
     });
-    await updateProject(canonicalRoot, (project) => ({
-      ...project,
-      currentDeck: CurrentDeckPointerSchema.parse({
+    await updateProject(canonicalRoot, (project) => resetToCurrentDeckReview(project, CurrentDeckPointerSchema.parse({
         schemaVersion: pointer.schemaVersion,
         revisionId: pointer.revisionId,
         relativePath: pointer.relativePath,
         sha256: pointer.sha256,
         updatedAt: pointer.updatedAt,
-      }),
-    }));
+      })));
     return pointer;
   }));
 }

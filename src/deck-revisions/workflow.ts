@@ -111,7 +111,7 @@ export async function prepareManualEditDeck(options: {
     mode: "manual",
   });
   try {
-    if (!alreadyEditable) {
+    if (!alreadyEditable && target.management === "managed") {
       if (!valid.conversionRoot) {
         throw new Error("manual edit requires an authenticated editable conversion for a non-editable slide");
       }

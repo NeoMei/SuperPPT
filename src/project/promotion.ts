@@ -42,7 +42,7 @@ export type DeckReviewActionOutcome =
 
 export type CompleteDeckReviewActionOutcome = {
   action: CompleteDeckReviewActionRequest["action"];
-  stage: "deck-review" | "revising";
+  stage: "deck-review" | "revising" | "delivered";
   currentRevisionId: string;
   evidence: CompleteDeckReviewActionEvidence;
 };
@@ -85,6 +85,9 @@ export async function applyCompleteDeckReviewAction(
     await assertProjectMutationNotFrozen(generationRoot);
     return withPlanningLock(generationRoot, async (canonicalRoot) => {
       const manifest = await readProject(canonicalRoot);
+      if (manifest.stage !== "deck-review") {
+        throw new Error("complete deck review action requires the current deck-review stage");
+      }
       const current = await readCurrentDeckPointer(canonicalRoot);
       if (request.revisionId !== current.revisionId || request.deckSha256 !== current.sha256) {
         throw new Error("complete deck review action is stale for the exact current revision and SHA-256");
@@ -116,14 +119,59 @@ export async function applyCompleteDeckReviewAction(
       });
       const stage = request.action === "edit-page"
         ? "revising" as const
-        : "deck-review" as const;
+        : request.action === "confirm-delivery"
+          ? "delivered" as const
+          : "deck-review" as const;
+      const delivery = {
+        revisionId: current.revisionId,
+        absolutePath: current.absolutePath,
+        sha256: current.sha256,
+      };
+      let acceptanceArtifact: { path: string; sha256: string; revisionId: string } | null = null;
+      if (request.action === "confirm-delivery") {
+        const acceptancePath = `output/deck-revisions/${current.revisionId}/acceptance.json`;
+        const acceptance = {
+          schemaVersion: 1,
+          kind: "exact-current-complete-deck-acceptance",
+          projectId: manifest.projectId,
+          projectRevisionId: manifest.currentRevision.id,
+          completeDeck: delivery,
+          formalDelivery: delivery,
+          exports: { pptx: delivery },
+          client: { completeDeck: delivery },
+          actionEvidenceSha256: evidence.actionEvidenceSha256,
+          confirmedAt: evidence.actedAt,
+        };
+        const bytes = Buffer.from(`${JSON.stringify(acceptance, null, 2)}\n`);
+        await writeDurableExclusive(join(canonicalRoot, ...acceptancePath.split("/")), bytes);
+        await syncDirectory(dirname(join(canonicalRoot, ...acceptancePath.split("/"))));
+        acceptanceArtifact = {
+          path: acceptancePath,
+          sha256: sha256Evidence(bytes),
+          revisionId: manifest.currentRevision.id,
+        };
+      }
       await updateProject(canonicalRoot, (live) => {
         if (JSON.stringify(live) !== JSON.stringify(manifest)) {
           throw new Error("project revision changed during complete deck review action");
         }
+        const { clientSmokeCopyAnchor: _smoke, clientAcceptanceTransaction: _acceptance, formalDelivery: _formal, ...base } = live;
         return {
-          ...live,
+          ...base,
           stage,
+          ...(request.action === "confirm-delivery" ? {
+            formalDelivery: delivery,
+            exports: {
+              pptx: {
+                path: current.relativePath,
+                sha256: current.sha256,
+                revisionId: live.currentRevision.id,
+              },
+              acceptance: acceptanceArtifact,
+            },
+          } : {
+            exports: { pptx: null, acceptance: null },
+          }),
           gates: request.action === "confirm-delivery"
             ? [...live.gates, {
               gate: "deck-review" as const,

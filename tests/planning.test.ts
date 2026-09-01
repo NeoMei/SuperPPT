@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
-import { access, mkdir, mkdtemp, readFile, readdir, realpath, rename, rm, stat, symlink, unlink, utimes, writeFile } from "node:fs/promises";
+import { access, chmod, mkdir, mkdtemp, readFile, readdir, realpath, rename, rm, stat, symlink, unlink, utimes, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test, { type TestContext } from "node:test";
@@ -1447,6 +1447,41 @@ test("CLI validates and publishes plans and exposes no artifact override", async
   assert.equal(await assertGateCurrent(root, "outline"), true);
   await assert.rejects(execFileAsync(process.execPath, [...invocation, "approve", "--project", root, "--gate", "outline", "--artifacts", "[\"superppt.json\"]"], projectCliOptions(root)), /unknown CLI flag/);
   await assert.rejects(execFileAsync(process.execPath, [...invocation, "validate-plan", "--project", "relative"], projectCliOptions(root)), /Unsafe project root/);
+});
+
+test("style-selection CLI authenticates one choice, representative slide, and project revision before sample authorization", async (t) => {
+  const root = await project(t, "superppt-style-selection-cli-");
+  await writeValidPlan(root);
+  const invocation = ["--import", "tsx", "src/cli.ts"];
+  const run = (args: string[]) => execFileAsync(process.execPath, [...invocation, ...args], projectCliOptions(root));
+  await run(["validate-plan", "--project", root]);
+  await run(["approve", "--project", root, "--gate", "outline"]);
+  await run(["approve", "--project", root, "--gate", "slide-specs"]);
+  const revisionId = (await readProject(root)).currentRevision.id;
+  const input = join(root, "selected-style.json");
+  await writeFile(input, `${JSON.stringify({
+    projectRevisionId: revisionId,
+    representativeSlideId: SLIDE_IDS[1],
+    selection: { kind: "catalog", styleId: "scientific-atlas" },
+    referenceArtifacts: [],
+  }, null, 2)}\n`);
+  await chmod(input, 0o600);
+  const selected = JSON.parse((await run(["style-selection", "--project", root, "--input", input])).stdout);
+  assert.equal(selected.stage, "style-selection");
+  assert.equal(selected.projectRevisionId, revisionId);
+  assert.equal(selected.representativeSlideId, SLIDE_IDS[1]);
+  assert.equal(selected.styleId, "scientific-atlas");
+  assert.equal((await readProject(root)).stage, "style-selection");
+
+  const stale = join(root, "stale-style.json");
+  await writeFile(stale, `${JSON.stringify({
+    projectRevisionId: "00000000-0000-4000-8000-000000000999",
+    representativeSlideId: SLIDE_IDS[1],
+    selection: { kind: "catalog", styleId: "cinematic-tech" },
+    referenceArtifacts: [],
+  })}\n`);
+  await chmod(stale, 0o600);
+  await assert.rejects(run(["style-selection", "--project", root, "--input", stale]), /stale|project revision/i);
 });
 
 test("CLI publishes and approves the outline before any slide specs exist", async (t) => {

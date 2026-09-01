@@ -232,3 +232,36 @@ The next action is explicitly the main agent opening the complete manual candida
 
 - Intended independent commit message: `fix: adopt WPS decks without creation IDs`.
 - The exact fix commit and scoped `a4dedf0..<newHEAD>` review-package hash/line/byte evidence are generated after this report is committed and reported in the handoff; this report does not predict its own commit identity.
+
+## Whole-branch review closure (2026-09-01)
+
+### Scope and RED evidence
+
+- Review baseline: `248a3be` (`fix: adopt WPS decks without creation IDs`). This round addresses all seven whole-branch findings together; no P2 item was deferred.
+- Initial focused source run: **RED**, 81 total / 77 passed / 4 failed, `43.17s`. It proved that the exact complete-deck review CLI and authenticated style-selection CLI were absent, manual `changedSlideIds` only echoed the target instead of actual WPS changes, and the package still exposed the legacy smoke script/CLI contract.
+- Adjacent audit then found two old `tests/deck.test.ts` assertions that still required the removed smoke script and legacy acceptance commands. Their focused migration is behavior-based: the script path is absent and `acceptance`, `acceptance-smoke-copy`, and `acceptance-record` are unknown CLI commands.
+
+### Minimal implementation
+
+- Added `complete-deck-review` with exact revision/SHA binding for `edit-page`, `return-upstream`, and `confirm-delivery`. Confirmation enters `delivered` and writes one acceptance record whose `completeDeck`, `formalDelivery`, `exports.pptx`, and `client.completeDeck` all name the same current revision, canonical absolute path, and SHA-256; the PPTX is neither copied nor rewritten.
+- Every edit-page transition enters `revising`; manual adoption, Agent confirm/reject, adopted-session recovery, and pointer-only rollback restore `deck-review`, bind the manifest to current, and remove stale formal-delivery/client/export metadata.
+- Manual adoption computes actual changed stable IDs from topology position/insertion/deletion plus slide XML and relationship bytes. A WPS-native unmanaged page bypasses converter activation and supports a second complete-deck manual cycle.
+- Added authenticated `style-selection`: exact user single choice, representative stable slide, and current project revision are persisted before sample authorization. A stale selection fails closed, and the stage contract now places this wait between `slide-specs` and sample generation authorization.
+- Removed `scripts/acceptance-smoke.sh` and isolated the old acceptance mechanism from the public CLI/package route. Exact-current complete-deck review is the active acceptance path.
+- Synchronized the active Skill, all five references (`阶段契约`, `门禁清单`, `工作区契约`, `修改路由`, `依赖说明`), README, main plan, workflow-contract tests, package tests, and this acceptance report.
+
+### Focused verification and acceptance boundary
+
+- Frozen focused source suites (`cli-approval`, `full-deck-editing`, `plugin-package`, `planning`, `workflow-contract`): **PASS**, 92/92, `45.98s`.
+- Frozen legacy-entry source name-pattern: **PASS**, 2/2, `1.18s`.
+- Frozen `npm run lint:types && npm run build`: **PASS**.
+- Frozen focused compiled suites: **PASS**, 92/92, `56.38s`; compiled legacy-entry name-pattern: **PASS**, 2/2, `1.20s`.
+- Frozen `npm pack --dry-run --json`: **PASS**, 102 files, package size 4,652,855 bytes, unpacked 5,667,702 bytes; legacy smoke script and generated/user PPTX, PDF, montage, and staging artifacts are absent. Built-in style catalog preview assets remain intentional Skill inputs.
+- Fixture manual adoption -> exact formal delivery: **PASS** and byte-equal. Fixture Agent confirm/reject/rollback review reset: **PASS**. Actual topology/XML changed IDs and unmanaged second manual edit: **PASS**.
+- Real WPS manual edit: **PENDING**. Real WPS next-page continuity: **PENDING**. Real WPS Agent GUI: **PENDING**. No controlled WPS file or user document was opened or modified in this round.
+- The long full source/compiled suites were intentionally **not run** in this round; controller frozen verification remains pending and must not be inferred from the focused results.
+
+### Commit and review handoff
+
+- Intended independent commit message: `fix: close exact complete-deck delivery contract`.
+- The exact commit and scoped `248a3be..<newHEAD>` review-package hash/line/byte evidence are generated after this report is committed; this report does not predict its own commit identity.

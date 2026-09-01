@@ -978,29 +978,8 @@ test("rejects missing undo or reopen and a saved smoke modification without chan
   }
 });
 
-test("manual discard reopen helper creates only the owned copy and prints the human checklist", async (t) => {
-  const fixture = await readyProject(t);
-  await deliverReviewedCandidate({ root: fixture.root, operations: { buildOutputs: fakeOutputs } });
-  const before = await readProject(fixture.root);
-  const canonical = join(fixture.root, before.exports.pptx!.path);
-  const canonicalBytes = await readFile(canonical);
-
-  const { stdout } = await execFileAsync(join(process.cwd(), "scripts", "acceptance-smoke.sh"), [fixture.root], {
-    cwd: process.cwd(),
-    env: process.env,
-  });
-
-  for (const item of ["选定对象", "临时修改", "观察", "撤销", "丢弃/不保存", "关闭", "重开", "核验原内容"]) {
-    assert.match(stdout, new RegExp(item));
-  }
-  assert.match(stdout, /不操作 WPS\/PowerPoint，也不声明验收通过/);
-  assert.match(stdout, /禁止.*canonical.*deck\.pptx/is);
-  const after = await readProject(fixture.root);
-  assert.equal(after.stage, "assembling");
-  assert.equal(after.clientSmokeCopyAnchor?.state, "ready");
-  await access(join(fixture.root, after.clientSmokeCopyAnchor!.initialCopy.path));
-  await assert.rejects(access(join(fixture.root, "output", "revisions", "1", "acceptance-record.json")));
-  assert.deepEqual(await readFile(canonical), canonicalBytes);
+test("legacy manual discard helper is not a current entrypoint", async () => {
+  await assert.rejects(access(join(process.cwd(), "scripts", "acceptance-smoke.sh")), { code: "ENOENT" });
 });
 
 test("rejects forged discard evidence and post-acceptance smoke-copy tampering", async (t) => {
@@ -1350,7 +1329,7 @@ test("rejects delivery when immutable gate snapshots or presentation pointers ar
   }
 });
 
-test("removes candidate assembly while retaining acceptance record inspection during migration", async (t) => {
+test("removes candidate assembly and legacy acceptance CLI entrypoints", async (t) => {
   const root = await directory(t);
   const cli = join(process.cwd(), "src", "cli.ts");
   const invoke = async (args: string[], env: NodeJS.ProcessEnv = process.env) => {
@@ -1376,23 +1355,10 @@ test("removes candidate assembly while retaining acceptance record inspection du
   assert.match(assembleError, /complete deck|current-deck-link|prepare-manual-deck/i);
   assert.doesNotMatch(assembleError, /unknown command/);
 
-  const acceptanceError = await invoke(["acceptance", "--project", root]);
-  assert.match(acceptanceError, /not owned by SuperPPT/);
-  assert.doesNotMatch(acceptanceError, /unknown command/);
-
-  const smokeCopyError = await invoke(["acceptance-smoke-copy", "--project", root]);
-  assert.match(smokeCopyError, /not owned by SuperPPT|planning artifact must be a regular file/);
-  assert.doesNotMatch(smokeCopyError, /unknown command/);
-
-  const recordError = await invoke([
-    "acceptance-record",
-    "--project",
-    root,
-    "--input",
-    join(root, "missing.json"),
-  ]);
-  assert.match(recordError, /client acceptance input must be a regular 0600 file/);
-  assert.doesNotMatch(recordError, /unknown command/);
+  for (const command of ["acceptance", "acceptance-smoke-copy", "acceptance-record"]) {
+    const error = await invoke([command, "--project", root]);
+    assert.match(error, /unknown command/, command);
+  }
 });
 
 test("rejects a PPTX that names pages but has no bound media relationships", async (t) => {

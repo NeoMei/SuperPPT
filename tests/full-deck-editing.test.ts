@@ -131,6 +131,7 @@ async function reorderInsertDelete(path: string): Promise<Buffer> {
   zip.remove("ppt/slides/_rels/slide1.xml.rels");
   zip.file("ppt/slides/slide4.xml", slideXml(2004, "inserted"));
   zip.file("ppt/slides/_rels/slide4.xml.rels", `<Relationships xmlns="${REL}"/>`);
+  zip.file("ppt/slides/slide3.xml", (await zip.file("ppt/slides/slide3.xml")!.async("string")).replace(">three</a:t>", ">three changed outside target</a:t>"));
   const saved = await zip.generateAsync({ type: "nodebuffer" });
   await writeFile(path, saved);
   return saved;
@@ -396,16 +397,31 @@ test("manual adoption reconciles reorder, insertion, and deletion and the next e
     { stableSlideId: fixture.slideIds[2], position: 2, management: "managed" },
   ]);
   assert.deepEqual(revision.slideTopology.deletedStableSlideIds, [fixture.slideIds[0]]);
+  assert.deepEqual(revision.changedSlideIds, [
+    fixture.slideIds[1],
+    revision.slideTopology.entries[1]!.stableSlideId,
+    fixture.slideIds[2],
+    fixture.slideIds[0],
+  ], "manual adoption records moved, inserted, non-target XML changed, and deleted stable IDs");
 
-  const next = await prepareManualEditDeck({ root: fixture.root, revisionId: adopted.revisionId, slideId: fixture.slideIds[1]! });
-  assert.equal(next.targetSlideIndex, 0);
+  const unmanaged = revision.slideTopology.entries[1]!;
+  const next = await prepareManualEditDeck({ root: fixture.root, revisionId: adopted.revisionId, slideId: unmanaged.stableSlideId });
+  assert.equal(next.targetSlideIndex, 1);
   assert.deepEqual(await readFile(next.absolutePath), saved);
+  const savedAgain = await replaceSlideText(next.absolutePath, unmanaged.slidePart, "inserted", "inserted edited again");
+  const adoptedAgain = await adoptManualSavedDeck({
+    root: fixture.root,
+    sessionId: next.sessionId,
+    userSignal: "saved-and-closed",
+  });
+  assert.deepEqual(await readFile(next.absolutePath), savedAgain);
+  assert.equal((await readLocalDeckRevision(fixture.root, adoptedAgain.revisionId)).slideTopology.entries[1]!.stableSlideId, unmanaged.stableSlideId);
   await assert.rejects(adoptManualSavedDeck({
     root: fixture.root,
     sessionId: prepared.sessionId,
     userSignal: "saved-and-closed",
   }), /stale|active session/i);
-  assert.equal((await readProject(fixture.root)).activeDeckEditSessionId, next.sessionId);
+  assert.equal((await readProject(fixture.root)).activeDeckEditSessionId, null);
 });
 
 test("manual adoption accepts WPS presentation identities after creation IDs are removed and the next Agent edit still binds", async (t) => {

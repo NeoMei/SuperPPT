@@ -10,7 +10,7 @@
       "inputs": ["brief.json", "source/original.md", "material answers gathered one at a time"],
       "userVisibleArtifact": "完整大纲：页码、稳定页面 ID、标题、页面角色、目的和来源覆盖",
       "allowedNextActions": ["approve-outline", "revise-outline", "return-to-intake"],
-      "invalidationDependencies": ["slide-specs", "style-sample-generation", "style-sample", "generation-authorization", "deck-review", "formal-delivery", "acceptance-evidence"],
+      "invalidationDependencies": ["slide-specs", "style-selection", "style-sample-generation", "style-sample", "generation-authorization", "deck-review", "formal-delivery", "acceptance-evidence"],
       "canSpendImageCalls": false
     },
     {
@@ -22,6 +22,18 @@
       "inputs": ["approved outline", "source evidence", "all slides/<stable-id>/spec.json"],
       "userVisibleArtifact": "逐页描述：核心信息、精确文字、视觉主体、构图关系、来源证据和禁用内容",
       "allowedNextActions": ["approve-slide-specs", "revise-one-or-more-slide-specs", "return-to-outline"],
+      "invalidationDependencies": ["style-selection", "style-sample-generation", "style-sample", "generation-authorization", "deck-review", "formal-delivery", "acceptance-evidence"],
+      "canSpendImageCalls": false
+    },
+    {
+      "id": "style-selection",
+      "kind": "ordinary",
+      "interaction": "human",
+      "action": "wait",
+      "mustWaitForUser": true,
+      "inputs": ["approved slide specs", "compact real-preview recommendations", "representative stable slide ID", "current project revision ID"],
+      "userVisibleArtifact": "内容相关的紧凑真实预览与高信息配方单选，绑定代表页和当前 project revision",
+      "allowedNextActions": ["select-one-style", "revise-style-recommendations", "return-to-slide-specs"],
       "invalidationDependencies": ["style-sample-generation", "style-sample", "generation-authorization", "deck-review", "formal-delivery", "acceptance-evidence"],
       "canSpendImageCalls": false
     },

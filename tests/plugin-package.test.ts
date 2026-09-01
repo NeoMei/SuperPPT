@@ -106,6 +106,9 @@ test("package allowlist and dry-run exclude build leftovers and removed provider
     return /(?:\.pptx$|\.pdf$|montage|(?:^|\/)(?:preview|previews)(?:\/|\.|-)|user[-_ ]?edit|single[-_ ]?(?:page|slide)|slide-editable|(?:^|\/)staging(?:\/|$)|\.staging(?:\.|\/|$))/i.test(path);
   };
   assert.deepEqual(paths.filter(generatedArtifact), [], "package must exclude generated/user edit and review artifacts");
+  assert.equal(paths.includes("scripts/acceptance-smoke.sh"), false, "legacy smoke-copy script must not ship");
+  const cli = await readFile("src/cli.ts", "utf8");
+  assert.doesNotMatch(cli, /command === "acceptance(?:-(?:smoke-copy|record))?"/);
   assert.deepEqual(dependencies.dependencies.map((dependency: Record<string, unknown>) => ({
     skill: dependency.skill,
     cliFlag: dependency.cliFlag,

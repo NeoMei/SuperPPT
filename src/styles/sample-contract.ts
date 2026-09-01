@@ -110,6 +110,9 @@ export async function canonicalStyleSample(root: string): Promise<CanonicalStyle
     readOwnedRegularFile(root, STYLE_SAMPLE_ARTIFACTS[0]),
   ]);
   const selection = StyleSampleSelectionSchema.parse(JSON.parse(selectionBytes.toString("utf8")));
+  if (selection.schemaVersion === 2 && selection.projectRevisionId !== manifest.currentRevision.id) {
+    throw new Error("style selection does not bind the current project revision");
+  }
   const spec = plan.specs.find(({ slideId }) => slideId === representativeSlideId(selection));
   if (!spec) throw new Error("representative slide must exist in current outline");
   const styleLock = await readStyleLockIfPresent(root);

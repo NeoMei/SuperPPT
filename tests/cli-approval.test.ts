@@ -151,6 +151,13 @@ test("manual commands return one clickable complete PPTX and adopt only saved-an
   assert.equal(current.markdownLink, `[${current.linkLabel}](<${current.absolutePath}>)`);
   assert.equal("sessionId" in current, false);
 
+  const editPage = await runCliJson([
+    "complete-deck-review", "--project", project.root, "--action", "edit-page",
+    "--revision-id", project.revisionId, "--sha256", digest(await readFile(project.absolutePath)),
+    "--slide-id", project.slideIds[1]!,
+  ]);
+  assert.equal(editPage.stage, "revising");
+
   const prepared = await runCliJson([
     "prepare-manual-deck", "--project", project.root, "--revision-id", project.revisionId, "--slide-id", project.slideIds[1]!,
   ]);
@@ -170,6 +177,64 @@ test("manual commands return one clickable complete PPTX and adopt only saved-an
   assert.equal(adopted.currentRevisionId, prepared.revisionId);
   assert.equal("absolutePath" in adopted, false);
   assert.match(adopted.nextRequiredAction, /current-deck-link/);
+  assert.equal((await readProject(project.root)).stage, "deck-review");
+  const savedBytes = await readFile(prepared.absolutePath);
+  const delivery = await runCliJson([
+    "complete-deck-review", "--project", project.root, "--action", "confirm-delivery",
+    "--revision-id", adopted.currentRevisionId, "--sha256", adopted.sha256,
+  ]);
+  assert.equal(delivery.stage, "delivered");
+  const delivered = await readProject(project.root);
+  assert.equal(delivered.formalDelivery?.revisionId, adopted.currentRevisionId);
+  assert.equal(delivered.formalDelivery?.absolutePath, prepared.absolutePath);
+  assert.equal(delivered.formalDelivery?.sha256, adopted.sha256);
+  assert.equal(delivered.exports.pptx?.path, `output/deck-revisions/${adopted.currentRevisionId}/deck.pptx`);
+  const acceptance = JSON.parse(await readFile(join(project.root, delivered.exports.acceptance!.path), "utf8"));
+  assert.deepEqual(acceptance.completeDeck, delivered.formalDelivery);
+  assert.deepEqual(acceptance.formalDelivery, delivered.formalDelivery);
+  assert.deepEqual(acceptance.exports.pptx, delivered.formalDelivery);
+  assert.deepEqual(acceptance.client.completeDeck, delivered.formalDelivery);
+  assert.deepEqual(await readFile(prepared.absolutePath), savedBytes, "manual adopt through acceptance remains byte-identical");
+});
+
+test("complete-deck-review CLI authenticates all three choices and confirm-delivery binds exact current bytes", async (t) => {
+  const project = await cliProject(t);
+  const before = await readFile(project.absolutePath);
+  const confirmed = await runCliJson([
+    "complete-deck-review",
+    "--project", project.root,
+    "--action", "confirm-delivery",
+    "--revision-id", project.revisionId,
+    "--sha256", digest(before),
+  ]);
+  assert.equal(confirmed.action, "confirm-delivery");
+  assert.equal(confirmed.stage, "delivered");
+  const manifest = await readProject(project.root);
+  assert.equal(manifest.stage, "delivered");
+  assert.deepEqual(manifest.formalDelivery, {
+    revisionId: project.revisionId,
+    absolutePath: project.absolutePath,
+    sha256: digest(before),
+  });
+  assert.deepEqual(manifest.exports.pptx, {
+    path: `output/deck-revisions/${project.revisionId}/deck.pptx`,
+    sha256: digest(before),
+    revisionId: manifest.currentRevision.id,
+  });
+  assert.equal(manifest.exports.acceptance?.revisionId, manifest.currentRevision.id);
+  const acceptance = JSON.parse(await readFile(join(project.root, manifest.exports.acceptance!.path), "utf8"));
+  assert.deepEqual(acceptance.completeDeck, manifest.formalDelivery);
+  assert.deepEqual(acceptance.formalDelivery, manifest.formalDelivery);
+  assert.deepEqual(acceptance.exports.pptx, manifest.formalDelivery);
+  assert.deepEqual(acceptance.client.completeDeck, manifest.formalDelivery);
+  assert.equal(acceptance.actionEvidenceSha256, confirmed.evidence.actionEvidenceSha256);
+  assert.deepEqual(await readFile(project.absolutePath), before, "formal delivery must not rewrite current PPTX bytes");
+
+  const stale = await cliProject(t);
+  await assert.rejects(runCli([
+    "complete-deck-review", "--project", stale.root, "--action", "confirm-delivery",
+    "--revision-id", stale.revisionId, "--sha256", "0".repeat(64),
+  ]), /stale|current|sha-256/i);
 });
 
 test("resolves repeated page-number edits from the current reconciled deck topology", async (t) => {
@@ -232,6 +297,12 @@ test("prepare-manual-deck binds the resolver revision and leaves no candidate wh
 test("Agent confirmation, rejection, and deck rollback use exact complete-deck identities", async (t) => {
   const project = await cliProject(t);
   const first = await readCurrentDeckPointer(project.root);
+  assert.equal((await applyCompleteDeckReviewAction(project.root, {
+    action: "edit-page",
+    revisionId: first.revisionId,
+    deckSha256: first.sha256,
+    slideId: project.slideIds[0]!,
+  })).stage, "revising");
   const rejectedCandidate = await createDeckCandidate(project.root, {
     sourceRevisionId: first.revisionId,
     reason: "agent-edit",
@@ -244,7 +315,14 @@ test("Agent confirmation, rejection, and deck rollback use exact complete-deck i
   const rejectResult = await runCliJson(["reject-deck-candidate", "--project", project.root, "--session-id", rejected.sessionId]);
   assert.equal(rejectResult.rejected, true);
   assert.equal((await readCurrentDeckPointer(project.root)).revisionId, first.revisionId);
+  assert.equal((await readProject(project.root)).stage, "deck-review");
 
+  assert.equal((await applyCompleteDeckReviewAction(project.root, {
+    action: "edit-page",
+    revisionId: first.revisionId,
+    deckSha256: first.sha256,
+    slideId: project.slideIds[1]!,
+  })).stage, "revising");
   const candidate = await createDeckCandidate(project.root, {
     sourceRevisionId: first.revisionId,
     reason: "agent-edit",
@@ -264,10 +342,12 @@ test("Agent confirmation, rejection, and deck rollback use exact complete-deck i
   assert.equal(confirmed.currentRevisionId, presented.revisionId);
   assert.equal("absolutePath" in confirmed, false);
   assert.match(confirmed.nextRequiredAction, /current-deck-link/);
+  assert.equal((await readProject(project.root)).stage, "deck-review");
   const rolledBack = await runCliJson(["rollback-deck", "--project", project.root, "--revision-id", first.revisionId]);
   assert.equal(rolledBack.currentRevisionId, first.revisionId);
   assert.equal("absolutePath" in rolledBack, false);
   assert.match(rolledBack.nextRequiredAction, /current-deck-link/);
+  assert.equal((await readProject(project.root)).stage, "deck-review");
 });
 
 test("upstream choices publish hash-bound actual impact, wait, then resume from restartStage", async (t) => {
@@ -330,6 +410,7 @@ test("complete-deck review actions fail closed on stale hashes and persist revis
     revisionId: current.revisionId,
     deckSha256: current.sha256,
   });
+  assert.equal(outcome.stage, "delivered");
   assert.equal(outcome.currentRevisionId, current.revisionId);
   assert.equal(outcome.evidence.absolutePath, current.absolutePath);
   assert.equal(outcome.evidence.deckSha256, current.sha256);

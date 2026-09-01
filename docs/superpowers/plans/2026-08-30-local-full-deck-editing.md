@@ -1089,6 +1089,16 @@ Using a fresh controlled project:
 
 From the adopted manual revision, ask the Agent to change a supported slide-3 text object. Verify the current pointer remains on the manual revision before confirmation, open the complete Agent candidate in WPS, confirm it, and verify the confirmed complete file becomes current without any further PPTX write.
 
+#### Whole-branch workflow closure (authoritative implementation addendum)
+
+The guided route has an authenticated `style-selection` stage between `slide-specs` and sample authorization. Persist the user's single selection with the exact current project revision and representative stable slide ID by running `style-selection --project <root> --input <selection.json>`; sample generation authorization must fail closed until that binding exists. Do not apply a default style or infer a representative page.
+
+Every complete-deck editing cycle begins from an authenticated `deck-review` action. Run `complete-deck-review --project <root> --action edit-page --revision-id <current-revision-id> --sha256 <current-sha256> --slide-id <stable-slide-id>` before preparing the edit. Manual adoption, Agent confirmation, Agent rejection, and pointer-only rollback all return the project to `deck-review`, clear stale formal-delivery/client/export bindings, and bind any following action to the new exact current revision and SHA-256.
+
+An unmanaged/native page inserted by WPS remains directly editable in the next manual complete-deck candidate; it must not be routed through the managed-slide converter. Manual adoption records the actual changed stable slide IDs determined from topology movement/insertion/deletion and slide XML/relationship changes, rather than merely echoing the requested target.
+
+Final delivery is only the exact authenticated current deck. Run `complete-deck-review --project <root> --action confirm-delivery --revision-id <current-revision-id> --sha256 <current-sha256>`. The successful action enters `delivered` and binds formal delivery, PPTX export, acceptance evidence, and the client-facing complete deck to the same revision, canonical path, and SHA-256 without copying or rewriting PPTX bytes. The former `acceptance-smoke-copy` and `acceptance-record` commands and `scripts/acceptance-smoke.sh` are not public or packaged entry points; acceptance is exact-current complete-deck authentication.
+
 - [ ] **Step 9: Commit instructions and E2E coverage**
 
 ```bash
