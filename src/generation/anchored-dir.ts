@@ -8,6 +8,7 @@ import {
   mkdirSync,
   openSync,
   readFileSync,
+  readdirSync,
   renameSync,
   rmdirSync,
   unlinkSync,
@@ -250,6 +251,16 @@ export class GenerationDirectory {
     } finally {
       closeSync(fd);
     }
+  }
+
+  listRegularFiles(): string[] {
+    this.assertCurrent();
+    const entries = readdirSync(this.path, { withFileTypes: true });
+    this.assertCurrent();
+    if (entries.some((entry) => entry.isSymbolicLink() || !entry.isFile())) {
+      throw new Error("generation directory contains a non-regular entry");
+    }
+    return entries.map((entry) => entry.name).sort();
   }
 
   replace(name: string, value: string | Buffer, temporaryName: string): void {

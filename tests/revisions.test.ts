@@ -39,7 +39,8 @@ import {
   ImpactPlanSchema,
   planImpact,
 } from "../src/revisions/impact.js";
-import { publishRevisionSnapshot } from "../src/revisions/snapshot.js";
+import { publishRevisionSnapshot, readRevisionSnapshot } from "../src/revisions/snapshot.js";
+import { authenticateStyleSelection } from "../src/styles/selection.js";
 
 const PROJECT_ID = "00000000-0000-4000-8000-000000000301";
 const A = "00000000-0000-4000-8000-000000000401";
@@ -168,6 +169,46 @@ async function writeApprovedOutline(
   }
   await publishPlanViews(root);
   await approveGate(root, "outline");
+}
+
+async function authenticateRevisionStyle(
+  root: string,
+  styleId: "scientific-atlas" | "cinematic-tech",
+): Promise<void> {
+  await approveGate(root, "slide-specs");
+  await authenticateStyleSelection(root, {
+    projectRevisionId: (await readProject(root)).currentRevision.id,
+    representativeSlideId: B,
+    selection: { kind: "catalog", styleId },
+    referenceArtifacts: [],
+  });
+}
+
+async function styleFiles(root: string): Promise<Map<string, Buffer>> {
+  return new Map(await Promise.all([
+    "style/selection.json",
+    "style/lock.json",
+    "style/recipe.json",
+  ].map(async (path) => [path, await readFile(join(root, ...path.split("/")))] as const)));
+}
+
+async function authenticatedStyleRollbackVersions(t: TestContext, prefix: string) {
+  const root = await project(t, prefix);
+  await writeApprovedOutline(root);
+  await authenticateRevisionStyle(root, "scientific-atlas");
+  const target = await readProject(root);
+  const targetId = target.currentRevision.id;
+  const targetStyle = await styleFiles(root);
+  const plan = await publishImpactPlan(root, { kind: "style" });
+  await approveImpact(root, plan.sha256);
+  await applyRevision(root, plan, plan.change);
+  await publishPlanViews(root);
+  await approveGate(root, "outline");
+  await authenticateRevisionStyle(root, "cinematic-tech");
+  const current = await readProject(root);
+  const currentStyle = await styleFiles(root);
+  assert.notDeepEqual(currentStyle, targetStyle);
+  return { root, target, targetId, targetStyle, current, currentStyle };
 }
 
 async function advanceWithBriefArtifact(root: string, brief: typeof approvedBrief): Promise<void> {
@@ -482,6 +523,181 @@ test("restores authenticated fixed planning artifacts from the rollback target",
   assert.deepEqual(rolledBack.gates, before.gates);
   assert.ok(rolledBack.slides.every((slide) => (slide.generationHistory ?? []).length === 0));
   assert.equal(rolledBack.brief, null);
+});
+
+test("rollback restores exact pre-gate style selection evidence from immutable revision snapshots", async (t) => {
+  const fixture = await authenticatedStyleRollbackVersions(t, "superppt-rollback-style-selection-");
+  await rollbackToRevision(fixture.root, fixture.targetId);
+
+  const rolledBack = await readProject(fixture.root);
+  assert.equal(rolledBack.stage, "style-selection");
+  assert.deepEqual(rolledBack.style, fixture.target.style);
+  for (const [path, bytes] of fixture.targetStyle) {
+    assert.deepEqual(await readFile(join(fixture.root, ...path.split("/"))), bytes);
+    assert.deepEqual(
+      await readFile(join(revisionSnapshotRoot(fixture.root, fixture.targetId), path.replace("style/", "style-"))),
+      bytes,
+    );
+  }
+  for (const [path, bytes] of fixture.currentStyle) {
+    assert.deepEqual(
+      await readFile(join(revisionSnapshotRoot(fixture.root, fixture.current.currentRevision.id), path.replace("style/", "style-"))),
+      bytes,
+    );
+  }
+});
+
+test("a rolled-back exact style chain remains snapshot-authenticated for the next revision", async (t) => {
+  const fixture = await authenticatedStyleRollbackVersions(t, "superppt-rollback-style-continue-");
+  await rollbackToRevision(fixture.root, fixture.targetId);
+  const rolledBack = await readProject(fixture.root);
+  assert.equal(rolledBack.style?.revisionId, fixture.targetId);
+  assert.notEqual(rolledBack.currentRevision.id, fixture.targetId);
+  const plan = await publishImpactPlan(fixture.root, { kind: "style" });
+  await approveImpact(fixture.root, plan.sha256);
+  await applyRevision(fixture.root, plan, plan.change);
+  const advanced = await readProject(fixture.root);
+  assert.equal(advanced.currentRevision.parentId, rolledBack.currentRevision.id);
+});
+
+test("rollback rejects unsafe style snapshot trees without modifying current evidence", async (t) => {
+  const cases = ["tampered", "missing", "linked", "extra"] as const;
+  for (const kind of cases) {
+    const fixture = await authenticatedStyleRollbackVersions(t, `superppt-rollback-style-${kind}-`);
+    const snapshot = revisionSnapshotRoot(fixture.root, fixture.targetId);
+    if (kind === "tampered") {
+      await writeFile(join(snapshot, "style-selection.json"), "tampered selection\n");
+    } else if (kind === "missing") {
+      await rm(join(snapshot, "style-lock.json"));
+    } else if (kind === "linked") {
+      const outsideRoot = await realpath(await mkdtemp(join(tmpdir(), "superppt-style-snapshot-outside-")));
+      t.after(async () => rm(outsideRoot, { recursive: true, force: true }));
+      const outside = join(outsideRoot, "recipe.json");
+      await writeFile(outside, await readFile(join(snapshot, "style-recipe.json")));
+      await rm(join(snapshot, "style-recipe.json"));
+      await symlink(outside, join(snapshot, "style-recipe.json"));
+    } else {
+      await writeFile(join(snapshot, "extra.json"), "{}\n");
+    }
+    const manifestBefore = await readFile(join(fixture.root, "superppt.json"));
+    const styleBefore = await styleFiles(fixture.root);
+
+    await assert.rejects(
+      rollbackToRevision(fixture.root, fixture.targetId),
+      /snapshot|unsafe|authentic|hash|tree/i,
+    );
+
+    assert.deepEqual(await readFile(join(fixture.root, "superppt.json")), manifestBefore);
+    assert.deepEqual(await styleFiles(fixture.root), styleBefore);
+    await assert.rejects(
+      access(join(fixture.root, "revisions", "rollback-transaction")),
+      { code: "ENOENT" },
+    );
+  }
+});
+
+test("revision snapshot v1 remains readable only when no style artifact chain is claimed", async (t) => {
+  async function downgrade(root: string, revisionId: string): Promise<void> {
+    const snapshotRoot = revisionSnapshotRoot(root, revisionId);
+    const descriptor = JSON.parse(await readFile(join(snapshotRoot, "snapshot.json"), "utf8"));
+    const { styleArtifacts } = descriptor;
+    const legacyBase = {
+      schemaVersion: 1,
+      kind: descriptor.kind,
+      projectId: descriptor.projectId,
+      revisionId: descriptor.revisionId,
+      snapshotPath: descriptor.snapshotPath,
+      manifestPath: descriptor.manifestPath,
+      manifestSha256: descriptor.manifestSha256,
+      manifestSize: descriptor.manifestSize,
+    };
+    const legacy = {
+      ...legacyBase,
+      descriptorSha256: createHash("sha256").update(JSON.stringify(legacyBase)).digest("hex"),
+    };
+    await writeFile(join(snapshotRoot, "snapshot.json"), `${JSON.stringify(legacy, null, 2)}\n`);
+    for (const artifact of styleArtifacts) {
+      await rm(join(snapshotRoot, artifact.snapshotFile));
+    }
+  }
+
+  const compatibleRoot = await project(t, "superppt-snapshot-v1-compatible-");
+  const compatibleManifest = await readProject(compatibleRoot);
+  await publishRevisionSnapshot(compatibleRoot, compatibleManifest);
+  await downgrade(compatibleRoot, compatibleManifest.currentRevision.id);
+  const compatible = await readRevisionSnapshot(compatibleRoot, compatibleManifest.currentRevision.id);
+  assert.equal(compatible.descriptor.schemaVersion, 1);
+  assert.equal(compatible.artifacts.size, 0);
+  assert.equal((await publishRevisionSnapshot(compatibleRoot, compatibleManifest)).schemaVersion, 1);
+
+  const strictRoot = await project(t, "superppt-snapshot-v1-style-reject-");
+  await writeApprovedOutline(strictRoot);
+  await authenticateRevisionStyle(strictRoot, "scientific-atlas");
+  const strictManifest = await readProject(strictRoot);
+  await publishRevisionSnapshot(strictRoot, strictManifest);
+  await downgrade(strictRoot, strictManifest.currentRevision.id);
+  await assert.rejects(
+    readRevisionSnapshot(strictRoot, strictManifest.currentRevision.id),
+    /style artifact|snapshot/i,
+  );
+});
+
+test("revision snapshot rejects coordinated style project-path and snapshot-file crossover", async (t) => {
+  const root = await project(t, "superppt-snapshot-style-path-crossover-");
+  await writeApprovedOutline(root);
+  await authenticateRevisionStyle(root, "scientific-atlas");
+  const manifest = await readProject(root);
+  await publishRevisionSnapshot(root, manifest);
+  const snapshotRoot = revisionSnapshotRoot(root, manifest.currentRevision.id);
+  const descriptorPath = join(snapshotRoot, "snapshot.json");
+  const descriptor = JSON.parse(await readFile(descriptorPath, "utf8"));
+  const selectionEntry = descriptor.styleArtifacts.find((entry: { projectPath: string }) =>
+    entry.projectPath === "style/selection.json");
+  const lockEntry = descriptor.styleArtifacts.find((entry: { projectPath: string }) =>
+    entry.projectPath === "style/lock.json");
+  assert.ok(selectionEntry && lockEntry);
+  [selectionEntry.snapshotFile, lockEntry.snapshotFile] = [lockEntry.snapshotFile, selectionEntry.snapshotFile];
+  const selectionBytes = await readFile(join(snapshotRoot, "style-selection.json"));
+  const lockBytes = await readFile(join(snapshotRoot, "style-lock.json"));
+  await writeFile(join(snapshotRoot, "style-selection.json"), lockBytes);
+  await writeFile(join(snapshotRoot, "style-lock.json"), selectionBytes);
+  const { descriptorSha256: _descriptorSha256, ...base } = descriptor;
+  descriptor.descriptorSha256 = createHash("sha256").update(JSON.stringify(base)).digest("hex");
+  await writeFile(descriptorPath, `${JSON.stringify(descriptor, null, 2)}\n`);
+
+  await assert.rejects(
+    readRevisionSnapshot(root, manifest.currentRevision.id),
+    /artifact identity|snapshot.*path|snapshot.*invalid/i,
+  );
+});
+
+test("style-selection rollback recovery converges at every durable transaction boundary", async (t) => {
+  const crashes = [
+    { checkpoint: "journal-published", after: false },
+    { checkpoint: "marker-published", after: false },
+    { checkpoint: "files-written", after: false },
+    { checkpoint: "manifest-published", after: true },
+  ] as const;
+  for (const crash of crashes) {
+    const fixture = await authenticatedStyleRollbackVersions(
+      t,
+      `superppt-rollback-style-crash-${crash.checkpoint}-`,
+    );
+    await assert.rejects(rollbackToRevision(fixture.root, fixture.targetId, {
+      operations: {
+        rollbackCheckpoint: (step) => {
+          if (step === crash.checkpoint) throw new Error(`crash ${crash.checkpoint}`);
+        },
+      },
+    }), new RegExp(`crash ${crash.checkpoint}`));
+    await recoverRollbackTransaction(fixture.root);
+    const recovered = await readProject(fixture.root);
+    assert.equal(recovered.currentRevision.id === fixture.current.currentRevision.id, !crash.after);
+    assert.deepEqual(
+      await styleFiles(fixture.root),
+      crash.after ? fixture.targetStyle : fixture.currentStyle,
+    );
+  }
 });
 
 test("recovers rollback journals at every durable crash boundary", async (t) => {

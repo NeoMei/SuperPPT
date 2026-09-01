@@ -360,3 +360,37 @@ The next action is explicitly the main agent opening the complete manual candida
 
 - Intended independent commit message: `fix: authenticate stale style retirement`.
 - The exact commit and scoped `f6dc107..<newHEAD>` review-package SHA/line/byte evidence are generated after this report is committed; this report does not predict its own commit identity.
+
+## Style snapshot rollback and replayable retirement fix round 6 (2026-09-01)
+
+### RED-first evidence and root causes
+
+- Review baseline: `d359113`. Two Important findings were addressed together.
+- Initial public-behavior run was intentionally **RED**, 0/2, `12.50s`. A real R0 authenticated `style-selection` → R1 new style → rollback R0 failed at `artifact hash mismatch: style/selection.json`; a crash expected after the first stale-evidence removal was never observed because retirement had no checkpoint or recovery transaction.
+- Three adjacent RED probes then locked the full trust boundary: a rolled-back R0 style chain could not be snapshotted for the next revision, a coordinated project-path/snapshot-file crossover was accepted by the snapshot reader, and an approved Style Lock could not cross a revision transition because selection correctly retains the provisional-lock SHA while the live lock is promoted.
+- The machine workflow contract was separately RED until it named both descriptor-bound rollback restoration and replayable retirement.
+
+### Minimal closure
+
+- Revision manifest snapshots now publish schema v2. When `manifest.style` is present, the exact `style/selection.json`, `style/lock.json`, and `style/recipe.json` bytes are copied into the immutable snapshot; descriptor entries bind their fixed project paths, fixed snapshot filenames, hashes, and sizes. The reader requires the exact regular-file tree, reads every byte twice through anchored/no-follow access, validates descriptor integrity and the full selection/lock/recipe chain, and rejects missing, extra, linked, crossed, or hash-conflicting evidence.
+- Schema-v1 snapshots remain readable and idempotently reusable only when their manifest claims no style chain. A v1 snapshot with `manifest.style` fails closed instead of pretending it can restore missing bytes.
+- Rollback merges descriptor-authenticated style snapshot bytes into the existing authenticated planning-artifact map before publishing its journal. R0 selection/lock/recipe bytes, `manifest.style`, and `style-selection` stage are restored without a later style-sample gate. The current R1 bytes are also preserved by its immutable pre-rollback snapshot and rollback journal; all four existing crash boundaries converge to the byte-exact before/after state.
+- A rollback creates a new project revision while the restored style evidence remains owned by its original known revision. Subsequent snapshot/apply operations accept that exact historical binding without rewriting it.
+- Stale retirement now publishes an exact, descriptor-integrity-protected transaction containing the three old bytes and their snapshot anchor before any removal. Each removal is idempotent; interruption after selection, recipe, or lock removal resumes from the transaction, reauthenticates project/revision/child anchor/snapshot bytes, and atomically moves the active transaction to immutable completed evidence before publishing the new v2 selection.
+- Approved locks are accepted only by reconstructing the exact provisional form bound by selection while separately snapshot-binding the promoted lock bytes; recipe and project/revision bindings remain exact. Unauthenticated conflicts still create no retirement transaction and preserve live evidence.
+- The old custom-style fixture was not used to relax production: it now supplies its actual discriminated custom v1 selection, and the test helper preserves that source instead of incorrectly coercing every existing lock to a catalog choice.
+- Active Skill, all five references, README, main plan, and machine stage policy describe the same snapshot-v2 rollback and replayable-retirement contract.
+
+### Focused verification and evidence boundary
+
+- Core Round6 behavior/safety matrix: **PASS**, 4/4, `20.14s`; v1 compatibility 1/1; rolled-back continuation 1/1; project-path crossover 1/1; approved-lock transition and retirement 1/1.
+- Frozen focused source (`revisions`, `project-state`, `planning`, `styles`, `e2e`, `workflow-contract`): **PASS**, 153 total / 151 passed / 0 failed / 2 Windows-only skipped, `94.94s`.
+- `npm run lint:types && npm run build`: **PASS**.
+- Frozen matching compiled suites: **PASS**, 153 total / 151 passed / 0 failed / 2 Windows-only skipped, `132.09s`.
+- `npm pack --dry-run --json`: **PASS**, 101 files, 4,653,336 bytes packed / 5,659,449 bytes unpacked; generated/user PPTX, PDF, montage, staging, and legacy smoke-copy entries are absent. `git diff --check`: **PASS**.
+- The long full source and `test:compiled` suites were intentionally **not run**. This round did not open WPS or touch a user/controlled PPTX; prior real WPS evidence remains unchanged.
+
+### Commit and review handoff
+
+- Intended independent commit message: `fix: restore style evidence across rollback`.
+- The exact commit and scoped `d359113..<newHEAD>` review-package SHA/line/byte evidence are generated after this report is committed; this report does not predict its own commit identity.

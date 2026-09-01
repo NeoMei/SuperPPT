@@ -27,7 +27,10 @@ export const StyleSelectionRequestSchema = z.object({
 export type StyleSelectionCheckpoint =
   | "lock-written"
   | "selection-written"
-  | "manifest-before-update";
+  | "manifest-before-update"
+  | "stale-selection-removed"
+  | "stale-recipe-removed"
+  | "stale-lock-removed";
 
 export type StyleSelectionOperations = {
   checkpoint?: (step: StyleSelectionCheckpoint) => Promise<void> | void;
@@ -42,6 +45,34 @@ type SelectionResult = {
   styleId: string;
   styleLockSha256: string;
 };
+
+const RETIREMENT_TRANSACTION = "retirement-transaction";
+const RetirementArtifactSchema = z.object({
+  projectPath: z.enum(["style/selection.json", "style/lock.json", "style/recipe.json"]),
+  file: z.enum(["selection.json", "lock.json", "recipe.json"]),
+  sha256: z.string().regex(/^[a-f0-9]{64}$/),
+  size: z.number().int().positive(),
+}).strict();
+const RetirementBaseSchema = z.object({
+  schemaVersion: z.literal(1),
+  kind: z.literal("style-retirement-transaction"),
+  transactionId: z.string().uuid(),
+  projectId: z.string().uuid(),
+  staleRevisionId: z.string().uuid(),
+  currentRevisionId: z.string().uuid(),
+  snapshotDescriptorSha256: z.string().regex(/^[a-f0-9]{64}$/),
+  artifacts: z.array(RetirementArtifactSchema).length(3),
+}).strict();
+const RetirementDescriptorSchema = RetirementBaseSchema.extend({
+  descriptorSha256: z.string().regex(/^[a-f0-9]{64}$/),
+}).strict();
+type RetirementDescriptor = z.infer<typeof RetirementDescriptorSchema>;
+
+const RETIREMENT_ARTIFACTS = [
+  { projectPath: "style/selection.json", file: "selection.json", checkpoint: "stale-selection-removed" },
+  { projectPath: "style/recipe.json", file: "recipe.json", checkpoint: "stale-recipe-removed" },
+  { projectPath: "style/lock.json", file: "lock.json", checkpoint: "stale-lock-removed" },
+] as const;
 
 function sha256(value: Buffer | string): string {
   return createHash("sha256").update(value).digest("hex");
@@ -64,12 +95,173 @@ function readOptional(style: GenerationDirectory, name: string): Buffer | null {
   }
 }
 
+function sameList(left: readonly string[], right: readonly string[]): boolean {
+  return JSON.stringify(left) === JSON.stringify(right);
+}
+
+function addRetirementIntegrity(base: z.infer<typeof RetirementBaseSchema>): RetirementDescriptor {
+  return RetirementDescriptorSchema.parse({
+    ...base,
+    descriptorSha256: sha256(JSON.stringify(base)),
+  });
+}
+
+function readRetirementTransaction(style: GenerationDirectory): {
+  descriptor: RetirementDescriptor;
+  artifacts: Map<string, Buffer>;
+} | null {
+  let transaction: GenerationDirectory;
+  try {
+    transaction = style.child(RETIREMENT_TRANSACTION, false);
+  } catch (error: unknown) {
+    if (isMissing(error)) return null;
+    throw error;
+  }
+  try {
+    const expectedTree = ["transaction.json", ...RETIREMENT_ARTIFACTS.map(({ file }) => file)].sort();
+    if (!sameList(transaction.listRegularFiles(), expectedTree)) {
+      throw new Error("style retirement transaction tree is invalid");
+    }
+    const descriptorBytes = transaction.read("transaction.json");
+    const descriptor = RetirementDescriptorSchema.parse(JSON.parse(descriptorBytes.toString("utf8")));
+    const { descriptorSha256, ...base } = descriptor;
+    if (descriptorSha256 !== sha256(JSON.stringify(base))) {
+      throw new Error("style retirement transaction descriptor integrity mismatch");
+    }
+    const expectedDescriptors = RETIREMENT_ARTIFACTS.map(({ projectPath, file }) => ({ projectPath, file }));
+    if (!sameJson(
+      descriptor.artifacts.map(({ projectPath, file }) => ({ projectPath, file })),
+      expectedDescriptors,
+    )) throw new Error("style retirement transaction artifact identity mismatch");
+    const artifacts = new Map(descriptor.artifacts.map(({ projectPath, file, sha256: digest, size }) => {
+      const bytes = transaction.read(file);
+      if (bytes.length !== size || sha256(bytes) !== digest) {
+        throw new Error(`style retirement transaction artifact hash mismatch: ${projectPath}`);
+      }
+      return [projectPath, bytes] as const;
+    }));
+    if (
+      !transaction.read("transaction.json").equals(descriptorBytes)
+      || [...descriptor.artifacts].some(({ projectPath, file }) =>
+        !transaction.read(file).equals(artifacts.get(projectPath)!))
+      || !sameList(transaction.listRegularFiles(), expectedTree)
+    ) throw new Error("style retirement transaction changed while authenticating");
+    return { descriptor, artifacts };
+  } finally {
+    transaction.close();
+  }
+}
+
+function publishRetirementTransaction(
+  style: GenerationDirectory,
+  input: {
+    projectId: string;
+    staleRevisionId: string;
+    currentRevisionId: string;
+    snapshotDescriptorSha256: string;
+    artifacts: ReadonlyMap<string, Buffer>;
+  },
+): void {
+  const transactionId = randomUUID();
+  const descriptors = RETIREMENT_ARTIFACTS.map(({ projectPath, file }) => {
+    const bytes = input.artifacts.get(projectPath);
+    if (!bytes) throw new Error(`style retirement artifact is missing: ${projectPath}`);
+    return { projectPath, file, sha256: sha256(bytes), size: bytes.length };
+  });
+  const base = RetirementBaseSchema.parse({
+    schemaVersion: 1,
+    kind: "style-retirement-transaction",
+    transactionId,
+    projectId: input.projectId,
+    staleRevisionId: input.staleRevisionId,
+    currentRevisionId: input.currentRevisionId,
+    snapshotDescriptorSha256: input.snapshotDescriptorSha256,
+    artifacts: descriptors,
+  });
+  const descriptor = addRetirementIntegrity(base);
+  const stagingName = `.retirement-${transactionId}`;
+  const staging = style.createChildExclusive(stagingName);
+  let complete = false;
+  try {
+    for (const { projectPath, file } of descriptors) {
+      staging.writeExclusive(file, input.artifacts.get(projectPath)!);
+    }
+    staging.writeExclusive("transaction.json", `${JSON.stringify(descriptor, null, 2)}\n`);
+    const expectedTree = ["transaction.json", ...descriptors.map(({ file }) => file)].sort();
+    if (!sameList(staging.listRegularFiles(), expectedTree)) {
+      throw new Error("style retirement transaction staging tree is invalid");
+    }
+    staging.close();
+    style.promoteChildExclusive(stagingName, RETIREMENT_TRANSACTION);
+    complete = true;
+  } finally {
+    if (!complete) {
+      try { staging.close(); } catch { /* best effort close before preserving evidence */ }
+    }
+  }
+}
+
+async function resumeRetirementTransaction(
+  root: string,
+  style: GenerationDirectory,
+  manifest: Awaited<ReturnType<typeof readProject>>,
+  operations: StyleSelectionOperations,
+): Promise<boolean> {
+  const evidence = readRetirementTransaction(style);
+  if (!evidence) return false;
+  const { descriptor, artifacts } = evidence;
+  if (
+    descriptor.projectId !== manifest.projectId
+    || descriptor.currentRevisionId !== manifest.currentRevision.id
+  ) throw new Error("style retirement transaction does not bind the current project revision");
+  const staleIndex = manifest.revisions.findIndex(({ id }) => id === descriptor.staleRevisionId);
+  const currentIndex = manifest.revisions.findIndex(({ id }) => id === manifest.currentRevision.id);
+  const child = staleIndex >= 0 ? manifest.revisions[staleIndex + 1] : undefined;
+  if (
+    staleIndex < 0
+    || currentIndex < 0
+    || staleIndex >= currentIndex
+    || !child
+    || child.parentId !== descriptor.staleRevisionId
+    || child.parentSnapshotDescriptorSha256 !== descriptor.snapshotDescriptorSha256
+  ) throw new Error("style retirement transaction revision anchor is invalid");
+  const snapshot = await readRevisionSnapshot(root, descriptor.staleRevisionId);
+  if (
+    snapshot.descriptor.descriptorSha256 !== descriptor.snapshotDescriptorSha256
+    || [...artifacts].some(([path, bytes]) => !snapshot.artifacts.get(path)?.equals(bytes))
+    || snapshot.artifacts.size !== artifacts.size
+  ) throw new Error("style retirement transaction conflicts with its immutable revision snapshot");
+  for (const { projectPath, file, checkpoint } of RETIREMENT_ARTIFACTS) {
+    const expected = artifacts.get(projectPath)!;
+    const live = readOptional(style, file);
+    if (live && !live.equals(expected)) {
+      throw new Error(`style retirement live evidence conflicts: ${projectPath}`);
+    }
+    if (live) style.remove(file);
+    await operations.checkpoint?.(checkpoint);
+  }
+  style.promoteChildExclusive(
+    RETIREMENT_TRANSACTION,
+    `.retirement-completed-${descriptor.transactionId}`,
+  );
+  return true;
+}
+
 function parseSelection(bytes: Buffer): StyleSampleSelection {
   try {
     return StyleSampleSelectionSchema.parse(JSON.parse(bytes.toString("utf8")));
   } catch (error: unknown) {
     throw new Error("style selection evidence is invalid", { cause: error });
   }
+}
+
+function selectionBoundLockSha256(
+  lock: z.infer<typeof StyleLockSchema>,
+  lockBytes: Buffer,
+): string {
+  return sha256(lock.approvalState === "provisional"
+    ? lockBytes
+    : canonicalFile({ ...lock, approvalState: "provisional", approvedSample: null }));
 }
 
 function selectionChoice(selection: StyleSampleSelection) {
@@ -108,10 +300,12 @@ function assertLegacySelectionMatchesBeforeRecovery(root: string, request: Style
 async function retireCoherentStaleEvidence(
   root: string,
   manifest: Awaited<ReturnType<typeof readProject>>,
+  operations: StyleSelectionOperations,
 ): Promise<void> {
   const project = openGenerationDirectory(root);
   const style = project.child("style", false);
   try {
+    if (await resumeRetirementTransaction(root, style, manifest, operations)) return;
     const lockBytes = readOptional(style, "lock.json");
     if (!lockBytes) return;
     let lock;
@@ -149,7 +343,7 @@ async function retireCoherentStaleEvidence(
     const selection = selectionBytes ? parseSelection(selectionBytes) : null;
     if (selection?.schemaVersion === 2 && (
       selection.projectRevisionId !== lock.revisionId
-      || selection.styleLockSha256 !== sha256(lockBytes)
+      || selection.styleLockSha256 !== selectionBoundLockSha256(lock, lockBytes)
     )) throw new Error("stale style selection conflicts with its lock");
     if (selection?.schemaVersion !== 2 || !selectionBytes || !recipeBytes) {
       throw new Error("stale style evidence is incomplete and cannot be retired");
@@ -165,6 +359,10 @@ async function retireCoherentStaleEvidence(
       || snapshotStyle.path !== "style/selection.json"
       || snapshotStyle.revisionId !== lock.revisionId
       || snapshotStyle.sha256 !== sha256(selectionBytes)
+      || !snapshot.artifacts.get("style/selection.json")?.equals(selectionBytes)
+      || !snapshot.artifacts.get("style/lock.json")?.equals(lockBytes)
+      || !snapshot.artifacts.get("style/recipe.json")?.equals(recipeBytes)
+      || snapshot.artifacts.size !== 3
     ) throw new Error("stale style evidence is not bound by its immutable revision snapshot");
     if (
       !readOptional(style, "selection.json")?.equals(selectionBytes)
@@ -172,9 +370,14 @@ async function retireCoherentStaleEvidence(
       || !readOptional(style, "recipe.json")?.equals(recipeBytes)
     ) throw new Error("stale style evidence changed after snapshot authentication");
 
-    style.remove("selection.json");
-    style.remove("recipe.json");
-    style.remove("lock.json");
+    publishRetirementTransaction(style, {
+      projectId: manifest.projectId,
+      staleRevisionId: lock.revisionId,
+      currentRevisionId: manifest.currentRevision.id,
+      snapshotDescriptorSha256: snapshot.descriptor.descriptorSha256,
+      artifacts: snapshot.artifacts,
+    });
+    await resumeRetirementTransaction(root, style, manifest, operations);
   } finally {
     style.close();
     project.close();
@@ -252,7 +455,7 @@ export async function authenticateStyleSelection(
     }
 
     assertLegacySelectionMatchesBeforeRecovery(canonicalRoot, request);
-    await retireCoherentStaleEvidence(canonicalRoot, manifest);
+    await retireCoherentStaleEvidence(canonicalRoot, manifest, operations);
     const existing = readAndValidateExistingSelection(canonicalRoot, request);
     const lock = await createProvisionalStyleLock(canonicalRoot, {
       selection: request.selection,

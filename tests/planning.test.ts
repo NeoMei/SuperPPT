@@ -1712,6 +1712,27 @@ test("a revision change retires only exact stale style bytes authenticated by it
   assert.equal((await readProject(fixture.root)).stage, "style-selection");
 });
 
+test("authenticated stale style retirement resumes after every durable removal boundary", async (t) => {
+  const checkpoints = [
+    "stale-selection-removed",
+    "stale-recipe-removed",
+    "stale-lock-removed",
+  ] as const;
+  for (const checkpoint of checkpoints) {
+    const fixture = await staleAuthenticatedStyle(t, `superppt-style-retirement-${checkpoint}-`);
+    await assert.rejects(authenticateStyleSelection(fixture.root, fixture.nextRequest, {
+      checkpoint: (step) => {
+        if (step === checkpoint) throw new Error(`crash ${checkpoint}`);
+      },
+    }), new RegExp(`crash ${checkpoint}`));
+
+    const recovered = await authenticateStyleSelection(fixture.root, fixture.nextRequest);
+    assert.equal(recovered.projectRevisionId, fixture.nextRequest.projectRevisionId);
+    assert.equal(recovered.styleId, "cinematic-tech");
+    assert.equal((await readProject(fixture.root)).stage, "style-selection");
+  }
+});
+
 test("CLI publishes and approves the outline before any slide specs exist", async (t) => {
   const root = await project(t, "superppt-outline-stage-cli-");
   await writeFile(join(root, "brief.json"), `${JSON.stringify(brief, null, 2)}\n`);

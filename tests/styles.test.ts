@@ -12,7 +12,10 @@ import { configureGenerationAuthorizationTrustForTests } from "../src/generation
 import { initializeProject } from "../src/project/initialize.js";
 import { publishPlanViews, publishStyleSample } from "../src/planning/views.js";
 import { approveStyleLock, createProvisionalStyleLock, readApprovedStyleLock, readStyleLock } from "../src/styles/style-lock.js";
+import { authenticateStyleSelection } from "../src/styles/selection.js";
 import { finalizeDelegatedStyleSampleForTest } from "./helpers/delegated-style-sample.js";
+import { applyRevision, approveImpact, publishImpactPlan } from "../src/revisions/apply.js";
+import { readProject } from "../src/project/store.js";
 
 const catalogPath = "skills/superppt/assets/styles/catalog.json";
 const promptSpec = { title: "AI Agent 协作系统", role: "content" as const, coreMessage: "Specialists cooperate", requiredText: ["AI Agent 协作系统"], visualSubject: "central orchestration core", composition: "one focal hub with six satellites", relationships: ["hub routes work"], forbidden: ["watermark"] };
@@ -338,16 +341,48 @@ test("Style Lock approval compares the expected provisional bytes before promoti
   }), /style lock changed during approval/);
 });
 
+test("an approved Style Lock remains snapshot-authenticated across a revision transition", async (t) => {
+  const root = await lockProject(t, "superppt-approved-style-snapshot-");
+  await createProvisionalStyleLock(root, {
+    selection: { kind: "catalog", styleId: "scientific-atlas" },
+    referenceArtifacts: [],
+  });
+  await approveCanonicalSample(root);
+  await approveStyleLock(root);
+  const before = await readProject(root);
+  const plan = await publishImpactPlan(root, { kind: "style" });
+  await approveImpact(root, plan.sha256);
+  await applyRevision(root, plan, plan.change);
+  const next = await readProject(root);
+  assert.equal(next.currentRevision.parentId, before.currentRevision.id);
+  await publishPlanViews(root);
+  await approveGate(root, "outline");
+  await approveGate(root, "slide-specs");
+  const authenticated = await authenticateStyleSelection(root, {
+    projectRevisionId: next.currentRevision.id,
+    representativeSlideId: LOCK_REVISION_SLIDE_IDS[1],
+    selection: { kind: "catalog", styleId: "cinematic-tech" },
+    referenceArtifacts: [],
+  });
+  assert.equal(authenticated.styleId, "cinematic-tech");
+});
+
 test("custom Style Lock drives the representative sample and becomes an approved downstream recipe", async (t) => {
   const root = await lockProject(t, "superppt-custom-style-approval-");
   await writeFile(join(root, "style", "references", "custom.png"), "custom-art-direction");
+  const customSelection = {
+    kind: "custom" as const,
+    name: "Lab notebook",
+    description: "Hand-drawn scientific notes with restrained mineral colors.",
+    recipe: { ...promptStyle, id: "lab-notebook", name: "Lab notebook" },
+  };
+  await writeFile(join(root, "style", "selection.json"), `${JSON.stringify({
+    schemaVersion: 1,
+    representativeSlideId: LOCK_REVISION_SLIDE_IDS[1],
+    selection: customSelection,
+  }, null, 2)}\n`);
   const provisional = await createProvisionalStyleLock(root, {
-    selection: {
-      kind: "custom",
-      name: "Lab notebook",
-      description: "Hand-drawn scientific notes with restrained mineral colors.",
-      recipe: { ...promptStyle, id: "lab-notebook", name: "Lab notebook" },
-    },
+    selection: customSelection,
     referenceArtifacts: [{ path: "style/references/custom.png", role: "art-direction" }],
   });
   await assert.rejects(readApprovedStyleLock(root), /approved before deck generation/);

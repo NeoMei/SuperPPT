@@ -92,8 +92,9 @@ export async function assertManifestArtifactReferences(
 export async function authenticatedPlanningArtifacts(
   root: string,
   manifest: ProjectManifest,
+  immutableRevisionArtifacts: ReadonlyMap<string, Buffer> = new Map(),
 ): Promise<Map<string, Buffer>> {
-  const result = new Map<string, Buffer>();
+  const result = new Map<string, Buffer>(immutableRevisionArtifacts);
   try {
     for (const gateName of [...ORDINARY_GATES, ...EXECUTION_GATES]) {
       const gate = [...manifest.gates].reverse().find((candidate) =>

@@ -988,7 +988,11 @@ async function beginProjectRollbackTransactionUnderTrustedLease(
       || targetChild.parentId !== targetRevisionId
       || targetChild.parentSnapshotDescriptorSha256 !== targetSnapshot.descriptor.descriptorSha256
     ) throw new Error("rollback target snapshot descriptor anchor mismatch");
-    const after = await authenticatedPlanningArtifacts(canonicalRoot, target);
+    const after = await authenticatedPlanningArtifacts(
+      canonicalRoot,
+      target,
+      targetSnapshot.artifacts,
+    );
     await assertManifestArtifactReferences(canonicalRoot, target, after);
     await assertCurrentRevisionPlanningEvidence(canonicalRoot, current.manifest);
     await assertManifestArtifactReferences(canonicalRoot, current.manifest);

@@ -111,7 +111,7 @@
       "previewMode": "compact-real-preview-grid",
       "selectionEvidence": "v2-current-revision-representative-slide-and-same-source-style-lock-sha",
       "legacyEvidence": "v1-read-migration-only-cannot-authorize-sample-plan",
-      "publicationRecovery": "exact-idempotent-v1-to-v2-migration-and-checkpoint-replay; stale-retirement-requires-project-old-revision-child-descriptor-and-immutable-snapshot-byte-binding; conflicts-byte-exact-fail-closed"
+      "publicationRecovery": "exact-idempotent-v1-to-v2-migration-and-checkpoint-replay; stale-retirement-requires-project-old-revision-child-descriptor-immutable-snapshot-byte-binding-and-replayable-transaction; rollback-restores-descriptor-bound-selection-lock-recipe; conflicts-byte-exact-fail-closed"
     },
     "generation": {
       "executor": "agent-invokes-resolved-ai-image-to-ppt-skill",

@@ -84,11 +84,9 @@ export async function authenticateStyleSelectionForTest(root: string): Promise<v
   if (selection.schemaVersion === 1) {
     const manifest = await readProject(root);
     const existingLock = await readStyleLockIfPresent(root);
-    const authenticatedSelection = existingLock
-      ? { kind: "catalog" as const, styleId: existingLock.recipe.id }
-      : "styleId" in selection
-      ? { kind: "catalog" as const, styleId: selection.styleId }
-      : selection.selection;
+    const authenticatedSelection = "selection" in selection
+      ? selection.selection
+      : { kind: "catalog" as const, styleId: existingLock?.recipe.id ?? selection.styleId };
     await authenticateStyleSelection(root, {
       projectRevisionId: manifest.currentRevision.id,
       representativeSlideId: selection.representativeSlideId,
