@@ -126,3 +126,33 @@ The next action is explicitly the main agent opening the complete manual candida
 
 - Intended independent commit message: `fix: bind complete deck workflow authority`.
 - The exact fix commit and scoped `b99a478..<newHEAD>` review-package hash/line/byte evidence are generated after this report is committed and reported in the handoff; this report does not predict its own commit identity.
+
+## Review-fix round 2 (2026-09-01)
+
+### Scope and RED-first evidence
+
+- Review baseline: `d82178880ad6e511647be6ce1bec13d6fd08fa72`.
+- The remaining Important was documentation-only: Task 3 in the main implementation plan still showed `prepareManualEditDeck({ root, slideId })` and instructed an implementation to read current itself, contradicting the resolver snapshot binding added in round 1.
+- A new machine-contract test first failed **RED**, 0/1, at `resolve the current page before manual preparation`. It requires Task 3 to resolve the page first, pass `resolved.revisionId` and `resolved.stableSlideId` unchanged, state that the revision must remain current, fail closed before any candidate/session creation, and leave zero residue. It also checks every manual-preparation call in the full plan so another legacy API example cannot silently return.
+
+### Minimal documentation correction
+
+- Task 3 now declares `resolveCurrentDeckPage({ root, pageNumber })` in its interfaces.
+- Its workflow example resolves page 2 first and passes both fields from that one resolver snapshot to `prepareManualEditDeck`.
+- Its implementation requirements no longer tell a future implementation to select current internally. They require the supplied revision to remain current, fail closed before any candidate/session creation when stale, and leave zero candidate/session residue.
+- No runtime source, active Skill/reference, package contract, controlled candidate, or real WPS state changed in this round.
+
+### Round-2 verification
+
+- Focused new source contract: **GREEN**, 1/1, `307.335458ms` process duration.
+- Complete source workflow-contract suite: **PASS**, 10/10, `313.255291ms`.
+- `npm run lint:types && npm run build`: **PASS**.
+- Complete compiled workflow-contract suite: **PASS**, 10/10, `403.971708ms`.
+- Full-plan audit: one `prepareManualEditDeck` call remains, and it passes `resolved.revisionId` plus `resolved.stableSlideId`; the obsolete self-read-current wording is absent.
+- `git diff --check`: **PASS**.
+- Real WPS manual, next-page, Agent GUI, and post-save checks remain **PENDING** and were not touched.
+
+### Round-2 commit and review handoff
+
+- Intended independent commit message: `docs: bind manual plan examples to revision`.
+- The exact fix commit and scoped `d821788..<newHEAD>` review-package hash/line/byte evidence are generated after this report is committed and reported in the handoff; this report does not predict its own commit identity.

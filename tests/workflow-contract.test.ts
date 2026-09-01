@@ -381,6 +381,30 @@ test("active workflow hands off only one complete local PPTX and names exact wai
   assert.match(workflow, /不能把整页图片描述为可编辑/);
 });
 
+test("main plan binds every manual preparation example to one resolver snapshot and stale failure leaves no residue", async () => {
+  const plan = await readFile("docs/superpowers/plans/2026-08-30-local-full-deck-editing.md", "utf8");
+  const task3Start = plan.indexOf("### Task 3: Implement Manual-Save and Agent-Confirmation Workflows");
+  const task4Start = plan.indexOf("### Task 4:", task3Start);
+  assert.ok(task3Start >= 0 && task4Start > task3Start, "Task 3 plan section");
+  const task3 = plan.slice(task3Start, task4Start);
+
+  const resolveIndex = task3.indexOf("resolveCurrentDeckPage({");
+  const prepareIndex = task3.indexOf("prepareManualEditDeck({");
+  assert.ok(resolveIndex >= 0 && resolveIndex < prepareIndex, "resolve the current page before manual preparation");
+  assert.match(task3, /const resolved = await resolveCurrentDeckPage\(\{[\s\S]*?root: fixture\.root,[\s\S]*?pageNumber: 2,[\s\S]*?\}\);/);
+  assert.match(task3, /prepareManualEditDeck\(\{[\s\S]*?revisionId: resolved\.revisionId,[\s\S]*?slideId: resolved\.stableSlideId,[\s\S]*?\}\);/);
+  assert.match(task3, /revisionId[^\n]*(?:still|must remain|仍是|必须仍是)[^\n]*current/i);
+  assert.match(task3, /(?:fail closed|失败关闭)[^\n]*(?:before|在)[^\n]*candidate[^\n]*session/i);
+  assert.match(task3, /(?:zero|no|不得留下|零)[^\n]*(?:candidate|session)[^\n]*(?:residue|残留)/i);
+
+  const manualCalls = [...plan.matchAll(/prepareManualEditDeck\(\{([\s\S]*?)\n\s*\}\);/g)];
+  assert.ok(manualCalls.length > 0, "documented prepareManualEditDeck calls");
+  for (const [, options] of manualCalls) {
+    assert.match(options!, /revisionId:\s*resolved\.revisionId/);
+    assert.match(options!, /slideId:\s*resolved\.stableSlideId/);
+  }
+});
+
 test("manual and Agent wait signals are exact and bind the presented candidate hash", () => {
   const presentedSha256 = "a".repeat(64);
   assert.equal(translateManualDeckSignal("已保存并关闭"), "saved-and-closed");

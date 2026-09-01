@@ -504,6 +504,7 @@ git commit -m "feat: activate official editable donors in full decks"
 - Modify: `src/project/store.ts`
 
 **Interfaces:**
+- Produces `resolveCurrentDeckPage({ root, pageNumber }): Promise<{ revisionId; stableSlideId; slideIndex }>`.
 - Produces `prepareManualEditDeck(options): Promise<PreparedDeckEdit>`.
 - Produces `adoptManualSavedDeck(options): Promise<ResolvedCurrentDeckPointer>`.
 - Produces `beginAgentCandidateConfirmation(options): Promise<PreparedDeckEdit>`.
@@ -516,9 +517,14 @@ git commit -m "feat: activate official editable donors in full decks"
 ```ts
 test("manual flow adopts exact bytes only after saved-and-closed", async (t) => {
   const fixture = await generatedProject(t);
+  const resolved = await resolveCurrentDeckPage({
+    root: fixture.root,
+    pageNumber: 2,
+  });
   const prepared = await prepareManualEditDeck({
     root: fixture.root,
-    slideId: fixture.slideIds[1]!,
+    revisionId: resolved.revisionId,
+    slideId: resolved.stableSlideId,
   });
   assert.equal(prepared.slideCount, fixture.slideIds.length);
   assert.equal(prepared.localLink, prepared.absolutePath);
@@ -575,12 +581,13 @@ Expected: FAIL because `src/deck-revisions/workflow.ts` is missing.
 `prepareManualEditDeck()` must:
 
 1. reject when another edit session is active;
-2. read the current complete deck pointer;
-3. create a full candidate from that exact file;
-4. activate only the requested slide when it is not already listed in `editableSlideIds`;
-5. inspect the resulting full deck;
-6. persist an `external-editing` session;
-7. return the absolute candidate path as `localLink` plus labels/roles for every authenticated `reviewRequired` object.
+2. accept the `revisionId` and `stableSlideId` returned together by `resolveCurrentDeckPage()` without substituting a newer pointer;
+3. require that revisionId must remain current; otherwise fail closed before any candidate or session creation and leave zero candidate/session residue;
+4. create a full candidate from that exact resolved revision;
+5. activate only the requested slide when it is not already listed in `editableSlideIds`;
+6. inspect the resulting full deck;
+7. persist an `external-editing` session;
+8. return the absolute candidate path as `localLink` plus labels/roles for every authenticated `reviewRequired` object.
 
 The conversation tells the user to inspect any returned `reviewRequired` objects in the complete deck before saving and closing; this warning does not create a separate preview or confirmation gate.
 
