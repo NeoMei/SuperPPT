@@ -134,7 +134,7 @@ type Fixture = {
 
 async function fixture(t: TestContext, version = "0.2.0"): Promise<Fixture> {
   const root = await mkdtemp(join(tmpdir(), "superppt-trust-boundary-"));
-  t.after(async () => rm(root, { recursive: true, force: true }));
+  t.after(async () => rm(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }));
   const ai = join(root, "ai");
   const editable = join(root, "editable");
   const contractFile = join(root, "dependencies.json");

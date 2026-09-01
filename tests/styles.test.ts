@@ -47,7 +47,7 @@ test("ships exactly ten unique single-select styles with real 16:9 JPEG previews
 
 test("loads the built-in catalog independently of the process working directory", async (t) => {
   const unrelated = await mkdtemp(join(tmpdir(), "superppt-style-cwd-"));
-  t.after(async () => rm(unrelated, { recursive: true, force: true }));
+  t.after(async () => rm(unrelated, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }));
   const original = process.cwd();
   try {
     process.chdir(unrelated);
@@ -208,7 +208,7 @@ const LOCK_REVISION_SLIDE_IDS = [
 
 async function lockProject(t: test.TestContext, prefix: string): Promise<string> {
   const root = join(await realpath(await mkdtemp(join(tmpdir(), prefix))), "project");
-  t.after(async () => rm(dirname(root), { recursive: true, force: true }));
+  t.after(async () => rm(dirname(root), { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }));
   await initializeProject({ root, title: "Style Lock", idFactory: () => LOCK_PROJECT_ID });
   await configureGenerationAuthorizationTrustForTests(root, {
     root: join(dirname(root), "authorization-trust"),

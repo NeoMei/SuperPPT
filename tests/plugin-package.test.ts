@@ -90,7 +90,11 @@ test("package allowlist and dry-run exclude build leftovers and removed provider
     "package-lock.json",
     "tsconfig.json",
   ]);
-  const { stdout } = await execFileAsync("npm", ["pack", "--dry-run", "--json"], {
+  const npmCli = process.env.npm_execpath;
+  const { stdout } = await execFileAsync(
+    npmCli ? process.execPath : "npm",
+    npmCli ? [npmCli, "pack", "--dry-run", "--json"] : ["pack", "--dry-run", "--json"],
+    {
     cwd: process.cwd(),
     maxBuffer: 4 * 1024 * 1024,
   });

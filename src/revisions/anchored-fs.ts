@@ -131,8 +131,8 @@ function openWindowsDirectoryGuard(path: string): number | bigint | null {
   if (Number(handle) === -1) {
     throw new Error(`unable to anchor Windows revision evidence directory: ${windowsGuardApi.getLastError()}`);
   }
-  const attributes = windowsGuardApi.getFileAttributes(path);
-  if (attributes === INVALID_FILE_ATTRIBUTES || (attributes & FILE_ATTRIBUTE_REPARSE_POINT) !== 0) {
+  const attributes = windowsGuardApi.getFileAttributes(path) >>> 0;
+  if (attributes !== INVALID_FILE_ATTRIBUTES && (attributes & FILE_ATTRIBUTE_REPARSE_POINT) !== 0) {
     windowsGuardApi.closeHandle(handle);
     throw new Error("Windows revision evidence directory is a reparse point");
   }

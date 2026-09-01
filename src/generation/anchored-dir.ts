@@ -95,8 +95,8 @@ function openWindowsGuard(path: string): number | bigint | null {
     0,
   );
   if (Number(handle) === -1) throw new Error(`unable to anchor generation directory: ${windowsApi.getLastError()}`);
-  const attributes = windowsApi.getFileAttributes(path);
-  if (attributes === INVALID_FILE_ATTRIBUTES || (attributes & FILE_ATTRIBUTE_REPARSE_POINT) !== 0) {
+  const attributes = windowsApi.getFileAttributes(path) >>> 0;
+  if (attributes !== INVALID_FILE_ATTRIBUTES && (attributes & FILE_ATTRIBUTE_REPARSE_POINT) !== 0) {
     windowsApi.closeHandle(handle);
     throw new Error("generation directory is a reparse point");
   }
@@ -218,8 +218,8 @@ export class GenerationDirectory {
     if (!nativeAt) {
       const path = join(this.path, name);
       if (windowsApi) {
-        const attributes = windowsApi.getFileAttributes(path);
-        if (attributes === INVALID_FILE_ATTRIBUTES || (attributes & FILE_ATTRIBUTE_REPARSE_POINT) !== 0) {
+        const attributes = windowsApi.getFileAttributes(path) >>> 0;
+        if (attributes !== INVALID_FILE_ATTRIBUTES && (attributes & FILE_ATTRIBUTE_REPARSE_POINT) !== 0) {
           throw new Error("generation file is a reparse point");
         }
       }
