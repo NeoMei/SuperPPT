@@ -394,3 +394,39 @@ The next action is explicitly the main agent opening the complete manual candida
 
 - Intended independent commit message: `fix: restore style evidence across rollback`.
 - The exact commit and scoped `d359113..<newHEAD>` review-package SHA/line/byte evidence are generated after this report is committed; this report does not predict its own commit identity.
+
+## Final whole-task closure and frozen acceptance (2026-09-01)
+
+### Repeated task and code reviews
+
+- All 60 implementation steps in the authoritative local-full-deck plan and all mirrored Task 0-7 brief steps are complete. No product task is intentionally deferred.
+- Independent review rounds closed the initial-bootstrap recovery, unrelated-lineage replay, edit-page authorization, regeneration-stage, style-selection migration, stale-style retirement, rollback, and exact-delivery findings. The final review of committed product code reported **0 Critical / 0 Important / 0 Minor** and **Spec PASS / Quality PASS**.
+- A final documentation review found one historical/current-status wording Minor in `验收/验收报告.md`; it was corrected to past tense with the removed legacy commands explicitly forbidden. Exact rereview then reported **0 Critical / 0 Important / 0 Minor**, **Spec PASS / Quality PASS**.
+- Final product commit under review: `2fd7983325af7770fc6f66ceac354042780d75d5` (`fix: preserve complete deck review lifecycle`).
+
+### Frozen full verification
+
+- Source full suite: **633 total / 631 passed / 0 failed / 2 Windows-only skipped**, `1,846,408 ms`.
+- Compiled full suite: **633 total / 631 passed / 0 failed / 2 Windows-only skipped**, `800,138 ms`.
+- `npm run lint:types`, `npm run build`, `git diff --check`: **PASS**.
+- `npm audit --omit=dev` and complete `npm audit`: **0 vulnerabilities**.
+- `npm pack --dry-run --json`: **PASS**, 101 files, 4,653,853 packed bytes / 5,662,124 unpacked bytes. No generated or user PPTX, PDF, montage, staging, deck revision, or legacy smoke-copy artifact is packaged.
+- Real installed dependency preflight: **PASS** against `/Users/neomei/.agents/skills/ai-image-to-ppt` and installed `image-to-editable-pptx 0.2.0`; the AI contract exposes the approved host/API routing order, `gpt-image-2`, and exact 1920x1080 plus 1280x720 outputs, while the editable dependency exposes manifest v2 and ledger v2.
+
+### Real external acceptance
+
+- Real host OpenAI generation: **PASS**. Raw 1672x941, normalized 1664x936 master, and exact 1280x720 editable input were separately hash-authenticated.
+- A deliberately complex converter input failed closed because required OCR text could not be repaired safely; it produced no falsely approved editable result. A simpler production input then passed the live converter with 9 authenticated elements (7 independent assets and 2 editable text elements) and no review-required item.
+- Real WPS inspection of that converter output: editable title replacement and independent image-layer movement both worked; undo, close-without-save, reopen, and exact original SHA preservation all passed. Visual fidelity was high overall, but the reconstructed title font/spacing was not pixel-identical to the image source; this remains a truthful quality limitation, not an integrity failure.
+- Real complete-deck WPS flow: page-2 text/alignment edit, slide reorder, blank insertion, slide deletion, save, exact-byte adoption, close, and reopen all passed. The adopted SHA remained `5ec01775d01084b85bc5aaf95b5fee22149cb0b01fd8341a37e145880fee9de8`; topology reconciled the unmanaged insertion and tombstone without rewriting the PPTX.
+- Real Agent edit flow: candidate preparation, exact presented-SHA confirmation, current-pointer promotion, and pointer-only rollback passed; the complete deck remained unchanged before confirmation and no post-save rendering or reconstruction occurred.
+
+### Final product boundary
+
+- The active handoff is one complete local PPTX link. The user opens that full deck in a local editor and edits the activated page in place; there is no cloud requirement and no single-page user handoff.
+- A manual save is adopted as the final file bytes without script editing, copying, PDF export, montage generation, or re-rendering. Further page requests resolve again against the current adopted topology.
+- Agent changes remain immutable candidates until the user confirms the exact presented SHA. Style selection remains compact, recommended, single-select, and the approved Style Lock is delegated unchanged to `ai-image-to-ppt`.
+
+### Operator safety note
+
+- During GUI acceptance, focus briefly landed on an unrelated already-open `华虹 BP.docx` window and path text was entered accidentally. It was immediately undone/removed and was never deliberately saved. All later acceptance actions used the controlled SuperPPT deck paths.

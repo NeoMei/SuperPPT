@@ -73,7 +73,7 @@
 - Produces a recorded source-test/type-check baseline before feature edits.
 - Consumes a released or locally installed `ai-image-to-ppt` capability manifest that passes its own validator.
 
-- [ ] **Step 1: Prove the existing worktree remains preserved**
+- [x] **Step 1: Prove the existing worktree remains preserved**
 
 Run in `/Users/neomei/项目/codexprojects/SuperPPT/.worktrees/superppt-v1`:
 
@@ -84,7 +84,7 @@ git rev-parse HEAD
 
 Expected: the overlapping tracked and untracked WIP files are still present. Do not reset, clean, stash, switch branches, or delete files in this worktree.
 
-- [ ] **Step 2: Create the clean implementation worktree**
+- [x] **Step 2: Create the clean implementation worktree**
 
 From the SuperPPT repository, after this confirmed design/plan revision is committed:
 
@@ -95,7 +95,7 @@ git worktree add /Users/neomei/项目/codexprojects/SuperPPT/.worktrees/superppt
 
 Expected: `git -C /Users/neomei/项目/codexprojects/SuperPPT/.worktrees/superppt-local-full-deck status --short` prints nothing, and both revised plan documents are present.
 
-- [ ] **Step 3: Capture a fresh clean baseline**
+- [x] **Step 3: Capture a fresh clean baseline**
 
 Run in the new worktree:
 
@@ -107,11 +107,11 @@ npm test
 
 Expected: type checking and the complete source suite exit with status 0. If either fails, stop feature work and fix or explicitly baseline the pre-existing failure in a separate commit; never treat failures observed in the old dirty worktree as the clean baseline.
 
-- [ ] **Step 4: Complete the lower-skill capability prerequisite**
+- [x] **Step 4: Complete the lower-skill capability prerequisite**
 
 Execute `docs/superpowers/plans/2026-08-30-ai-image-to-ppt-capability-manifest.md`, install its validated result into the Agent skill location, and run its manifest validator. Do not start SuperPPT dependency integration while `references/capabilities.json` is absent or invalid.
 
-- [ ] **Step 5: Record the baseline without touching product code**
+- [x] **Step 5: Record the baseline without touching product code**
 
 Save the exact clean base commit, Node version, npm version, source test count, type-check result, installed `ai-image-to-ppt` capability schema/sub-contract versions and manifest hash, and installed `image-to-editable-pptx` version in the implementation session notes. This step creates no SuperPPT source commit.
 
@@ -142,7 +142,7 @@ Save the exact clean base commit, Node version, npm version, source test count, 
 - Produces `adoptDeckCandidate(root, options): Promise<ResolvedCurrentDeckPointer>` and `rollbackCurrentDeck(root, revisionId): Promise<ResolvedCurrentDeckPointer>`.
 - Consumes `Sha256Schema`, safe project-path helpers, durable JSON writes, and project locks.
 
-- [ ] **Step 1: Write failing schema and lifecycle tests**
+- [x] **Step 1: Write failing schema and lifecycle tests**
 
 ```ts
 import assert from "node:assert/strict";
@@ -200,13 +200,13 @@ test("revision records stay immutable and interrupted adoption recovers one poin
 });
 ```
 
-- [ ] **Step 2: Run the focused test and verify the missing-module failure**
+- [x] **Step 2: Run the focused test and verify the missing-module failure**
 
 Run: `node --import tsx --test tests/deck-revisions.test.ts tests/deck-topology.test.ts`
 
 Expected: FAIL because `src/deck-revisions/store.ts` does not exist.
 
-- [ ] **Step 3: Implement strict revision and session schemas**
+- [x] **Step 3: Implement strict revision and session schemas**
 
 ```ts
 export const SlideTopologyEntrySchema = z.object({
@@ -291,13 +291,13 @@ export type ResolvedCurrentDeckPointer = CurrentDeckPointer & { absolutePath: st
 
 Do not add mutable revision state. Store edit sessions below `output/deck-edit-sessions/<sessionId>/session.json`; store immutable adopted revision records beside their PPTX; derive current/superseded from `output/current.json`. Add only `currentDeck: CurrentDeckPointerSchema.nullable()` and active-session identity to `ProjectManifestSchema`. Remove preview artifacts from `EditableRevisionBindingSchema`; the binding retains converter identity and editable slide IDs but does not point to a PNG.
 
-- [ ] **Step 4: Install runtime package tooling and implement namespace-aware raw ranges**
+- [x] **Step 4: Install runtime package tooling and implement namespace-aware raw ranges**
 
 Run `npm install --save jszip saxes`. Verify both packages appear under `dependencies` and `jszip` no longer appears under `devDependencies`.
 
 Use `saxes` only to identify namespace URI + local-name element/attribute ranges in the original UTF-8 XML. `scanOoxmlRanges()` returns offsets into the original string and namespace-resolved names; it never serializes a parsed document. Add tests with non-default prefixes, unknown namespace declarations, extension lists, Unicode text, and self-closing relationship elements.
 
-- [ ] **Step 5: Implement safe PPTX inspection and stable reads**
+- [x] **Step 5: Implement safe PPTX inspection and stable reads**
 
 `inspectLocalPptx()` must:
 
@@ -311,7 +311,7 @@ Use `saxes` only to identify namespace URI + local-name element/attribute ranges
 
 Use the existing `readRegularFileNoFollow()`, `validateProjectRoot()`, and project lock helpers instead of adding a second path-security implementation.
 
-- [ ] **Step 6: Implement persistent identity and read-only topology reconciliation**
+- [x] **Step 6: Implement persistent identity and read-only topology reconciliation**
 
 Initial assembly calls `publishInitialSlideIdentities()` before the deck is exposed. It records the project stable UUID -> `p:sldId/@id` -> slide relationship target -> `p14:creationId` mapping in the revision topology. A slide without `p14:creationId` receives a cryptographically random, nonzero, unique `xsd:unsignedInt` value at the official location `p:cSld/p:extLst/p:ext[@uri='{BB962C8B-B14F-4D97-AF65-F5344CB8AC3E}']/p14:creationId/@val`, using the namespace `http://schemas.microsoft.com/office/powerpoint/2010/main`. Preserve every existing `p:ext` child and all XML outside the insertion range byte-for-byte. A one-time migration of a legacy SuperPPT deck may add missing creation IDs before any external editor opens; record this as an explicit pre-open migration and rebaseline hashes. Do not add hidden shapes or a proprietary custom-XML slide marker.
 
@@ -327,7 +327,7 @@ Initial assembly calls `publishInitialSlideIdentities()` before the deck is expo
 
 The function writes only topology metadata. It never injects or repairs identity inside a user-saved PPTX.
 
-- [ ] **Step 7: Implement candidate creation and journaled metadata-only adoption**
+- [x] **Step 7: Implement candidate creation and journaled metadata-only adoption**
 
 `createDeckCandidate()` allocates the future revision ID, writes one owned copy to `output/deck-revisions/<candidateRevisionId>/deck.pptx`, authenticates it, and writes only the edit-session record. It does not create `revision.json` and never changes the current pointer.
 
@@ -354,13 +354,13 @@ await writeCurrentPointerOnly(root, {
 
 Write the immutable revision record and adoption evidence before atomically replacing `output/current.json`; append journal phases before and after each durable metadata operation. Recovery treats an orphan finalized revision as non-current until the pointer transaction completes or is safely retried. The function must not call `writeFile`, `copyFile`, `rename`, `chmod`, `createPresentation`, identity injection, or any slide mutation function on `deck.pptx` after `inspectLocalPptx()` begins.
 
-- [ ] **Step 8: Run schema, topology, store, crash-recovery, and type tests**
+- [x] **Step 8: Run schema, topology, store, crash-recovery, and type tests**
 
 Run: `node --import tsx --test tests/deck-revisions.test.ts tests/deck-topology.test.ts tests/project-state.test.ts && npm run lint:types`
 
 Expected: PASS with byte-for-byte manual adoption, moved/deleted/new slide reconciliation, ambiguous-ID rejection, crash recovery, immutable records, and pointer-only rollback.
 
-- [ ] **Step 9: Commit the revision ledger and topology**
+- [x] **Step 9: Commit the revision ledger and topology**
 
 ```bash
 git add src/deck-revisions/schemas.ts src/deck-revisions/ooxml.ts src/deck-revisions/identity.ts src/deck-revisions/inspect.ts src/deck-revisions/topology.ts src/deck-revisions/store.ts src/deck/assemble.ts src/project/schemas.ts package.json package-lock.json tests/deck-revisions.test.ts tests/deck-topology.test.ts tests/project-state.test.ts
@@ -384,7 +384,7 @@ git commit -m "feat: add immutable deck revisions and topology"
 - Consumes the authenticated converter `manifestVersion: 2`, ledger, assets, and official `slide-editable.pptx` for one stable slide ID.
 - Consumes an owned complete candidate path from Task 1 and never returns a donor path to the CLI or Skill.
 
-- [ ] **Step 1: Write failing full-deck activation tests**
+- [x] **Step 1: Write failing full-deck activation tests**
 
 ```ts
 test("activates only the selected slide and returns the complete deck candidate", async (t) => {
@@ -414,13 +414,13 @@ test("activates only the selected slide and returns the complete deck candidate"
 
 Add tests proving native simple shapes and official object names (`text-<id>`, `shape-<id>-<label>`, `asset-<id>`) survive activation, all manifest v2 relations/provenance/review flags remain in the authenticated binding, and every non-target ZIP member under `ppt/slides/`, `ppt/notesSlides/`, and `ppt/comments/` retains its hash.
 
-- [ ] **Step 2: Run the activation test and verify failure**
+- [x] **Step 2: Run the activation test and verify failure**
 
 Run: `node --import tsx --test tests/full-deck-activation.test.ts`
 
 Expected: FAIL because `activateEditableSlideInDeck()` is missing.
 
-- [ ] **Step 3: Accept only the converter's official v2 result**
+- [x] **Step 3: Accept only the converter's official v2 result**
 
 Define the SuperPPT adapter result:
 
@@ -445,13 +445,13 @@ export const AuthenticatedEditableConversionSchema = z.object({
 
 Validate hashes against the converter ledger and owned output paths, parse `manifest.json` with the v2 schema, and require exactly one valid 16:9 slide in `slide-editable.pptx`. Reject v1, missing donor output, mismatched hashes, unexpected absolute paths, and donor/manifest object-name mismatches. Remove `buildPrivateEditableDonor()` and any SuperPPT manifest-to-PPTX rebuilding path.
 
-- [ ] **Step 4: Extend namespace-aware ranges with relationship validation**
+- [x] **Step 4: Extend namespace-aware ranges with relationship validation**
 
 Use Task 1's raw range index to locate exactly one PresentationML `spTree` (`http://schemas.openxmlformats.org/presentationml/2006/main`) and reject zero or multiple matches. Build replacements from raw ranges; never serialize the parsed document.
 
 Parse relationship elements by namespace URI. Reject `TargetMode="External"`, `r:link`, macros, OLE, audio/video, ActiveX, charts, diagrams, and every shape-tree relationship whose type is not the OOXML image relationship. Preserve the target slide's existing layout relationship and all raw XML outside the replaced `spTree`/relationship insertion ranges.
 
-- [ ] **Step 5: Implement target-slide shape-tree transplantation**
+- [x] **Step 5: Implement target-slide shape-tree transplantation**
 
 `activateEditableSlideInDeck()` must operate on a temporary copy and atomically replace the candidate only after validation:
 
@@ -468,7 +468,7 @@ Parse relationship elements by namespace URI. Reject `TargetMode="External"`, `r
 
 Leaving now-unreferenced target-slide media in the package is acceptable; deleting shared media is forbidden because it could affect other slides.
 
-- [ ] **Step 6: Add corruption, OOXML preservation, and identity tests**
+- [x] **Step 6: Add corruption, OOXML preservation, and identity tests**
 
 Test and reject:
 
@@ -482,13 +482,13 @@ Test and reject:
 - a converter result with `manifestVersion: 1`, version outside `>=0.2.0 <0.3.0`, missing official donor, or mismatched donor hash;
 - any attempted output path outside `output/deck-revisions/<revisionId>/deck.pptx`.
 
-- [ ] **Step 7: Run activation, editable, and type tests**
+- [x] **Step 7: Run activation, editable, and type tests**
 
 Run: `node --import tsx --test tests/full-deck-activation.test.ts tests/editable.test.ts && npm run lint:types`
 
 Expected: PASS; only the target slide changes, v2 native shapes and review-required metadata survive, unknown OOXML is preserved, and no user-visible single-page artifact exists.
 
-- [ ] **Step 8: Commit official-donor full-deck activation**
+- [x] **Step 8: Commit official-donor full-deck activation**
 
 ```bash
 git add src/deck-revisions/activate-slide.ts src/editable/adapter.ts src/editable/schemas.ts tests/full-deck-activation.test.ts tests/editable.test.ts
@@ -515,7 +515,7 @@ git commit -m "feat: activate official editable donors in full decks"
 - Produces `rejectDeckEdit(options): Promise<void>`.
 - Consumes Task 1 candidate/store APIs and Task 2 slide activation.
 
-- [ ] **Step 1: Write failing workflow tests**
+- [x] **Step 1: Write failing workflow tests**
 
 ```ts
 test("manual flow adopts exact bytes only after saved-and-closed", async (t) => {
@@ -573,13 +573,13 @@ test("agent candidate is not current until its exact hash is confirmed", async (
 });
 ```
 
-- [ ] **Step 2: Run the workflow tests and verify failure**
+- [x] **Step 2: Run the workflow tests and verify failure**
 
 Run: `node --import tsx --test tests/full-deck-editing.test.ts`
 
 Expected: FAIL because `src/deck-revisions/workflow.ts` is missing.
 
-- [ ] **Step 3: Implement the manual workflow**
+- [x] **Step 3: Implement the manual workflow**
 
 `prepareManualEditDeck()` must:
 
@@ -596,13 +596,13 @@ The conversation tells the user to inspect any returned `reviewRequired` objects
 
 `adoptManualSavedDeck()` accepts only the exact active session plus `userSignal: "saved-and-closed"`. It performs a stable read, structure validation, and Task 1's read-only topology reconciliation, then runs the journaled metadata-only adoption transaction. It must not repair, normalize, or rewrite slide content after the user saves; the user may intentionally have edited, reordered, inserted, or removed more than one slide. Blocking duplicate/ambiguous identities stop adoption and preserve the prior current pointer.
 
-- [ ] **Step 4: Implement the Agent confirmation lifecycle**
+- [x] **Step 4: Implement the Agent confirmation lifecycle**
 
 `beginAgentCandidateConfirmation()` accepts an already prepared and inspected complete candidate from Task 4, records `awaiting-confirmation`, and returns its complete local path and exact presented hash. It does not change the current pointer.
 
 `confirmAgentEditDeck()` re-reads the candidate, requires its hash to equal both the presented hash and `confirmedSha256`, and performs metadata-only adoption. `rejectDeckEdit()` marks the session rejected and leaves the prior current pointer unchanged.
 
-- [ ] **Step 5: Serialize external editing**
+- [x] **Step 5: Serialize external editing**
 
 Add tests proving:
 
@@ -614,13 +614,13 @@ Add tests proving:
 - after a user reorder/insert/delete, the next request resolves page numbers from the reconciled current topology;
 - after Agent confirmation, the next edit starts from the exact confirmed complete deck.
 
-- [ ] **Step 6: Run workflow, revisions, and type tests**
+- [x] **Step 6: Run workflow, revisions, and type tests**
 
 Run: `node --import tsx --test tests/full-deck-editing.test.ts tests/deck-revisions.test.ts tests/deck-topology.test.ts tests/revisions.test.ts && npm run lint:types`
 
 Expected: PASS with serialized edits and no PPTX write after manual save.
 
-- [ ] **Step 7: Commit the workflows**
+- [x] **Step 7: Commit the workflows**
 
 ```bash
 git add src/deck-revisions/workflow.ts src/editable/operations.ts src/editable/schemas.ts src/project/store.ts tests/full-deck-editing.test.ts tests/deck-revisions.test.ts tests/revisions.test.ts
@@ -649,7 +649,7 @@ git commit -m "feat: adopt complete deck edits by pointer"
 - Consumes the current deck revision's reconciled topology, `editableSlideIds`, authenticated editable manifest v2/binding, page description, and approved Style Lock.
 - Produces one complete Agent candidate or one complete manual candidate; it never produces a user-facing page artifact.
 
-- [ ] **Step 1: Write failing least-destructive routing tests**
+- [x] **Step 1: Write failing least-destructive routing tests**
 
 ```ts
 test("routes with direct edit before activation before regeneration", () => {
@@ -667,13 +667,13 @@ test("regeneration keeps the approved style lock", async () => {
 });
 ```
 
-- [ ] **Step 2: Run routing tests and verify failure**
+- [x] **Step 2: Run routing tests and verify failure**
 
 Run: `node --import tsx --test tests/editable.test.ts tests/generation.test.ts`
 
 Expected: FAIL because the full-deck route contract is not implemented.
 
-- [ ] **Step 3: Implement the route contract**
+- [x] **Step 3: Implement the route contract**
 
 ```ts
 export const DeckEditRouteSchema = z.discriminatedUnion("route", [
@@ -704,13 +704,13 @@ Add a regression fixture where the user first changes title alignment in WPS, th
 
 `prepareAgentEditDeck()` must always create a complete candidate first. It then runs `editActualSlideObjects()` for `direct-edit`, Task 2 official-donor activation followed by `editActualSlideObjects()` for `activate-editable`, or Step 4's one-page image replacement for `regenerate-slide`. After inspection it calls Task 3's `beginAgentCandidateConfirmation()` and returns one complete local PPTX link. If the authenticated binding contains `reviewRequired: true` assets, the result also returns their labels/roles and the Skill tells the user to inspect them in the complete deck before confirmation.
 
-- [ ] **Step 4: Bind regeneration to the current full deck**
+- [x] **Step 4: Bind regeneration to the current full deck**
 
 The regeneration job contains one page and the approved Style Lock. When `ai-image-to-ppt` returns a successful normalized page image, replace only the target slide's shape tree inside a newly created complete candidate. Remove the target slide ID from that candidate's `editableSlideIds`; a later edit can activate the regenerated page again.
 
 Never call initial full-deck `createPresentation()` for a slide-regeneration edit, and never regenerate already successful untouched pages.
 
-- [ ] **Step 5: Add user-override and truthful-limit tests**
+- [x] **Step 5: Add user-override and truthful-limit tests**
 
 Verify:
 
@@ -723,13 +723,13 @@ Verify:
 - supported simple-shape edits target `shape-*` objects without rebuilding the slide;
 - `reviewRequired` objects are disclosed before manual saved-and-closed or Agent confirmation.
 
-- [ ] **Step 6: Run editable, generation, and type tests**
+- [x] **Step 6: Run editable, generation, and type tests**
 
 Run: `node --import tsx --test tests/editable.test.ts tests/generation.test.ts tests/full-deck-editing.test.ts && npm run lint:types`
 
 Expected: PASS with one-page generation jobs and full-deck candidate outputs.
 
-- [ ] **Step 7: Commit edit routing**
+- [x] **Step 7: Commit edit routing**
 
 ```bash
 git add src/deck-revisions/edit-slide.ts src/editable/route.ts src/editable/operations.ts src/editable/adapter.ts src/generation/jobs.ts src/generation/job-schemas.ts src/generation/batch.ts tests/editable.test.ts tests/generation.test.ts tests/full-deck-editing.test.ts
@@ -759,7 +759,7 @@ git commit -m "feat: route edits into complete deck candidates"
 - Produces `formatLocalPptxLink(absolutePath, label): string` and CLI commands `current-deck-link`, `resolve-current-deck-page`, `prepare-manual-deck`, `adopt-saved-deck`, `prepare-agent-deck`, `confirm-agent-deck`, `reject-deck-candidate`, and `rollback-deck`. Manual preparation requires the exact `revisionId` returned by page resolution.
 - Removes `render-editable`, `confirm-preview`, `replace-slide`, image-review adapter, and derived-export commands.
 
-- [ ] **Step 1: Write failing CLI contract tests**
+- [x] **Step 1: Write failing CLI contract tests**
 
 ```ts
 test("manual edit commands return a clickable complete local pptx and saved-and-closed adoption", async (t) => {
@@ -791,13 +791,13 @@ test("removed preview commands fail with the complete-deck replacement", async (
 });
 ```
 
-- [ ] **Step 2: Run CLI and workflow tests and verify old behavior fails**
+- [x] **Step 2: Run CLI and workflow tests and verify old behavior fails**
 
 Run: `node --import tsx --test tests/cli-approval.test.ts tests/workflow-contract.test.ts tests/publication.test.ts`
 
 Expected: FAIL because CLI and gates still bind montage and slide-preview evidence.
 
-- [ ] **Step 3: Replace deck-review and edit-session evidence**
+- [x] **Step 3: Replace deck-review and edit-session evidence**
 
 Remove `presentedMontageSha256`, preview paths, and adapter IDs. Deck review actions bind:
 
@@ -824,7 +824,7 @@ export const HostRuntimeCapabilitiesSchema = z.object({
 
 The Skill/harness supplies this capability object when invoking the workflow. `requireLocalDeckHandoff()` rejects unless both booleans are true. SuperPPT must not infer support from TTY state, operating system, WPS installation, or the fact that a path exists.
 
-- [ ] **Step 4: Implement the complete-deck CLI surface**
+- [x] **Step 4: Implement the complete-deck CLI surface**
 
 Each preparation command prints:
 
@@ -847,7 +847,7 @@ Each preparation command prints:
 
 `formatLocalPptxLink()` requires an absolute canonical `.pptx` path, rejects control characters/newlines and `>` in the target, and always uses an angle-bracket Markdown target so spaces and Chinese path segments remain clickable. `current-deck-link` returns the same shape without a session. Preflight must fail before project work when the host cannot expose local file links. The CLI must not emit a single-page PPT path, PNG path, PDF path, montage path, browser URL, or cloud-upload instruction.
 
-- [ ] **Step 5: Preserve conversational wait points**
+- [x] **Step 5: Preserve conversational wait points**
 
 Update workflow tests so the Skill must:
 
@@ -858,13 +858,13 @@ Update workflow tests so the Skill must:
 - wait for `确认` on Agent sessions;
 - allow `修改大纲`, `修改第 N 页描述`, and `换风格` to return to upstream gates with impact disclosure.
 
-- [ ] **Step 6: Run CLI, state, publication, and type tests**
+- [x] **Step 6: Run CLI, state, publication, and type tests**
 
 Run: `node --import tsx --test tests/cli-approval.test.ts tests/workflow-contract.test.ts tests/publication.test.ts tests/project-state.test.ts && npm run lint:types`
 
 Expected: PASS with local complete-deck links and no preview-bound action.
 
-- [ ] **Step 7: Commit CLI and gate migration**
+- [x] **Step 7: Commit CLI and gate migration**
 
 ```bash
 git add src/host/capabilities.ts src/acceptance/schema.ts src/acceptance/build.ts src/acceptance/current.ts src/project/schemas.ts src/project/promotion.ts src/cli.ts tests/publication.test.ts tests/project-state.test.ts tests/cli-approval.test.ts tests/workflow-contract.test.ts
@@ -897,7 +897,7 @@ git commit -m "feat: replace preview gates with local deck links"
 - Adoption reads and hashes an existing complete PPTX; it has no render or rebuild callback.
 - Runtime dependency preflight requires `ai-image-to-ppt` and `image-to-editable-pptx`, not WPSComposer.
 
-- [ ] **Step 1: Add failing negative-contract tests**
+- [x] **Step 1: Add failing negative-contract tests**
 
 ```ts
 test("candidate assembly emits no render-derived review artifacts", async (t) => {
@@ -924,13 +924,13 @@ test("manual adoption invokes no output writer", async (t) => {
 });
 ```
 
-- [ ] **Step 2: Run deck and editable tests and verify the old PDF/montage path fails**
+- [x] **Step 2: Run deck and editable tests and verify the old PDF/montage path fails**
 
 Run: `node --import tsx --test tests/deck.test.ts tests/editable.test.ts tests/mixed-deck.test.ts`
 
 Expected: FAIL because current assembly still requires PDF/montage and adopted edits still render previews.
 
-- [ ] **Step 3: Remove derived output production**
+- [x] **Step 3: Remove derived output production**
 
 Delete PDF, montage, WPS slide-image export, `pdftoppm`, editable preview, `verifyFlatArtifacts`, and preview-bound schemas. Change output contracts from:
 
@@ -946,13 +946,13 @@ to:
 
 Remove `pdf-lib` from `package.json` and regenerate `package-lock.json` with `npm install --package-lock-only`. Assert that Task 2's runtime `jszip` and `saxes` dependencies remain under `dependencies`. Keep `sharp` because source-image normalization, editable conversion, and generation QA still use it.
 
-- [ ] **Step 4: Remove WPSComposer from the main dependency contract**
+- [x] **Step 4: Remove WPSComposer from the main dependency contract**
 
 Delete WPS preview/export capability schemas and preflight branches. `references/dependencies.json` must list only the two required skill dependencies for this workflow. Its `ai-image-to-ppt` entry requires the versioned `references/capabilities.json` schema and exact script capabilities used by SuperPPT; its `image-to-editable-pptx` entry requires `>=0.2.0 <0.3.0`, manifest v2, official donor output, and object-name contracts. The runtime resolver must parse and validate those same requirements instead of maintaining separate hard-coded version rules. Do not add a hidden optional preview fallback.
 
 Add negative preflight fixtures for a missing/malformed `ai-image-to-ppt` capability manifest, manifest/script disagreement, converter 0.1.x, manifest v1, missing `slide-editable.pptx`, and a host without clickable local-file capability. Each must fail before a generation or conversion call.
 
-- [ ] **Step 5: Delete post-save reconstruction**
+- [x] **Step 5: Delete post-save reconstruction**
 
 Remove calls and exports for:
 
@@ -964,13 +964,13 @@ Remove calls and exports for:
 
 Keep converter validation and pre-open Agent operations. Rename remaining helpers so no function called `render*` is used during adoption.
 
-- [ ] **Step 6: Run removal, package, and type tests**
+- [x] **Step 6: Run removal, package, and type tests**
 
 Run: `node --import tsx --test tests/deck.test.ts tests/editable.test.ts tests/generation.test.ts tests/mixed-deck.test.ts tests/plugin-package.test.ts && npm run lint:types`
 
 Expected: PASS with no `pdf-lib`, WPSComposer preview dependency, PDF, montage, PNG review, or post-save PPTX writer.
 
-- [ ] **Step 7: Commit removal of obsolete paths**
+- [x] **Step 7: Commit removal of obsolete paths**
 
 ```bash
 git add src/deck/assemble.ts src/deck/pdf.ts src/deck/montage.ts src/editable/preview-image.ts src/editable/render.ts src/dependencies/schemas.ts src/dependencies/resolve.ts src/dependencies/preflight.ts references/dependencies.json package.json package-lock.json tests/deck.test.ts tests/editable.test.ts tests/generation.test.ts tests/mixed-deck.test.ts tests/plugin-package.test.ts
@@ -998,7 +998,7 @@ The dirty preserved worktree contains untracked `src/deck/wps-export.ts`, `src/e
 - Consumes all completed tasks.
 - Produces one guided creation path, one manual complete-deck edit loop, one Agent complete-deck edit loop, and one rollback path.
 
-- [ ] **Step 1: Write the complete workflow contract before changing instructions**
+- [x] **Step 1: Write the complete workflow contract before changing instructions**
 
 The Skill must express this exact manual sequence:
 
@@ -1028,7 +1028,7 @@ Agent modifies target page in the complete candidate
 -> move current pointer
 ```
 
-- [ ] **Step 2: Add end-to-end tests for consecutive pages**
+- [x] **Step 2: Add end-to-end tests for consecutive pages**
 
 The fixture must:
 
@@ -1042,7 +1042,7 @@ The fixture must:
 8. assert current still points to the manual revision until confirmation;
 9. confirm the Agent candidate and assert rollback restores the manual revision without rewriting either file.
 
-- [ ] **Step 3: Update user-facing instructions**
+- [x] **Step 3: Update user-facing instructions**
 
 Remove all language about:
 
@@ -1054,25 +1054,25 @@ Remove all language about:
 
 Every editing response must provide one clickable Markdown link to the complete local PPTX, say that WPS/PowerPoint is the preview and editing interface, disclose any `reviewRequired` object labels, and wait for the correct manual saved-and-closed or Agent confirmation signal.
 
-- [ ] **Step 4: Run the complete source suite**
+- [x] **Step 4: Run the complete source suite**
 
 Run: `npm test`
 
 Expected: all source tests pass with zero failures.
 
-- [ ] **Step 5: Run type checking, build, and compiled tests**
+- [x] **Step 5: Run type checking, build, and compiled tests**
 
 Run: `npm run lint:types && npm run build && npm run test:compiled`
 
 Expected: all commands succeed with zero failures.
 
-- [ ] **Step 6: Run package validation**
+- [x] **Step 6: Run package validation**
 
 Run: `npm pack --dry-run --json`
 
 Expected: package contains the two required skill contracts and full-deck revision modules, and contains no generated PPTX, user-edited files, single-page donors, previews, PDFs, montages, or temporary staging directories.
 
-- [ ] **Step 7: Perform real WPS manual-edit acceptance**
+- [x] **Step 7: Perform real WPS manual-edit acceptance**
 
 Using a fresh controlled project:
 
@@ -1085,7 +1085,7 @@ Using a fresh controlled project:
 7. request editing by the new current page number and verify the resolved target is correct and the new complete candidate contains the prior saved change;
 8. confirm no PDF, montage, preview image, single-page user artifact, or post-save deck copy was created.
 
-- [ ] **Step 8: Perform real Agent-edit acceptance**
+- [x] **Step 8: Perform real Agent-edit acceptance**
 
 From the adopted manual revision, ask the Agent to change a supported slide-3 text object. Verify the current pointer remains on the manual revision before confirmation, open the complete Agent candidate in WPS, confirm it, and verify the confirmed complete file becomes current without any further PPTX write.
 
@@ -1099,14 +1099,14 @@ An unmanaged/native page inserted by WPS remains directly editable in the next m
 
 Final delivery is only the exact authenticated current deck. Run `complete-deck-review --project <root> --action confirm-delivery --revision-id <current-revision-id> --sha256 <current-sha256>`. The successful action enters `delivered` and binds formal delivery, PPTX export, acceptance evidence, and the client-facing complete deck to the same revision, canonical path, and SHA-256 without copying or rewriting PPTX bytes. The fixed revision acceptance artifact is idempotent and crash-recoverable only when its existing bytes authenticate the same evidence; any malformed or conflicting artifact fails closed without deleting or changing the user's deck. The former `acceptance-smoke-copy` and `acceptance-record` implementations/commands and `scripts/acceptance-smoke.sh` are absent from public source/package entry points; acceptance is exact-current complete-deck authentication.
 
-- [ ] **Step 9: Commit instructions and E2E coverage**
+- [x] **Step 9: Commit instructions and E2E coverage**
 
 ```bash
 git add skills/superppt/SKILL.md skills/superppt/references/阶段契约.json skills/superppt/references/门禁清单.md skills/superppt/references/修改路由.md skills/superppt/references/工作区契约.md README.md tests/e2e.test.ts tests/workflow-contract.test.ts tests/plugin-package.test.ts
 git commit -m "docs: guide complete deck editing loops"
 ```
 
-- [ ] **Step 10: Report implementation and real acceptance separately**
+- [x] **Step 10: Report implementation and real acceptance separately**
 
 The final handoff must report:
 
