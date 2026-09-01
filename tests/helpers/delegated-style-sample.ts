@@ -50,7 +50,7 @@ async function testAiDependency(root: string): Promise<AiImageSkillDependency> {
       { provider: "doubao", channel: "api", defaultModel: "doubao-seedream-5-0-260128" },
     ],
     outputs: { normalizedSlide: { format: "image", width: 1920, height: 1080 }, editableInput: { format: "png", width: 1280, height: 720 } },
-    scripts: Object.fromEntries(Object.entries(scripts).map(([name, path]) => [name, `scripts/${path.split("/").at(-1)}`])),
+    scripts: Object.fromEntries(Object.entries(scripts).map(([name, path]) => [name, `scripts/${path.split(/[\\/]/).at(-1)}`])),
   }, null, 2)}\n`);
   const editableRoot = join(dirname(root), "delegated-style-sample-editable");
   await mkdir(join(editableRoot, ".codex-plugin"), { recursive: true });
