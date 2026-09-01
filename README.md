@@ -34,10 +34,16 @@ SuperPPT 需要 Node.js 22.6 或更高版本。
 
 ```bash
 npm ci
-bash scripts/verify.sh
+npm run verify:portable
+npm run verify:full
+npm run test:release-install
 ```
 
-当前未进行 push、npm 发布或生产部署；本地验证不等于发布状态。
+`verify:portable` 是 GitHub 公共 runner 的 Linux/macOS/Windows 门禁，不依赖 Codex 私有 workspace runtime。`verify:full` 必须在已注入 workspace runtime 的 Codex 主机运行，覆盖完整源码与编译测试；`test:release-install` 会真实打包、按 `--omit=dev` 安装并启动 CLI。发布前全部门禁都必须通过，公共 CI 不能用替身伪造 `@oai/artifact-tool`。
+
+V1 只通过 GitHub/Codex 插件渠道发布，不发布 npm 包，`package.json` 因此保持 `private: true`。发布 tag 必须与插件版本完全一致（当前为 `v0.1.0`），tag commit 必须已在 `main`；tag workflow 会重新执行 portable gate、生成 `.tgz` 与 `SHA256SUMS`、写入 GitHub artifact provenance，并一次性创建 GitHub Release。
+
+当前未进行 push、GitHub Release、npm 发布或生产部署；本地验证不等于发布状态。
 
 ## V1 限制
 

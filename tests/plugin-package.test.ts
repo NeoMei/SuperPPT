@@ -21,6 +21,14 @@ test("packages the approved SuperPPT identity", async () => {
   assert.equal(pkg.name, "superppt");
   assert.equal(pkg.version, "0.1.0");
   assert.equal(pkg.engines.node, ">=22.6");
+  assert.deepEqual(pkg.author, { name: "NeoMei", url: "https://github.com/NeoMei" });
+  assert.equal(pkg.license, "MIT");
+  assert.deepEqual(pkg.repository, {
+    type: "git",
+    url: "git+https://github.com/NeoMei/SuperPPT.git",
+  });
+  assert.equal(pkg.homepage, "https://github.com/NeoMei/SuperPPT#readme");
+  assert.deepEqual(pkg.bugs, { url: "https://github.com/NeoMei/SuperPPT/issues" });
   assert.equal(plugin.name, "superppt");
   assert.equal(plugin.version, pkg.version);
   assert.equal(plugin.skills, "./skills/");
@@ -147,6 +155,7 @@ test("runtime package and dependency authority expose only the two full-deck cap
     "koffi",
     "saxes",
     "sharp",
+    "tsx",
     "zod",
   ]);
   assert.equal(pkg.devDependencies.typescript, "^5.9.0");

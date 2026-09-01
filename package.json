@@ -2,6 +2,19 @@
   "name": "superppt",
   "version": "0.1.0",
   "description": "Create high-detail image-first PPTX decks with versioned planning and editable page revisions.",
+  "author": {
+    "name": "NeoMei",
+    "url": "https://github.com/NeoMei"
+  },
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/NeoMei/SuperPPT.git"
+  },
+  "homepage": "https://github.com/NeoMei/SuperPPT#readme",
+  "bugs": {
+    "url": "https://github.com/NeoMei/SuperPPT/issues"
+  },
   "private": true,
   "type": "module",
   "engines": {
@@ -21,9 +34,15 @@
   ],
   "scripts": {
     "test": "node --import tsx scripts/test.ts",
+    "test:portable": "node --import tsx --test tests/cli-input.test.ts tests/plugin-package.test.ts tests/publication.test.ts tests/release-readiness.test.ts tests/styles.test.ts tests/test-runtime.test.ts tests/trust-boundary.test.ts tests/workflow-contract.test.ts",
     "lint:types": "tsc -p tsconfig.json --noEmit",
     "build": "tsc -p tsconfig.json",
     "test:compiled": "node --import tsx scripts/test.ts --compiled",
+    "test:portable:compiled": "node --experimental-detect-module --test dist/tests/cli-input.test.js dist/tests/plugin-package.test.js dist/tests/publication.test.js dist/tests/release-readiness.test.js dist/tests/styles.test.js dist/tests/test-runtime.test.js dist/tests/trust-boundary.test.js dist/tests/workflow-contract.test.js",
+    "verify:portable": "node scripts/verify-contract.mjs && npm run test:portable && npm run lint:types && npm run build && npm run test:portable:compiled && npm audit",
+    "verify:full": "bash scripts/verify.sh",
+    "test:release-install": "node scripts/run-release-install-smoke.mjs",
+    "release:check": "node scripts/verify-release.mjs",
     "cli": "tsx src/cli.ts"
   },
   "dependencies": {
@@ -31,11 +50,11 @@
     "koffi": "3.1.6",
     "saxes": "^6.0.0",
     "sharp": "^0.35.3",
+    "tsx": "^4.20.0",
     "zod": "^4.0.0"
   },
   "devDependencies": {
     "@types/node": "^24.0.0",
-    "tsx": "^4.20.0",
     "typescript": "^5.9.0"
   }
 }

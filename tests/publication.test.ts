@@ -56,18 +56,21 @@ test("publishes one strict three-action complete-deck review boundary", () => {
   }), /unrecognized/i);
 });
 
-test("runs deterministic verification on Linux, macOS, and Windows with Node 22.6", async () => {
+test("runs portable verification on Linux, macOS, and Windows with Node 22.6", async () => {
   const [workflow, verifier, contractVerifier] = await Promise.all([
-    text(".github/workflows/ci.yml"),
+    json(".github/workflows/ci.yml"),
     text("scripts/verify.sh"),
     text("scripts/verify-contract.mjs"),
   ]);
 
-  for (const runner of ["ubuntu-latest", "macos-latest", "windows-latest"]) {
-    assert.match(workflow, new RegExp(`- ${runner}`));
-  }
-  assert.match(workflow, /node-version:\s*22\.6\.0/);
-  assert.match(workflow, /run:\s*bash scripts\/verify\.sh/);
+  assert.deepEqual(workflow.jobs.portable.strategy.matrix.os, [
+    "ubuntu-latest",
+    "macos-latest",
+    "windows-latest",
+  ]);
+  assert.equal(workflow.jobs.portable.steps[1].with["node-version"], "22.6.0");
+  assert.ok(workflow.jobs.portable.steps.some((step: { run?: string }) => step.run === "npm run verify:portable"));
+  assert.ok(workflow.jobs.portable.steps.every((step: { run?: string }) => step.run !== "bash scripts/verify.sh"));
   assert.match(verifier, /node scripts\/verify-contract\.mjs/);
   assert.match(verifier, /npm test/);
   assert.match(verifier, /npm run lint:types/);
