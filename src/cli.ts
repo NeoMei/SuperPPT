@@ -269,11 +269,16 @@ async function main(argv: string[]): Promise<void> {
 
   if (command === "prepare-manual-deck") {
     requireInjectedLocalHandoff();
-    const options = selectedFlags(argv.slice(1), ["--project", "--slide-id"], ["--project", "--slide-id", "--conversion-root"]);
+    const options = selectedFlags(
+      argv.slice(1),
+      ["--project", "--revision-id", "--slide-id"],
+      ["--project", "--revision-id", "--slide-id", "--conversion-root"],
+    );
     const root = options.get("--project")!;
     const project = await readProject(root);
     const prepared = await prepareManualEditDeck({
       root,
+      revisionId: options.get("--revision-id")!,
       slideId: options.get("--slide-id")!,
       ...(options.has("--conversion-root") ? { conversionRoot: options.get("--conversion-root")! } : {}),
     });

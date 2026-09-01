@@ -13,8 +13,9 @@ import {
   writeFile,
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import test, { type TestContext } from "node:test";
+import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 
 import { preflightDependencies } from "../src/dependencies/preflight.js";
@@ -91,6 +92,11 @@ function request(current: Fixture) {
   return { aiSkillRoot: current.ai, editableSkillRoot: current.editable };
 }
 
+function packageRootFromTestModule(): string {
+  const containingRoot = dirname(dirname(fileURLToPath(import.meta.url)));
+  return basename(containingRoot) === "dist" ? dirname(containingRoot) : containingRoot;
+}
+
 test("dependency contract v3 keeps exactly the two explicit local dependencies", async () => {
   const contract = DependencyContractSchema.parse(JSON.parse(await readFile(join(process.cwd(), "references", "dependencies.json"), "utf8")));
   assert.equal(contract.contractVersion, 3);
@@ -143,6 +149,50 @@ test("resolves exactly the supplied Skill roots and attests declarative identiti
     shape: "shape-<id>-<label>",
     asset: "asset-<id>",
   });
+});
+
+test("default dependency authority ignores valid, invalid, and symlinked dist shadows", async (t) => {
+  const packageRoot = packageRootFromTestModule();
+  const canonicalContract = await realpath(join(packageRoot, "references", "dependencies.json"));
+  const canonicalBytes = await readFile(canonicalContract);
+  const canonicalSha256 = createHash("sha256").update(canonicalBytes).digest("hex");
+  const shadowRoot = join(packageRoot, "dist", "references");
+  const shadowContract = join(shadowRoot, "dependencies.json");
+
+  for (const variant of ["valid", "invalid", "symlink"] as const) {
+    await t.test(variant, async (subtest) => {
+      const current = await fixture(subtest);
+      await mkdir(shadowRoot, { recursive: true });
+      subtest.after(async () => rm(shadowRoot, { recursive: true, force: true }));
+      if (variant === "valid") {
+        await writeFile(shadowContract, Buffer.concat([canonicalBytes, Buffer.from("\n")]));
+      } else if (variant === "invalid") {
+        await writeFile(shadowContract, "{}\n");
+      } else {
+        const legacy = join(shadowRoot, "legacy-dependencies.json");
+        await writeFile(legacy, canonicalBytes);
+        await symlink(legacy, shadowContract);
+      }
+
+      const resolved = await resolveSkillDependencies(request(current));
+      assert.equal(resolved.contractFile, canonicalContract);
+      assert.equal(resolved.contractSha256, canonicalSha256);
+    });
+  }
+});
+
+test("an explicit dependency contract file remains the selected authority", async (t) => {
+  const current = await fixture(t);
+  const explicitContract = join(current.root, "explicit-dependencies.json");
+  const bytes = Buffer.concat([
+    await readFile(join(packageRootFromTestModule(), "references", "dependencies.json")),
+    Buffer.from("\n"),
+  ]);
+  await writeFile(explicitContract, bytes);
+
+  const resolved = await resolveSkillDependencies({ ...request(current), contractFile: explicitContract });
+  assert.equal(resolved.contractFile, await realpath(explicitContract));
+  assert.equal(resolved.contractSha256, createHash("sha256").update(bytes).digest("hex"));
 });
 
 test("rejects a missing or malformed AI capability manifest", async (t) => {

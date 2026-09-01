@@ -213,7 +213,7 @@ test("continues from exact WPS-saved deck bytes through current-page Agent confi
   assert.equal(initial.sha256, digest(generatedBytes));
   assert.equal((await readCurrentDeckPointer(root)).revisionId, initialRevisionId);
 
-  const manual = await prepareManualEditDeck({ root, slideId: slideIds[1]! });
+  const manual = await prepareManualEditDeck({ root, revisionId: initialRevisionId, slideId: slideIds[1]! });
   assert.equal(manual.slideCount, 3);
   assert.equal(manual.targetSlideIndex, 1);
   assert.deepEqual(manual.reviewRequiredObjects.map(({ label }) => label), ["Slide 2 title alignment"]);

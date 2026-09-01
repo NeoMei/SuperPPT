@@ -2,7 +2,7 @@ import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
 import type { BigIntStats } from "node:fs";
 import { lstat, readdir, realpath } from "node:fs/promises";
-import { join, relative, resolve, sep } from "node:path";
+import { basename, dirname, extname, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 
@@ -20,10 +20,13 @@ import {
 } from "./schemas.js";
 
 const execFileAsync = promisify(execFile);
-const DEFAULT_CONTRACT_FILES = [
-  fileURLToPath(new URL("../../references/dependencies.json", import.meta.url)),
-  fileURLToPath(new URL("../../../references/dependencies.json", import.meta.url)),
-];
+const MODULE_FILE = fileURLToPath(import.meta.url);
+const SOURCE_TREE_ROOT = dirname(dirname(MODULE_FILE));
+const BUILD_OR_PACKAGE_ROOT = dirname(SOURCE_TREE_ROOT);
+const PACKAGE_ROOT = basename(BUILD_OR_PACKAGE_ROOT) === "dist" && extname(MODULE_FILE) === ".js"
+  ? dirname(BUILD_OR_PACKAGE_ROOT)
+  : BUILD_OR_PACKAGE_ROOT;
+const DEFAULT_CONTRACT_FILE = join(PACKAGE_ROOT, "references", "dependencies.json");
 const MAX_EDITABLE_SOURCE_FILES = 2048;
 const MAX_EDITABLE_SOURCE_ENTRIES = 4096;
 const MAX_EDITABLE_SOURCE_FILE_BYTES = 16 * 1024 * 1024;
@@ -130,20 +133,8 @@ async function gitRevision(root: string): Promise<string | null> {
   }
 }
 
-async function loadDependencyContract(path?: string) {
-  const candidates = path === undefined ? DEFAULT_CONTRACT_FILES : [path];
-  let contractFile: string | undefined;
-  for (const candidate of candidates) {
-    try {
-      contractFile = await canonicalContractFile(candidate);
-      break;
-    } catch (error: unknown) {
-      if ((error as Error).message !== "dependency contract is missing" || candidate === candidates.at(-1)) {
-        throw error;
-      }
-    }
-  }
-  if (contractFile === undefined) throw new Error("dependency contract is missing");
+async function loadDependencyContract(path = DEFAULT_CONTRACT_FILE) {
+  const contractFile = await canonicalContractFile(path);
   let bytes: Buffer;
   let value: unknown;
   try {

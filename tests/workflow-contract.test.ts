@@ -64,6 +64,7 @@ type WorkflowPolicy = {
     previewAndEditor: string;
     pageResolution: string;
     manual: {
+      revisionBinding: string;
       waitForUserText: string;
       internalSignal: string;
       acceptsSavedOnly: boolean;
@@ -158,6 +159,7 @@ function validateStageContract(contract: StageContract): void {
   assert.equal(policy.editing.previewAndEditor, "wps-or-powerpoint");
   assert.equal(policy.editing.pageResolution, "current-reconciled-topology");
   assert.deepEqual(policy.editing.manual, {
+    revisionBinding: "resolver-revision-id-must-still-be-current",
     waitForUserText: "已保存并关闭",
     internalSignal: "saved-and-closed",
     acceptsSavedOnly: false,
@@ -362,6 +364,7 @@ test("active workflow hands off only one complete local PPTX and names exact wai
   assert.match(workflow, /已保存并关闭/);
   assert.match(workflow, /确认.*SHA-256|SHA-256.*确认/is);
   assert.match(workflow, /current-deck-link.*prepare-manual-deck.*adopt-saved-deck/is);
+  assert.match(workflow, /resolve-current-deck-page[\s\S]*(?:revisionId|revision ID)[\s\S]*prepare-manual-deck[\s\S]*--revision-id/i);
   assert.match(workflow, /prepare-agent-deck.*confirm-agent-deck.*reject-deck-candidate/is);
   assert.match(workflow, /rollback-deck/);
   for (const obsolete of [

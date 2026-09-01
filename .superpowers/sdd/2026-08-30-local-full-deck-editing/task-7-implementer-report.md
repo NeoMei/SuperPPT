@@ -85,3 +85,44 @@ The next action is explicitly the main agent opening the complete manual candida
 - Intended independent commit message: `docs: guide complete deck editing loops`.
 - The exact final HEAD and scoped `eec2155..<newHEAD>` review-package hash/line/byte evidence are generated after this report is committed and are reported in the handoff; the report does not predict its own commit identity.
 - Independent review remains pending; this implementer report does not declare Task 7 review complete.
+
+## Review-fix round 1 (2026-09-01)
+
+### Review result and scope
+
+- Review baseline: `b99a47833da89550da4e51e764834d5a651577a7`.
+- Formal result before these fixes: Critical 0 / Important 2 / Minor 0; Spec and Quality both failed only on the two Important findings below.
+- Finding 1: the page resolver and manual-candidate preparation were not bound to the same current revision, so a stable slide ID that survived a concurrent pointer change could be prepared from a newer revision without the caller noticing.
+- Finding 2: compiled default dependency resolution preferred `dist/references/dependencies.json`, allowing a legacy shadow contract to replace the package-root authority.
+- No real WPS GUI action was performed in this round. The original real-WPS statuses above remain **PENDING**.
+
+### RED-first and GREEN evidence
+
+- Revision-binding RED: the two new API/CLI race tests passed `revisionId`, but the old API schema and CLI rejected that field/flag before they could enforce stale authority: 0/2 passed.
+- Revision-binding GREEN: `prepareManualEditDeck` now requires the resolver's `revisionId`; `prepare-manual-deck` requires `--revision-id`; a changed current pointer fails closed before a candidate/session is created. API and CLI race tests pass 2/2 even though the stable slide ID remains present in the promoted revision. Both assert unchanged revision/session directory listings and a null active session after rejection.
+- Dependency-shadow RED: with the old compiled resolver, only explicit `contractFile` passed; valid, invalid, and symlinked `dist/references/dependencies.json` shadows selected or poisoned the compiled default: 1/5 passed.
+- Dependency-shadow GREEN: source and compiled default resolution now select the same canonical package-root `references/dependencies.json` and SHA-256, ignoring all three shadow variants. Explicit `contractFile` still selects and attests the explicit file: 7/7 targeted tests passed in both source and compiled runs.
+- Canonical default contract: `/Users/neomei/项目/codexprojects/SuperPPT/.worktrees/superppt-local-full-deck/references/dependencies.json`; SHA-256 `14f946f1254003a2ffa68bf8c5e9b9c7f2210dcaec548be46f63e131853483a2`.
+- Documentation-contract RED/GREEN: the two focused tests first failed 0/2 because the machine contract and maintained instructions did not require the resolver revision handoff; after migration they passed 2/2.
+
+### Maintained contract migration
+
+- README, the active Skill, all five active references, and the main plan now pass the `revisionId` returned by `resolve-current-deck-page` unchanged to `prepare-manual-deck --revision-id`.
+- The machine contract declares `manual.revisionBinding = "resolver-revision-id-must-still-be-current"`; stale preparation requires a fresh resolution and leaves no candidate/session residue.
+- Dependency documentation names package-root `references/dependencies.json` as the source and compiled/installed default authority, rejects `dist/references` shadow authority, and preserves the explicit `contractFile` trust boundary.
+- The ignored controlled WPS acceptance state records the exact initial revision binding and updated command template. Its already-prepared complete candidate was not regenerated, opened, or adopted.
+
+### Round-1 focused verification
+
+- Affected source suites (`cli-approval`, `dependencies`, `e2e`, `full-deck-editing`, `workflow-contract`): **PASS**, 63/63, `15862.629209ms`.
+- `npm run lint:types && npm run build`: **PASS**.
+- Affected compiled suites: **PASS**, 63/63, `15888.345ms`.
+- Adjacent source package/publication/runtime suites: **PASS**, 14/14, `573.803875ms`.
+- Adjacent compiled package/publication/runtime suites: **PASS**, 14/14, `556.02675ms`.
+- `npm pack --dry-run --json`: **PASS**, 102 files, 4,650,099 packed bytes, 5,654,183 unpacked bytes. It contains the two required full-deck Skill/contracts/modules and no generated PPTX, user edit, single-page donor, PDF, montage, staging, or generated review-preview artifact.
+- This round intentionally used focused source/compiled verification before the review conclusion, rather than rerunning the long full suites. The earlier full-suite evidence remains the original Task 7 freeze, not evidence for these review-fix changes.
+
+### Round-1 commit and review handoff
+
+- Intended independent commit message: `fix: bind complete deck workflow authority`.
+- The exact fix commit and scoped `b99a478..<newHEAD>` review-package hash/line/byte evidence are generated after this report is committed and reported in the handoff; this report does not predict its own commit identity.

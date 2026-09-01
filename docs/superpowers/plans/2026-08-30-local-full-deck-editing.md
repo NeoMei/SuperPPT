@@ -746,7 +746,7 @@ git commit -m "feat: route edits into complete deck candidates"
 **Interfaces:**
 - Produces `HostRuntimeCapabilitiesSchema` and `requireLocalDeckHandoff(capabilities): void`.
 - Produces a deck-review gate bound to `revisionId + absolutePath + sha256` for one complete local PPTX.
-- Produces `formatLocalPptxLink(absolutePath, label): string` and CLI commands `current-deck-link`, `prepare-manual-deck`, `adopt-saved-deck`, `prepare-agent-deck`, `confirm-agent-deck`, `reject-deck-candidate`, and `rollback-deck`.
+- Produces `formatLocalPptxLink(absolutePath, label): string` and CLI commands `current-deck-link`, `resolve-current-deck-page`, `prepare-manual-deck`, `adopt-saved-deck`, `prepare-agent-deck`, `confirm-agent-deck`, `reject-deck-candidate`, and `rollback-deck`. Manual preparation requires the exact `revisionId` returned by page resolution.
 - Removes `render-editable`, `confirm-preview`, `replace-slide`, image-review adapter, and derived-export commands.
 
 - [ ] **Step 1: Write failing CLI contract tests**
@@ -754,8 +754,12 @@ git commit -m "feat: route edits into complete deck candidates"
 ```ts
 test("manual edit commands return a clickable complete local pptx and saved-and-closed adoption", async (t) => {
   const project = await cliProject(t);
+  const resolved = await runCliJson([
+    "resolve-current-deck-page", "--project", project.root, "--page-number", "2",
+  ]);
   const prepared = await runCliJson([
-    "prepare-manual-deck", "--project", project.root, "--slide-id", project.slideIds[1]!,
+    "prepare-manual-deck", "--project", project.root,
+    "--revision-id", resolved.revisionId, "--slide-id", resolved.stableSlideId,
   ]);
   assert.equal(prepared.kind, "complete-local-pptx");
   assert.equal(prepared.slideCount, project.slideIds.length);

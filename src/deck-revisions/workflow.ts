@@ -19,6 +19,7 @@ import {
 
 const PrepareManualEditDeckOptionsSchema = z.object({
   root: z.string().min(1),
+  revisionId: z.string().uuid(),
   slideId: z.string().uuid(),
   conversionRoot: z.string().min(1).optional(),
 }).strict();
@@ -84,12 +85,16 @@ export async function resolveCurrentDeckPage(options: {
 
 export async function prepareManualEditDeck(options: {
   root: string;
+  revisionId: string;
   slideId: string;
   conversionRoot?: string;
 }): Promise<PreparedDeckEdit> {
   const valid = PrepareManualEditDeckOptionsSchema.parse(options);
   const current = await readCurrentDeckPointer(valid.root);
-  const parent = await readLocalDeckRevision(valid.root, current.revisionId);
+  if (current.revisionId !== valid.revisionId) {
+    throw new Error("manual edit resolution is stale because the current revision changed");
+  }
+  const parent = await readLocalDeckRevision(valid.root, valid.revisionId);
   const target = parent.slideTopology.entries.find((entry) => entry.stableSlideId === valid.slideId);
   if (!target) throw new Error("manual edit target is not in the reconciled current deck topology");
   const alreadyEditable = parent.editableSlideIds.includes(valid.slideId);
@@ -98,7 +103,7 @@ export async function prepareManualEditDeck(options: {
     reviewRequiredObjects: parent.reviewRequiredObjectsBySlideId[valid.slideId] ?? [],
   });
   const candidate = await createDeckCandidate(valid.root, {
-    sourceRevisionId: current.revisionId,
+    sourceRevisionId: valid.revisionId,
     reason: "manual-edit",
     changedSlideIds: [valid.slideId],
     editableSlideIds: parent.editableSlideIds,

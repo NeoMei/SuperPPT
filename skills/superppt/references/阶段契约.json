@@ -115,6 +115,7 @@
       "previewAndEditor": "wps-or-powerpoint",
       "pageResolution": "current-reconciled-topology",
       "manual": {
+        "revisionBinding": "resolver-revision-id-must-still-be-current",
         "waitForUserText": "已保存并关闭",
         "internalSignal": "saved-and-closed",
         "acceptsSavedOnly": false,

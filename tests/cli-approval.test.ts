@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
-import { mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, readdir, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test, { type TestContext } from "node:test";
@@ -10,8 +10,8 @@ import { promisify } from "node:util";
 import JSZip from "jszip";
 
 import { formatLocalPptxLink, requireLocalDeckHandoff } from "../src/host/capabilities.js";
-import { beginAgentCandidateConfirmation } from "../src/deck-revisions/workflow.js";
-import { createDeckCandidate, readCurrentDeckPointer } from "../src/deck-revisions/store.js";
+import { beginAgentCandidateConfirmation, confirmAgentEditDeck } from "../src/deck-revisions/workflow.js";
+import { createDeckCandidate, readCurrentDeckPointer, readLocalDeckRevision } from "../src/deck-revisions/store.js";
 import { finalizeSlideTopology } from "../src/deck-revisions/topology.js";
 import {
   bindAgentDeckConfirmation,
@@ -152,7 +152,7 @@ test("manual commands return one clickable complete PPTX and adopt only saved-an
   assert.equal("sessionId" in current, false);
 
   const prepared = await runCliJson([
-    "prepare-manual-deck", "--project", project.root, "--slide-id", project.slideIds[1]!,
+    "prepare-manual-deck", "--project", project.root, "--revision-id", project.revisionId, "--slide-id", project.slideIds[1]!,
   ]);
   assert.equal(prepared.kind, "complete-local-pptx");
   assert.equal(prepared.mode, "manual");
@@ -186,6 +186,47 @@ test("resolves repeated page-number edits from the current reconciled deck topol
   await assert.rejects(runCli([
     "resolve-current-deck-page", "--project", project.root, "--page-number", "4",
   ]), /outside.*topology|page number/i);
+});
+
+test("prepare-manual-deck binds the resolver revision and leaves no candidate when it is stale", async (t) => {
+  const project = await cliProject(t);
+  const resolved = await runCliJson([
+    "resolve-current-deck-page", "--project", project.root, "--page-number", "2",
+  ]);
+  const candidate = await createDeckCandidate(project.root, {
+    sourceRevisionId: resolved.revisionId,
+    reason: "agent-edit",
+    changedSlideIds: [resolved.stableSlideId],
+    editableSlideIds: project.slideIds,
+    targetSlideId: resolved.stableSlideId,
+    mode: "agent",
+  });
+  const presented = await beginAgentCandidateConfirmation({
+    root: project.root,
+    sessionId: candidate.sessionId,
+    slideId: resolved.stableSlideId,
+  });
+  const promoted = await confirmAgentEditDeck({
+    root: project.root,
+    sessionId: presented.sessionId,
+    confirmedSha256: presented.sha256,
+  });
+  const promotedRevision = await readLocalDeckRevision(project.root, promoted.revisionId);
+  assert.ok(promotedRevision.slideTopology.entries.some(({ stableSlideId }) => stableSlideId === resolved.stableSlideId));
+  const revisionDirectoriesBefore = await readdir(join(project.root, "output", "deck-revisions"));
+  const sessionDirectoriesBefore = await readdir(join(project.root, "output", "deck-edit-sessions"));
+
+  await assert.rejects(runCli([
+    "prepare-manual-deck",
+    "--project", project.root,
+    "--revision-id", resolved.revisionId,
+    "--slide-id", resolved.stableSlideId,
+  ]), /stale|current revision changed|no longer current/i);
+
+  assert.equal((await readCurrentDeckPointer(project.root)).revisionId, promoted.revisionId);
+  assert.deepEqual(await readdir(join(project.root, "output", "deck-revisions")), revisionDirectoriesBefore);
+  assert.deepEqual(await readdir(join(project.root, "output", "deck-edit-sessions")), sessionDirectoriesBefore);
+  assert.equal((await readProject(project.root)).activeDeckEditSessionId, null);
 });
 
 test("Agent confirmation, rejection, and deck rollback use exact complete-deck identities", async (t) => {

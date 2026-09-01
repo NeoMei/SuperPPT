@@ -17,7 +17,7 @@ SuperPPT 把主题描述、粘贴文本或 Markdown 变成一套高细节、图�
 
 WPS 或 PowerPoint 是预览与编辑界面。每次编辑响应只交付一个可点击的完整本地 PPTX 链接，并显示任何 `reviewRequired` 对象标签。
 
-- 手动循环：按 current 完整 deck 的对账后页序把第 N 页解析成稳定 ID，复制精确 current 文件为完整 candidate，展示唯一链接后停止。用户在 WPS/PowerPoint 中修改、原位保存、关闭，并精确回复 `已保存并关闭`。采纳只稳定读取、校验结构、对账移动/插入/删除后的 topology，并移动 current pointer；不在保存后改写 PPTX。
+- 手动循环：按 current 完整 deck 的对账后页序把第 N 页解析成稳定 ID 与 `revisionId`，把两者原样传给 `prepare-manual-deck --revision-id`；若 current 已变就拒绝并重新解析，不在新 revision 上静默继续。随后复制该精确 current 文件为完整 candidate，展示唯一链接后停止。用户在 WPS/PowerPoint 中修改、原位保存、关闭，并精确回复 `已保存并关闭`。采纳只稳定读取、校验结构、对账移动/插入/删除后的 topology，并移动 current pointer；不在保存后改写 PPTX。
 - Agent 循环：从精确 current 完整 deck 创建 candidate，只改目标页已认证对象，展示唯一链接、修改摘要和 SHA-256 后停止。只有用户精确回复 `确认`，且确认绑定所展示哈希时，current pointer 才切换。
 - 连续修改：“再改第 N 页”始终按最新对账 topology 解析，下一个 candidate 从上一次采纳的精确字节创建。
 - 恢复：“恢复上一版”只移动 current pointer，不重写任何历史 PPTX。
