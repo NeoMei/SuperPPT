@@ -17,13 +17,13 @@ export const SlideTopologyEntrySchema = z.object({
   position: z.number().int().nonnegative(),
   management: z.enum(["managed", "unmanaged"]),
   presentationSlideId: z.number().int().min(256).max(4294967295),
-  creationId: z.number().int().positive().max(4294967295),
+  creationId: z.number().int().positive().max(4294967295).nullable(),
 }).strict();
 
 export const DeletedSlideIdentitySchema = z.object({
   stableSlideId: z.string().uuid(),
   presentationSlideId: z.number().int().min(256).max(4294967295),
-  creationId: z.number().int().positive().max(4294967295),
+  creationId: z.number().int().positive().max(4294967295).nullable(),
 }).strict();
 
 export const SlideTopologySchema = z.object({
@@ -37,11 +37,14 @@ export const SlideTopologySchema = z.object({
     ["stableSlideId", topology.entries.map((entry) => entry.stableSlideId)],
     ["position", topology.entries.map((entry) => entry.position)],
     ["presentationSlideId", topology.entries.map((entry) => entry.presentationSlideId)],
-    ["creationId", topology.entries.map((entry) => entry.creationId)],
   ] as const) {
     if (new Set<unknown>(values).size !== values.length) {
       context.addIssue({ code: "custom", path: ["entries"], message: `slide topology ${field} values must be unique` });
     }
+  }
+  const activeCreationIds = topology.entries.flatMap((entry) => entry.creationId === null ? [] : [entry.creationId]);
+  if (new Set(activeCreationIds).size !== activeCreationIds.length) {
+    context.addIssue({ code: "custom", path: ["entries"], message: "slide topology creationId values must be unique when present" });
   }
   if (topology.deletedStableSlideIds.some((id) => topology.entries.some((entry) => entry.stableSlideId === id))) {
     context.addIssue({ code: "custom", path: ["deletedStableSlideIds"], message: "active slide identities cannot also be deleted" });
@@ -49,11 +52,14 @@ export const SlideTopologySchema = z.object({
   for (const [field, values] of [
     ["stableSlideId", topology.deletedSlideIdentities.map((entry) => entry.stableSlideId)],
     ["presentationSlideId", topology.deletedSlideIdentities.map((entry) => entry.presentationSlideId)],
-    ["creationId", topology.deletedSlideIdentities.map((entry) => entry.creationId)],
   ] as const) {
     if (new Set<unknown>(values).size !== values.length) {
       context.addIssue({ code: "custom", path: ["deletedSlideIdentities"], message: `deleted slide ${field} values must be unique` });
     }
+  }
+  const deletedCreationIds = topology.deletedSlideIdentities.flatMap((entry) => entry.creationId === null ? [] : [entry.creationId]);
+  if (new Set(deletedCreationIds).size !== deletedCreationIds.length) {
+    context.addIssue({ code: "custom", path: ["deletedSlideIdentities"], message: "deleted slide creationId values must be unique when present" });
   }
   if (JSON.stringify(topology.deletedStableSlideIds) !== JSON.stringify(topology.deletedSlideIdentities.map((entry) => entry.stableSlideId))) {
     context.addIssue({ code: "custom", path: ["deletedStableSlideIds"], message: "deleted stable IDs must exactly match tombstone evidence" });
@@ -61,7 +67,7 @@ export const SlideTopologySchema = z.object({
   if (topology.deletedSlideIdentities.some((deleted) => topology.entries.some((active) =>
     active.stableSlideId === deleted.stableSlideId
     || active.presentationSlideId === deleted.presentationSlideId
-    || active.creationId === deleted.creationId))) {
+    || (active.creationId !== null && deleted.creationId !== null && active.creationId === deleted.creationId)))) {
     context.addIssue({ code: "custom", path: ["deletedSlideIdentities"], message: "active and deleted slide evidence must be disjoint" });
   }
   const expected = createHash("sha256").update(JSON.stringify({

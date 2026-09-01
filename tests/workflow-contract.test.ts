@@ -411,6 +411,16 @@ test("main plan binds every manual preparation example to one resolver snapshot 
   }
 });
 
+test("main plan keeps presentation identity authoritative when WPS removes optional creation evidence", async () => {
+  const plan = await readFile("docs/superpowers/plans/2026-08-30-local-full-deck-editing.md", "utf8");
+  assert.match(plan, /creationId:\s*z\.number\(\)[^\n]*\.nullable\(\)/);
+  assert.match(plan, /creationId[^\n]*(?:null|missing)[^\n]*presentationSlideId[^\n]*(?:stable|preserve)/i);
+  assert.match(plan, /creationId[^\n]*non-null[^\n]*(?:agree|consistent)[^\n]*presentation/i);
+  assert.match(plan, /presentationSlideId[^\n]*(?:tombstone|deleted)[^\n]*(?:reject|blocking)/i);
+  assert.match(plan, /new[^\n]*presentationSlideId[^\n]*creationId[^\n]*null[^\n]*unmanaged/i);
+  assert.doesNotMatch(plan, /new slide part\/creation ID with no known identity/);
+});
+
 test("manual and Agent wait signals are exact and bind the presented candidate hash", () => {
   const presentedSha256 = "a".repeat(64);
   assert.equal(translateManualDeckSignal("已保存并关闭"), "saved-and-closed");

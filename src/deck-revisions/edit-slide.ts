@@ -425,7 +425,7 @@ export async function replaceRegeneratedSlideShapeTree(options: {
       await syncDirectory(dirname(candidatePath));
       await valid.operations?.beforeAtomicReplace?.(stagingPath);
       const after = await inspectLocalPptx(stagingPath);
-      assertStableTopology(before, after);
+      assertStableTopology(before, after, "slide regeneration");
       for (const [index, previous] of before.slides.entries()) {
         if (index === target.position) continue;
         const next = after.slides[index]!;
@@ -482,6 +482,7 @@ export async function replaceRegeneratedSlideShapeTree(options: {
 function assertStableTopology(
   before: Awaited<ReturnType<typeof inspectLocalPptx>>,
   after: Awaited<ReturnType<typeof inspectLocalPptx>>,
+  operation: "slide regeneration" | "direct edit",
 ): void {
   if (before.slideCount !== after.slideCount || before.slides.some((slide, index) => {
     const next = after.slides[index];
@@ -490,7 +491,7 @@ function assertStableTopology(
       || slide.presentationSlideId !== next.presentationSlideId
       || slide.creationId !== next.creationId
       || slide.relationshipId !== next.relationshipId;
-  })) throw new Error("direct edit changed stable complete-deck topology");
+  })) throw new Error(`${operation} changed stable complete-deck topology`);
 }
 
 export async function editActualSlideObjects(options: {
@@ -551,7 +552,7 @@ export async function editActualSlideObjects(options: {
       const stagedInfo = await lstat(stagingPath);
       if (stagedInfo.isSymbolicLink() || !stagedInfo.isFile()) throw new Error("direct edit staging is unsafe");
       const after = await inspectLocalPptx(stagingPath);
-      assertStableTopology(before, after);
+      assertStableTopology(before, after, "direct edit");
       const stagedZip = await JSZip.loadAsync(await readRegularFileNoFollow(stagingPath));
       const afterMembers = await memberHashes(stagedZip);
       for (const [name, hash] of beforeMembers) {

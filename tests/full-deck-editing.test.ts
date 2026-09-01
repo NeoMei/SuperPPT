@@ -21,8 +21,10 @@ import {
   createDeckCandidate,
   readCurrentDeckPointer,
   readLocalDeckRevision,
+  rollbackCurrentDeck,
 } from "../src/deck-revisions/store.js";
 import { editActualSlideObjects, replaceRegeneratedSlideShapeTree } from "../src/deck-revisions/edit-slide.js";
+import { inspectLocalPptx } from "../src/deck-revisions/inspect.js";
 import { finalizeSlideTopology } from "../src/deck-revisions/topology.js";
 import { initializeProject } from "../src/project/initialize.js";
 import { readProject, updateProject } from "../src/project/store.js";
@@ -128,6 +130,31 @@ async function reorderInsertDelete(path: string): Promise<Buffer> {
   zip.remove("ppt/slides/slide1.xml");
   zip.remove("ppt/slides/_rels/slide1.xml.rels");
   zip.file("ppt/slides/slide4.xml", slideXml(2004, "inserted"));
+  zip.file("ppt/slides/_rels/slide4.xml.rels", `<Relationships xmlns="${REL}"/>`);
+  const saved = await zip.generateAsync({ type: "nodebuffer" });
+  await writeFile(path, saved);
+  return saved;
+}
+
+function withoutCreationId(xml: string): string {
+  const stripped = xml.replace(
+    /<p:extLst><p:ext uri="\{BB962C8B-B14F-4D97-AF65-F5344CB8AC3E\}"><p14:creationId val="[0-9]+"\/><\/p:ext><\/p:extLst>/,
+    "",
+  );
+  assert.notEqual(stripped, xml, "fixture must remove one official creation ID");
+  return stripped;
+}
+
+async function wpsReorderInsertDeleteAndDropCreationIds(path: string): Promise<Buffer> {
+  const zip = await JSZip.loadAsync(await readFile(path));
+  zip.file("ppt/presentation.xml", `<p:presentation xmlns:p="${P}" xmlns:r="${R}"><p:sldIdLst><p:sldId id="257" r:id="rId2"/><p:sldId id="259" r:id="rId4"/><p:sldId id="258" r:id="rId3"/></p:sldIdLst></p:presentation>`);
+  zip.file("ppt/_rels/presentation.xml.rels", `<Relationships xmlns="${REL}"><Relationship Id="rId2" Type="${R}/slide" Target="slides/slide2.xml"/><Relationship Id="rId4" Type="${R}/slide" Target="slides/slide4.xml"/><Relationship Id="rId3" Type="${R}/slide" Target="slides/slide3.xml"/></Relationships>`);
+  zip.remove("ppt/slides/slide1.xml");
+  zip.remove("ppt/slides/_rels/slide1.xml.rels");
+  for (const part of ["ppt/slides/slide2.xml", "ppt/slides/slide3.xml"] as const) {
+    zip.file(part, withoutCreationId(await zip.file(part)!.async("string")));
+  }
+  zip.file("ppt/slides/slide4.xml", withoutCreationId(slideXml(2004, "inserted")));
   zip.file("ppt/slides/_rels/slide4.xml.rels", `<Relationships xmlns="${REL}"/>`);
   const saved = await zip.generateAsync({ type: "nodebuffer" });
   await writeFile(path, saved);
@@ -381,6 +408,138 @@ test("manual adoption reconciles reorder, insertion, and deletion and the next e
   assert.equal((await readProject(fixture.root)).activeDeckEditSessionId, next.sessionId);
 });
 
+test("manual adoption accepts WPS presentation identities after creation IDs are removed and the next Agent edit still binds", async (t) => {
+  const fixture = await workflowFixture(t);
+  const prepared = await prepareManualEditDeck({
+    root: fixture.root,
+    revisionId: fixture.revisionId,
+    slideId: fixture.slideIds[1]!,
+  });
+  const saved = await wpsReorderInsertDeleteAndDropCreationIds(prepared.absolutePath);
+  const savedStat = await stat(prepared.absolutePath);
+
+  const adopted = await adoptManualSavedDeck({
+    root: fixture.root,
+    sessionId: prepared.sessionId,
+    userSignal: "saved-and-closed",
+  });
+  const adoptedStat = await stat(prepared.absolutePath);
+  assert.deepEqual(await readFile(prepared.absolutePath), saved);
+  assert.equal(adopted.sha256, digest(saved));
+  assert.equal(adoptedStat.ino, savedStat.ino);
+  assert.equal(adoptedStat.size, savedStat.size);
+
+  const revision = await readLocalDeckRevision(fixture.root, adopted.revisionId);
+  assert.deepEqual(revision.slideTopology.entries.map(({ stableSlideId, presentationSlideId, creationId, management }) => ({
+    stableSlideId,
+    presentationSlideId,
+    creationId,
+    management,
+  })), [
+    { stableSlideId: fixture.slideIds[1], presentationSlideId: 257, creationId: null, management: "managed" },
+    { stableSlideId: revision.slideTopology.entries[1]!.stableSlideId, presentationSlideId: 259, creationId: null, management: "unmanaged" },
+    { stableSlideId: fixture.slideIds[2], presentationSlideId: 258, creationId: null, management: "managed" },
+  ]);
+  assert.deepEqual(revision.slideTopology.deletedSlideIdentities, [
+    { stableSlideId: fixture.slideIds[0], presentationSlideId: 256, creationId: 1001 },
+  ]);
+
+  const resolved = await resolveCurrentDeckPage({ root: fixture.root, pageNumber: 1 });
+  assert.equal(resolved.revisionId, adopted.revisionId);
+  assert.equal(resolved.stableSlideId, fixture.slideIds[1]);
+  const candidate = await createDeckCandidate(fixture.root, {
+    sourceRevisionId: resolved.revisionId,
+    reason: "agent-edit",
+    changedSlideIds: [resolved.stableSlideId],
+    editableSlideIds: revision.editableSlideIds,
+    targetSlideId: resolved.stableSlideId,
+    mode: "agent",
+  });
+  assert.deepEqual(await readFile(candidate.absolutePath), saved);
+  await editActualSlideObjects({
+    root: fixture.root,
+    currentRevisionId: resolved.revisionId,
+    sessionId: candidate.sessionId,
+    candidatePath: candidate.absolutePath,
+    slideId: resolved.stableSlideId,
+    manifest: {
+      manifestVersion: 2,
+      canvas: { width: 1280, height: 720 },
+      warnings: [],
+      elements: [{
+        kind: "text",
+        id: "two",
+        text: "two",
+        bbox: { x: 100, y: 80, width: 600, height: 80 },
+        rotation: 0,
+        color: "#ffffff",
+        fontSizePx: 48,
+        bold: true,
+        align: "center",
+        zIndex: 1,
+      }],
+    },
+    operations: [{ kind: "replace-text", elementId: "two", text: "Agent after WPS" }],
+  });
+  const editedInspection = await inspectLocalPptx(candidate.absolutePath);
+  assert.deepEqual(editedInspection.slides.map((slide) => slide.creationId), [null, null, null]);
+  const editedZip = await JSZip.loadAsync(await readFile(candidate.absolutePath));
+  assert.match(await editedZip.file("ppt/slides/slide2.xml")!.async("string"), /<a:t>Agent after WPS<\/a:t>/);
+  assert.equal((await readCurrentDeckPointer(fixture.root)).revisionId, adopted.revisionId);
+
+  const agentBytes = await readFile(candidate.absolutePath);
+  const presented = await beginAgentCandidateConfirmation({
+    root: fixture.root,
+    sessionId: candidate.sessionId,
+    slideId: resolved.stableSlideId,
+  });
+  assert.equal(presented.sha256, digest(agentBytes));
+  const confirmed = await confirmAgentEditDeck({
+    root: fixture.root,
+    sessionId: presented.sessionId,
+    confirmedSha256: presented.sha256,
+  });
+  assert.equal((await readCurrentDeckPointer(fixture.root)).revisionId, confirmed.revisionId);
+  assert.deepEqual(await readFile(prepared.absolutePath), saved);
+  assert.deepEqual(await readFile(candidate.absolutePath), agentBytes);
+
+  const rolledBack = await rollbackCurrentDeck(fixture.root, adopted.revisionId);
+  assert.equal(rolledBack.revisionId, adopted.revisionId);
+  assert.equal((await readCurrentDeckPointer(fixture.root)).revisionId, adopted.revisionId);
+  assert.deepEqual(await readFile(prepared.absolutePath), saved);
+  assert.deepEqual(await readFile(candidate.absolutePath), agentBytes);
+
+  const regenerationCandidate = await createDeckCandidate(fixture.root, {
+    sourceRevisionId: adopted.revisionId,
+    reason: "slide-regeneration",
+    changedSlideIds: [resolved.stableSlideId],
+    editableSlideIds: revision.editableSlideIds.filter((slideId) => slideId !== resolved.stableSlideId),
+    targetSlideId: resolved.stableSlideId,
+    mode: "agent",
+  });
+  const normalizedImage = await sharp({ create: { width: 1920, height: 1080, channels: 3, background: "#334455" } }).png().toBuffer();
+  await replaceRegeneratedSlideShapeTree({
+    root: fixture.root,
+    currentRevisionId: adopted.revisionId,
+    sessionId: regenerationCandidate.sessionId,
+    candidatePath: regenerationCandidate.absolutePath,
+    slideId: resolved.stableSlideId,
+    normalizedImage,
+    normalizedImageSha256: digest(normalizedImage),
+  });
+  assert.deepEqual(
+    (await inspectLocalPptx(regenerationCandidate.absolutePath)).slides.map((slide) => slide.creationId),
+    [null, null, null],
+  );
+  assert.equal((await readCurrentDeckPointer(fixture.root)).revisionId, adopted.revisionId);
+  const regenerationPresented = await beginAgentCandidateConfirmation({
+    root: fixture.root,
+    sessionId: regenerationCandidate.sessionId,
+    slideId: resolved.stableSlideId,
+  });
+  await rejectDeckEdit({ root: fixture.root, sessionId: regenerationPresented.sessionId });
+});
+
 test("blocking identity ambiguity preserves the previous current pointer and saved candidate bytes", async (t) => {
   const fixture = await workflowFixture(t);
   const prepared = await prepareManualEditDeck({ root: fixture.root, revisionId: fixture.revisionId, slideId: fixture.slideIds[1]! });
@@ -588,6 +747,45 @@ test("regeneration rejects a staged mutation of any pre-existing media member", 
       },
     },
   }), /pre-existing package member|shared-existing\.png/i);
+  assert.deepEqual(await readFile(candidate.absolutePath), originalCandidate);
+});
+
+test("regeneration reports its own topology diagnostic for a staged identity mutation", async (t) => {
+  const fixture = await workflowFixture(t);
+  const current = await readCurrentDeckPointer(fixture.root);
+  const candidate = await createDeckCandidate(fixture.root, {
+    sourceRevisionId: current.revisionId,
+    reason: "slide-regeneration",
+    changedSlideIds: [fixture.slideIds[0]!],
+    editableSlideIds: fixture.slideIds.slice(1),
+    targetSlideId: fixture.slideIds[0]!,
+    mode: "agent",
+  });
+  const originalCandidate = await readFile(candidate.absolutePath);
+  const normalizedImage = await sharp({ create: { width: 1920, height: 1080, channels: 3, background: "#445566" } }).png().toBuffer();
+
+  await assert.rejects(replaceRegeneratedSlideShapeTree({
+    root: fixture.root,
+    currentRevisionId: current.revisionId,
+    sessionId: candidate.sessionId,
+    candidatePath: candidate.absolutePath,
+    slideId: fixture.slideIds[0]!,
+    normalizedImage,
+    normalizedImageSha256: digest(normalizedImage),
+    operations: {
+      beforeAtomicReplace: async (stagingPath: string) => {
+        const staged = await JSZip.loadAsync(await readFile(stagingPath));
+        const presentation = await staged.file("ppt/presentation.xml")!.async("string");
+        staged.file("ppt/presentation.xml", presentation.replace('id="256"', 'id="999"'));
+        await writeFile(stagingPath, await staged.generateAsync({ type: "nodebuffer" }));
+      },
+    },
+  }), (error: unknown) => {
+    assert.ok(error instanceof Error);
+    assert.match(error.message, /slide regeneration changed stable complete-deck topology/i);
+    assert.doesNotMatch(error.message, /direct edit/i);
+    return true;
+  });
   assert.deepEqual(await readFile(candidate.absolutePath), originalCandidate);
 });
 

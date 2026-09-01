@@ -212,6 +212,104 @@ test("topology reconciliation preserves moved identities and records deleted and
   assert.deepEqual(reconciled.movements, [{ stableSlideId: second, from: 1, to: 0 }]);
 });
 
+test("WPS reconciliation preserves presentation identities when every creation ID is removed", () => {
+  const deleted = randomUUID();
+  const moved = randomUUID();
+  const retained = randomUUID();
+  const previous = signedTopology({
+    schemaVersion: 1 as const,
+    entries: [
+      { stableSlideId: deleted, slidePart: "ppt/slides/slide1.xml", position: 0, management: "managed" as const, presentationSlideId: 256, creationId: 1001 },
+      { stableSlideId: moved, slidePart: "ppt/slides/slide2.xml", position: 1, management: "managed" as const, presentationSlideId: 257, creationId: 1002 },
+      { stableSlideId: retained, slidePart: "ppt/slides/slide3.xml", position: 2, management: "managed" as const, presentationSlideId: 258, creationId: 1003 },
+    ],
+    deletedStableSlideIds: [],
+  });
+  const wpsInspection = { slides: [
+    { position: 0, slidePart: "ppt/slides/slide2.xml", presentationSlideId: 257, relationshipId: "rId2", relationshipTarget: "slides/slide2.xml", creationId: null, xmlSha256: "a".repeat(64), relationshipsSha256: null },
+    { position: 1, slidePart: "ppt/slides/slide4.xml", presentationSlideId: 259, relationshipId: "rId4", relationshipTarget: "slides/slide4.xml", creationId: null, xmlSha256: "b".repeat(64), relationshipsSha256: null },
+    { position: 2, slidePart: "ppt/slides/slide3.xml", presentationSlideId: 258, relationshipId: "rId3", relationshipTarget: "slides/slide3.xml", creationId: null, xmlSha256: "c".repeat(64), relationshipsSha256: null },
+  ] };
+
+  const adopted = reconcileSlideTopology(previous, wpsInspection);
+  assert.deepEqual(adopted.conflicts, []);
+  assert.deepEqual(adopted.topology.entries.map(({ stableSlideId, presentationSlideId, creationId, management }) => ({
+    stableSlideId,
+    presentationSlideId,
+    creationId,
+    management,
+  })), [
+    { stableSlideId: moved, presentationSlideId: 257, creationId: null, management: "managed" },
+    { stableSlideId: adopted.topology.entries[1]!.stableSlideId, presentationSlideId: 259, creationId: null, management: "unmanaged" },
+    { stableSlideId: retained, presentationSlideId: 258, creationId: null, management: "managed" },
+  ]);
+  assert.deepEqual(adopted.topology.deletedSlideIdentities, [
+    { stableSlideId: deleted, presentationSlideId: 256, creationId: 1001 },
+  ]);
+  assert.deepEqual(adopted.movements, [{ stableSlideId: moved, from: 1, to: 0 }]);
+
+  const repeated = reconcileSlideTopology(adopted.topology, wpsInspection);
+  assert.deepEqual(repeated.conflicts, []);
+  assert.deepEqual(
+    repeated.topology.entries.map((entry) => entry.stableSlideId),
+    adopted.topology.entries.map((entry) => entry.stableSlideId),
+  );
+
+  const removedNullCreation = reconcileSlideTopology(repeated.topology, { slides: [
+    wpsInspection.slides[0]!,
+    { ...wpsInspection.slides[2]!, position: 1 },
+  ] });
+  assert.deepEqual(removedNullCreation.conflicts, []);
+  assert.deepEqual(removedNullCreation.topology.deletedSlideIdentities, [
+    { stableSlideId: deleted, presentationSlideId: 256, creationId: 1001 },
+    { stableSlideId: adopted.topology.entries[1]!.stableSlideId, presentationSlideId: 259, creationId: null },
+  ]);
+});
+
+test("presentation tombstones reject reappearance even when creation evidence is null", () => {
+  const survivor = randomUUID();
+  const deleted = randomUUID();
+  const previous = signedTopology({
+    schemaVersion: 1 as const,
+    entries: [
+      { stableSlideId: survivor, slidePart: "ppt/slides/slide2.xml", position: 0, management: "managed" as const, presentationSlideId: 257, creationId: null },
+    ],
+    deletedStableSlideIds: [deleted],
+    deletedSlideIdentities: [
+      { stableSlideId: deleted, presentationSlideId: 256, creationId: null },
+    ],
+  });
+  const reconciled = reconcileSlideTopology(previous, { slides: [
+    { position: 0, slidePart: "ppt/slides/slide2.xml", presentationSlideId: 257, relationshipId: "rId2", relationshipTarget: "slides/slide2.xml", creationId: null, xmlSha256: "a".repeat(64), relationshipsSha256: null },
+    { position: 1, slidePart: "ppt/slides/slide1.xml", presentationSlideId: 256, relationshipId: "rId1", relationshipTarget: "slides/slide1.xml", creationId: null, xmlSha256: "b".repeat(64), relationshipsSha256: null },
+  ] });
+  assert.match(reconciled.conflicts.join("\n"), /deleted slide identity reappeared/i);
+  assert.deepEqual(reconciled.topology, previous);
+});
+
+test("non-null creation evidence cannot attach to a presentation-only known slide", () => {
+  const stableSlideId = randomUUID();
+  const previous = signedTopology({
+    schemaVersion: 1 as const,
+    entries: [
+      { stableSlideId, slidePart: "ppt/slides/slide2.xml", position: 0, management: "managed" as const, presentationSlideId: 257, creationId: null },
+    ],
+    deletedStableSlideIds: [],
+  });
+  const reconciled = reconcileSlideTopology(previous, { slides: [{
+    position: 0,
+    slidePart: "ppt/slides/slide2.xml",
+    presentationSlideId: 257,
+    relationshipId: "rId2",
+    relationshipTarget: "slides/slide2.xml",
+    creationId: 9999,
+    xmlSha256: "c".repeat(64),
+    relationshipsSha256: null,
+  }] });
+  assert.match(reconciled.conflicts.join("\n"), /conflicting identity evidence/i);
+  assert.deepEqual(reconciled.topology, previous);
+});
+
 test("topology reconciliation fails closed on duplicate persistent identity", () => {
   const previous = signedTopology({
     schemaVersion: 1 as const,

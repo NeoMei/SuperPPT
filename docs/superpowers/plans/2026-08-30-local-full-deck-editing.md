@@ -215,7 +215,7 @@ export const SlideTopologyEntrySchema = z.object({
   position: z.number().int().nonnegative(),
   management: z.enum(["managed", "unmanaged"]),
   presentationSlideId: z.number().int().min(256).max(4294967295),
-  creationId: z.number().int().positive().max(4294967295),
+  creationId: z.number().int().positive().max(4294967295).nullable(),
 }).strict();
 
 export const SlideTopologySchema = z.object({
@@ -318,9 +318,12 @@ Initial assembly calls `publishInitialSlideIdentities()` before the deck is expo
 `reconcileSlideTopology()` compares the previous revision topology with the saved presentation order:
 
 - known identity at a new position -> preserve stable ID and record movement;
+- `creationId` missing or null with a unique known `presentationSlideId` -> preserve that stable ID and record the adopted `creationId: null` exactly;
+- `creationId` non-null -> it must agree with the same stable slide's presentation evidence; single-sided or crossed evidence is a blocking conflict;
 - previous identity absent -> add to `deletedStableSlideIds`;
-- new slide part/creation ID with no known identity -> allocate a new stable ID and mark `management: "unmanaged"`;
-- duplicate identity, conflicting custom-part/creation-ID evidence, or one slide mapped to multiple identities -> return a blocking conflict and do not adopt.
+- a new unique, non-tombstoned `presentationSlideId` with `creationId: null` -> allocate a new stable ID and mark `management: "unmanaged"`;
+- a `presentationSlideId` tombstone reappearance -> reject as a blocking conflict even when creation evidence is null;
+- duplicate presentation identity, duplicate non-null creation identity, conflicting presentation/creation evidence, or one slide mapped to multiple identities -> return a blocking conflict and do not adopt. Null creation evidence does not participate in uniqueness or crossover checks.
 
 The function writes only topology metadata. It never injects or repairs identity inside a user-saved PPTX.
 

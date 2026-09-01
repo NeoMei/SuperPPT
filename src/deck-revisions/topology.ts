@@ -42,9 +42,11 @@ export function reconcileSlideTopology(
   for (const [identity, count] of presentationCounts) {
     if (count > 1) conflicts.push(`duplicate or ambiguous presentation identity ${identity}`);
   }
-  const byCreation = new Map(validPrevious.entries.map((entry) => [entry.creationId, entry]));
+  const byCreation = new Map(validPrevious.entries.flatMap((entry) =>
+    entry.creationId === null ? [] : [[entry.creationId, entry] as const]));
   const byPresentation = new Map(validPrevious.entries.map((entry) => [entry.presentationSlideId, entry]));
-  const deletedByCreation = new Map(validPrevious.deletedSlideIdentities.map((entry) => [entry.creationId, entry]));
+  const deletedByCreation = new Map(validPrevious.deletedSlideIdentities.flatMap((entry) =>
+    entry.creationId === null ? [] : [[entry.creationId, entry] as const]));
   const deletedByPresentation = new Map(validPrevious.deletedSlideIdentities.map((entry) => [entry.presentationSlideId, entry]));
   const consumed = new Set<string>();
   const reservedStableIds = new Set([
@@ -60,15 +62,15 @@ export function reconcileSlideTopology(
     }
     const creationMatch = slide.creationId === null ? undefined : byCreation.get(slide.creationId);
     const presentationMatch = byPresentation.get(slide.presentationSlideId);
-    if (
-      (creationMatch || presentationMatch)
-      && (!creationMatch || !presentationMatch || creationMatch.stableSlideId !== presentationMatch.stableSlideId)
-    ) {
+    if (slide.creationId !== null && (creationMatch || presentationMatch)
+      && (!creationMatch || !presentationMatch || creationMatch.stableSlideId !== presentationMatch.stableSlideId)) {
       conflicts.push(`conflicting identity evidence for ${slide.slidePart}`);
     }
-    const known = creationMatch && presentationMatch && creationMatch.stableSlideId === presentationMatch.stableSlideId
-      ? creationMatch
-      : undefined;
+    const known = slide.creationId === null
+      ? presentationMatch
+      : creationMatch && presentationMatch && creationMatch.stableSlideId === presentationMatch.stableSlideId
+        ? creationMatch
+        : undefined;
     if (known) {
       if (consumed.has(known.stableSlideId)) conflicts.push(`one stable identity maps to multiple slides: ${known.stableSlideId}`);
       consumed.add(known.stableSlideId);
@@ -78,10 +80,9 @@ export function reconcileSlideTopology(
         slidePart: slide.slidePart,
         position: slide.position,
         presentationSlideId: slide.presentationSlideId,
-        creationId: slide.creationId ?? known.creationId,
+        creationId: slide.creationId,
       };
     }
-    if (slide.creationId === null) conflicts.push(`new slide ${slide.slidePart} has no persistent creation identity`);
     let stableSlideId = randomUUID();
     while (reservedStableIds.has(stableSlideId)) stableSlideId = randomUUID();
     reservedStableIds.add(stableSlideId);
@@ -91,7 +92,7 @@ export function reconcileSlideTopology(
       position: slide.position,
       management: "unmanaged" as const,
       presentationSlideId: slide.presentationSlideId,
-      creationId: slide.creationId ?? 1,
+      creationId: slide.creationId,
     };
   });
   const newlyDeleted = validPrevious.entries

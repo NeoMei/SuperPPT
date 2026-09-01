@@ -346,7 +346,7 @@ Provider/channel 切换只能改变调用通道，不得改写当次 job 的最�
 
 ### 8.1 稳定页面身份
 
-每个由 SuperPPT 管理的页面使用项目稳定 UUID，页码只是当前排序。该 UUID 保存在项目修订元数据中，并绑定 PPTX 内部的 `p:sldId/@id`、指向 slide part 的 relationship 以及 Office 2010 `p14:creationId` 多重证据；不依赖页码、标题文字或单一对象的空间位置。`p14:creationId` 仅按官方扩展位置写入 `p:cSld/p:extLst`；必须保留 PowerPoint/WPS 的其他未知扩展，不得为了标识页面而重序列化整份演示文稿，也不另行发明非标准隐藏形状或自定义页面哨兵。
+每个由 SuperPPT 管理的页面使用项目稳定 UUID，页码只是当前排序。该 UUID 保存在项目修订元数据中，并绑定 PPTX 内部的 `p:sldId/@id`、指向 slide part 的 relationship 以及 Office 2010 `p14:creationId` 多重证据；不依赖页码、标题文字或单一对象的空间位置。WPS 保存后如删除 `p14:creationId`，采纳后的 topology 精确记录 `creationId: null`，并以唯一、未被墓碑占用的 `p:sldId/@id` 作为持久证据；非空 creation 证据仍必须与 presentation 证据指向同一稳定页。`p14:creationId` 仅按官方扩展位置写入 `p:cSld/p:extLst`；必须保留 PowerPoint/WPS 的其他未知扩展，不得为了标识页面而重序列化整份演示文稿，也不另行发明非标准隐藏形状或自定义页面哨兵。
 
 用户在 WPS/PowerPoint 中重排、新增或删除页面后，SuperPPT 在采纳前只读解析 `presentation.xml` 和页面关系，重建“当前页码 -> 稳定 ID -> slide part”拓扑。已知 ID 移动时保留身份；消失的 ID 标记为用户删除；无已知 ID 的新页建立 `unmanaged` 记录并分配新稳定 ID。重复 ID、无法解析的关系或一页对应多个 ID 属于阻断性冲突，必须向用户说明，不得自动猜测。校准只写项目元数据，不回写用户 PPTX。
 

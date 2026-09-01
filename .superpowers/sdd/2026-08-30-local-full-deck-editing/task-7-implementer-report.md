@@ -181,3 +181,54 @@ The next action is explicitly the main agent opening the complete manual candida
 
 - Intended independent commit message: `docs: correct resolver return contract`.
 - The exact fix commit and scoped `90b7e75..<newHEAD>` review-package hash/line/byte evidence are generated after this report is committed and reported in the handoff; this report does not predict its own commit identity.
+
+## Real-WPS nullable-creation topology repair (2026-09-01)
+
+### Scope and root cause
+
+- Fix baseline: `a4dedf02ead98933b645ce8ea27518883e14a8fa`.
+- Supplied real-WPS evidence showed surviving unique presentation IDs, one deleted presentation ID, one newly allocated presentation ID, and `p14:creationId` removed from every saved slide. This agent did not read, write, or retry adoption against that real file.
+- Root cause traced through inspection, topology parsing, reconciliation, and adoption: inspection correctly returned `creationId: null`; the persisted schema rejected null, null values incorrectly participated in uniqueness/disjointness, reconciliation required both presentation and creation matches, and a new slide without creation evidence was rejected after temporarily substituting the fake value `1`.
+
+### RED-first evidence
+
+- Pure, hand-derived fixtures first ran **RED**, 0/5, `1626.956708ms`:
+  - WPS move/delete/insert with presentation IDs `257/259/258` and all-null creation evidence produced five identity conflicts;
+  - nullable active/tombstone records failed schema parsing;
+  - non-null inconsistent evidence over a presentation-only known slide could not reach the intended fail-closed branch;
+  - metadata-only manual adoption failed with `saved deck has ambiguous slide identities`;
+  - regeneration reported the unrelated diagnostic `direct edit changed stable complete-deck topology`.
+- The authoritative-plan contract separately ran **RED**, 0/1, `208.875333ms`, because it still required non-null creation IDs and described new slides only through creation evidence.
+
+### Minimal repair and safety boundary
+
+- Active and tombstone topology records now persist `creationId: number | null`. Null values do not participate in active/deleted uniqueness, disjointness, crossover maps, or creation tombstone lookup.
+- `presentationSlideId` remains mandatory and unique. With inspected creation null, a unique known presentation ID preserves its stable ID and records null exactly; a new unique non-tombstoned presentation ID becomes an unmanaged slide with null creation evidence.
+- With inspected creation non-null, both creation and presentation evidence must still resolve to the same stable slide. Single-sided, crossed, duplicate, active/deleted, and presentation-tombstone evidence remain blocking conflicts.
+- A second reconciliation over the adopted all-null topology preserves every stable ID. Deleting a later all-null unmanaged page creates a nullable tombstone without conflicting with other null creation values.
+- Existing authoritative bindings in candidate creation, adoption validation, activation, direct edit, and regeneration continue to require exact presentation equality and exact nullable creation equality. Strict TypeScript validation covers every consumer; the fixture exercises candidate creation, direct edit, presentation/confirmation, rollback, and regeneration from the adopted nullable topology.
+- Regeneration and direct-edit topology checks now supply distinct operation labels; the regeneration failure test requires the accurate regeneration diagnostic and explicitly rejects `direct edit` wording.
+- The main plan and design spec now document nullable WPS creation evidence, presentation authority, non-null corroboration, tombstone rejection, and unmanaged-null insertion.
+
+### Fixture integration evidence (not a real-WPS retry)
+
+- WPS-shaped complete PPTX fixture: moved managed page, deleted prior page, inserted new page, presentation IDs `257/259/258`, and all official creation IDs absent.
+- Manual saved bytes were adopted metadata-only with unchanged bytes, inode, and size; topology records `[managed/null, unmanaged/null, managed/null]` and retains the presentation tombstone for deleted ID `256`.
+- The next page-number resolution returns the moved stable slide. An Agent candidate starts from the exact manual bytes, performs a direct text edit, presents an exact SHA, confirms, and switches current only after confirmation.
+- Pointer-only rollback restores the manual revision. Both the manual saved PPTX and Agent candidate PPTX remain byte-identical to their recorded pre-confirm/pre-rollback buffers after confirmation and rollback.
+- A new regeneration candidate from the rolled-back nullable topology succeeds, preserves all three null creation values, reaches Agent presentation, and is rejected without moving current.
+- Real WPS post-fix adoption and downstream GUI validation remain **PENDING** for the main agent; fixture success is not reported as real GUI success.
+
+### Frozen verification
+
+- Initial targeted GREEN: **PASS**, 5/5, `1295.664334ms`.
+- Broader source revisions/activation/CLI/E2E regression: **PASS**, 161/161, `414569.544667ms`.
+- Frozen affected source suites (`deck-topology`, `full-deck-editing`, `workflow-contract`): **PASS**, 43/43, `7144.437041ms`.
+- `npm run lint:types && npm run build`: **PASS**.
+- Frozen affected compiled suites: **PASS**, 43/43, `7184.548958ms`.
+- `git diff --check`: **PASS**.
+
+### Commit and review handoff
+
+- Intended independent commit message: `fix: adopt WPS decks without creation IDs`.
+- The exact fix commit and scoped `a4dedf0..<newHEAD>` review-package hash/line/byte evidence are generated after this report is committed and reported in the handoff; this report does not predict its own commit identity.
