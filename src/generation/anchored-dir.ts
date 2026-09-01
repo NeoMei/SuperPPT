@@ -94,7 +94,12 @@ function openWindowsGuard(path: string): number | bigint | null {
     FILE_FLAG_OPEN_REPARSE_POINT | FILE_FLAG_BACKUP_SEMANTICS,
     0,
   );
-  if (Number(handle) === -1) throw new Error(`unable to anchor generation directory: ${windowsApi.getLastError()}`);
+  if (Number(handle) === -1) {
+    const winError = windowsApi.getLastError();
+    const error = new Error(`unable to anchor generation directory: ${winError}`) as NodeJS.ErrnoException;
+    if (winError === 2 || winError === 3) error.code = "ENOENT";
+    throw error;
+  }
   const attributes = windowsApi.getFileAttributes(path) >>> 0;
   if (attributes !== INVALID_FILE_ATTRIBUTES && (attributes & FILE_ATTRIBUTE_REPARSE_POINT) !== 0) {
     windowsApi.closeHandle(handle);

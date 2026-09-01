@@ -129,7 +129,10 @@ function openWindowsDirectoryGuard(path: string): number | bigint | null {
     0,
   );
   if (Number(handle) === -1) {
-    throw new Error(`unable to anchor Windows revision evidence directory: ${windowsGuardApi.getLastError()}`);
+    const winError = windowsGuardApi.getLastError();
+    const error = new Error(`unable to anchor Windows revision evidence directory: ${winError}`) as NodeJS.ErrnoException;
+    if (winError === 2 || winError === 3) error.code = "ENOENT";
+    throw error;
   }
   const attributes = windowsGuardApi.getFileAttributes(path) >>> 0;
   if (attributes !== INVALID_FILE_ATTRIBUTES && (attributes & FILE_ATTRIBUTE_REPARSE_POINT) !== 0) {
