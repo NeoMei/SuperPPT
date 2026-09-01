@@ -30,6 +30,9 @@ import { addDescriptorIntegrity, sha256Evidence } from "../src/project/evidence.
 import { withProjectLease } from "../src/project/lock.js";
 import { readProject, updateProject, writeProject } from "../src/project/store.js";
 import { applyRevision, approveImpact, publishImpactPlan } from "../src/revisions/apply.js";
+import { authenticateStyleSelection, type StyleSelectionCheckpoint } from "../src/styles/selection.js";
+import { StyleSampleSelectionSchema } from "../src/styles/schemas.js";
+import { createProvisionalStyleLock } from "../src/styles/style-lock.js";
 import { writeCanonicalStyleSample } from "./helpers/style-sample.js";
 import { finalizeDelegatedStyleSampleForTest } from "./helpers/delegated-style-sample.js";
 
@@ -221,6 +224,31 @@ async function writeValidStyleSample(root: string): Promise<void> {
     styleId: "cinematic-tech",
     representativeSlideId: SLIDE_IDS[1],
   }, null, 2)}\n`);
+}
+
+async function readyStyleSelection(root: string, legacy = false): Promise<{
+  projectRevisionId: string;
+  representativeSlideId: string;
+  selection: { kind: "catalog"; styleId: "scientific-atlas" };
+  referenceArtifacts: [];
+}> {
+  await writeValidPlan(root);
+  await publishPlanViews(root);
+  await approveGate(root, "outline");
+  await approveGate(root, "slide-specs");
+  if (legacy) {
+    await writeFile(join(root, "style", "selection.json"), `${JSON.stringify({
+      schemaVersion: 1,
+      styleId: "scientific-atlas",
+      representativeSlideId: SLIDE_IDS[1],
+    }, null, 2)}\n`);
+  }
+  return {
+    projectRevisionId: (await readProject(root)).currentRevision.id,
+    representativeSlideId: SLIDE_IDS[1],
+    selection: { kind: "catalog", styleId: "scientific-atlas" },
+    referenceArtifacts: [],
+  };
 }
 
 async function approveAll(root: string): Promise<void> {
@@ -1467,6 +1495,146 @@ test("style-selection CLI authenticates one choice, representative slide, and pr
   })}\n`);
   await chmod(stale, 0o600);
   await assert.rejects(run(["style-selection", "--project", root, "--input", stale]), /stale|project revision/i);
+});
+
+test("public style-selection migrates matching v1 and exact CLI retry repairs the stage without rewriting evidence", async (t) => {
+  const root = await project(t, "superppt-style-selection-migrate-");
+  const request = await readyStyleSelection(root, true);
+  const first = await authenticateStyleSelection(root, request);
+  const selectionPath = join(root, "style", "selection.json");
+  const lockPath = join(root, "style", "lock.json");
+  const recipePath = join(root, "style", "recipe.json");
+  const selection = StyleSampleSelectionSchema.parse(JSON.parse(await readFile(selectionPath, "utf8")));
+  assert.equal(selection.schemaVersion, 2);
+  assert.equal(selection.projectRevisionId, request.projectRevisionId);
+  assert.equal(selection.representativeSlideId, request.representativeSlideId);
+  const before = await Promise.all([selectionPath, lockPath, recipePath].map((path) => readFile(path)));
+
+  await updateProject(root, (manifest) => ({ ...manifest, stage: "slide-specs" }));
+  const input = join(root, "retry-style.json");
+  await writeFile(input, `${JSON.stringify(request, null, 2)}\n`, { mode: 0o600 });
+  const invocation = ["--import", "tsx", "src/cli.ts"];
+  const retried = JSON.parse((await execFileAsync(
+    process.execPath,
+    [...invocation, "style-selection", "--project", root, "--input", input],
+    projectCliOptions(root),
+  )).stdout);
+  assert.deepEqual(retried, first);
+  assert.equal((await readProject(root)).stage, "style-selection");
+  const after = await Promise.all([selectionPath, lockPath, recipePath].map((path) => readFile(path)));
+  assert.deepEqual(after, before, "exact retry must not rewrite authenticated evidence");
+});
+
+test("public style-selection conflicts fail closed with selection, lock, recipe, and manifest byte-exact", async (t) => {
+  const root = await project(t, "superppt-style-selection-conflict-");
+  const request = await readyStyleSelection(root, true);
+  await authenticateStyleSelection(root, request);
+  const paths = [
+    join(root, "style", "selection.json"),
+    join(root, "style", "lock.json"),
+    join(root, "style", "recipe.json"),
+    join(root, "superppt.json"),
+  ];
+  const before = await Promise.all(paths.map((path) => readFile(path)));
+  const conflicts = [
+    { ...request, representativeSlideId: SLIDE_IDS[0] },
+    { ...request, selection: { kind: "catalog" as const, styleId: "cinematic-tech" } },
+    { ...request, projectRevisionId: "00000000-0000-4000-8000-000000000999" },
+  ];
+  for (const conflict of conflicts) {
+    await assert.rejects(authenticateStyleSelection(root, conflict), /stale|conflict|selection|lock|representative/i);
+    assert.deepEqual(
+      await Promise.all(paths.map((path) => readFile(path))),
+      before,
+      "rejected evidence must remain byte-exact",
+    );
+  }
+
+  const legacyRoot = await project(t, "superppt-style-selection-v1-conflict-");
+  const legacyRequest = await readyStyleSelection(legacyRoot, true);
+  const legacyPaths = [join(legacyRoot, "style", "selection.json"), join(legacyRoot, "superppt.json")];
+  const legacyBefore = await Promise.all(legacyPaths.map((path) => readFile(path)));
+  await assert.rejects(authenticateStyleSelection(legacyRoot, {
+    ...legacyRequest,
+    selection: { kind: "catalog", styleId: "cinematic-tech" },
+  }), /conflict|selection/i);
+  assert.deepEqual(await Promise.all(legacyPaths.map((path) => readFile(path))), legacyBefore);
+  assert.deepEqual((await readdir(join(legacyRoot, "style"))).sort(), ["references", "sample", "selection.json"]);
+
+  const lockRoot = await project(t, "superppt-style-selection-lock-conflict-");
+  const lockRequest = await readyStyleSelection(lockRoot);
+  await createProvisionalStyleLock(lockRoot, {
+    selection: { kind: "catalog", styleId: "cinematic-tech" },
+    referenceArtifacts: [],
+  });
+  const lockPaths = [join(lockRoot, "style", "lock.json"), join(lockRoot, "style", "recipe.json"), join(lockRoot, "superppt.json")];
+  const lockBefore = await Promise.all(lockPaths.map((path) => readFile(path)));
+  await assert.rejects(authenticateStyleSelection(lockRoot, lockRequest), /lock|replace|selection/i);
+  assert.deepEqual(await Promise.all(lockPaths.map((path) => readFile(path))), lockBefore);
+  assert.equal((await readdir(join(lockRoot, "style"))).includes("selection.json"), false);
+});
+
+test("public style-selection exactly recovers all durable publication checkpoints", async (t) => {
+  for (const checkpoint of ["lock-written", "selection-written", "manifest-before-update"] as const) {
+    await t.test(checkpoint, async (t) => {
+      const root = await project(t, `superppt-style-selection-${checkpoint}-`);
+      const request = await readyStyleSelection(root, checkpoint !== "lock-written");
+      let interrupted = false;
+      await assert.rejects(authenticateStyleSelection(root, request, {
+        checkpoint: (step) => {
+          if (!interrupted && step === checkpoint) {
+            interrupted = true;
+            throw new Error(`injected ${checkpoint}`);
+          }
+        },
+      }), new RegExp(`injected ${checkpoint}`));
+      const durablePaths = checkpoint === "lock-written"
+        ? [join(root, "style", "lock.json")]
+        : [join(root, "style", "lock.json"), join(root, "style", "recipe.json"), join(root, "style", "selection.json")];
+      const interruptedBytes = await Promise.all(durablePaths.map((path) => readFile(path)));
+      const recovered = await authenticateStyleSelection(root, request);
+      assert.equal(recovered.projectRevisionId, request.projectRevisionId);
+      assert.equal((await readProject(root)).stage, "style-selection");
+      const selection = StyleSampleSelectionSchema.parse(JSON.parse(
+        await readFile(join(root, "style", "selection.json"), "utf8"),
+      ));
+      assert.equal(selection.schemaVersion, 2);
+      assert.equal(selection.styleLockSha256, recovered.styleLockSha256);
+      assert.deepEqual(
+        await Promise.all(durablePaths.map((path) => readFile(path))),
+        interruptedBytes,
+        "recovery must reuse every already-durable exact byte",
+      );
+    });
+  }
+});
+
+test("a revision change during style-selection leaves recoverable evidence for the next current revision", async (t) => {
+  const root = await project(t, "superppt-style-selection-revision-race-");
+  const request = await readyStyleSelection(root, true);
+  let revised = false;
+  await assert.rejects(authenticateStyleSelection(root, request, {
+    checkpoint: async (step: StyleSelectionCheckpoint) => {
+      if (step !== "manifest-before-update" || revised) return;
+      revised = true;
+      const plan = await publishImpactPlan(root, { kind: "brief", title: "Revision raced style selection" });
+      await approveImpact(root, plan.sha256);
+      await applyRevision(root, plan, plan.change);
+    },
+  }), /stale|revision/i);
+
+  await publishPlanViews(root);
+  await approveGate(root, "outline");
+  await approveGate(root, "slide-specs");
+  const next = {
+    ...request,
+    projectRevisionId: (await readProject(root)).currentRevision.id,
+    selection: { kind: "catalog" as const, styleId: "cinematic-tech" },
+  };
+  const authenticated = await authenticateStyleSelection(root, next);
+  assert.equal(authenticated.projectRevisionId, next.projectRevisionId);
+  assert.equal(authenticated.styleId, "cinematic-tech");
+  assert.equal((await readProject(root)).stage, "style-selection");
 });
 
 test("CLI publishes and approves the outline before any slide specs exist", async (t) => {

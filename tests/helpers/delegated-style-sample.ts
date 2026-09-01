@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { mkdir, readFile, unlink, writeFile } from "node:fs/promises";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 
 import sharp from "sharp";
@@ -12,7 +12,7 @@ import { recordDelegatedResult } from "../../src/generation/delegation-result.js
 import { finalizeStyleSample, prepareStyleSampleJob } from "../../src/generation/style-sample.js";
 import { approveExecutionGate, approveGate } from "../../src/planning/confirm.js";
 import { publishStyleSample } from "../../src/planning/views.js";
-import { createProvisionalStyleLock, readStyleLockIfPresent } from "../../src/styles/style-lock.js";
+import { readStyleLockIfPresent } from "../../src/styles/style-lock.js";
 import { StyleSampleSelectionSchema } from "../../src/styles/schemas.js";
 import { authenticateStyleSelection } from "../../src/styles/selection.js";
 import { readProject } from "../../src/project/store.js";
@@ -89,7 +89,6 @@ export async function authenticateStyleSelectionForTest(root: string): Promise<v
       : "styleId" in selection
       ? { kind: "catalog" as const, styleId: selection.styleId }
       : selection.selection;
-    await unlink(join(root, "style", "selection.json"));
     await authenticateStyleSelection(root, {
       projectRevisionId: manifest.currentRevision.id,
       representativeSlideId: selection.representativeSlideId,
@@ -99,13 +98,7 @@ export async function authenticateStyleSelectionForTest(root: string): Promise<v
     selection = StyleSampleSelectionSchema.parse(JSON.parse(await readFile(join(root, "style", "selection.json"), "utf8")));
   }
   const styleLock = await readStyleLockIfPresent(root);
-  if (!styleLock) {
-    if (selection.schemaVersion !== 2) throw new Error("test fake requires authenticated style selection evidence");
-    await createProvisionalStyleLock(root, {
-      selection: selection.selection,
-      referenceArtifacts: [],
-    });
-  } else if (selection.schemaVersion !== 2 || selection.styleLockSha256 !== styleLock.styleLockSha256) {
+  if (!styleLock || selection.schemaVersion !== 2 || selection.styleLockSha256 !== styleLock.styleLockSha256) {
     throw new Error("test fake style selection and Style Lock must share one authenticated source");
   }
 }

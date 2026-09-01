@@ -48,6 +48,7 @@ type WorkflowPolicy = {
     previewMode: string;
     selectionEvidence: string;
     legacyEvidence: string;
+    publicationRecovery: string;
   };
   generation: {
     executor: string;
@@ -158,6 +159,7 @@ function validateStageContract(contract: StageContract): void {
   assert.equal(policy.style.previewMode, "compact-real-preview-grid");
   assert.equal(policy.style.selectionEvidence, "v2-current-revision-representative-slide-and-same-source-style-lock-sha");
   assert.equal(policy.style.legacyEvidence, "v1-read-migration-only-cannot-authorize-sample-plan");
+  assert.equal(policy.style.publicationRecovery, "exact-idempotent-v1-to-v2-migration-and-checkpoint-replay; conflicts-byte-exact-fail-closed");
   assert.equal(policy.generation.executor, "agent-invokes-resolved-ai-image-to-ppt-skill");
   assert.equal(policy.generation.cliExecutesDependency, false);
   assert.equal(policy.generation.scheduling, "serial");

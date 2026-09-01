@@ -301,3 +301,32 @@ The next action is explicitly the main agent opening the complete manual candida
 
 - Intended independent commit message: `fix: enforce exact complete-deck review bindings`.
 - The exact commit and scoped `ddd5b12..<newHEAD>` review-package hash/line/byte evidence are generated after this report is committed; this report does not predict its own commit identity.
+
+## Style-selection migration and recovery fix round 4 (2026-09-01)
+
+### RED and root cause
+
+- Review baseline: `fe1e721`. The sole remaining Important finding was production migration and crash recovery for authenticated style selection.
+- Initial public API/CLI focused run was intentionally **RED**, 7/7 failed in `9.4s`: matching v1 and retry both stopped at `EEXIST`, none of the three publication checkpoints was recoverable, and a revision race left the next current revision blocked by the stale lock.
+- The root cause was a three-step publication split across an exclusive lock write, an exclusive selection write, and an independent manifest update, with no exact replay path. The test helper hid the v1 failure by unlinking `selection.json`, and offline acceptance still authored v1 directly.
+
+### Minimal closure
+
+- `authenticateStyleSelection` now serializes the complete public operation under the project generation lease, validates selection conflicts before mutation, migrates matching current v1 evidence through anchored durable atomic replace to canonical v2, and returns the same result on exact retry.
+- The public path can resume after injected `lock-written`, `selection-written`, and `manifest-before-update` failures. It reuses every already-durable byte, repairs only an exact incomplete provisional lock, and updates the stage only after rechecking the current revision.
+- Mismatched v1/v2 selection, Style Lock, representative slide, or revision evidence fails closed with selection/lock/recipe/manifest bytes unchanged. After a revision race, only internally coherent stale evidence already preserved by the old revision can be retired; inconsistent evidence is never overwritten.
+- Offline acceptance now calls the public authenticated route and writes no v1 selection. The delegated sample helper no longer unlinks selection evidence or creates a lock outside that public route. Schema-v1 remains parseable solely for migration and still cannot publish external sample authorization.
+- Active Skill, all five references, README, main plan, and the machine workflow policy now state the same atomic migration, exact replay, and byte-preserving conflict contract.
+
+### Focused verification and evidence boundary
+
+- Final source planning + workflow contract: **PASS**, 67/67, `43.72s`; focused generation/style authorization and lock regression: **PASS**, 4/4, `8.76s`; source offline E2E: **PASS**, 2/2, `10.68s`.
+- Final exact public migration/checkpoint rerun: **PASS**, 7/7, `6.45s`. `npm run lint:types` and `npm run build`: **PASS**.
+- Compiled public migration/checkpoint 7/7, workflow 11/11, generation/style 4/4, and E2E 2/2: **PASS**, 24/24 total.
+- `npm pack --dry-run --json`: **PASS**, 101 files, 4,649,283 bytes packed / 5,638,270 bytes unpacked. `git diff --check`: **PASS**.
+- No full source or compiled suite was run; controller freeze remains authoritative. This round did not open WPS or touch a user/controlled PPTX. Fixture E2E is not real WPS evidence, and the previously recorded real WPS result remains unchanged.
+
+### Commit and review handoff
+
+- Intended independent commit message: `fix: recover authenticated style selection`.
+- The exact commit and scoped `fe1e721..<newHEAD>` review-package SHA/line/byte evidence are generated after this report is committed; this report does not predict its own commit identity.

@@ -61,6 +61,41 @@ function regularFileExists(style: ReturnType<typeof openGenerationDirectory>, na
   }
 }
 
+function matchingProvisionalLock(
+  existing: LockedStyle,
+  expected: StyleLock,
+): boolean {
+  return existing.approvalState === "provisional"
+    && existing.projectId === expected.projectId
+    && existing.revisionId === expected.revisionId
+    && sameJson(existing.recipe, expected.recipe)
+    && sameJson(existing.referenceArtifacts, expected.referenceArtifacts);
+}
+
+function recoverIncompleteLockFiles(root: string, expected: StyleLock): LockedStyle | null {
+  const project = openGenerationDirectory(root);
+  const style = project.child("style", false);
+  try {
+    const lockExists = regularFileExists(style, "lock.json");
+    const recipeExists = regularFileExists(style, "recipe.json");
+    if ((!lockExists && !recipeExists) || (lockExists && recipeExists)) return null;
+    if (!lockExists) throw new Error("style lock transaction is incomplete");
+    const existing = parseExactLock(style.read("lock.json"));
+    if (!matchingProvisionalLock(existing, expected)) {
+      throw new Error("incomplete style lock does not match the authenticated selection");
+    }
+    const recipeBytes = canonicalFile(existing.recipe);
+    if (sha256(recipeBytes) !== existing.styleRecipeSha256) {
+      throw new Error("incomplete style lock recipe binding is invalid");
+    }
+    style.writeExclusive("recipe.json", recipeBytes);
+    return existing;
+  } finally {
+    style.close();
+    project.close();
+  }
+}
+
 async function referenceArtifacts(root: string, references: StyleReferenceInput[]) {
   return Promise.all(references.map(async ({ path, role }) => ({
     path,
@@ -143,7 +178,10 @@ export async function hasStyleLockEvidence(root: string): Promise<boolean> {
 export async function createProvisionalStyleLock(root: string, input: {
   selection: StyleSelection;
   referenceArtifacts: StyleReferenceInput[];
-  operations?: { afterLockPublished?: () => Promise<void> | void };
+  operations?: {
+    afterLockPublished?: () => Promise<void> | void;
+    recoverIncomplete?: boolean;
+  };
 }): Promise<LockedStyle> {
   const selection = StyleSelectionSchema.parse(input.selection);
   return withGenerationLease(root, (generationRoot) => withProjectLease(generationRoot, "state", async (canonicalRoot) => {
@@ -166,15 +204,13 @@ export async function createProvisionalStyleLock(root: string, input: {
       applyDependencyDefaultStyle: false,
       createdAt: new Date().toISOString(),
     });
+    if (input.operations?.recoverIncomplete) {
+      const recovered = recoverIncompleteLockFiles(canonicalRoot, lock);
+      if (recovered) return recovered;
+    }
     if (await hasStyleLockEvidence(canonicalRoot)) {
       const existing = await readStyleLock(canonicalRoot);
-      if (
-        existing.approvalState === "provisional"
-        && existing.projectId === lock.projectId
-        && existing.revisionId === lock.revisionId
-        && sameJson(existing.recipe, lock.recipe)
-        && sameJson(existing.referenceArtifacts, lock.referenceArtifacts)
-      ) return existing;
+      if (matchingProvisionalLock(existing, lock)) return existing;
       throw new Error("style lock already exists and cannot be replaced");
     }
     await createLockFiles(canonicalRoot, recipe, lock, input.operations?.afterLockPublished);

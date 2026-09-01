@@ -110,7 +110,8 @@
       "catalog": "assets/styles/catalog.json",
       "previewMode": "compact-real-preview-grid",
       "selectionEvidence": "v2-current-revision-representative-slide-and-same-source-style-lock-sha",
-      "legacyEvidence": "v1-read-migration-only-cannot-authorize-sample-plan"
+      "legacyEvidence": "v1-read-migration-only-cannot-authorize-sample-plan",
+      "publicationRecovery": "exact-idempotent-v1-to-v2-migration-and-checkpoint-replay; conflicts-byte-exact-fail-closed"
     },
     "generation": {
       "executor": "agent-invokes-resolved-ai-image-to-ppt-skill",

@@ -30,7 +30,8 @@ import { readProject, sha256 } from "../project/store.js";
 import { resolveSkillDependencies } from "../dependencies/resolve.js";
 import { attestWorkflowDependencies } from "../dependencies/preflight.js";
 import type { ResolvedDependencies } from "../dependencies/schemas.js";
-import { approveStyleLock, createProvisionalStyleLock } from "../styles/style-lock.js";
+import { approveStyleLock } from "../styles/style-lock.js";
+import { authenticateStyleSelection } from "../styles/selection.js";
 
 type AcceptanceSnapshot = {
   slideCount: number;
@@ -436,13 +437,10 @@ export async function runOfflineAcceptance(options: OfflineAcceptanceOptions): P
   const converterRoot = await stagedConverter(parent);
   const dependencies = await offlineDependencies(aiRoot, converterRoot);
   const aiDependency = dependencies.ai;
-  await writeFile(join(root, "style", "selection.json"), `${JSON.stringify({
-    schemaVersion: 1,
-    styleId: "cinematic-tech",
-    representativeSlideId: EDITABLE_SLIDE_ID,
-  }, null, 2)}\n`, { flag: "wx", mode: 0o600 });
   let generation: ProjectGenerationResult;
-  await createProvisionalStyleLock(root, {
+  await authenticateStyleSelection(root, {
+    projectRevisionId: (await readProject(root)).currentRevision.id,
+    representativeSlideId: EDITABLE_SLIDE_ID,
     selection: { kind: "catalog", styleId: "cinematic-tech" },
     referenceArtifacts: [],
   });
