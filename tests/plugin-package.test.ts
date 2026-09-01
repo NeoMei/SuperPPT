@@ -114,9 +114,9 @@ test("runtime package and dependency authority expose only the two full-deck cap
     "koffi",
     "saxes",
     "sharp",
-    "typescript",
     "zod",
   ]);
+  assert.equal(pkg.devDependencies.typescript, "^5.9.0");
   assert.deepEqual(contract.dependencies.map((entry: Record<string, unknown>) => entry.skill), [
     "ai-image-to-ppt",
     "image-to-editable-pptx",
@@ -151,20 +151,44 @@ test("runtime package and dependency authority expose only the two full-deck cap
       editableInput: { format: "png", width: 1280, height: 720 },
     },
   });
-  assert.deepEqual(contract.dependencies[1].capabilities, {
-    version: ">=0.2.0 <0.3.0",
-    manifestVersion: 2,
-    officialDonor: "slide-editable.pptx",
-    objectNames: {
-      background: "asset-background",
-      text: "text-<id>",
-      shape: "shape-<id>-<label>",
-      asset: "asset-<id>",
+  assert.equal(contract.contractVersion, 3);
+  assert.deepEqual(contract.dependencies[1].consumerProfile, {
+    package: {
+      name: "image-to-editable-pptx",
+      version: ">=0.2.0 <0.3.0",
+      stable: true,
+      nodeEngine: ">=22.6",
+      cliScript: "tsx src/cli.ts",
     },
-    evidence: {
-      manifestSchema: "src/contracts.ts",
-      officialDonor: "src/pipeline.ts",
-      objectNames: "src/export/pptx.ts",
+    plugin: {
+      name: "image-to-editable-pptx",
+      versionMatchesPackage: true,
+      skills: "./skills/",
+    },
+    invocation: {
+      command: "npm",
+      script: "cli",
+      separator: "--",
+      subcommand: "run",
+      inputFlag: "--image",
+      outputFlag: "--out",
+    },
+    outputContract: {
+      ownershipMarker: {
+        path: ".image-to-editable-pptx-output.json",
+        markerVersion: 1,
+        appId: "image-to-editable-pptx",
+        artifactKind: "published-output",
+      },
+      manifest: { path: "manifest.json", version: 2 },
+      ledger: { path: "run-ledger.json", version: 2 },
+      officialDonor: "slide-editable.pptx",
+      objectNames: {
+        background: "asset-background",
+        text: "text-<id>",
+        shape: "shape-<id>-<label>",
+        asset: "asset-<id>",
+      },
     },
   });
   for (const path of [

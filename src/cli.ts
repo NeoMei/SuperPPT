@@ -585,7 +585,6 @@ async function main(argv: string[]): Promise<void> {
     const result = await convertProjectPage({
       root: options.get("--project")!,
       slideId: options.get("--slide")!,
-      converterRoot: resolved.editable.root,
       dependencies: resolved,
     });
     outputJson({

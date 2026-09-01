@@ -7,7 +7,13 @@ import JSZip from "jszip";
 import sharp from "sharp";
 
 import { assertWorkflowPreflightCurrent, preflightDependencies } from "../dependencies/preflight.js";
-import type { ResolvedDependencies } from "../dependencies/schemas.js";
+import {
+  EditableInvocationSchema,
+  EditableOutputContractSchema,
+  type EditableInvocation,
+  type EditableOutputContract,
+  type ResolvedDependencies,
+} from "../dependencies/schemas.js";
 import { assertAiImageSkillDependencyCurrent } from "../generation/authorization.js";
 import { withGenerationLease } from "../generation/lease.js";
 import { syncDirectory, writeDurableExclusive } from "../project/durable.js";
@@ -34,6 +40,31 @@ import {
 
 const execFileAsync = promisify(execFile);
 const OUTPUT_MARKER = ".image-to-editable-pptx-output.json";
+const DEFAULT_EDITABLE_OUTPUT_CONTRACT = EditableOutputContractSchema.parse({
+  ownershipMarker: {
+    path: OUTPUT_MARKER,
+    markerVersion: 1,
+    appId: "image-to-editable-pptx",
+    artifactKind: "published-output",
+  },
+  manifest: { path: "manifest.json", version: 2 },
+  ledger: { path: "run-ledger.json", version: 2 },
+  officialDonor: "slide-editable.pptx",
+  objectNames: {
+    background: "asset-background",
+    text: "text-<id>",
+    shape: "shape-<id>-<label>",
+    asset: "asset-<id>",
+  },
+});
+const DEFAULT_EDITABLE_INVOCATION: EditableInvocation = {
+  command: "npm",
+  script: "cli",
+  separator: "--",
+  subcommand: "run",
+  inputFlag: "--image",
+  outputFlag: "--out",
+};
 const MAX_JSON = 16 * 1024 * 1024;
 const MAX_ASSET = 64 * 1024 * 1024;
 const MAX_OUTPUT = 512 * 1024 * 1024;
@@ -577,6 +608,7 @@ export async function inspectOfficialEditableDonor(
   bytes: Buffer,
   manifest: EditableManifestV2,
   evidence?: { cleanBackgroundSha256: string; assets: Record<string, string> },
+  expectedObjectNames = DEFAULT_EDITABLE_OUTPUT_CONTRACT.objectNames,
 ): Promise<OfficialEditableDonorInspection> {
   let zip: JSZip;
   try {
@@ -648,10 +680,10 @@ export async function inspectOfficialEditableDonor(
   if (objectIds.some((id) => !id || !/^[1-9][0-9]*$/.test(id)) || new Set(objectIds).size !== objectIds.length) {
     throw new Error("official editable donor has duplicate or invalid numeric object IDs");
   }
-  const expectedNames = ["asset-background", ...manifest.elements.map((element) => {
-    if (element.kind === "text") return `text-${element.id}`;
-    if (element.kind === "shape") return `shape-${element.id}-${element.label}`;
-    return `asset-${element.id}`;
+  const expectedNames = [expectedObjectNames.background, ...manifest.elements.map((element) => {
+    if (element.kind === "text") return expectedObjectNames.text.replace("<id>", element.id);
+    if (element.kind === "shape") return expectedObjectNames.shape.replace("<id>", element.id).replace("<label>", element.label);
+    return expectedObjectNames.asset.replace("<id>", element.id);
   })];
   for (const name of expectedNames) {
     if (objectNames.filter((candidate) => candidate === name).length !== 1) {
@@ -679,7 +711,8 @@ export async function inspectOfficialEditableDonor(
     const embeds = slideElements.filter((element) => element.start >= visual.start && element.end <= visual.end)
       .flatMap((element) => element.attributes.filter((attribute) =>
         attribute.namespaceUri === DOCUMENT_RELATIONSHIPS && attribute.localName === "embed").map((attribute) => attribute.value));
-    const needsImage = name === "asset-background" || name.startsWith("asset-");
+    const needsImage = name === expectedObjectNames.background
+      || manifest.elements.some((element) => element.kind === "asset" && expectedObjectNames.asset.replace("<id>", element.id) === name);
     if ((needsImage && embeds.length !== 1) || (!needsImage && embeds.length !== 0)) {
       throw new Error(`official editable donor object image binding is not one-to-one: ${name}`);
     }
@@ -715,8 +748,8 @@ export async function inspectOfficialEditableDonor(
       if (metadata.format !== "png") throw new Error("official editable donor image relationship is not PNG");
       const mediaSha256 = sha256(mediaBytes);
       if (evidence) {
-        const assetElement = manifest.elements.find((element) => element.kind === "asset" && `asset-${element.id}` === objectName);
-        const expectedHash = objectName === "asset-background"
+        const assetElement = manifest.elements.find((element) => element.kind === "asset" && expectedObjectNames.asset.replace("<id>", element.id) === objectName);
+        const expectedHash = objectName === expectedObjectNames.background
           ? evidence.cleanBackgroundSha256
           : assetElement?.kind === "asset" ? evidence.assets[assetElement.assetPath] : undefined;
         if (!expectedHash || mediaSha256 !== expectedHash) {
@@ -808,20 +841,33 @@ async function verifyConverterOutput(
   outDir: string,
   sourceBytes: Buffer,
   converterVersionValue: string,
+  rawOutputContract: EditableOutputContract = DEFAULT_EDITABLE_OUTPUT_CONTRACT,
 ): Promise<Omit<EditableConversionResult, "converterRoot">> {
+  const outputContract = EditableOutputContractSchema.parse(rawOutputContract);
   AuthenticatedEditableConversionSchema.shape.converterVersion.parse(converterVersionValue);
   const canonicalOutput = await requireDirectory(outDir, "converter output");
   const canonicalParent = await realpath(dirname(resolve(outDir)));
   if (canonicalOutput !== join(canonicalParent, basename(resolve(outDir)))) {
     throw new Error("converter output path contains an unsafe symlink");
   }
-  await parseJson(join(outDir, OUTPUT_MARKER), MAX_JSON, "converter ownership marker", (value) => ConverterOwnershipMarkerSchema.parse(value));
-  const manifestPath = join(outDir, "manifest.json");
+  const marker = await parseJson(join(outDir, outputContract.ownershipMarker.path), MAX_JSON, "converter ownership marker", (value) => ConverterOwnershipMarkerSchema.parse(value));
+  if (
+    marker.value.markerVersion !== outputContract.ownershipMarker.markerVersion
+    || marker.value.appId !== outputContract.ownershipMarker.appId
+    || marker.value.artifactKind !== outputContract.ownershipMarker.artifactKind
+  ) throw new Error("converter ownership marker does not match the attested output contract");
+  const manifestPath = join(outDir, outputContract.manifest.path);
   const parsedManifest = await parseJson(manifestPath, MAX_JSON, "converter manifest", (value) => EditableManifestV2Schema.parse(value));
-  const ledgerPath = join(outDir, "run-ledger.json");
+  const ledgerPath = join(outDir, outputContract.ledger.path);
   const parsedLedger = await parseJson(ledgerPath, MAX_JSON, "converter run ledger", (value) => RunLedgerV2Schema.parse(value));
   const { value: officialManifest, bytes: manifestBytes } = parsedManifest;
   const { value: ledger, bytes: ledgerBytes } = parsedLedger;
+  if (officialManifest.manifestVersion !== outputContract.manifest.version) {
+    throw new Error("converter manifest version does not match the attested output contract");
+  }
+  if (ledger.ledgerVersion !== outputContract.ledger.version) {
+    throw new Error("converter run ledger version does not match the attested output contract");
+  }
   validateDecisionBinding(officialManifest, ledger);
   if (ledger.hashes.sourceImage !== sha256(sourceBytes)) throw new Error("source image hash mismatch");
   if (ledger.hashes.manifest !== sha256(manifestBytes)) throw new Error("converter manifest hash mismatch");
@@ -834,7 +880,7 @@ async function verifyConverterOutput(
     ocr: "ocr.json",
     vision: visionName,
     analysisLedger: "analysis-ledger.json",
-    manifest: "manifest.json",
+    manifest: outputContract.manifest.path,
     removalMask: "removal-mask.png",
     cleanBackground: "clean-background.png",
   } as const;
@@ -853,7 +899,7 @@ async function verifyConverterOutput(
   }
   if (ledger.outputs.sceneGraph !== undefined) expectedOutput(outDir, ledger.outputs.sceneGraph, "scene-graph.json");
   const pptxRelative = basename(ledger.outputs.pptx);
-  if (pptxRelative !== "slide-editable.pptx") throw new Error("converter ledger must publish the official slide-editable.pptx donor");
+  if (pptxRelative !== outputContract.officialDonor) throw new Error(`converter ledger must publish the official ${outputContract.officialDonor} donor`);
   expectedOutput(outDir, ledger.outputs.pptx, pptxRelative);
   await requireDirectory(join(outDir, "assets"), "converter asset directory");
 
@@ -870,7 +916,7 @@ async function verifyConverterOutput(
     const checked = await verifyOutputHash(outDir, name, expected, `converter output ${name}`);
     outputHashes[name] = checked.hash;
   }
-  outputHashes["manifest.json"] = sha256(manifestBytes);
+  outputHashes[outputContract.manifest.path] = sha256(manifestBytes);
   for (const [key, expected] of Object.entries(ledger.hashes.qaPreviews) as Array<[keyof typeof qaNames, string]>) {
     const name = qaNames[key];
     const checked = await verifyOutputHash(outDir, name, expected, `converter QA preview ${name}`);
@@ -905,7 +951,7 @@ async function verifyConverterOutput(
   await inspectOfficialEditableDonor(pptx.bytes, officialManifest, {
     cleanBackgroundSha256: ledger.hashes.cleanBackground,
     assets: assetHashes,
-  });
+  }, outputContract.objectNames);
   const legacyElements: EditableManifest["elements"] = [];
   for (const element of officialManifest.elements) {
     if (element.kind === "shape") continue;
@@ -926,7 +972,7 @@ async function verifyConverterOutput(
     outputRoot: canonicalOutput,
     manifestPath,
     cleanBackground: join(outDir, "clean-background.png"),
-    donorPptx: join(outDir, "slide-editable.pptx"),
+    donorPptx: join(outDir, outputContract.officialDonor),
     ledgerPath,
     manifest: officialManifest,
     legacyManifest,
@@ -965,16 +1011,21 @@ export async function runEditableConversion(options: {
   outDir: string;
   execute?: EditableConverterExecutor;
   nodeVersion?: string;
+  invocation?: EditableInvocation;
+  outputContract?: EditableOutputContract;
+  beforeExecute?: () => Promise<void>;
 }): Promise<EditableConversionResult> {
   const converterRoot = await validateConverterRoot(options.converterRoot, options.nodeVersion ?? process.versions.node);
   const version = await converterVersion(converterRoot);
   const sourceBytes = await exactPng(options.sourcePng, 1280, 720, "converter source");
   await freshOutputPath(options.outDir, options.sourcePng);
+  const invocation = EditableInvocationSchema.parse(options.invocation ?? DEFAULT_EDITABLE_INVOCATION);
   const execute = options.execute ?? (execFileAsync as unknown as EditableConverterExecutor);
+  await options.beforeExecute?.();
   try {
     await execute(
-      "npm",
-      ["run", "cli", "--", "run", "--image", options.sourcePng, "--out", options.outDir],
+      invocation.command,
+      ["run", invocation.script, invocation.separator, invocation.subcommand, invocation.inputFlag, options.sourcePng, invocation.outputFlag, options.outDir],
       {
         cwd: converterRoot,
         env: { ...process.env },
@@ -987,7 +1038,7 @@ export async function runEditableConversion(options: {
   }
   return {
     converterRoot,
-    ...await verifyConverterOutput(options.outDir, sourceBytes, version),
+    ...await verifyConverterOutput(options.outDir, sourceBytes, version, options.outputContract),
   };
 }
 
@@ -1177,21 +1228,24 @@ export async function prepareAgentEditDeck(
 export async function convertProjectPage(options: {
   root: string;
   slideId: string;
-  converterRoot: string;
   dependencies: ResolvedDependencies;
   prepareExecute?: EditableInputPreparationExecutor;
   execute?: EditableConverterExecutor;
   nodeVersion?: string;
   idFactory?: () => string;
 }): Promise<ProjectConversionResult> {
+  if ("converterRoot" in options) {
+    throw new Error("convertProjectPage no longer accepts converterRoot; converter identity comes from workflow preflight");
+  }
   if (!options.dependencies) throw new Error("editable conversion requires preflight-resolved dependencies");
   const initialReport = await preflightDependencies(options.dependencies);
   if (!initialReport.ok) throw new Error("editable conversion dependency preflight failed");
   const preflightAi = await assertWorkflowPreflightCurrent(options.dependencies.ai);
   await assertAiImageSkillDependencyCurrent(preflightAi);
-  if (await realpath(options.converterRoot) !== options.dependencies.editable.root) {
-    throw new Error("editable converter root does not match the preflight-resolved dependency");
+  if (!isDeepStrictEqual(options.dependencies.editable, preflightAi.workflowPreflight!.editable)) {
+    throw new Error("editable conversion dependency does not match the attested canonical identity");
   }
+  const converterRoot = preflightAi.workflowPreflight!.editable.root;
   return withGenerationLease(options.root, async (generationRoot) => {
   await assertWorkflowPreflightCurrent(preflightAi);
   await assertProjectMutationNotFrozen(generationRoot);
@@ -1232,10 +1286,11 @@ export async function convertProjectPage(options: {
   const sourcePng = join(revisionRoot, "source-1280x720.png");
   const converterOutputRoot = join(revisionRoot, CONVERTER_OUTPUT_DIRECTORY);
   try {
-    const scriptPath = options.dependencies.ai.scripts.prepareEditableInput;
-    const scriptSha256 = options.dependencies.ai.scriptSha256.prepareEditableInput;
-    await assertAiImageSkillDependencyCurrent(options.dependencies.ai);
+    const scriptPath = preflightAi.scripts.prepareEditableInput;
+    const scriptSha256 = preflightAi.scriptSha256.prepareEditableInput;
+    await assertAiImageSkillDependencyCurrent(preflightAi);
     const executePrepare = options.prepareExecute ?? (execFileAsync as unknown as EditableInputPreparationExecutor);
+    await assertWorkflowPreflightCurrent(preflightAi);
     let prepared: Awaited<ReturnType<EditableInputPreparationExecutor>>;
     try {
       prepared = await executePrepare("python3", [scriptPath, join(root, ...sourceMaster.path.split("/")), sourcePng], {
@@ -1257,11 +1312,14 @@ export async function convertProjectPage(options: {
     const currentDependencies = await preflightDependencies(options.dependencies);
     if (!currentDependencies.ok) throw new Error("editable conversion dependency changed after input preparation");
     const converted = await runEditableConversion({
-      converterRoot: options.converterRoot,
+      converterRoot,
       sourcePng,
       outDir: converterOutputRoot,
       execute: options.execute,
       nodeVersion: options.nodeVersion,
+      invocation: preflightAi.workflowPreflight!.editable.invocation,
+      outputContract: preflightAi.workflowPreflight!.editable.outputContract,
+      beforeExecute: async () => { await assertWorkflowPreflightCurrent(preflightAi); },
     });
     const preparedAfterConversion = await lstat(sourcePng);
     if (

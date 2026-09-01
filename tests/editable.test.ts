@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
+import { writeFileSync } from "node:fs";
 import {
   chmod,
   lstat,
@@ -93,6 +94,7 @@ async function recursiveProjectSnapshot(root: string): Promise<string[]> {
 
 async function converterRoot(t: TestContext): Promise<string> {
   const root = join(await temporary(t, "superppt-editable-plugin-"), "plugin");
+  await mkdir(join(root, ".codex-plugin"), { recursive: true });
   await mkdir(join(root, "skills", "image-to-editable-pptx"), { recursive: true });
   await mkdir(join(root, "src", "export"), { recursive: true });
   await writeFile(join(root, "package.json"), `${JSON.stringify({
@@ -101,7 +103,13 @@ async function converterRoot(t: TestContext): Promise<string> {
     engines: { node: ">=22.6" },
     scripts: { cli: "tsx src/cli.ts" },
   })}\n`);
+  await writeFile(join(root, ".codex-plugin", "plugin.json"), `${JSON.stringify({
+    name: "image-to-editable-pptx",
+    version: "0.2.0",
+    skills: "./skills/",
+  })}\n`);
   await writeFile(join(root, "skills", "image-to-editable-pptx", "SKILL.md"), "---\nname: image-to-editable-pptx\n---\n");
+  await writeFile(join(root, "src", "cli.ts"), "throw new Error('fixture CLI must only run through the injected executor');\n");
   await writeFile(join(root, "src", "contracts.ts"), 'import { z } from "zod";\nexport const SlideManifestV2Schema = z.object({ manifestVersion: z.literal(2) }).strict();\n');
   await writeFile(join(root, "src", "pipeline.ts"), 'function outputName(imagePath?: string): string { if (imagePath === undefined) return "slide-editable.pptx"; return `${imagePath}-editable.pptx`; }\nexport function buildSlide(imagePath?: string): string { return outputName(imagePath); }\n');
   await writeFile(join(root, "src", "export", "pptx.ts"), 'export async function exportPptx(element: any): Promise<void> { const pptx = new PptxGenConstructor(); const slide = pptx.addSlide(); slide.addImage({ objectName: "asset-background" }); slide.addText("", { objectName: `text-${element.id}` }); slide.addShape("", { objectName: `shape-${element.id}-${element.label}` }); slide.addImage({ objectName: `asset-${element.id}` }); await pptx.writeFile({ fileName: "out.pptx" }); }\n');
@@ -131,15 +139,17 @@ async function resolvedDependencies(
 }
 
 type FixtureConversionOptions = Omit<Parameters<typeof strictConvertProjectPage>[0], "dependencies"> & {
+  converterRoot: string;
   dependencies?: ResolvedDependencies;
 };
 
 async function convertProjectPage(options: FixtureConversionOptions) {
-  const dependencies = options.dependencies ?? await resolvedDependenciesForPlugin(options.converterRoot);
+  const { converterRoot, dependencies: injectedDependencies, ...conversionOptions } = options;
+  const dependencies = injectedDependencies ?? await resolvedDependenciesForPlugin(converterRoot);
   return strictConvertProjectPage({
-    ...options,
+    ...conversionOptions,
     dependencies,
-    prepareExecute: options.prepareExecute ?? (async (_command, args) => {
+    prepareExecute: conversionOptions.prepareExecute ?? (async (_command, args) => {
       await sharp(await readFile(args[1]!)).resize(1280, 720).png().toFile(args[2]!);
       return { stdout: `  OK: ${args[2]} (1280x720 PNG, editable-converter input)\n`, stderr: "" };
     }),
@@ -494,6 +504,49 @@ test("authenticates ownership, the source, manifest, background, assets, and eve
         return { stdout: "", stderr: "" };
       },
     }), /hash mismatch|valid PNG|manifest/);
+  }
+});
+
+test("rejects invalid marker, manifest v1, and ledger v1 at runtime regardless of admitted source syntax", async (t) => {
+  const root = await temporary(t, "superppt-editable-runtime-contract-");
+  const plugin = await converterRoot(t);
+  const sourcePng = join(root, "source.png");
+  await writeFile(sourcePng, await png(1280, 720));
+  const scenarios: Array<[string, (outDir: string) => Promise<void>, RegExp]> = [
+    ["ownership marker", async (outDir) => {
+      const path = join(outDir, ".image-to-editable-pptx-output.json");
+      const marker = JSON.parse(await readFile(path, "utf8"));
+      marker.markerVersion = 2;
+      await writeFile(path, `${JSON.stringify(marker)}\n`);
+    }, /ownership marker/i],
+    ["manifest v1", async (outDir) => {
+      const path = join(outDir, "manifest.json");
+      const manifest = JSON.parse(await readFile(path, "utf8"));
+      manifest.manifestVersion = 1;
+      await writeFile(path, `${JSON.stringify(manifest)}\n`);
+    }, /manifest/i],
+    ["ledger v1", async (outDir) => {
+      const path = join(outDir, "run-ledger.json");
+      const ledger = JSON.parse(await readFile(path, "utf8"));
+      ledger.ledgerVersion = 1;
+      await writeFile(path, `${JSON.stringify(ledger)}\n`);
+    }, /ledger/i],
+  ];
+  for (const [name, mutate, pattern] of scenarios) {
+    await t.test(name, async () => {
+      const outDir = join(root, name.replaceAll(" ", "-"));
+      await assert.rejects(runEditableConversion({
+        converterRoot: plugin,
+        sourcePng,
+        outDir,
+        execute: async () => {
+          await mkdir(outDir);
+          await writeFakeConverterOutput(outDir, sourcePng);
+          await mutate(outDir);
+          return { stdout: "", stderr: "" };
+        },
+      }), pattern);
+    });
   }
 });
 
@@ -947,7 +1000,6 @@ test("selected page conversion rejects a ready page that was not selected from t
   const dependencies = await resolvedDependencies(t, plugin);
   await assert.rejects(strictConvertProjectPage({
     ...project,
-    converterRoot: plugin,
     dependencies,
     prepareExecute: async () => {
       throw new Error("unreviewed preparation must not execute");
@@ -964,12 +1016,59 @@ test("project conversion has no dependency-optional production bypass", async (t
   let converterCalls = 0;
   await assert.rejects(strictConvertProjectPage({
     ...project,
-    converterRoot: plugin,
     execute: async () => {
       converterCalls += 1;
       throw new Error("dependency-free converter must not execute");
     },
   } as unknown as Parameters<typeof strictConvertProjectPage>[0]), /resolved dependencies/i);
+  assert.equal(converterCalls, 0);
+});
+
+test("project conversion reattests full workflow identity at the editable-input executor boundary", async (t) => {
+  const project = await readyProject(t);
+  const plugin = await converterRoot(t);
+  const dependencies = await resolvedDependencies(t, plugin);
+  let preparationCalls = 0;
+  await assert.rejects(strictConvertProjectPage({
+    ...project,
+    dependencies,
+    get prepareExecute() {
+      writeFileSync(join(plugin, "src", "cli.ts"), "changed immediately before editable input preparation\n");
+      return async () => {
+        preparationCalls += 1;
+        throw new Error("preparation must not execute after workflow identity drift");
+      };
+    },
+    execute: async () => {
+      throw new Error("converter must not execute after workflow identity drift");
+    },
+    idFactory: () => "00000000-0000-4000-8000-000000000122",
+  }), /attestation.*current|dependency changed|identity changed/i);
+  assert.equal(preparationCalls, 0);
+});
+
+test("project conversion reattests editable identity at the final executor boundary", async (t) => {
+  const project = await readyProject(t);
+  const plugin = await converterRoot(t);
+  const dependencies = await resolvedDependencies(t, plugin);
+  let converterCalls = 0;
+  await assert.rejects(strictConvertProjectPage({
+    ...project,
+    dependencies,
+    prepareExecute: async (_command, args) => {
+      await sharp(await readFile(args[1]!)).resize(1280, 720).png().toFile(args[2]!);
+      return { stdout: `  OK: ${args[2]} (1280x720 PNG, editable-converter input)\n`, stderr: "" };
+    },
+    get nodeVersion() {
+      writeFileSync(join(plugin, "src", "cli.ts"), "changed immediately before converter execution\n");
+      return process.versions.node;
+    },
+    execute: async () => {
+      converterCalls += 1;
+      throw new Error("converter must not execute after identity drift");
+    },
+    idFactory: () => "00000000-0000-4000-8000-000000000123",
+  }), /attestation.*current|dependency changed|identity changed/i);
   assert.equal(converterCalls, 0);
 });
 

@@ -51,10 +51,22 @@ async function testAiDependency(root: string): Promise<AiImageSkillDependency> {
     scripts: Object.fromEntries(Object.entries(scripts).map(([name, path]) => [name, `scripts/${path.split("/").at(-1)}`])),
   }, null, 2)}\n`);
   const editableRoot = join(dirname(root), "delegated-style-sample-editable");
+  await mkdir(join(editableRoot, ".codex-plugin"), { recursive: true });
   await mkdir(join(editableRoot, "skills", "image-to-editable-pptx"), { recursive: true });
   await mkdir(join(editableRoot, "src", "export"), { recursive: true });
-  await writeFile(join(editableRoot, "package.json"), JSON.stringify({ name: "image-to-editable-pptx", version: "0.2.0" }));
+  await writeFile(join(editableRoot, "package.json"), JSON.stringify({
+    name: "image-to-editable-pptx",
+    version: "0.2.0",
+    engines: { node: ">=22.6" },
+    scripts: { cli: "tsx src/cli.ts" },
+  }));
+  await writeFile(join(editableRoot, ".codex-plugin", "plugin.json"), JSON.stringify({
+    name: "image-to-editable-pptx",
+    version: "0.2.0",
+    skills: "./skills/",
+  }));
   await writeFile(join(editableRoot, "skills", "image-to-editable-pptx", "SKILL.md"), "---\nname: image-to-editable-pptx\n---\n");
+  await writeFile(join(editableRoot, "src", "cli.ts"), "throw new Error('fixture CLI is never executed');\n");
   await writeFile(join(editableRoot, "src", "contracts.ts"), 'import { z } from "zod";\nexport const SlideManifestV2Schema = z.object({ manifestVersion: z.literal(2) }).strict();\n');
   await writeFile(join(editableRoot, "src", "pipeline.ts"), 'function outputName(imagePath?: string): string { if (imagePath === undefined) return "slide-editable.pptx"; return `${imagePath}-editable.pptx`; }\nexport function buildSlide(imagePath?: string): string { return outputName(imagePath); }\n');
   await writeFile(join(editableRoot, "src", "export", "pptx.ts"), 'export async function exportPptx(element: any): Promise<void> { const pptx = new PptxGenConstructor(); const slide = pptx.addSlide(); slide.addImage({ objectName: "asset-background" }); slide.addText("", { objectName: `text-${element.id}` }); slide.addShape("", { objectName: `shape-${element.id}-${element.label}` }); slide.addImage({ objectName: `asset-${element.id}` }); await pptx.writeFile({ fileName: "out.pptx" }); }\n');

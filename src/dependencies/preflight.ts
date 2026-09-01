@@ -1,8 +1,10 @@
 import { createHash } from "node:crypto";
-import { lstat, readFile, realpath } from "node:fs/promises";
+import { lstat, realpath } from "node:fs/promises";
 import { dirname, relative, sep } from "node:path";
+import { isDeepStrictEqual } from "node:util";
 
 import { requireLocalDeckHandoff } from "../host/capabilities.js";
+import { readAnchoredRegularFile } from "../project/safe-file.js";
 import {
   AiImageSkillDependencyIdentitySchema,
   AiImageSkillDependencySchema,
@@ -11,8 +13,9 @@ import {
   type DependencyPreflight,
   type ResolvedDependencies,
 } from "./schemas.js";
-import { resolveSkillDependencies } from "./resolve.js";
-import { isDeepStrictEqual } from "node:util";
+import { computeEditableSourceTreeIdentity, resolveSkillDependencies } from "./resolve.js";
+
+const MAX_DEPENDENCY_IDENTITY_BYTES = 16 * 1024 * 1024;
 
 function sha256Json(value: unknown): string {
   return createHash("sha256").update(JSON.stringify(value)).digest("hex");
@@ -31,7 +34,7 @@ export function attestWorkflowDependencies(
   const host = { source: "agent-host" as const, localFilesystem: true as const, localFileLinks: true as const };
   const ai = aiIdentity(resolved.ai);
   const body = {
-    bindingVersion: 1 as const,
+    bindingVersion: 2 as const,
     contractFile: resolved.contractFile,
     contractSha256: resolved.contractSha256,
     ai,
@@ -55,8 +58,7 @@ export async function assertWorkflowPreflightCurrent(raw: AiImageSkillDependency
   const { attestationSha256, ...body } = binding;
   if (sha256Json(body) !== attestationSha256) throw new Error("workflow preflight attestation hash is invalid");
   requireLocalDeckHandoff(binding.host);
-  const callerAi = aiIdentity(ai);
-  if (!isDeepStrictEqual(callerAi, binding.ai)) {
+  if (!isDeepStrictEqual(aiIdentity(ai), binding.ai)) {
     throw new Error("workflow preflight AI dependency does not match the attested canonical identity");
   }
   const resolved = await resolveSkillDependencies({
@@ -81,9 +83,18 @@ async function currentSha256(root: string, path: string): Promise<string | null>
     const relation = relative(root, path);
     if (relation === "" || relation === ".." || relation.startsWith(`..${sep}`)) return null;
     const info = await lstat(path);
-    if (info.isSymbolicLink() || !info.isFile()) return null;
+    if (
+      info.isSymbolicLink()
+      || !info.isFile()
+      || info.size === 0
+      || info.size > MAX_DEPENDENCY_IDENTITY_BYTES
+    ) return null;
     if (await realpath(path) !== path) return null;
-    return createHash("sha256").update(await readFile(path)).digest("hex");
+    const bytes = await readAnchoredRegularFile(path, {
+      label: "dependency identity",
+      maxBytes: MAX_DEPENDENCY_IDENTITY_BYTES,
+    });
+    return createHash("sha256").update(bytes).digest("hex");
   } catch {
     return null;
   }
@@ -103,12 +114,12 @@ export async function preflightDependencies(
   ])));
   const requiredScripts = Object.fromEntries(Object.entries(resolved.ai.scripts).map(([name, path]) => [
     name,
-    { path, sha256: observedScripts[name] ?? resolved.integrity.aiScripts[name as keyof typeof resolved.integrity.aiScripts] },
+    { path, sha256: observedScripts[name] ?? resolved.ai.scriptSha256[name as keyof typeof resolved.ai.scriptSha256] },
   ]));
-  const aiFilesChanged = changed(resolved.integrity.aiSkillSha256, await currentSha256(resolved.ai.root, resolved.ai.skillFile))
-    || changed(resolved.integrity.aiCapabilityManifestSha256, await currentSha256(resolved.ai.root, resolved.ai.capabilityManifestFile))
-    || Object.entries(resolved.ai.scripts).some(([name, path]) => changed(
-      resolved.integrity.aiScripts[name as keyof typeof resolved.integrity.aiScripts],
+  const aiFilesChanged = changed(resolved.ai.skillSha256, await currentSha256(resolved.ai.root, resolved.ai.skillFile))
+    || changed(resolved.ai.capabilityManifestSha256, await currentSha256(resolved.ai.root, resolved.ai.capabilityManifestFile))
+    || Object.entries(resolved.ai.scripts).some(([name]) => changed(
+      resolved.ai.scriptSha256[name as keyof typeof resolved.ai.scriptSha256],
       observedScripts[name] ?? null,
     ));
   if (aiFilesChanged) {
@@ -118,22 +129,29 @@ export async function preflightDependencies(
       safeMessage: "required Skill files changed after resolution",
     });
   }
-  const observedEditableEvidence = Object.fromEntries(await Promise.all(
-    Object.entries(resolved.editable.capabilityEvidence).map(async ([name, evidence]) => [
-      name,
-      await currentSha256(resolved.editable.root, evidence.path),
-    ]),
-  ));
+
+  let sourceTreeChanged = true;
+  try {
+    sourceTreeChanged = !isDeepStrictEqual(
+      await computeEditableSourceTreeIdentity(resolved.editable.root),
+      resolved.editable.sourceTree,
+    );
+  } catch {
+    sourceTreeChanged = true;
+  }
   const editableFilesChanged = changed(
-    resolved.integrity.editablePackageSha256,
+    resolved.editable.packageSha256,
     await currentSha256(resolved.editable.root, resolved.editable.packageFile),
   ) || changed(
-    resolved.integrity.editableSkillSha256,
+    resolved.editable.pluginSha256,
+    await currentSha256(resolved.editable.root, resolved.editable.pluginFile),
+  ) || changed(
+    resolved.editable.skillSha256,
     await currentSha256(resolved.editable.root, resolved.editable.skillFile),
-  ) || Object.entries(resolved.editable.capabilityEvidence).some(([name, evidence]) => changed(
-    resolved.integrity.editableCapabilityEvidence[name as keyof typeof resolved.integrity.editableCapabilityEvidence].sha256,
-    observedEditableEvidence[name] ?? null,
-  ));
+  ) || changed(
+    resolved.editable.cliSha256,
+    await currentSha256(resolved.editable.root, resolved.editable.cliFile),
+  ) || sourceTreeChanged;
   if (editableFilesChanged) {
     errors.push({
       dependency: "image-to-editable-pptx",
@@ -141,7 +159,7 @@ export async function preflightDependencies(
       safeMessage: "required Skill files changed after resolution",
     });
   }
-  if (changed(resolved.integrity.contractSha256, await currentSha256(dirname(resolved.contractFile), resolved.contractFile))) {
+  if (changed(resolved.contractSha256, await currentSha256(dirname(resolved.contractFile), resolved.contractFile))) {
     errors.push({
       dependency: "superppt-dependency-contract",
       code: "identity_changed",
@@ -163,12 +181,17 @@ export async function preflightDependencies(
     },
     imageToEditablePptx: {
       root: resolved.editable.root,
-      skillSha256: resolved.editable.skillSha256,
       version: resolved.editable.version,
-      manifestVersion: resolved.editable.manifestVersion,
-      officialDonor: resolved.editable.officialDonor,
-      objectNames: resolved.editable.objectNames,
-      capabilityEvidence: resolved.editable.capabilityEvidence,
+      packageSha256: resolved.editable.packageSha256,
+      pluginSha256: resolved.editable.pluginSha256,
+      skillSha256: resolved.editable.skillSha256,
+      cliSha256: resolved.editable.cliSha256,
+      sourceTreeSha256: resolved.editable.sourceTree.sha256,
+      manifestVersion: resolved.editable.outputContract.manifest.version,
+      ledgerVersion: resolved.editable.outputContract.ledger.version,
+      officialDonor: resolved.editable.outputContract.officialDonor,
+      objectNames: resolved.editable.outputContract.objectNames,
+      invocation: resolved.editable.invocation,
     },
     errors,
   };

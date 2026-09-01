@@ -69,8 +69,47 @@ export const EditableObjectNamesSchema = z.object({
   asset: z.literal("asset-<id>"),
 }).strict();
 
+export const EditableInvocationSchema = z.object({
+  command: z.literal("npm"),
+  script: z.literal("cli"),
+  separator: z.literal("--"),
+  subcommand: z.literal("run"),
+  inputFlag: z.literal("--image"),
+  outputFlag: z.literal("--out"),
+}).strict();
+
+export const EditableOutputContractSchema = z.object({
+  ownershipMarker: z.object({
+    path: z.literal(".image-to-editable-pptx-output.json"),
+    markerVersion: z.literal(1),
+    appId: z.literal("image-to-editable-pptx"),
+    artifactKind: z.literal("published-output"),
+  }).strict(),
+  manifest: z.object({ path: z.literal("manifest.json"), version: z.literal(2) }).strict(),
+  ledger: z.object({ path: z.literal("run-ledger.json"), version: z.literal(2) }).strict(),
+  officialDonor: z.literal("slide-editable.pptx"),
+  objectNames: EditableObjectNamesSchema,
+}).strict();
+
+export const EditableConsumerProfileSchema = z.object({
+  package: z.object({
+    name: z.literal("image-to-editable-pptx"),
+    version: z.literal(">=0.2.0 <0.3.0"),
+    stable: z.literal(true),
+    nodeEngine: z.literal(">=22.6"),
+    cliScript: z.literal("tsx src/cli.ts"),
+  }).strict(),
+  plugin: z.object({
+    name: z.literal("image-to-editable-pptx"),
+    versionMatchesPackage: z.literal(true),
+    skills: z.literal("./skills/"),
+  }).strict(),
+  invocation: EditableInvocationSchema,
+  outputContract: EditableOutputContractSchema,
+}).strict();
+
 export const DependencyContractSchema = z.object({
-  contractVersion: z.literal(2),
+  contractVersion: z.literal(3),
   dependencies: z.tuple([
     z.object({
       skill: z.literal("ai-image-to-ppt"),
@@ -92,24 +131,20 @@ export const DependencyContractSchema = z.object({
       resolution: z.literal("explicit-only"),
       required: z.tuple([
         z.literal("package.json"),
+        z.literal(".codex-plugin/plugin.json"),
         z.literal("skills/image-to-editable-pptx/SKILL.md"),
-        z.literal("src/contracts.ts"),
-        z.literal("src/pipeline.ts"),
-        z.literal("src/export/pptx.ts"),
+        z.literal("src/cli.ts"),
       ]),
-      capabilities: z.object({
-        version: z.literal(">=0.2.0 <0.3.0"),
-        manifestVersion: z.literal(2),
-        officialDonor: z.literal("slide-editable.pptx"),
-        objectNames: EditableObjectNamesSchema,
-        evidence: z.object({
-          manifestSchema: z.literal("src/contracts.ts"),
-          officialDonor: z.literal("src/pipeline.ts"),
-          objectNames: z.literal("src/export/pptx.ts"),
-        }).strict(),
-      }).strict(),
+      consumerProfile: EditableConsumerProfileSchema,
     }).strict(),
   ]),
+}).strict();
+
+export const EditableSourceTreeIdentitySchema = z.object({
+  root: z.string().min(1),
+  sha256: Sha256Schema,
+  fileCount: z.number().int().min(1).max(2048),
+  totalBytes: z.number().int().nonnegative().max(128 * 1024 * 1024),
 }).strict();
 
 export const ImageToEditablePptxSkillDependencySchema = z.object({
@@ -117,17 +152,21 @@ export const ImageToEditablePptxSkillDependencySchema = z.object({
   root: z.string().min(1),
   packageFile: z.string().min(1),
   packageSha256: Sha256Schema,
+  pluginFile: z.string().min(1),
+  pluginSha256: Sha256Schema,
   skillFile: z.string().min(1),
   skillSha256: Sha256Schema,
+  cliFile: z.string().min(1),
+  cliSha256: Sha256Schema,
+  sourceTree: EditableSourceTreeIdentitySchema,
   version: z.string().min(1),
-  manifestVersion: z.literal(2),
-  officialDonor: z.literal("slide-editable.pptx"),
-  objectNames: EditableObjectNamesSchema,
-  capabilityEvidence: z.object({
-    manifestSchema: z.object({ path: z.string().min(1), sha256: Sha256Schema }).strict(),
-    officialDonor: z.object({ path: z.string().min(1), sha256: Sha256Schema }).strict(),
-    objectNames: z.object({ path: z.string().min(1), sha256: Sha256Schema }).strict(),
-  }).strict(),
+  packageName: z.literal("image-to-editable-pptx"),
+  nodeEngine: z.literal(">=22.6"),
+  cliScript: z.literal("tsx src/cli.ts"),
+  pluginName: z.literal("image-to-editable-pptx"),
+  pluginSkills: z.literal("./skills/"),
+  invocation: EditableInvocationSchema,
+  outputContract: EditableOutputContractSchema,
 }).strict();
 
 export const AiImageSkillDependencyIdentitySchema = z.object({
@@ -147,7 +186,7 @@ export const AiImageSkillDependencyIdentitySchema = z.object({
 }).strict();
 
 export const WorkflowPreflightBindingSchema = z.object({
-  bindingVersion: z.literal(1),
+  bindingVersion: z.literal(2),
   contractFile: z.string().min(1),
   contractSha256: Sha256Schema,
   ai: AiImageSkillDependencyIdentitySchema,
@@ -167,21 +206,14 @@ export const AiImageSkillDependencySchema = AiImageSkillDependencyIdentitySchema
 export type AiImageSkillDependency = z.infer<typeof AiImageSkillDependencySchema>;
 export type ImageToEditablePptxSkillDependency = z.infer<typeof ImageToEditablePptxSkillDependencySchema>;
 export type WorkflowPreflightBinding = z.infer<typeof WorkflowPreflightBindingSchema>;
+export type EditableInvocation = z.infer<typeof EditableInvocationSchema>;
+export type EditableOutputContract = z.infer<typeof EditableOutputContractSchema>;
 
 export type ResolvedDependencies = {
   contractFile: string;
   contractSha256: string;
   ai: AiImageSkillDependency;
   editable: ImageToEditablePptxSkillDependency;
-  integrity: {
-    aiSkillSha256: string;
-    aiCapabilityManifestSha256: string;
-    aiScripts: Record<keyof AiImageSkillDependency["scripts"], string>;
-    editablePackageSha256: string;
-    editableSkillSha256: string;
-    editableCapabilityEvidence: z.infer<typeof ImageToEditablePptxSkillDependencySchema>["capabilityEvidence"];
-    contractSha256: string;
-  };
 };
 
 export type DependencyPreflight = {
@@ -199,12 +231,17 @@ export type DependencyPreflight = {
   };
   imageToEditablePptx: {
     root: string;
+    version: string;
+    packageSha256: string;
+    pluginSha256: string;
     skillSha256: string;
-    version: string | null;
+    cliSha256: string;
+    sourceTreeSha256: string;
     manifestVersion: 2;
+    ledgerVersion: 2;
     officialDonor: "slide-editable.pptx";
-    objectNames: z.infer<typeof ImageToEditablePptxSkillDependencySchema>["objectNames"];
-    capabilityEvidence: z.infer<typeof ImageToEditablePptxSkillDependencySchema>["capabilityEvidence"];
+    objectNames: z.infer<typeof EditableObjectNamesSchema>;
+    invocation: z.infer<typeof EditableInvocationSchema>;
   };
   errors: Array<{ dependency: string; code: string; safeMessage: string }>;
 };

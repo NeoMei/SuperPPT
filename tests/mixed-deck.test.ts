@@ -266,6 +266,7 @@ async function readyProject(t: TestContext): Promise<string> {
 
 async function converterRoot(t: TestContext): Promise<string> {
   const root = join(await temporary(t, "superppt-mixed-converter-"), "plugin");
+  await mkdir(join(root, ".codex-plugin"), { recursive: true });
   await mkdir(join(root, "skills", "image-to-editable-pptx"), { recursive: true });
   await mkdir(join(root, "src", "export"), { recursive: true });
   await writeFile(join(root, "package.json"), `${JSON.stringify({
@@ -274,7 +275,13 @@ async function converterRoot(t: TestContext): Promise<string> {
     engines: { node: ">=22.6" },
     scripts: { cli: "tsx src/cli.ts" },
   })}\n`);
+  await writeFile(join(root, ".codex-plugin", "plugin.json"), `${JSON.stringify({
+    name: "image-to-editable-pptx",
+    version: "0.2.0",
+    skills: "./skills/",
+  })}\n`);
   await writeFile(join(root, "skills", "image-to-editable-pptx", "SKILL.md"), "---\nname: image-to-editable-pptx\n---\n");
+  await writeFile(join(root, "src", "cli.ts"), "throw new Error('fixture CLI must run only through injected execution');\n");
   await writeFile(join(root, "src", "contracts.ts"), 'import { z } from "zod";\nexport const SlideManifestV2Schema = z.object({ manifestVersion: z.literal(2) }).strict();\n');
   await writeFile(join(root, "src", "pipeline.ts"), 'function outputName(imagePath?: string): string { if (imagePath === undefined) return "slide-editable.pptx"; return `${imagePath}-editable.pptx`; }\nexport function buildSlide(imagePath?: string): string { return outputName(imagePath); }\n');
   await writeFile(join(root, "src", "export", "pptx.ts"), 'export async function exportPptx(element: any): Promise<void> { const pptx = new PptxGenConstructor(); const slide = pptx.addSlide(); slide.addImage({ objectName: "asset-background" }); slide.addText("", { objectName: `text-${element.id}` }); slide.addShape("", { objectName: `shape-${element.id}-${element.label}` }); slide.addImage({ objectName: `asset-${element.id}` }); await pptx.writeFile({ fileName: "out.pptx" }); }\n');
@@ -472,7 +479,6 @@ test("prepare editable input and selected page replacement invalidate only the r
   const converted = await convertProjectPage({
     root,
     slideId: slideIds[1],
-    converterRoot: plugin,
     dependencies,
     prepareExecute: async (command: string, args: string[]) => {
       prepareCalls += 1;
@@ -561,7 +567,6 @@ test("one authenticated edit-page action cannot authorize another page", async (
   await assert.rejects(convertProjectPage({
     root: reviewed.root,
     slideId: slideIds[0],
-    converterRoot: plugin,
     dependencies,
     prepareExecute: async () => {
       prepareCalls += 1;
@@ -600,7 +605,6 @@ test("prepare editable input rejects dependency drift, extra output, wrong dimen
     await convertProjectPage({
       root: reviewed.root,
       slideId: slideIds[1],
-      converterRoot: plugin,
       dependencies,
       idFactory: () => revisionId,
       prepareExecute,
@@ -659,7 +663,6 @@ test("prepare editable input rejects dependency drift, extra output, wrong dimen
   await assert.rejects(convertProjectPage({
     root: reviewed.root,
     slideId: slideIds[1],
-    converterRoot: plugin,
     dependencies: refreshedDependencies,
     idFactory: () => identityRevision,
     prepareExecute: async (_command, args) => {

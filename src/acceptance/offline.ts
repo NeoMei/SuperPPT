@@ -184,6 +184,7 @@ async function stagedAiDependency(parent: string): Promise<string> {
 
 async function stagedConverter(parent: string): Promise<string> {
   const root = join(parent, "offline-image-to-editable-pptx");
+  await mkdir(join(root, ".codex-plugin"), { recursive: true, mode: 0o700 });
   await mkdir(join(root, "skills", "image-to-editable-pptx"), { recursive: true, mode: 0o700 });
   await mkdir(join(root, "src", "export"), { recursive: true, mode: 0o700 });
   await writeFile(join(root, "package.json"), `${JSON.stringify({
@@ -192,7 +193,13 @@ async function stagedConverter(parent: string): Promise<string> {
     engines: { node: ">=22.6" },
     scripts: { cli: "tsx src/cli.ts" },
   }, null, 2)}\n`, { flag: "wx", mode: 0o600 });
+  await writeFile(join(root, ".codex-plugin", "plugin.json"), `${JSON.stringify({
+    name: "image-to-editable-pptx",
+    version: "0.2.0",
+    skills: "./skills/",
+  }, null, 2)}\n`, { flag: "wx", mode: 0o600 });
   await writeFile(join(root, "skills", "image-to-editable-pptx", "SKILL.md"), "---\nname: image-to-editable-pptx\n---\n", { flag: "wx", mode: 0o600 });
+  await writeFile(join(root, "src", "cli.ts"), "throw new Error('offline fixture CLI runs only through injected execution');\n", { flag: "wx", mode: 0o600 });
   await writeFile(join(root, "src", "contracts.ts"), 'import { z } from "zod";\nexport const SlideManifestV2Schema = z.object({ manifestVersion: z.literal(2) }).strict();\n', { flag: "wx", mode: 0o600 });
   await writeFile(join(root, "src", "pipeline.ts"), 'function outputName(imagePath?: string): string { if (imagePath === undefined) return "slide-editable.pptx"; return `${imagePath}-editable.pptx`; }\nexport function buildSlide(imagePath?: string): string { return outputName(imagePath); }\n', { flag: "wx", mode: 0o600 });
   await writeFile(join(root, "src", "export", "pptx.ts"), 'export async function exportPptx(element: any): Promise<void> { const pptx = new PptxGenConstructor(); const slide = pptx.addSlide(); slide.addImage({ objectName: "asset-background" }); slide.addText("", { objectName: `text-${element.id}` }); slide.addShape("", { objectName: `shape-${element.id}-${element.label}` }); slide.addImage({ objectName: `asset-${element.id}` }); await pptx.writeFile({ fileName: "out.pptx" }); }\n', { flag: "wx", mode: 0o600 });
@@ -490,7 +497,6 @@ export async function runOfflineAcceptance(options: OfflineAcceptanceOptions): P
   const conversion = await convertProjectPage({
     root,
     slideId: EDITABLE_SLIDE_ID,
-    converterRoot,
     dependencies,
     prepareExecute: async (_command, args) => {
       const source = args[1];
