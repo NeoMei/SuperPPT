@@ -89,9 +89,15 @@ export async function resolveTestRuntime(
   }
 }
 
-export async function runTests(environment: NodeJS.ProcessEnv = process.env): Promise<number> {
+export async function runTests(
+  environment: NodeJS.ProcessEnv = process.env,
+  options: { compiled?: boolean } = {},
+): Promise<number> {
   const runtime = await resolveTestRuntime(environment);
-  const child = spawn(process.execPath, ["--import", "tsx", "--test", "tests/*.test.ts"], {
+  const testArguments = options.compiled
+    ? ["--experimental-detect-module", "--test", "dist/tests/*.test.js"]
+    : ["--import", "tsx", "--test", "tests/*.test.ts"];
+  const child = spawn(process.execPath, testArguments, {
     cwd: process.cwd(),
     env: {
       ...environment,
@@ -115,7 +121,11 @@ export async function runTests(environment: NodeJS.ProcessEnv = process.env): Pr
 
 const invokedPath = process.argv[1] ? pathToFileURL(resolve(process.argv[1])).href : null;
 if (invokedPath === import.meta.url) {
-  runTests()
+  const arguments_ = process.argv.slice(2);
+  if (arguments_.some((argument) => argument !== "--compiled")) {
+    process.stderr.write("usage: test.ts [--compiled]\n");
+    process.exitCode = 1;
+  } else runTests(process.env, { compiled: arguments_.includes("--compiled") })
     .then((code) => { process.exitCode = code; })
     .catch((error: unknown) => {
       process.stderr.write(`${(error as Error).message}\n`);

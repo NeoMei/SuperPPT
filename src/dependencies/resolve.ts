@@ -20,7 +20,10 @@ import {
 } from "./schemas.js";
 
 const execFileAsync = promisify(execFile);
-const DEFAULT_CONTRACT_FILE = fileURLToPath(new URL("../../references/dependencies.json", import.meta.url));
+const DEFAULT_CONTRACT_FILES = [
+  fileURLToPath(new URL("../../references/dependencies.json", import.meta.url)),
+  fileURLToPath(new URL("../../../references/dependencies.json", import.meta.url)),
+];
 const MAX_EDITABLE_SOURCE_FILES = 2048;
 const MAX_EDITABLE_SOURCE_ENTRIES = 4096;
 const MAX_EDITABLE_SOURCE_FILE_BYTES = 16 * 1024 * 1024;
@@ -127,8 +130,20 @@ async function gitRevision(root: string): Promise<string | null> {
   }
 }
 
-async function loadDependencyContract(path = DEFAULT_CONTRACT_FILE) {
-  const contractFile = await canonicalContractFile(path);
+async function loadDependencyContract(path?: string) {
+  const candidates = path === undefined ? DEFAULT_CONTRACT_FILES : [path];
+  let contractFile: string | undefined;
+  for (const candidate of candidates) {
+    try {
+      contractFile = await canonicalContractFile(candidate);
+      break;
+    } catch (error: unknown) {
+      if ((error as Error).message !== "dependency contract is missing" || candidate === candidates.at(-1)) {
+        throw error;
+      }
+    }
+  }
+  if (contractFile === undefined) throw new Error("dependency contract is missing");
   let bytes: Buffer;
   let value: unknown;
   try {

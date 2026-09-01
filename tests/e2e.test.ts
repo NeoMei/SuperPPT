@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
-import { access, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
+import { createHash, randomUUID } from "node:crypto";
+import { access, mkdir, mkdtemp, readFile, readdir, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -8,7 +9,69 @@ import JSZip from "jszip";
 
 import { runOfflineAcceptance } from "../src/acceptance/offline.js";
 import { assembleProjectCandidate } from "../src/deck/assemble.js";
+import { editActualSlideObjects } from "../src/deck-revisions/edit-slide.js";
+import {
+  adoptManualSavedDeck,
+  beginAgentCandidateConfirmation,
+  confirmAgentEditDeck,
+  prepareManualEditDeck,
+  resolveCurrentDeckPage,
+} from "../src/deck-revisions/workflow.js";
+import {
+  bootstrapInitialDeckRevision,
+  createDeckCandidate,
+  readCurrentDeckPointer,
+  readLocalDeckRevision,
+  rollbackCurrentDeck,
+} from "../src/deck-revisions/store.js";
+import { finalizeSlideTopology } from "../src/deck-revisions/topology.js";
+import { translateManualDeckSignal } from "../src/editable/route.js";
+import { initializeProject } from "../src/project/initialize.js";
 import { sha256 } from "../src/project/store.js";
+
+const P = "http://schemas.openxmlformats.org/presentationml/2006/main";
+const A = "http://schemas.openxmlformats.org/drawingml/2006/main";
+const R = "http://schemas.openxmlformats.org/officeDocument/2006/relationships";
+const REL = "http://schemas.openxmlformats.org/package/2006/relationships";
+const P14 = "http://schemas.microsoft.com/office/powerpoint/2010/main";
+
+function digest(value: Buffer | string): string {
+  return createHash("sha256").update(value).digest("hex");
+}
+
+function editableSlideXml(creationId: number, label: string): string {
+  return `<p:sld xmlns:p="${P}" xmlns:a="${A}" xmlns:p14="${P14}"><p:cSld><p:spTree><p:nvGrpSpPr/><p:sp><p:nvSpPr><p:cNvPr id="2" name="text-${label}"/></p:nvSpPr><p:spPr><a:xfrm><a:off x="952500" y="762000"/><a:ext cx="5715000" cy="762000"/></a:xfrm></p:spPr><p:txBody><a:p><a:pPr algn="ctr"/><a:r><a:rPr lang="zh-CN" sz="3200" b="1"/><a:t>${label}</a:t></a:r></a:p></p:txBody></p:sp></p:spTree><p:extLst><p:ext uri="{BB962C8B-B14F-4D97-AF65-F5344CB8AC3E}"><p14:creationId val="${creationId}"/></p:ext></p:extLst></p:cSld></p:sld>`;
+}
+
+async function completeThreeSlideDeck(): Promise<Buffer> {
+  const labels = ["one", "two", "three"];
+  const zip = new JSZip();
+  zip.file("[Content_Types].xml", "<Types xmlns=\"http://schemas.openxmlformats.org/package/2006/content-types\"/>");
+  zip.file("ppt/presentation.xml", `<p:presentation xmlns:p="${P}" xmlns:r="${R}"><p:sldIdLst>${labels.map((_label, index) => `<p:sldId id="${256 + index}" r:id="rId${index + 1}"/>`).join("")}</p:sldIdLst></p:presentation>`);
+  zip.file("ppt/_rels/presentation.xml.rels", `<Relationships xmlns="${REL}">${labels.map((_label, index) => `<Relationship Id="rId${index + 1}" Type="${R}/slide" Target="slides/slide${index + 1}.xml"/>`).join("")}</Relationships>`);
+  for (const [index, label] of labels.entries()) {
+    zip.file(`ppt/slides/slide${index + 1}.xml`, editableSlideXml(1001 + index, label));
+    zip.file(`ppt/slides/_rels/slide${index + 1}.xml.rels`, `<Relationships xmlns="${REL}"/>`);
+  }
+  return zip.generateAsync({ type: "nodebuffer" });
+}
+
+async function simulateWpsSavedCompleteDeck(path: string): Promise<Buffer> {
+  const zip = await JSZip.loadAsync(await readFile(path));
+  const target = await zip.file("ppt/slides/slide2.xml")!.async("string");
+  zip.file("ppt/slides/slide2.xml", target
+    .replace('algn="ctr"', 'algn="r"')
+    .replace(">two</a:t>", ">WPS manual saved</a:t>"));
+  zip.file("ppt/presentation.xml", `<p:presentation xmlns:p="${P}" xmlns:r="${R}"><p:sldIdLst><p:sldId id="258" r:id="rId3"/><p:sldId id="300" r:id="rId4"/><p:sldId id="257" r:id="rId2"/></p:sldIdLst></p:presentation>`);
+  zip.file("ppt/_rels/presentation.xml.rels", `<Relationships xmlns="${REL}"><Relationship Id="rId3" Type="${R}/slide" Target="slides/slide3.xml"/><Relationship Id="rId4" Type="${R}/slide" Target="slides/slide4.xml"/><Relationship Id="rId2" Type="${R}/slide" Target="slides/slide2.xml"/></Relationships>`);
+  zip.remove("ppt/slides/slide1.xml");
+  zip.remove("ppt/slides/_rels/slide1.xml.rels");
+  zip.file("ppt/slides/slide4.xml", editableSlideXml(2004, "inserted"));
+  zip.file("ppt/slides/_rels/slide4.xml.rels", `<Relationships xmlns="${REL}"/>`);
+  const saved = await zip.generateAsync({ type: "nodebuffer" });
+  await writeFile(path, saved);
+  return saved;
+}
 
 test("keeps editable preparation private and emits no post-save reconstruction artifacts", async (t) => {
   const temporary = process.env.SUPERPPT_ACCEPTANCE_ROOT
@@ -107,4 +170,141 @@ test("keeps editable preparation private and emits no post-save reconstruction a
     assembleProjectCandidate(result.root),
     /aggregate pages do not match immutable page results|delegated.*evidence/i,
   );
+});
+
+test("continues from exact WPS-saved deck bytes through current-page Agent confirmation and rollback", async (t) => {
+  const parent = await realpath(await mkdtemp(join(tmpdir(), "superppt-full-deck-e2e-")));
+  t.after(() => rm(parent, { recursive: true, force: true }));
+  const root = join(parent, "project");
+  const project = await initializeProject({ root, title: "Task 7 complete deck acceptance" });
+  const slideIds = [randomUUID(), randomUUID(), randomUUID()];
+  const generatedCandidateId = randomUUID();
+  const generatedPath = join(root, "output", "candidates", generatedCandidateId, "deck.pptx");
+  await mkdir(join(root, "output", "candidates", generatedCandidateId), { recursive: true });
+  const generatedBytes = await completeThreeSlideDeck();
+  await writeFile(generatedPath, generatedBytes);
+  const initialRevisionId = randomUUID();
+  const initialTopology = finalizeSlideTopology(slideIds.map((stableSlideId, position) => ({
+    stableSlideId,
+    slidePart: `ppt/slides/slide${position + 1}.xml`,
+    position,
+    management: "managed" as const,
+    presentationSlideId: 256 + position,
+    creationId: 1001 + position,
+  })), []);
+  const initial = await bootstrapInitialDeckRevision(root, {
+    revisionId: initialRevisionId,
+    projectRevisionId: project.currentRevision.id,
+    sourceAbsolutePath: generatedPath,
+    slideTopology: initialTopology,
+    changedSlideIds: slideIds,
+  });
+
+  const initialRecordPath = join(root, "output", "deck-revisions", initialRevisionId, "revision.json");
+  const initialRecord = JSON.parse(await readFile(initialRecordPath, "utf8")) as {
+    editableSlideIds: string[];
+    reviewRequiredObjectsBySlideId: Record<string, Array<{ elementId: string; label: string; role: string }>>;
+  };
+  initialRecord.editableSlideIds = [...slideIds];
+  initialRecord.reviewRequiredObjectsBySlideId = {
+    [slideIds[1]!]: [{ elementId: "two", label: "Slide 2 title alignment", role: "text" }],
+  };
+  await writeFile(initialRecordPath, `${JSON.stringify(initialRecord, null, 2)}\n`);
+  assert.equal(initial.sha256, digest(generatedBytes));
+  assert.equal((await readCurrentDeckPointer(root)).revisionId, initialRevisionId);
+
+  const manual = await prepareManualEditDeck({ root, slideId: slideIds[1]! });
+  assert.equal(manual.slideCount, 3);
+  assert.equal(manual.targetSlideIndex, 1);
+  assert.deepEqual(manual.reviewRequiredObjects.map(({ label }) => label), ["Slide 2 title alignment"]);
+  assert.equal(manual.localLink, manual.absolutePath);
+  const savedBytes = await simulateWpsSavedCompleteDeck(manual.absolutePath);
+  const savedSha256 = digest(savedBytes);
+  assert.throws(() => translateManualDeckSignal("已保存"), /已保存并关闭/);
+  const adoptedManual = await adoptManualSavedDeck({
+    root,
+    sessionId: manual.sessionId,
+    userSignal: translateManualDeckSignal("已保存并关闭"),
+  });
+  assert.equal(adoptedManual.sha256, savedSha256);
+  assert.deepEqual(await readFile(manual.absolutePath), savedBytes);
+  const manualRevision = await readLocalDeckRevision(root, adoptedManual.revisionId);
+  assert.deepEqual(manualRevision.slideTopology.entries.map(({ stableSlideId, position, management }) => ({
+    stableSlideId, position, management,
+  })), [
+    { stableSlideId: slideIds[2], position: 0, management: "managed" },
+    { stableSlideId: manualRevision.slideTopology.entries[1]!.stableSlideId, position: 1, management: "unmanaged" },
+    { stableSlideId: slideIds[1], position: 2, management: "managed" },
+  ]);
+  assert.deepEqual(manualRevision.slideTopology.deletedStableSlideIds, [slideIds[0]]);
+
+  const nextTarget = await resolveCurrentDeckPage({ root, pageNumber: 3 });
+  assert.deepEqual(nextTarget, {
+    revisionId: adoptedManual.revisionId,
+    pageNumber: 3,
+    stableSlideId: slideIds[1],
+    management: "managed",
+  });
+
+  const agentCandidate = await createDeckCandidate(root, {
+    sourceRevisionId: adoptedManual.revisionId,
+    reason: "agent-edit",
+    changedSlideIds: [nextTarget.stableSlideId],
+    editableSlideIds: manualRevision.editableSlideIds,
+    targetSlideId: nextTarget.stableSlideId,
+    mode: "agent",
+  });
+  assert.deepEqual(await readFile(agentCandidate.absolutePath), savedBytes);
+  await editActualSlideObjects({
+    root,
+    currentRevisionId: adoptedManual.revisionId,
+    sessionId: agentCandidate.sessionId,
+    candidatePath: agentCandidate.absolutePath,
+    slideId: nextTarget.stableSlideId,
+    manifest: {
+      manifestVersion: 2,
+      canvas: { width: 1280, height: 720 },
+      warnings: [],
+      elements: [{
+        kind: "text",
+        id: "two",
+        text: "WPS manual saved",
+        bbox: { x: 100, y: 80, width: 600, height: 80 },
+        rotation: 0,
+        color: "#ffffff",
+        fontSizePx: 48,
+        bold: true,
+        align: "right",
+        zIndex: 1,
+      }],
+    },
+    operations: [{ kind: "replace-text", elementId: "two", text: "Agent confirmed title" }],
+  });
+  const agent = await beginAgentCandidateConfirmation({
+    root,
+    sessionId: agentCandidate.sessionId,
+    slideId: nextTarget.stableSlideId,
+  });
+  const agentBytes = await readFile(agent.absolutePath);
+  const agentZip = await JSZip.loadAsync(agentBytes);
+  const agentTargetXml = await agentZip.file("ppt/slides/slide2.xml")!.async("string");
+  assert.match(agentTargetXml, /algn="r"/);
+  assert.match(agentTargetXml, />Agent confirmed title<\/a:t>/);
+  assert.equal((await readCurrentDeckPointer(root)).revisionId, adoptedManual.revisionId);
+
+  const confirmed = await confirmAgentEditDeck({
+    root,
+    sessionId: agent.sessionId,
+    confirmedSha256: agent.sha256,
+  });
+  assert.equal(confirmed.revisionId, agent.revisionId);
+  assert.deepEqual(await readFile(agent.absolutePath), agentBytes);
+  const rolledBack = await rollbackCurrentDeck(root, adoptedManual.revisionId);
+  assert.equal(rolledBack.revisionId, adoptedManual.revisionId);
+  assert.equal((await readCurrentDeckPointer(root)).revisionId, adoptedManual.revisionId);
+  assert.deepEqual(await readFile(manual.absolutePath), savedBytes);
+  assert.deepEqual(await readFile(agent.absolutePath), agentBytes);
+
+  const outputEntries = await readdir(join(root, "output"), { recursive: true });
+  assert.equal(outputEntries.some((entry) => /(?:\.pdf$|montage|preview|single[-_]?slide|single[-_]?page)/i.test(String(entry))), false);
 });

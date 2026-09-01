@@ -55,6 +55,7 @@ import {
   confirmAgentEditDeck,
   prepareManualEditDeck,
   rejectDeckEdit,
+  resolveCurrentDeckPage,
 } from "./deck-revisions/workflow.js";
 import {
   readCurrentDeckPointer,
@@ -239,6 +240,15 @@ async function main(argv: string[]): Promise<void> {
   const command = argv[0];
   if (command && REMOVED_COMPLETE_DECK_COMMANDS.has(command)) {
     throw new Error(`${command} was removed: use current-deck-link, prepare-manual-deck, or prepare-agent-deck for one complete deck`);
+  }
+
+  if (command === "resolve-current-deck-page") {
+    const options = exactFlags(argv.slice(1), ["--project", "--page-number"]);
+    outputJson(await resolveCurrentDeckPage({
+      root: options.get("--project")!,
+      pageNumber: integerFlag(options.get("--page-number")!, "page number", 1),
+    }));
+    return;
   }
 
   if (command === "current-deck-link") {

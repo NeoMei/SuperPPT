@@ -34,6 +34,11 @@ const AdoptionOptionsSchema = z.object({
   sessionId: z.string().uuid(),
 }).strict();
 
+const ResolveCurrentDeckPageOptionsSchema = z.object({
+  root: z.string().min(1),
+  pageNumber: z.number().int().positive(),
+}).strict();
+
 function preparedResult(
   mode: "manual" | "agent",
   targetSlideIndex: number,
@@ -53,6 +58,28 @@ function preparedResult(
     editableSlideIds: presented.editableSlideIds,
     reviewRequiredObjects: presented.reviewRequiredObjects,
   });
+}
+
+export async function resolveCurrentDeckPage(options: {
+  root: string;
+  pageNumber: number;
+}): Promise<{
+  revisionId: string;
+  pageNumber: number;
+  stableSlideId: string;
+  management: "managed" | "unmanaged";
+}> {
+  const valid = ResolveCurrentDeckPageOptionsSchema.parse(options);
+  const current = await readCurrentDeckPointer(valid.root);
+  const revision = await readLocalDeckRevision(valid.root, current.revisionId);
+  const entry = revision.slideTopology.entries.find(({ position }) => position === valid.pageNumber - 1);
+  if (!entry) throw new Error("current complete deck page number is outside the reconciled topology");
+  return {
+    revisionId: current.revisionId,
+    pageNumber: valid.pageNumber,
+    stableSlideId: entry.stableSlideId,
+    management: entry.management,
+  };
 }
 
 export async function prepareManualEditDeck(options: {

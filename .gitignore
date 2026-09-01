@@ -2,6 +2,7 @@
 node_modules/
 dist/
 /.superpowers/sdd/2026-08-28-superppt-ai-image-delegation/
+/.superpowers/sdd/2026-08-30-local-full-deck-editing/task-7-wps-acceptance/
 .DS_Store
 output/
 *.failed-runs/

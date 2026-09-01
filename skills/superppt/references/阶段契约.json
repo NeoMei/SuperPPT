@@ -109,11 +109,24 @@
       "genericApprovalAllowed": false,
       "reviewActions": ["edit-page", "return-upstream", "confirm-delivery"]
     },
-    "smoke": {
-      "copyDisposition": "discard-no-save",
-      "runtimeState": "discard-reopen-supported",
-      "acceptanceRecordAction": "invoke-after-authenticated-discard-reopen-evidence",
-      "intermediateEvidence": "immutable-acceptance-observation"
+    "editing": {
+      "artifactKind": "complete-local-pptx",
+      "localPptxLinksPerResponse": 1,
+      "previewAndEditor": "wps-or-powerpoint",
+      "pageResolution": "current-reconciled-topology",
+      "manual": {
+        "waitForUserText": "已保存并关闭",
+        "internalSignal": "saved-and-closed",
+        "acceptsSavedOnly": false,
+        "adoption": "stable-read-validate-metadata-only-pointer-move",
+        "topology": "reconcile-move-insert-delete-with-stable-slide-ids"
+      },
+      "agent": {
+        "waitForUserText": "确认",
+        "confirmationBinding": "exact-presented-sha256",
+        "pointerBeforeConfirmation": "unchanged"
+      },
+      "rollback": "pointer-only-no-pptx-write"
     },
     "jobInputs": {
       "styleSample": {

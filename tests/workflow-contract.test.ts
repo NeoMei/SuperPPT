@@ -5,10 +5,12 @@ import test from "node:test";
 
 import {
   DECK_EDIT_MODE_QUESTION,
+  bindAgentDeckConfirmation,
   classifyDeckEditMode,
   describeDeckEditRoute,
   mapUpstreamDeckChange,
   presentUpstreamImpactPlan,
+  translateManualDeckSignal,
 } from "../src/editable/route.js";
 
 const skillRoot = "skills/superppt";
@@ -56,11 +58,24 @@ type WorkflowPolicy = {
     genericApprovalAllowed: boolean;
     reviewActions: string[];
   };
-  smoke: {
-    copyDisposition: string;
-    runtimeState: string;
-    acceptanceRecordAction: string;
-    intermediateEvidence: string;
+  editing: {
+    artifactKind: string;
+    localPptxLinksPerResponse: number;
+    previewAndEditor: string;
+    pageResolution: string;
+    manual: {
+      waitForUserText: string;
+      internalSignal: string;
+      acceptsSavedOnly: boolean;
+      adoption: string;
+      topology: string;
+    };
+    agent: {
+      waitForUserText: string;
+      confirmationBinding: string;
+      pointerBeforeConfirmation: string;
+    };
+    rollback: string;
   };
   jobInputs: {
     styleSample: {
@@ -138,10 +153,23 @@ function validateStageContract(contract: StageContract): void {
   assert.equal(policy.delivery.reviewRequired, true);
   assert.equal(policy.delivery.genericApprovalAllowed, false);
   assert.deepEqual(policy.delivery.reviewActions, ["edit-page", "return-upstream", "confirm-delivery"]);
-  assert.equal(policy.smoke.copyDisposition, "discard-no-save");
-  assert.equal(policy.smoke.runtimeState, "discard-reopen-supported");
-  assert.equal(policy.smoke.acceptanceRecordAction, "invoke-after-authenticated-discard-reopen-evidence");
-  assert.equal(policy.smoke.intermediateEvidence, "immutable-acceptance-observation");
+  assert.equal(policy.editing.artifactKind, "complete-local-pptx");
+  assert.equal(policy.editing.localPptxLinksPerResponse, 1);
+  assert.equal(policy.editing.previewAndEditor, "wps-or-powerpoint");
+  assert.equal(policy.editing.pageResolution, "current-reconciled-topology");
+  assert.deepEqual(policy.editing.manual, {
+    waitForUserText: "已保存并关闭",
+    internalSignal: "saved-and-closed",
+    acceptsSavedOnly: false,
+    adoption: "stable-read-validate-metadata-only-pointer-move",
+    topology: "reconcile-move-insert-delete-with-stable-slide-ids",
+  });
+  assert.deepEqual(policy.editing.agent, {
+    waitForUserText: "确认",
+    confirmationBinding: "exact-presented-sha256",
+    pointerBeforeConfirmation: "unchanged",
+  });
+  assert.equal(policy.editing.rollback, "pointer-only-no-pptx-write");
   assert.equal(policy.jobInputs.styleSample.styleLockState, "provisional");
   assert.equal(policy.jobInputs.styleSample.approvedSample, "must-be-null");
   assert.deepEqual(policy.jobInputs.styleSample.required, [
@@ -191,9 +219,14 @@ test("machine contract encodes all user decisions and rejects unsafe workflow va
     ["direct dependency execution", (fixture) => { fixture.workflowPolicy.generation.cliExecutesDependency = true; }],
     ["generic deck-review approval", (fixture) => { fixture.workflowPolicy.delivery.genericApprovalAllowed = true; }],
     ["pre-review delivery", (fixture) => { fixture.workflowPolicy.delivery.reviewRequired = false; }],
-    ["saved smoke mutation", (fixture) => { fixture.workflowPolicy.smoke.copyDisposition = "save"; }],
+    ["single-page handoff", (fixture) => { fixture.workflowPolicy.editing.artifactKind = "single-page-pptx"; }],
+    ["multiple local links", (fixture) => { fixture.workflowPolicy.editing.localPptxLinksPerResponse = 2; }],
+    ["stale page resolution", (fixture) => { fixture.workflowPolicy.editing.pageResolution = "outline-order"; }],
+    ["manual saved-only acceptance", (fixture) => { fixture.workflowPolicy.editing.manual.acceptsSavedOnly = true; }],
+    ["manual rewrite adoption", (fixture) => { fixture.workflowPolicy.editing.manual.adoption = "replace-saved-page"; }],
+    ["unbound Agent confirmation", (fixture) => { fixture.workflowPolicy.editing.agent.confirmationBinding = "session-only"; }],
+    ["rollback rewrite", (fixture) => { fixture.workflowPolicy.editing.rollback = "copy-and-rewrite"; }],
     ["machine auto-advance", (fixture) => { fixture.stages[0]!.mustWaitForUser = false; }],
-    ["unauthenticated discard invocation", (fixture) => { fixture.workflowPolicy.smoke.acceptanceRecordAction = "invoke-now"; }],
     ["sample requires approved sample", (fixture) => { fixture.workflowPolicy.jobInputs.styleSample.approvedSample = "authenticated-non-null"; }],
     ["deck lacks approved sample", (fixture) => { fixture.workflowPolicy.jobInputs.deckAndPageRegeneration.approvedSample = "must-be-null"; }],
     ["style change skips sample authorization", (fixture) => { fixture.workflowPolicy.changeInvalidation.style.shift(); }],
@@ -300,6 +333,7 @@ test("delegation discloses exact outbound inputs and preserves current Task 10 r
     "admit-image-call",
     "record-image-result",
     "current-deck-link",
+    "resolve-current-deck-page",
     "prepare-manual-deck",
     "adopt-saved-deck",
     "prepare-agent-deck",
@@ -344,28 +378,17 @@ test("active workflow hands off only one complete local PPTX and names exact wai
   assert.match(workflow, /不能把整页图片描述为可编辑/);
 });
 
-test("controlled WPS smoke edits, undoes, discards, and reopens without saving canonical output", async () => {
-  const [skill, dependencies] = await Promise.all([
-    text("SKILL.md"),
-    text("references/依赖说明.md"),
-  ]);
-  const workflow = `${skill}\n${dependencies}`;
-  for (const evidence of ["选定对象", "观察到的修改", "撤销结果", "丢弃结果", "重开结果"]) {
-    assert.match(workflow, new RegExp(evidence));
+test("manual and Agent wait signals are exact and bind the presented candidate hash", () => {
+  const presentedSha256 = "a".repeat(64);
+  assert.equal(translateManualDeckSignal("已保存并关闭"), "saved-and-closed");
+  for (const rejected of ["已保存", "保存并关闭", "已保存并关闭。"]) {
+    assert.throws(() => translateManualDeckSignal(rejected), /已保存并关闭/);
   }
-  assert.match(workflow, /discard|no-save|不保存/);
-  assert.match(workflow, /npm run cli -- acceptance-smoke-copy --project/);
-  assert.match(workflow, /npm run cli -- acceptance-record --project .* --input/);
-  assert.match(workflow, /deck-smoke\.pptx/);
-  assert.match(workflow, /绝不.*canonical.*deck\.pptx|禁止.*canonical.*deck\.pptx/is);
-  assert.doesNotMatch(workflow, /客户端编辑、保存、关闭|保存、关闭、重新打开|edit representative text.*then save/i);
-  assert.match(workflow, /temporaryEditObserved:true/);
-  assert.match(workflow, /undoObserved:true/);
-  assert.match(workflow, /saveDecision:"discarded"/);
-  assert.match(workflow, /reopenObserved:true/);
-  assert.match(workflow, /成功.*记录.*正式交付|successful authenticated record.*formal delivery/is);
-  assert.match(workflow, /不得虚构|never fabricate/i);
-  assert.doesNotMatch(workflow, /blocked until Task 12|blocked-until-task-12|task-11-save-based-incompatible/i);
+  assert.equal(bindAgentDeckConfirmation("确认", presentedSha256), presentedSha256);
+  for (const rejected of ["好", "确认。", "approve"]) {
+    assert.throws(() => bindAgentDeckConfirmation(rejected, presentedSha256), /确认/);
+  }
+  assert.throws(() => bindAgentDeckConfirmation("确认", "0"), /64|invalid|regex/i);
 });
 
 test("deck editing recognizes natural answers to the exact mode question and rejects contradictions", () => {

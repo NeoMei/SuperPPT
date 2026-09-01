@@ -172,6 +172,22 @@ test("manual commands return one clickable complete PPTX and adopt only saved-an
   assert.match(adopted.nextRequiredAction, /current-deck-link/);
 });
 
+test("resolves repeated page-number edits from the current reconciled deck topology", async (t) => {
+  const project = await cliProject(t);
+  const resolved = await runCliJson([
+    "resolve-current-deck-page", "--project", project.root, "--page-number", "2",
+  ]);
+  assert.deepEqual(resolved, {
+    revisionId: project.revisionId,
+    pageNumber: 2,
+    stableSlideId: project.slideIds[1],
+    management: "managed",
+  });
+  await assert.rejects(runCli([
+    "resolve-current-deck-page", "--project", project.root, "--page-number", "4",
+  ]), /outside.*topology|page number/i);
+});
+
 test("Agent confirmation, rejection, and deck rollback use exact complete-deck identities", async (t) => {
   const project = await cliProject(t);
   const first = await readCurrentDeckPointer(project.root);

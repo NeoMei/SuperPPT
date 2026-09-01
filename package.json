@@ -23,7 +23,7 @@
     "test": "node --import tsx scripts/test.ts",
     "lint:types": "tsc -p tsconfig.json --noEmit",
     "build": "tsc -p tsconfig.json",
-    "test:compiled": "node --experimental-detect-module --test \"dist/tests/*.test.js\"",
+    "test:compiled": "node --import tsx scripts/test.ts --compiled",
     "cli": "tsx src/cli.ts"
   },
   "dependencies": {

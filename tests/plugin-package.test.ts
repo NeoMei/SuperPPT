@@ -88,10 +88,24 @@ test("package allowlist and dry-run exclude build leftovers and removed provider
   });
   const packed = JSON.parse(stdout) as Array<{ files: Array<{ path: string }> }>;
   const paths = packed[0]!.files.map(({ path }) => path);
-  assert.ok(paths.includes("src/cli.ts"));
-  assert.ok(paths.includes("skills/superppt/SKILL.md"));
+  for (const required of [
+    "skills/superppt/SKILL.md",
+    "skills/superppt/references/阶段契约.json",
+    "references/dependencies.json",
+    "src/cli.ts",
+    "src/deck-revisions/workflow.ts",
+    "src/deck-revisions/store.ts",
+    "src/deck-revisions/topology.ts",
+    "src/deck-revisions/edit-slide.ts",
+    "src/editable/route.ts",
+  ]) assert.ok(paths.includes(required), `package is missing ${required}`);
   assert.ok(paths.every((path) => !path.startsWith("dist/")));
   assert.ok(paths.every((path) => !/(?:provider|bridge-process|run_ai_image_provider|fake_ai_provider)/i.test(path)));
+  const generatedArtifact = (path: string): boolean => {
+    if (path.startsWith("skills/superppt/assets/styles/previews/")) return false;
+    return /(?:\.pptx$|\.pdf$|montage|(?:^|\/)(?:preview|previews)(?:\/|\.|-)|user[-_ ]?edit|single[-_ ]?(?:page|slide)|slide-editable|(?:^|\/)staging(?:\/|$)|\.staging(?:\.|\/|$))/i.test(path);
+  };
+  assert.deepEqual(paths.filter(generatedArtifact), [], "package must exclude generated/user edit and review artifacts");
   assert.deepEqual(dependencies.dependencies.map((dependency: Record<string, unknown>) => ({
     skill: dependency.skill,
     cliFlag: dependency.cliFlag,
