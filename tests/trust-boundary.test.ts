@@ -1,5 +1,6 @@
+import { withSourceTreeScanRace } from "./helpers/source-tree-scan-race.js";
 import assert from "node:assert/strict";
-import { mkdtemp, mkdir, readFile, rm, symlink, truncate, unlink, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, readFile, rename, rm, symlink, truncate, unlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test, { type TestContext } from "node:test";
@@ -173,6 +174,17 @@ function request(current: Fixture) {
   };
 }
 
+const EARLY_SOURCE_BYTES = "old-source\n";
+const CHANGED_SOURCE_BYTES = "new-source\n";
+
+async function sourceScanRaceFixture(current: Fixture): Promise<{ early: string; sentinel: string }> {
+  const early = join(current.editable, "src", "aa-early.ts");
+  const sentinel = join(current.editable, "src", "zz-sentinel.ts");
+  await writeFile(early, EARLY_SOURCE_BYTES);
+  await writeFile(sentinel, "late scan sentinel\n");
+  return { early, sentinel };
+}
+
 test("repository dependency contract and workflow attestation use the corrected versions", async (t) => {
   const repositoryContract = JSON.parse(await readFile(join(process.cwd(), "references", "dependencies.json"), "utf8"));
   assert.equal(repositoryContract.contractVersion, 3);
@@ -254,6 +266,56 @@ test("editable source-tree identity fails closed on oversized files", async (t) 
   await writeFile(oversized, "x");
   await truncate(oversized, 16 * 1024 * 1024 + 1);
   await assert.rejects(resolveSkillDependencies(request(current)), /source file exceeds the identity budget/i);
+});
+
+test("editable resolution rejects source-tree changes after an earlier file was read", async (t) => {
+  for (const [name, mutate] of [
+    ["equal-length in-place rewrite", async (_current: Fixture, early: string) => {
+      assert.equal(Buffer.byteLength(EARLY_SOURCE_BYTES), Buffer.byteLength(CHANGED_SOURCE_BYTES));
+      await writeFile(early, CHANGED_SOURCE_BYTES);
+    }],
+    ["inode replacement", async (current: Fixture, early: string) => {
+      const replacement = join(current.root, "replacement-source.ts");
+      await writeFile(replacement, EARLY_SOURCE_BYTES);
+      await rename(replacement, early);
+    }],
+    ["added path", async (current: Fixture) => {
+      await writeFile(join(current.editable, "src", "ab-added.ts"), "added during scan\n");
+    }],
+    ["deleted path", async (_current: Fixture, early: string) => {
+      await unlink(early);
+    }],
+    ["renamed path", async (current: Fixture, early: string) => {
+      await rename(early, join(current.editable, "src", "ab-renamed.ts"));
+    }],
+  ] as const) {
+    await t.test(name, async (subtest) => {
+      const current = await fixture(subtest);
+      const { early, sentinel } = await sourceScanRaceFixture(current);
+      await assert.rejects(withSourceTreeScanRace({
+        sourceRoot: join(current.editable, "src"),
+        sentinelFile: sentinel,
+        afterSentinelRead: async (read) => {
+          if (read === 1) await mutate(current, early);
+        },
+      }, () => resolveSkillDependencies(request(current))), /source tree.*changed.*snapshot/i);
+    });
+  }
+});
+
+test("editable preflight fails closed when an early source file changes during its tree scan", async (t) => {
+  const current = await fixture(t);
+  const { early, sentinel } = await sourceScanRaceFixture(current);
+  const resolved = await resolveSkillDependencies(request(current));
+  const report = await withSourceTreeScanRace({
+    sourceRoot: join(current.editable, "src"),
+    sentinelFile: sentinel,
+    afterSentinelRead: async (read) => {
+      if (read === 1) await writeFile(early, CHANGED_SOURCE_BYTES);
+    },
+  }, () => preflightDependencies(resolved));
+  assert.equal(report.ok, false);
+  assert.ok(report.errors.some((error) => error.dependency === "image-to-editable-pptx" && error.code === "identity_changed"));
 });
 
 test("editable source syntax is outside admission and is only a TOCTOU identity", async (t) => {

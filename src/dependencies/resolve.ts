@@ -1,5 +1,6 @@
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
+import type { BigIntStats } from "node:fs";
 import { lstat, readdir, realpath } from "node:fs/promises";
 import { join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -150,16 +151,85 @@ function compatibleStableVersion(version: string, range: string): boolean {
 
 type LoadedContract = Awaited<ReturnType<typeof loadDependencyContract>>["contract"];
 
-export async function computeEditableSourceTreeIdentity(root: string) {
-  const sourceRoot = await requiredDirectory(
-    root,
-    join(root, "src"),
-    "image-to-editable-pptx source tree is missing",
-    "image-to-editable-pptx source tree is unsafe",
+type EditableSourceEntryKind = "directory" | "file";
+
+type EditableSourceEntrySnapshot = {
+  absolutePath: string;
+  relativePath: string;
+  kind: EditableSourceEntryKind;
+  dev: bigint;
+  ino: bigint;
+  size: bigint;
+  mtimeNs: bigint;
+  ctimeNs: bigint;
+};
+
+type EditableSourceTopologySnapshot = {
+  root: EditableSourceEntrySnapshot;
+  entries: EditableSourceEntrySnapshot[];
+  fileCount: number;
+  totalBytes: number;
+};
+
+function sourceTreeChanged(cause?: unknown): Error {
+  return new Error(
+    "image-to-editable-pptx source tree changed during identity snapshot",
+    cause === undefined ? undefined : { cause },
   );
-  const entries: Array<readonly [string, number, string]> = [];
-  let totalBytes = 0;
+}
+
+function sourceEntrySnapshot(
+  absolutePath: string,
+  relativePath: string,
+  kind: EditableSourceEntryKind,
+  info: BigIntStats,
+): EditableSourceEntrySnapshot {
+  return {
+    absolutePath,
+    relativePath,
+    kind,
+    dev: info.dev,
+    ino: info.ino,
+    size: info.size,
+    mtimeNs: info.mtimeNs,
+    ctimeNs: info.ctimeNs,
+  };
+}
+
+async function inspectEditableSourceEntry(
+  sourceRoot: string,
+  path: string,
+  relativePath: string,
+): Promise<EditableSourceEntrySnapshot> {
+  let info: BigIntStats;
+  try {
+    info = await lstat(path, { bigint: true });
+  } catch (error) {
+    throw new Error("image-to-editable-pptx source tree is unsafe", { cause: error });
+  }
+  if (info.isSymbolicLink()) throw new Error("image-to-editable-pptx source tree must not contain symbolic links");
+  const kind = info.isDirectory() ? "directory" : info.isFile() ? "file" : null;
+  if (kind === null) throw new Error("image-to-editable-pptx source tree contains an unsupported entry");
+  let physicalPath: string;
+  try {
+    physicalPath = await realpath(path);
+  } catch (error) {
+    throw new Error("image-to-editable-pptx source tree path is unsafe", { cause: error });
+  }
+  if (
+    physicalPath !== path
+    || (path === sourceRoot ? physicalPath !== sourceRoot : !staysInside(sourceRoot, physicalPath))
+  ) throw new Error("image-to-editable-pptx source tree path is unsafe");
+  return sourceEntrySnapshot(path, relativePath, kind, info);
+}
+
+async function enumerateEditableSourceTopology(sourceRoot: string): Promise<EditableSourceTopologySnapshot> {
+  const root = await inspectEditableSourceEntry(sourceRoot, sourceRoot, ".");
+  if (root.kind !== "directory") throw new Error("image-to-editable-pptx source tree is unsafe");
+  const entries: EditableSourceEntrySnapshot[] = [];
   let visitedEntries = 0;
+  let fileCount = 0;
+  let totalBytes = 0;
 
   const walk = async (directory: string, depth: number): Promise<void> => {
     if (depth > MAX_EDITABLE_SOURCE_DEPTH) throw new Error("image-to-editable-pptx source tree exceeds the depth identity budget");
@@ -173,33 +243,101 @@ export async function computeEditableSourceTreeIdentity(root: string) {
       visitedEntries += 1;
       if (visitedEntries > MAX_EDITABLE_SOURCE_ENTRIES) throw new Error("image-to-editable-pptx source tree exceeds the entry-count identity budget");
       const path = join(directory, child.name);
-      const info = await lstat(path);
-      if (info.isSymbolicLink()) throw new Error("image-to-editable-pptx source tree must not contain symbolic links");
-      const physicalPath = await realpath(path);
-      if (physicalPath !== path || !staysInside(sourceRoot, physicalPath)) {
-        throw new Error("image-to-editable-pptx source tree path is unsafe");
-      }
-      if (info.isDirectory()) {
+      const local = relative(sourceRoot, path).split(sep).join("/");
+      const entry = await inspectEditableSourceEntry(sourceRoot, path, local);
+      entries.push(entry);
+      if (entry.kind === "directory") {
         await walk(path, depth + 1);
         continue;
       }
-      if (!info.isFile()) throw new Error("image-to-editable-pptx source tree contains an unsupported entry");
-      if (info.size > MAX_EDITABLE_SOURCE_FILE_BYTES) throw new Error("image-to-editable-pptx source file exceeds the identity budget");
-      const bytes = await readIdentityFile(path, "image-to-editable-pptx source identity");
-      totalBytes += bytes.length;
+      if (entry.size > BigInt(MAX_EDITABLE_SOURCE_FILE_BYTES)) {
+        throw new Error("image-to-editable-pptx source file exceeds the identity budget");
+      }
+      fileCount += 1;
+      if (fileCount > MAX_EDITABLE_SOURCE_FILES) throw new Error("image-to-editable-pptx source tree exceeds the file-count identity budget");
+      totalBytes += Number(entry.size);
       if (totalBytes > MAX_EDITABLE_SOURCE_TREE_BYTES) throw new Error("image-to-editable-pptx source tree exceeds the identity budget");
-      if (entries.length >= MAX_EDITABLE_SOURCE_FILES) throw new Error("image-to-editable-pptx source tree exceeds the file-count identity budget");
-      const local = relative(sourceRoot, path).split(sep).join("/");
-      entries.push([local, bytes.length, sha256Bytes(bytes)]);
     }
   };
   await walk(sourceRoot, 0);
-  if (entries.length === 0) throw new Error("image-to-editable-pptx source tree is empty");
+  if (fileCount === 0) throw new Error("image-to-editable-pptx source tree is empty");
+  entries.sort((left, right) => left.relativePath < right.relativePath ? -1 : left.relativePath > right.relativePath ? 1 : 0);
+  return { root, entries, fileCount, totalBytes };
+}
+
+function sameEditableSourceEntry(left: EditableSourceEntrySnapshot, right: EditableSourceEntrySnapshot): boolean {
+  return left.absolutePath === right.absolutePath
+    && left.relativePath === right.relativePath
+    && left.kind === right.kind
+    && left.dev === right.dev
+    && left.ino === right.ino
+    && left.size === right.size
+    && left.mtimeNs === right.mtimeNs
+    && left.ctimeNs === right.ctimeNs;
+}
+
+function sameEditableSourceTopology(
+  left: EditableSourceTopologySnapshot,
+  right: EditableSourceTopologySnapshot,
+): boolean {
+  return sameEditableSourceEntry(left.root, right.root)
+    && left.fileCount === right.fileCount
+    && left.totalBytes === right.totalBytes
+    && left.entries.length === right.entries.length
+    && left.entries.every((entry, index) => sameEditableSourceEntry(entry, right.entries[index]!));
+}
+
+async function assertEditableSourceTopologyCurrent(
+  sourceRoot: string,
+  expected: EditableSourceTopologySnapshot,
+): Promise<void> {
+  let current: EditableSourceTopologySnapshot;
+  try {
+    current = await enumerateEditableSourceTopology(sourceRoot);
+  } catch (error) {
+    throw sourceTreeChanged(error);
+  }
+  if (!sameEditableSourceTopology(expected, current)) throw sourceTreeChanged();
+}
+
+export async function computeEditableSourceTreeIdentity(root: string) {
+  const sourceRoot = await requiredDirectory(
+    root,
+    join(root, "src"),
+    "image-to-editable-pptx source tree is missing",
+    "image-to-editable-pptx source tree is unsafe",
+  );
+  // This closes the bounded scan-window race; it is not an OS-level atomic
+  // snapshot with a later spawn, so callers still re-run it at each last boundary.
+  const initial = await enumerateEditableSourceTopology(sourceRoot);
+  const contents = new Map<string, { bytes: number; sha256: string }>();
+  for (const entry of initial.entries) {
+    if (entry.kind !== "file") continue;
+    const bytes = await readIdentityFile(entry.absolutePath, "image-to-editable-pptx source identity");
+    if (BigInt(bytes.length) !== entry.size) throw sourceTreeChanged();
+    contents.set(entry.relativePath, { bytes: bytes.length, sha256: sha256Bytes(bytes) });
+  }
+  await assertEditableSourceTopologyCurrent(sourceRoot, initial);
+  for (const entry of [...initial.entries].reverse()) {
+    if (entry.kind !== "file") continue;
+    let bytes: Buffer;
+    try {
+      bytes = await readIdentityFile(entry.absolutePath, "image-to-editable-pptx source identity");
+    } catch (error) {
+      throw sourceTreeChanged(error);
+    }
+    const expected = contents.get(entry.relativePath)!;
+    if (bytes.length !== expected.bytes || sha256Bytes(bytes) !== expected.sha256) throw sourceTreeChanged();
+  }
+  await assertEditableSourceTopologyCurrent(sourceRoot, initial);
+  const digestEntries = initial.entries.map((entry) => entry.kind === "directory"
+    ? ["directory", entry.relativePath] as const
+    : ["file", entry.relativePath, contents.get(entry.relativePath)!.bytes, contents.get(entry.relativePath)!.sha256] as const);
   return EditableSourceTreeIdentitySchema.parse({
     root: sourceRoot,
-    sha256: createHash("sha256").update(JSON.stringify(entries)).digest("hex"),
-    fileCount: entries.length,
-    totalBytes,
+    sha256: createHash("sha256").update(JSON.stringify(digestEntries)).digest("hex"),
+    fileCount: initial.fileCount,
+    totalBytes: initial.totalBytes,
   });
 }
 

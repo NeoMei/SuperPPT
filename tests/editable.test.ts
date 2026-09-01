@@ -1,3 +1,4 @@
+import { withSourceTreeScanRace } from "./helpers/source-tree-scan-race.js";
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
@@ -114,6 +115,17 @@ async function converterRoot(t: TestContext): Promise<string> {
   await writeFile(join(root, "src", "pipeline.ts"), 'function outputName(imagePath?: string): string { if (imagePath === undefined) return "slide-editable.pptx"; return `${imagePath}-editable.pptx`; }\nexport function buildSlide(imagePath?: string): string { return outputName(imagePath); }\n');
   await writeFile(join(root, "src", "export", "pptx.ts"), 'export async function exportPptx(element: any): Promise<void> { const pptx = new PptxGenConstructor(); const slide = pptx.addSlide(); slide.addImage({ objectName: "asset-background" }); slide.addText("", { objectName: `text-${element.id}` }); slide.addShape("", { objectName: `shape-${element.id}-${element.label}` }); slide.addImage({ objectName: `asset-${element.id}` }); await pptx.writeFile({ fileName: "out.pptx" }); }\n');
   return root;
+}
+
+const SCAN_BASELINE_SOURCE = "old-source\n";
+const SCAN_CHANGED_SOURCE = "new-source\n";
+
+async function converterScanRaceFiles(plugin: string): Promise<{ early: string; sentinel: string }> {
+  const early = join(plugin, "src", "aa-early.ts");
+  const sentinel = join(plugin, "src", "zz-sentinel.ts");
+  await writeFile(early, SCAN_BASELINE_SOURCE);
+  await writeFile(sentinel, "late scan sentinel\n");
+  return { early, sentinel };
 }
 
 async function resolvedDependencies(
@@ -1047,6 +1059,37 @@ test("project conversion reattests full workflow identity at the editable-input 
   assert.equal(preparationCalls, 0);
 });
 
+test("project conversion rejects a scan-window source replacement before editable-input execution", async (t) => {
+  const project = await readyProject(t);
+  const plugin = await converterRoot(t);
+  const { early, sentinel } = await converterScanRaceFiles(plugin);
+  const dependencies = await resolvedDependencies(t, plugin);
+  let raceEnabled = false;
+  let preparationCalls = 0;
+  await assert.rejects(withSourceTreeScanRace({
+    sourceRoot: join(plugin, "src"),
+    sentinelFile: sentinel,
+    enabled: () => raceEnabled,
+    beforeSourceRootRead: async () => writeFile(early, SCAN_BASELINE_SOURCE),
+    afterSentinelRead: async () => writeFile(early, SCAN_CHANGED_SOURCE),
+  }, () => strictConvertProjectPage({
+    ...project,
+    dependencies,
+    get prepareExecute() {
+      raceEnabled = true;
+      return async () => {
+        preparationCalls += 1;
+        throw new Error("preparation executed with a stale source-tree snapshot");
+      };
+    },
+    execute: async () => {
+      throw new Error("converter must not execute after workflow identity drift");
+    },
+    idFactory: () => "00000000-0000-4000-8000-000000000124",
+  })), /source tree.*changed.*snapshot|attestation.*current|identity changed/i);
+  assert.equal(preparationCalls, 0);
+});
+
 test("project conversion reattests editable identity at the final executor boundary", async (t) => {
   const project = await readyProject(t);
   const plugin = await converterRoot(t);
@@ -1069,6 +1112,38 @@ test("project conversion reattests editable identity at the final executor bound
     },
     idFactory: () => "00000000-0000-4000-8000-000000000123",
   }), /attestation.*current|dependency changed|identity changed/i);
+  assert.equal(converterCalls, 0);
+});
+
+test("project conversion rejects a scan-window source replacement before converter execution", async (t) => {
+  const project = await readyProject(t);
+  const plugin = await converterRoot(t);
+  const { early, sentinel } = await converterScanRaceFiles(plugin);
+  const dependencies = await resolvedDependencies(t, plugin);
+  let raceEnabled = false;
+  let converterCalls = 0;
+  await assert.rejects(withSourceTreeScanRace({
+    sourceRoot: join(plugin, "src"),
+    sentinelFile: sentinel,
+    enabled: () => raceEnabled,
+    beforeSourceRootRead: async () => writeFile(early, SCAN_BASELINE_SOURCE),
+    afterSentinelRead: async () => writeFile(early, SCAN_CHANGED_SOURCE),
+  }, () => strictConvertProjectPage({
+    ...project,
+    dependencies,
+    prepareExecute: async (_command, args) => {
+      await sharp(await readFile(args[1]!)).resize(1280, 720).png().toFile(args[2]!);
+      return { stdout: `  OK: ${args[2]} (1280x720 PNG, editable-converter input)\n`, stderr: "" };
+    },
+    get execute() {
+      raceEnabled = true;
+      return async () => {
+        converterCalls += 1;
+        throw new Error("converter executed with a stale source-tree snapshot");
+      };
+    },
+    idFactory: () => "00000000-0000-4000-8000-000000000125",
+  })), /source tree.*changed.*snapshot|attestation.*current|identity changed/i);
   assert.equal(converterCalls, 0);
 });
 
