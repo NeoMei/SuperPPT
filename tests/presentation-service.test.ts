@@ -91,14 +91,16 @@ test("owned adapter builds a three-page image/editable/image PPTX without Codex 
   assert.doesNotMatch(slides[2]!, /TITLE EDIT/);
 });
 
-test("SuperPPT presentation sources remain independent from Codex artifact runtime", async () => {
-  const paths = [
-    fileURLToPath(new URL("../src/deck/pptx.ts", import.meta.url)),
-    fileURLToPath(new URL("../src/deck/presentation-service.ts", import.meta.url)),
-    fileURLToPath(new URL("../scripts/test.ts", import.meta.url)),
-  ];
-  for (const path of paths) {
-    const source = await readFile(path, "utf8");
-    assert.doesNotMatch(source, /@oai\/artifact-tool|codex-primary-runtime|codex-runtimes|RUNTIME_NODE|RUNTIME_NODE_MODULES|RUNTIME_BIN_DIR/);
-  }
+async function assertIndependentSource(path: string): Promise<void> {
+  const source = await readFile(path, "utf8");
+  assert.doesNotMatch(source, /@oai\/artifact-tool|codex-primary-runtime|codex-runtimes|RUNTIME_NODE|RUNTIME_NODE_MODULES|RUNTIME_BIN_DIR/);
+}
+
+test("SuperPPT owned presentation-service source exists and is independent", async () => {
+  await assertIndependentSource(fileURLToPath(new URL("../src/deck/presentation-service.ts", import.meta.url)));
+});
+
+test("SuperPPT PPTX writer and test runner remain independent from Codex artifact runtime", async () => {
+  await assertIndependentSource(fileURLToPath(new URL("../src/deck/pptx.ts", import.meta.url)));
+  await assertIndependentSource(fileURLToPath(new URL("../scripts/test.ts", import.meta.url)));
 });
