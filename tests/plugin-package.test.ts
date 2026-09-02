@@ -157,11 +157,13 @@ test("runtime package and dependency authority expose only the two full-deck cap
   assert.deepEqual(Object.keys(pkg.dependencies).sort(), [
     "jszip",
     "koffi",
+    "pptxgenjs",
     "saxes",
     "sharp",
     "tsx",
     "zod",
   ]);
+  assert.equal(pkg.dependencies.pptxgenjs, "4.0.1");
   assert.equal(pkg.devDependencies.typescript, "^5.9.0");
   assert.deepEqual(contract.dependencies.map((entry: Record<string, unknown>) => entry.skill), [
     "ai-image-to-ppt",

@@ -9,6 +9,11 @@ export const pxToX = (px: number): number => px * SLIDE_WIDTH_PX / SOURCE_WIDTH_
 export const pxToY = (px: number): number => px * SLIDE_HEIGHT_PX / SOURCE_HEIGHT_PX;
 export const pxToPt = (px: number): number => px * 72 / 96;
 
+export const SLIDE_WIDTH_IN = 13.333;
+export const SLIDE_HEIGHT_IN = 7.5;
+export const pxToInchX = (px: number): number => px * SLIDE_WIDTH_IN / SLIDE_WIDTH_PX;
+export const pxToInchY = (px: number): number => px * SLIDE_HEIGHT_IN / SLIDE_HEIGHT_PX;
+
 export const position = (bbox: {
   x: number;
   y: number;

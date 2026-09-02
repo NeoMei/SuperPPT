@@ -741,11 +741,11 @@ test("removes the preview-bound confirm-delivery CLI in favor of exact complete-
   );
 });
 
-test("uses only injected workspace runtime paths and a platform PATH delimiter", async () => {
+test("delegates PPTX writing without workspace runtime paths", async () => {
   const source = await readFile(join(process.cwd(), "src", "deck", "pptx.ts"), "utf8");
   const tests = await readFile(join(process.cwd(), "tests", "deck.test.ts"), "utf8");
   assert.doesNotMatch(source, /\/Users\/neomei/);
   assert.doesNotMatch(tests, /\/Users\/neomei/);
-  assert.match(source, /delimiter/);
-  assert.doesNotMatch(source, /PATH:\s*`\$\{runtime\.binDir\}:\$\{/);
+  assert.doesNotMatch(source, /runtime|delimiter|PATH:/i);
+  assert.match(source, /return writePresentation\(pages, output, trustedRoot\);/);
 });
