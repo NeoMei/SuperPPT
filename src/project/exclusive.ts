@@ -37,13 +37,20 @@ function loadNativeRename(): NativeRename {
   }
   if (process.platform === "win32") {
     const system = koffi.load("kernel32.dll");
+    // MoveFileExW without the \\?\ long-path prefix cannot operate on paths that
+    // reach the MAX_PATH boundary, even when Node's own file APIs created them.
+    const longPath = (path: string): string => {
+      if (path.startsWith("\\\\?\\")) return path;
+      if (path.startsWith("\\\\")) return `\\\\?\\UNC${path.slice(1)}`;
+      return `\\\\?\\${path}`;
+    };
     const moveFileExclusive = system.func(
       "int __stdcall MoveFileExW(str16 source, str16 target, unsigned int flags)",
     ) as (source: string, target: string, flags: number) => number;
     const getLastError = system.func("unsigned int __stdcall GetLastError(void)") as () => number;
     let lastError = 0;
     nativeRename = (source, target) => {
-      const succeeded = moveFileExclusive(source, target, MOVEFILE_WRITE_THROUGH);
+      const succeeded = moveFileExclusive(longPath(source), longPath(target), MOVEFILE_WRITE_THROUGH);
       if (!succeeded) lastError = getLastError();
       return succeeded ? 0 : -1;
     };
