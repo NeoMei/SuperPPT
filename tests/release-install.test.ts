@@ -45,7 +45,7 @@ test("the release archive installs without dev dependencies and starts the real 
   const installedPackage = JSON.parse(await readFile(join(installedRoot, "package.json"), "utf8")) as {
     version: string;
   };
-  assert.equal(installedPackage.version, "0.1.0");
+  assert.equal(installedPackage.version, "0.1.1");
   await assert.rejects(
     execFileAsync("npm", ["run", "cli", "--", "release-smoke-invalid"], {
       cwd: installedRoot,

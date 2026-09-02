@@ -7,12 +7,12 @@
 | 项 | 状态 |
 | --- | --- |
 | 仓库 | https://github.com/NeoMei/SuperPPT （公开） |
-| Release | [SuperPPT v0.1.0](https://github.com/NeoMei/SuperPPT/releases/tag/v0.1.0)，2026-09-01 由 tag 工作流自动创建 |
-| 发布产物 | `superppt-0.1.0.tgz` + `SHA256SUMS`，校验和与 sigstore artifact attestation 均已验证通过 |
+| Release | [SuperPPT v0.1.1](https://github.com/NeoMei/SuperPPT/releases/tag/v0.1.1)（当前版本，含 Windows 修复）；历史版本 [v0.1.0](https://github.com/NeoMei/SuperPPT/releases/tag/v0.1.0) |
+| 发布产物 | `superppt-0.1.1.tgz` + `SHA256SUMS`，校验和与 sigstore artifact attestation 均已验证通过 |
 | main HEAD（本文撰写时） | `d4af86d fix: use platform-safe script names in test fixtures` |
 | 三平台 CI | ubuntu / macos / windows 全部通过（run 33549798960） |
 
-重要：`v0.1.0` tag 指向 `2923c07`，早于三个 Windows 修复提交。v0.1.0 的发布产物在 Windows 上存在 Style Lock 创建失败的问题（原因见第 5 节，修复已在 main）。macOS 不受影响。是否补发包含修复的 `v0.1.1` 是当前唯一的待决策事项。
+重要：`v0.1.0` tag 指向 `2923c07`，早于三个 Windows 修复提交，其产物在 Windows 上存在 Style Lock 创建失败的问题（原因见第 5 节）；`v0.1.1` 已包含全部修复，Windows 环境请使用 v0.1.1 或 main。macOS 两个版本均不受影响。
 
 ## 2. Windows 快速验证
 
@@ -70,7 +70,7 @@ npm run cli                # CLI 入口（tsx src/cli.ts）
 ## 6. 已知未处理事项
 
 - `tests/release-install.test.ts` 仍直接 `execFile("npm")`，在 Windows 手动运行 `npm run test:release-install` 会失败。该门禁只在 ubuntu 发布工作流执行，如需在 Windows 本地跑发布安装冒烟，可套用 `npm_execpath` 方案修复。
-- v0.1.0 发布产物不含 Windows 修复；待决策是否发 v0.1.1（版本号需联动 `package.json` / `package-lock.json` / `.codex-plugin/plugin.json` 及对应契约测试，然后按既有 tag 工作流发布）。
+- v0.1.0 发布产物不含 Windows 修复；v0.1.1 已按既有 tag 工作流补发并包含全部修复。
 
 ## 7. 架构与契约文档索引
 

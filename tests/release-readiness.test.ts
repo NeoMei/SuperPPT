@@ -19,14 +19,14 @@ async function verifyRelease(tag: string) {
 }
 
 test("release readiness authenticates the exact GitHub-only plugin publication contract", async () => {
-  const { stdout, stderr } = await verifyRelease("v0.1.0");
+  const { stdout, stderr } = await verifyRelease("v0.1.1");
 
   assert.equal(stderr, "");
   assert.deepEqual(JSON.parse(stdout), {
     ok: true,
     package: "superppt",
-    version: "0.1.0",
-    tag: "v0.1.0",
+    version: "0.1.1",
+    tag: "v0.1.1",
     repository: "https://github.com/NeoMei/SuperPPT",
     publication: "github-release",
     npmPublication: false,
@@ -37,9 +37,9 @@ test("release readiness authenticates the exact GitHub-only plugin publication c
 
 test("release readiness rejects a tag that does not exactly match the plugin version", async () => {
   await assert.rejects(
-    verifyRelease("v0.1.1"),
+    verifyRelease("v0.1.2"),
     (error: Error & { stderr?: string }) => {
-      assert.match(error.stderr ?? "", /release tag must be v0\.1\.0/);
+      assert.match(error.stderr ?? "", /release tag must be v0\.1\.1/);
       return true;
     },
   );

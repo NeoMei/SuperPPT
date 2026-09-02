@@ -1,6 +1,6 @@
 {
   "name": "superppt",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Create high-detail image-first PPTX decks and revise selected pages as editable slides.",
   "author": { "name": "NeoMei", "url": "https://github.com/NeoMei" },
   "homepage": "https://github.com/NeoMei/SuperPPT#readme",
