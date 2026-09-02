@@ -1323,7 +1323,7 @@ test("creates fresh durable conversion revisions without changing the previous c
     execute,
     idFactory: () => "00000000-0000-4000-8000-000000000104",
   });
-  assert.match(first.revisionRoot, /editable\/00000000-0000-4000-8000-000000000102\/00000000-0000-4000-8000-000000000103$/);
+  assert.match(first.revisionRoot, /editable[\/\\]00000000-0000-4000-8000-000000000102[\/\\]00000000-0000-4000-8000-000000000103$/);
   assert.notEqual(first.revisionRoot, second.revisionRoot);
   assert.deepEqual(await readFile(first.manifestPath), before);
   assert.deepEqual([(await sharp(join(first.revisionRoot, "source-1280x720.png")).metadata()).width, (await sharp(join(first.revisionRoot, "source-1280x720.png")).metadata()).height], [1280, 720]);

@@ -134,9 +134,12 @@ test("requires an injected host capability object and never infers local handoff
 });
 
 test("formats canonical absolute Chinese and space-containing PPTX paths as robust angle-bracket links", () => {
+  const canonicalDeckPath = process.platform === "win32"
+    ? "C:\\tmp\\中文 目录\\deck.pptx"
+    : "/tmp/中文 目录/deck.pptx";
   assert.equal(
-    formatLocalPptxLink("/tmp/中文 目录/deck.pptx", "演示 [终稿].pptx"),
-    "[演示 \\[终稿\\].pptx](</tmp/中文 目录/deck.pptx>)",
+    formatLocalPptxLink(canonicalDeckPath, "演示 [终稿].pptx"),
+    `[演示 \\[终稿\\].pptx](<${canonicalDeckPath}>)`,
   );
   for (const path of ["relative/deck.pptx", "/tmp/../tmp/deck.pptx", "/tmp/deck.pdf", "/tmp/bad>deck.pptx", "/tmp/bad\ndeck.pptx"]) {
     assert.throws(() => formatLocalPptxLink(path, "deck.pptx"), /absolute|canonical|pptx|unsafe|control|target/i, path);
@@ -165,7 +168,7 @@ test("manual commands return one clickable complete PPTX and adopt only saved-an
   assert.equal(prepared.mode, "manual");
   assert.equal(prepared.slideCount, project.slideIds.length);
   assert.equal(prepared.targetSlideId, project.slideIds[1]);
-  assert.match(prepared.absolutePath, /output\/deck-revisions\/.+\/deck\.pptx$/);
+  assert.match(prepared.absolutePath, /output[\/\\]deck-revisions[\/\\].+[\/\\]deck\.pptx$/);
   assert.equal(prepared.markdownLink, `[${prepared.linkLabel}](<${prepared.absolutePath}>)`);
   assert.equal(prepared.waitFor, "已保存并关闭");
 
