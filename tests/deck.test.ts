@@ -311,25 +311,34 @@ test("detects render replacement during its no-follow read", async (t) => {
   }), /changed while reading/);
 });
 
-test("requires injected artifact runtime paths and anchors PPTX output", async (t) => {
+test("assembles without Codex runtime and rejects output escaping the trusted root", async (t) => {
   const root = await directory(t);
   const render = await image(join(root, "page.png"), "#123456");
-  const runtime = process.env.RUNTIME_NODE;
+  const runtime = {
+    RUNTIME_NODE: process.env.RUNTIME_NODE,
+    RUNTIME_NODE_MODULES: process.env.RUNTIME_NODE_MODULES,
+    RUNTIME_BIN_DIR: process.env.RUNTIME_BIN_DIR,
+  };
   delete process.env.RUNTIME_NODE;
+  delete process.env.RUNTIME_NODE_MODULES;
+  delete process.env.RUNTIME_BIN_DIR;
   try {
+    await assembleDeck([
+      { id: "page", order: 0, mode: "image", render: render.path },
+    ], join(root, "one-page.pptx"), { trustedRoot: root });
+
+    const outside = await directory(t);
+    const redirect = join(root, "redirect");
+    await symlink(outside, redirect);
     await assert.rejects(assembleDeck([
       { id: "page", order: 0, mode: "image", render: render.path },
-    ], join(root, "missing-runtime.pptx"), { trustedRoot: root }), /RUNTIME_NODE is required/);
+    ], join(redirect, "escaped.pptx"), { trustedRoot: root }), /output escaped the trusted root/);
   } finally {
-    process.env.RUNTIME_NODE = runtime;
+    for (const [name, value] of Object.entries(runtime)) {
+      if (value === undefined) delete process.env[name];
+      else process.env[name] = value;
+    }
   }
-
-  const outside = await directory(t);
-  const redirect = join(root, "redirect");
-  await symlink(outside, redirect);
-  await assert.rejects(assembleDeck([
-    { id: "page", order: 0, mode: "image", render: render.path },
-  ], join(redirect, "escaped.pptx"), { trustedRoot: root }), /output escaped the trusted root/);
 });
 
 test("builds revision-bound initial acceptance with physical artifact hashes", async (t) => {
