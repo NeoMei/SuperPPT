@@ -1,5 +1,5 @@
 import { lstat, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
-import { dirname, isAbsolute, join, relative } from "node:path";
+import { basename, dirname, isAbsolute, join, relative } from "node:path";
 
 import JSZip from "jszip";
 import PptxGenJS from "pptxgenjs";
@@ -20,14 +20,17 @@ const dataUri = (bytes: Buffer, contentType: "image/png" | "image/jpeg"): string
 const color = (value: string): string => value.startsWith("#") ? value.slice(1) : value;
 
 function box(bbox: { x: number; y: number; width: number; height: number }) {
-  const tenthInch = (value: number): number => Math.round(value * 10) / 10;
   return {
-    x: tenthInch(pxToInchX(bbox.x)),
-    y: tenthInch(pxToInchY(bbox.y)),
-    w: tenthInch(pxToInchX(bbox.width)),
-    h: tenthInch(pxToInchY(bbox.height)),
+    x: pxToInchX(bbox.x),
+    y: pxToInchY(bbox.y),
+    w: pxToInchX(bbox.width),
+    h: pxToInchY(bbox.height),
   };
 }
+
+export type PresentationServiceOperations = {
+  beforePromotion?: (canonicalParent: string) => Promise<void> | void;
+};
 
 function serializeDefaultLanguage(source: string): string {
   return source.replace(/<a:defRPr\b([^>]*)>/g, (tag, attributes: string) => {
@@ -74,6 +77,7 @@ export async function writePresentation(
   pages: PptxPage[],
   output: string,
   trustedRoot?: string,
+  operations: PresentationServiceOperations = {},
 ): Promise<void> {
   if (!isAbsolute(output) || !output.endsWith(".pptx")) {
     throw new Error("PPTX output must be an absolute .pptx path");
@@ -94,6 +98,7 @@ export async function writePresentation(
 
   const temporary = await mkdtemp(join(canonicalParent, ".superppt-presentation-service-"));
   const staged = join(temporary, "deck.pptx");
+  const target = join(canonicalParent, basename(output));
   try {
     const Presentation = PptxGenJS as unknown as (typeof import("pptxgenjs"))["default"];
     const presentation = new Presentation();
@@ -162,7 +167,11 @@ export async function writePresentation(
 
     await presentation.writeFile({ fileName: staged, compression: true });
     await normalizeOwnedOoxml(staged);
-    await promoteExclusive(staged, output);
+    await operations.beforePromotion?.(canonicalParent);
+    if (await realpath(parent) !== canonicalParent) {
+      throw new Error("PPTX output parent changed after validation");
+    }
+    await promoteExclusive(staged, target);
   } finally {
     await rm(temporary, { recursive: true, force: true });
   }

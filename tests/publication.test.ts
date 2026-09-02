@@ -57,10 +57,11 @@ test("publishes one strict three-action complete-deck review boundary", () => {
 });
 
 test("runs portable verification on Linux, macOS, and Windows with Node 22.6", async () => {
-  const [workflow, verifier, contractVerifier] = await Promise.all([
+  const [workflow, verifier, contractVerifier, packageDocument] = await Promise.all([
     json(".github/workflows/ci.yml"),
     text("scripts/verify.sh"),
     text("scripts/verify-contract.mjs"),
+    json("package.json"),
   ]);
 
   assert.deepEqual(workflow.jobs.portable.strategy.matrix.os, [
@@ -79,6 +80,10 @@ test("runs portable verification on Linux, macOS, and Windows with Node 22.6", a
   assert.match(verifier, /git diff --check/);
   assert.doesNotMatch(verifier, /bash scripts\/verify\.sh/);
   assert.match(contractVerifier, /unfinished placeholders found/);
+  for (const required of ["tests/presentation-service.test.ts", "tests/deck.test.ts"]) {
+    assert.match(packageDocument.scripts["test:portable"], new RegExp(required.replace(".", "\\.")));
+    assert.match(packageDocument.scripts["test:portable:compiled"], new RegExp(`dist/${required.replace(/\.ts$/, ".js").replace(".", "\\.")}`));
+  }
 });
 
 test("documents only the verified V1 capabilities and editable boundary", async () => {

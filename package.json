@@ -34,11 +34,11 @@
   ],
   "scripts": {
     "test": "node --import tsx scripts/test.ts",
-    "test:portable": "node --import tsx --test tests/cli-input.test.ts tests/plugin-package.test.ts tests/publication.test.ts tests/release-readiness.test.ts tests/styles.test.ts tests/test-runtime.test.ts tests/trust-boundary.test.ts tests/workflow-contract.test.ts",
+    "test:portable": "node --import tsx --test tests/cli-input.test.ts tests/deck.test.ts tests/plugin-package.test.ts tests/presentation-service.test.ts tests/publication.test.ts tests/release-readiness.test.ts tests/styles.test.ts tests/test-runtime.test.ts tests/trust-boundary.test.ts tests/workflow-contract.test.ts",
     "lint:types": "tsc -p tsconfig.json --noEmit",
     "build": "tsc -p tsconfig.json",
     "test:compiled": "node --import tsx scripts/test.ts --compiled",
-    "test:portable:compiled": "node --experimental-detect-module --test dist/tests/cli-input.test.js dist/tests/plugin-package.test.js dist/tests/publication.test.js dist/tests/release-readiness.test.js dist/tests/styles.test.js dist/tests/test-runtime.test.js dist/tests/trust-boundary.test.js dist/tests/workflow-contract.test.js",
+    "test:portable:compiled": "node --experimental-detect-module --test dist/tests/cli-input.test.js dist/tests/deck.test.js dist/tests/plugin-package.test.js dist/tests/presentation-service.test.js dist/tests/publication.test.js dist/tests/release-readiness.test.js dist/tests/styles.test.js dist/tests/test-runtime.test.js dist/tests/trust-boundary.test.js dist/tests/workflow-contract.test.js",
     "verify:portable": "node scripts/verify-contract.mjs && npm run test:portable && npm run lint:types && npm run build && npm run test:portable:compiled && npm audit",
     "verify:full": "bash scripts/verify.sh",
     "test:release-install": "node scripts/run-release-install-smoke.mjs",

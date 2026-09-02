@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { readFile, mkdtemp, rm } from "node:fs/promises";
+import { access, mkdir, readFile, mkdtemp, rename, rm, symlink } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 import { join } from "node:path";
@@ -10,6 +10,8 @@ import JSZip from "jszip";
 import sharp from "sharp";
 
 import { createPresentation } from "../src/deck/pptx.js";
+import { pxToInchX, pxToInchY } from "../src/deck/geometry.js";
+import { writePresentation } from "../src/deck/presentation-service.js";
 
 async function directory(t: TestContext): Promise<string> {
   const root = await mkdtemp(join(tmpdir(), "superppt-presentation-service-"));
@@ -25,7 +27,7 @@ async function image(path: string, color: string): Promise<Buffer> {
 }
 
 function assertNear(actual: string, expected: number, label: string): void {
-  assert.ok(Math.abs(Number(actual) - expected) <= 2_000, `${label}: ${actual} ~= ${expected}`);
+  assert.ok(Math.abs(Number(actual) - expected) <= 2, `${label}: ${actual} ~= ${expected}`);
 }
 
 test("owned adapter builds a three-page image/editable/image PPTX without Codex runtime coupling", async (t) => {
@@ -52,7 +54,7 @@ test("owned adapter builds a three-page image/editable/image PPTX without Codex 
           cleanBackground: second,
           elements: [{
             kind: "text", id: "title", text: "TITLE EDIT",
-            bbox: { x: 77, y: 67, width: 614, height: 77 }, rotation: 0,
+            bbox: { x: 77.25, y: 67.5, width: 613.75, height: 76.25 }, rotation: 0,
             color: "#17324D", fontSizePx: 32, bold: true, align: "left", zIndex: 1,
           }],
         },
@@ -82,10 +84,10 @@ test("owned adapter builds a three-page image/editable/image PPTX without Codex 
   assert.ok(textShape, "text-title shape XML is present");
   const geometry = textShape!.match(/<a:off x="(\d+)" y="(\d+)"\/><a:ext cx="(\d+)" cy="(\d+)"\/>/);
   assert.ok(geometry, "text-title geometry is serialized");
-  assertNear(geometry![1]!, 0.8 * 914400, "x");
-  assertNear(geometry![2]!, 0.7 * 914400, "y");
-  assertNear(geometry![3]!, 6.4 * 914400, "width");
-  assertNear(geometry![4]!, 0.8 * 914400, "height");
+  assertNear(geometry![1]!, pxToInchX(77.25) * 914400, "x");
+  assertNear(geometry![2]!, pxToInchY(67.5) * 914400, "y");
+  assertNear(geometry![3]!, pxToInchX(613.75) * 914400, "width");
+  assertNear(geometry![4]!, pxToInchY(76.25) * 914400, "height");
   assert.match(textShape!, /<a:rPr[^>]*b="1"[^>]*sz="2400"/);
   assert.match(textShape!, /<a:srgbClr val="17324D"/i);
   assert.match(textShape!, /<a:pPr[^>]*algn="l"/);
@@ -95,6 +97,30 @@ test("owned adapter builds a three-page image/editable/image PPTX without Codex 
   assert.match(presentationXml, /<p:defaultTextStyle>[\s\S]*?lang="zh-CN"/);
   assert.match(slideMasterXml, /<p:txStyles>[\s\S]*?lang="zh-CN"/);
   assert.match(coreXml, /<dc:language>zh-CN<\/dc:language>/);
+});
+
+test("fails closed when a requested output parent is swapped after validation", async (t) => {
+  const root = await directory(t);
+  const physical = join(root, "physical");
+  const outside = await directory(t);
+  await mkdir(join(physical, "child"), { recursive: true });
+  await mkdir(join(outside, "child"));
+  const requested = join(root, "requested");
+  await symlink(physical, requested);
+  const bytes = await image(join(root, "page.png"), "#17324d");
+  const output = join(requested, "child", "race.pptx");
+
+  await assert.rejects(writePresentation([
+    { id: "race", bytes, contentType: "image/png" },
+  ], output, root, {
+    beforePromotion: async () => {
+      await rename(requested, `${requested}.validated`);
+      await symlink(outside, requested);
+    },
+  }), /output parent changed after validation/);
+
+  await assert.rejects(access(join(physical, "child", "race.pptx")));
+  await assert.rejects(access(join(outside, "child", "race.pptx")));
 });
 
 async function assertIndependentSource(path: string): Promise<void> {
