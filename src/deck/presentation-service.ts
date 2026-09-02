@@ -29,7 +29,16 @@ function box(bbox: { x: number; y: number; width: number; height: number }) {
   };
 }
 
-async function normalizeTextRunAttributes(path: string): Promise<void> {
+function serializeDefaultLanguage(source: string): string {
+  return source.replace(/<a:defRPr\b([^>]*)>/g, (tag, attributes: string) => {
+    if (/\slang="[^"]+"/.test(attributes)) {
+      return tag.replace(/\slang="[^"]+"/, ' lang="zh-CN"');
+    }
+    return `<a:defRPr lang="zh-CN"${attributes}>`;
+  });
+}
+
+async function normalizeOwnedOoxml(path: string): Promise<void> {
   const archive = await JSZip.loadAsync(await readFile(path));
   const slidePaths = Object.keys(archive.files).filter((name) => /^ppt\/slides\/slide\d+\.xml$/.test(name));
   for (const slidePath of slidePaths) {
@@ -42,6 +51,21 @@ async function normalizeTextRunAttributes(path: string): Promise<void> {
       if (!bold || !size) return tag;
       return `<a:rPr${bold}${size}${attributes.replace(bold, "").replace(size, "")}>`;
     }));
+  }
+  const defaultLanguagePaths = Object.keys(archive.files).filter((name) =>
+    name === "ppt/presentation.xml"
+      || /^ppt\/(?:slideMasters|notesMasters)\/[^/]+\.xml$/.test(name));
+  for (const languagePath of defaultLanguagePaths) {
+    const part = archive.file(languagePath);
+    if (!part) continue;
+    archive.file(languagePath, serializeDefaultLanguage(await part.async("string")));
+  }
+  const core = archive.file("docProps/core.xml");
+  if (core) {
+    const source = await core.async("string");
+    archive.file("docProps/core.xml", /<dc:language>[^<]*<\/dc:language>/.test(source)
+      ? source.replace(/<dc:language>[^<]*<\/dc:language>/, "<dc:language>zh-CN</dc:language>")
+      : source.replace("</cp:coreProperties>", "<dc:language>zh-CN</dc:language></cp:coreProperties>"));
   }
   await writeFile(path, await archive.generateAsync({ type: "nodebuffer", compression: "DEFLATE" }));
 }
@@ -82,7 +106,6 @@ export async function writePresentation(
       headFontFace: "Microsoft YaHei",
       bodyFontFace: "Microsoft YaHei",
     };
-    (presentation as unknown as { lang: string }).lang = "zh-CN";
 
     for (const [index, page] of pages.entries()) {
       const slide = presentation.addSlide();
@@ -138,7 +161,7 @@ export async function writePresentation(
     }
 
     await presentation.writeFile({ fileName: staged, compression: true });
-    await normalizeTextRunAttributes(staged);
+    await normalizeOwnedOoxml(staged);
     await promoteExclusive(staged, output);
   } finally {
     await rm(temporary, { recursive: true, force: true });

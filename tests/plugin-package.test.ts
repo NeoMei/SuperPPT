@@ -163,7 +163,13 @@ test("runtime package and dependency authority expose only the two full-deck cap
     "tsx",
     "zod",
   ]);
-  assert.equal(pkg.dependencies.pptxgenjs, "4.0.1");
+  assert.deepEqual({
+    jszip: pkg.dependencies.jszip,
+    pptxgenjs: pkg.dependencies.pptxgenjs,
+  }, {
+    jszip: "3.10.1",
+    pptxgenjs: "4.0.1",
+  });
   assert.equal(pkg.devDependencies.typescript, "^5.9.0");
   assert.deepEqual(contract.dependencies.map((entry: Record<string, unknown>) => entry.skill), [
     "ai-image-to-ppt",

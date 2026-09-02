@@ -71,6 +71,9 @@ test("owned adapter builds a three-page image/editable/image PPTX without Codex 
   const zip = await JSZip.loadAsync(bytes);
   const slides = await Promise.all([1, 2, 3].map(async (index) =>
     zip.file(`ppt/slides/slide${index}.xml`)!.async("string")));
+  const presentationXml = await zip.file("ppt/presentation.xml")!.async("string");
+  const slideMasterXml = await zip.file("ppt/slideMasters/slideMaster1.xml")!.async("string");
+  const coreXml = await zip.file("docProps/core.xml")!.async("string");
   assert.match(slides[0]!, /name="page-first"/);
   assert.match(slides[1]!, /name="background-second"/);
   assert.match(slides[1]!, /name="text-title"/);
@@ -89,6 +92,9 @@ test("owned adapter builds a three-page image/editable/image PPTX without Codex 
   assert.match(slides[2]!, /name="page-third"/);
   assert.doesNotMatch(slides[0]!, /TITLE EDIT/);
   assert.doesNotMatch(slides[2]!, /TITLE EDIT/);
+  assert.match(presentationXml, /<p:defaultTextStyle>[\s\S]*?lang="zh-CN"/);
+  assert.match(slideMasterXml, /<p:txStyles>[\s\S]*?lang="zh-CN"/);
+  assert.match(coreXml, /<dc:language>zh-CN<\/dc:language>/);
 });
 
 async function assertIndependentSource(path: string): Promise<void> {

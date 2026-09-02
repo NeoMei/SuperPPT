@@ -46,7 +46,7 @@
     "cli": "tsx src/cli.ts"
   },
   "dependencies": {
-    "jszip": "^3.10.1",
+    "jszip": "3.10.1",
     "koffi": "3.1.6",
     "pptxgenjs": "4.0.1",
     "saxes": "^6.0.0",
