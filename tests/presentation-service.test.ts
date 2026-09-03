@@ -7,11 +7,24 @@ import { fileURLToPath } from "node:url";
 import test, { type TestContext } from "node:test";
 
 import JSZip from "jszip";
+import PptxGenJS from "pptxgenjs";
 import sharp from "sharp";
 
 import { createPresentation } from "../src/deck/pptx.js";
 import { pxToInchX, pxToInchY } from "../src/deck/geometry.js";
-import { writePresentation } from "../src/deck/presentation-service.js";
+import {
+  resolvePresentationConstructor,
+  writePresentation,
+} from "../src/deck/presentation-service.js";
+
+test("resolves direct and nested pptxgenjs default exports", () => {
+  assert.equal(resolvePresentationConstructor(PptxGenJS), PptxGenJS);
+  assert.equal(resolvePresentationConstructor({ default: { default: PptxGenJS } }), PptxGenJS);
+  assert.throws(
+    () => resolvePresentationConstructor({ default: { default: {} } }),
+    /did not expose a presentation constructor/,
+  );
+});
 
 async function directory(t: TestContext): Promise<string> {
   const root = await mkdtemp(join(tmpdir(), "superppt-presentation-service-"));

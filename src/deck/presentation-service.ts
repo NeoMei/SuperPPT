@@ -32,6 +32,18 @@ export type PresentationServiceOperations = {
   beforePromotion?: (canonicalParent: string) => Promise<void> | void;
 };
 
+type PresentationConstructor = (typeof import("pptxgenjs"))["default"];
+
+export function resolvePresentationConstructor(value: unknown): PresentationConstructor {
+  let candidate = value;
+  for (let depth = 0; depth < 3; depth += 1) {
+    if (typeof candidate === "function") return candidate as unknown as PresentationConstructor;
+    if (!candidate || typeof candidate !== "object" || !("default" in candidate)) break;
+    candidate = (candidate as { default: unknown }).default;
+  }
+  throw new TypeError("pptxgenjs did not expose a presentation constructor");
+}
+
 function serializeDefaultLanguage(source: string): string {
   return source.replace(/<a:defRPr\b([^>]*)>/g, (tag, attributes: string) => {
     if (/\slang="[^"]+"/.test(attributes)) {
@@ -100,7 +112,7 @@ export async function writePresentation(
   const staged = join(temporary, "deck.pptx");
   const target = join(canonicalParent, basename(output));
   try {
-    const Presentation = PptxGenJS as unknown as (typeof import("pptxgenjs"))["default"];
+    const Presentation = resolvePresentationConstructor(PptxGenJS);
     const presentation = new Presentation();
     presentation.layout = "LAYOUT_WIDE";
     presentation.author = "SuperWagie PresentationService";
