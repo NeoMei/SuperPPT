@@ -6,6 +6,7 @@ import JSZip from "jszip";
 
 import { syncDirectory, writeDurableExclusive } from "../project/durable.js";
 import { withProjectLease } from "../project/lock.js";
+import { isSameOrAncestor } from "../project/paths.js";
 import { readRegularFileNoFollow } from "../project/safe-file.js";
 import { inspectLocalPptx } from "./inspect.js";
 import { scanOoxmlRanges, type OoxmlElementRange } from "./ooxml.js";
@@ -119,50 +120,50 @@ export async function publishInitialSlideIdentities(
   let projectRoot = pptxPath;
   for (let index = 0; index < 4; index += 1) projectRoot = dirname(projectRoot);
   return withProjectLease(projectRoot, "deck-identity", async (root) => {
-  const canonical = await realpath(pptxPath);
-  if (!canonical.startsWith(`${root}/`)) throw new Error("identity publication path escaped its owned project");
-  if (canonical !== pptxPath) throw new Error("identity publication requires a canonical PPTX path");
-  const info = await lstat(canonical);
-  if (info.isSymbolicLink() || !info.isFile()) throw new Error("identity publication requires a regular PPTX file");
-  const before = await inspectLocalPptx(canonical);
-  const ordered = [...slides].sort((left, right) => left.position - right.position);
-  if (
-    ordered.length !== before.slideCount
-    || ordered.some((slide, position) => slide.position !== position)
-    || new Set(ordered.map((slide) => slide.stableSlideId)).size !== ordered.length
-  ) throw new Error("initial slide identity list does not match the complete deck");
-  const used = new Set(before.slides.flatMap((slide) => slide.creationId === null ? [] : [slide.creationId]));
-  const assigned = before.slides.map((slide) => slide.creationId ?? allocateCreationId(used));
-  if (before.slides.some((slide) => slide.creationId === null)) {
-    const zip = await JSZip.loadAsync(await readRegularFileNoFollow(canonical));
-    for (const [position, slide] of before.slides.entries()) {
-      if (slide.creationId !== null) continue;
-      const file = zip.file(slide.slidePart);
-      if (!file) throw new Error("identity publication lost a slide part");
-      zip.file(slide.slidePart, injectCreationId(await file.async("string"), assigned[position]!));
+    const canonical = await realpath(pptxPath);
+    if (!isSameOrAncestor(root, canonical)) throw new Error("identity publication path escaped its owned project");
+    if (canonical !== pptxPath) throw new Error("identity publication requires a canonical PPTX path");
+    const info = await lstat(canonical);
+    if (info.isSymbolicLink() || !info.isFile()) throw new Error("identity publication requires a regular PPTX file");
+    const before = await inspectLocalPptx(canonical);
+    const ordered = [...slides].sort((left, right) => left.position - right.position);
+    if (
+      ordered.length !== before.slideCount
+      || ordered.some((slide, position) => slide.position !== position)
+      || new Set(ordered.map((slide) => slide.stableSlideId)).size !== ordered.length
+    ) throw new Error("initial slide identity list does not match the complete deck");
+    const used = new Set(before.slides.flatMap((slide) => slide.creationId === null ? [] : [slide.creationId]));
+    const assigned = before.slides.map((slide) => slide.creationId ?? allocateCreationId(used));
+    if (before.slides.some((slide) => slide.creationId === null)) {
+      const zip = await JSZip.loadAsync(await readRegularFileNoFollow(canonical));
+      for (const [position, slide] of before.slides.entries()) {
+        if (slide.creationId !== null) continue;
+        const file = zip.file(slide.slidePart);
+        if (!file) throw new Error("identity publication lost a slide part");
+        zip.file(slide.slidePart, injectCreationId(await file.async("string"), assigned[position]!));
+      }
+      const staged = join(dirname(canonical), `.deck-identity-${randomUUID()}.staging.pptx`);
+      await writeDurableExclusive(staged, await zip.generateAsync({ type: "nodebuffer" }));
+      try {
+        await inspectLocalPptx(staged);
+        await rename(staged, canonical);
+      } catch (error: unknown) {
+        await unlink(staged).catch(() => undefined);
+        throw error;
+      }
+      await syncDirectory(dirname(canonical));
     }
-    const staged = join(dirname(canonical), `.deck-identity-${randomUUID()}.staging.pptx`);
-    await writeDurableExclusive(staged, await zip.generateAsync({ type: "nodebuffer" }));
-    try {
-      await inspectLocalPptx(staged);
-      await rename(staged, canonical);
-    } catch (error: unknown) {
-      await unlink(staged).catch(() => undefined);
-      throw error;
+    const inspected = await inspectLocalPptx(canonical);
+    if (inspected.slides.some((slide, position) => slide.creationId !== assigned[position])) {
+      throw new Error("published slide identities did not survive PPTX validation");
     }
-    await syncDirectory(dirname(canonical));
-  }
-  const inspected = await inspectLocalPptx(canonical);
-  if (inspected.slides.some((slide, position) => slide.creationId !== assigned[position])) {
-    throw new Error("published slide identities did not survive PPTX validation");
-  }
-  return finalizeSlideTopology(inspected.slides.map((slide, position) => ({
-    stableSlideId: ordered[position]!.stableSlideId,
-    slidePart: slide.slidePart,
-    position,
-    management: "managed",
-    presentationSlideId: slide.presentationSlideId,
-    creationId: slide.creationId!,
-  })), []);
+    return finalizeSlideTopology(inspected.slides.map((slide, position) => ({
+      stableSlideId: ordered[position]!.stableSlideId,
+      slidePart: slide.slidePart,
+      position,
+      management: "managed",
+      presentationSlideId: slide.presentationSlideId,
+      creationId: slide.creationId!,
+    })), []);
   });
 }

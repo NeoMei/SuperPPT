@@ -39,11 +39,11 @@ npm run verify:full
 npm run test:release-install
 ```
 
-`verify:portable` 是 GitHub 公共 runner 的 Linux/macOS/Windows 门禁，不依赖 Codex 私有 workspace runtime。`verify:full` 必须在已注入 workspace runtime 的 Codex 主机运行，覆盖完整源码与编译测试；`test:release-install` 会真实打包、按 `--omit=dev` 安装并启动 CLI。发布前全部门禁都必须通过，公共 CI 不能用替身伪造 `@oai/artifact-tool`。
+`verify:portable` 是 GitHub 公共 runner 的 Linux/macOS/Windows 门禁。`verify:full` 同样可跨平台运行，并覆盖完整源码、编译产物、类型检查、构建和严格依赖审计；它使用仓库自有的 PPTX 服务，不依赖 Codex 私有 workspace runtime。`test:release-install` 会真实打包、按 `--omit=dev` 安装并启动 CLI。发布前全部门禁都必须通过。
 
-V1 只通过 GitHub/Codex 插件渠道发布，不发布 npm 包，`package.json` 因此保持 `private: true`。发布 tag 必须与插件版本完全一致（当前为 `v0.1.1`），tag commit 必须已在 `main`；tag workflow 会重新执行 portable gate、生成 `.tgz` 与 `SHA256SUMS`、写入 GitHub artifact provenance，并一次性创建 GitHub Release。
+V1 只通过 GitHub/Codex 插件渠道发布，不发布 npm 包，`package.json` 因此保持 `private: true`。发布 tag 必须与插件版本完全一致（当前为 `v0.1.2`），tag commit 必须已在 `main`；tag workflow 会重新执行 portable gate、生成 `.tgz` 与 `SHA256SUMS`、写入 GitHub artifact provenance，并一次性创建 GitHub Release。
 
-发布状态：v0.1.0 与 v0.1.1 均通过 tag workflow 创建 GitHub Release 并通过校验和与 artifact attestation 验证；npm 保持不发布。v0.1.0 产物构建于 Windows 修复合入前，Windows 环境请使用 v0.1.1 及以后版本，并参考 [Windows 交接与验证指南](docs/Windows交接与验证指南.md)。
+发布状态：v0.1.0、v0.1.1 与 v0.1.2 均通过 tag workflow 创建 GitHub Release，并由校验和与 artifact attestation 保护；npm 保持不发布。v0.1.0 产物构建于 Windows 修复合入前，Windows 环境请使用 v0.1.2，并参考 [Windows 交接与验证指南](docs/Windows交接与验证指南.md)。
 
 ## V1 限制
 

@@ -80,7 +80,9 @@ test("initializes the complete owned workspace and reopens it", async (t) => {
   );
   await Promise.all(DIRECTORIES.map((directory) => access(join(root, directory))));
   await assert.rejects(access(join(root, "previews")), { code: "ENOENT" });
-  assert.equal((await lstat(join(root, "superppt.json"))).mode & 0o777, 0o600);
+  if (process.platform !== "win32") {
+    assert.equal((await lstat(join(root, "superppt.json"))).mode & 0o777, 0o600);
+  }
 });
 
 test("generation authorization and complete-deck review stages accept authenticated evidence", async (t) => {

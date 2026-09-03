@@ -1,12 +1,13 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
-import { access, chmod, mkdir, mkdtemp, readFile, readdir, realpath, rename, rm, stat, symlink, unlink, utimes, writeFile } from "node:fs/promises";
+import { access, chmod, mkdir, mkdtemp, readFile, readdir, realpath, rm, stat, symlink, unlink, utimes, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test, { type TestContext } from "node:test";
 import { promisify } from "node:util";
 import sharp from "sharp";
 
+import { renameSafe } from "../src/project/exclusive.js";
 import { DeckReviewActionEvidenceSchema, DeckReviewDescriptorSchema } from "../src/acceptance/schema.js";
 import { GenerationAuthorizationPlanSchema } from "../src/generation/job-schemas.js";
 import {
@@ -255,7 +256,8 @@ async function projectFileNames(root: string): Promise<string[]> {
   const entries = await readdir(root, { recursive: true });
   const files: string[] = [];
   for (const entry of entries) {
-    if (!entry.startsWith(".superppt-leases/") && (await stat(join(root, entry))).isFile()) files.push(entry);
+    const portableEntry = entry.replaceAll("\\", "/");
+    if (!portableEntry.startsWith(".superppt-leases/") && (await stat(join(root, entry))).isFile()) files.push(entry);
   }
   return files.sort();
 }
@@ -431,7 +433,7 @@ test("fails closed when a Markdown pathname is swapped after its handle opens", 
   await assert.rejects(
     normalizeInput(root, { kind: "markdown", path: source }, {
       async afterSourceOpened() {
-        await rename(source, backup);
+        await renameSafe(source, backup);
         await writeFile(source, "replacement");
       },
     }),
@@ -886,7 +888,7 @@ test("fails closed when a fixed gate artifact is swapped after opening", async (
       async afterArtifactOpened(path) {
         if (!swapped && path === briefPath) {
           swapped = true;
-          await rename(briefPath, backup);
+          await renameSafe(briefPath, backup);
           await writeFile(briefPath, JSON.stringify(brief));
         }
       },
@@ -989,6 +991,10 @@ test("unique request leases prevent adversarial takeover and concurrent owners",
 });
 
 test("state lease contenders tolerate an atomic manifest promotion by the current owner", async (t) => {
+  if (process.platform === "win32") {
+    t.skip("Windows file locking prevents replacing open files");
+    return;
+  }
   const root = await project(t, "superppt-state-lease-promotion-");
   let announcePromotion!: () => void;
   const promotionStarted = new Promise<void>((resolve) => { announcePromotion = resolve; });
@@ -999,7 +1005,7 @@ test("state lease contenders tolerate an atomic manifest promotion by the curren
     promote: async (stagingPath, manifestPath) => {
       announcePromotion();
       await promotionReleased;
-      await rename(stagingPath, manifestPath);
+      await renameSafe(stagingPath, manifestPath);
     },
   });
   await promotionStarted;
@@ -1185,7 +1191,7 @@ test("lease snapshot bounds repeated pre-open promotions before reading content"
     }, {
       manifestRead: {
         afterPathStat: async () => {
-          await rename(replacements[promotions]!, manifestPath);
+          await renameSafe(replacements[promotions]!, manifestPath);
           promotions += 1;
         },
         afterOpen: async () => { contentReadStarted = true; },
@@ -1202,6 +1208,10 @@ test("lease snapshot bounds repeated pre-open promotions before reading content"
 });
 
 test("state lease contender tolerates promotion after opening the old manifest before its first stat", async (t) => {
+  if (process.platform === "win32") {
+    t.skip("Windows file locking prevents replacing open files");
+    return;
+  }
   const root = await project(t, "superppt-state-lease-pre-stat-promotion-");
   let announceOpened!: () => void;
   const fileOpened = new Promise<void>((resolve) => { announceOpened = resolve; });
@@ -1263,6 +1273,10 @@ test("lease authentication rejects an in-place manifest rewrite before publishin
 });
 
 test("state lease reauthenticates the current manifest after a mutated old inode is detached", async (t) => {
+  if (process.platform === "win32") {
+    t.skip("Windows file locking prevents replacing open files");
+    return;
+  }
   const root = await project(t, "superppt-state-lease-detached-rewrite-");
   const manifestPath = join(root, "superppt.json");
   const replacementPath = join(root, "invalid-manifest.json");
@@ -1281,7 +1295,7 @@ test("state lease reauthenticates the current manifest after a mutated old inode
       afterOpen: async () => {
         await writeFile(manifestPath, changed);
         await utimes(manifestPath, fixedTimestamp, fixedTimestamp);
-        await rename(replacementPath, manifestPath);
+        await renameSafe(replacementPath, manifestPath);
       },
     },
   }), /not owned/i);

@@ -1,18 +1,18 @@
 # SuperPPT Windows 交接与验证指南
 
-更新日期：2026-09-02。本文面向在 Windows 机器上接手 SuperPPT 验证与后续开发的同学，说明当前发布状态、可执行的验证步骤、测试能力边界，以及 Windows 相关修复的背景。
+更新日期：2026-09-03。本文面向在 Windows 机器上接手 SuperPPT 验证与后续开发的同学，说明当前发布状态、可执行的验证步骤、测试能力边界，以及 Windows 相关修复的背景。
 
 ## 1. 当前发布状态
 
 | 项 | 状态 |
 | --- | --- |
 | 仓库 | https://github.com/NeoMei/SuperPPT （公开） |
-| Release | [SuperPPT v0.1.1](https://github.com/NeoMei/SuperPPT/releases/tag/v0.1.1)（当前版本，含 Windows 修复）；历史版本 [v0.1.0](https://github.com/NeoMei/SuperPPT/releases/tag/v0.1.0) |
-| 发布产物 | `superppt-0.1.1.tgz` + `SHA256SUMS`，校验和与 sigstore artifact attestation 均已验证通过 |
-| main HEAD（本文撰写时） | `d4af86d fix: use platform-safe script names in test fixtures` |
-| 三平台 CI | ubuntu / macos / windows 全部通过（run 33549798960） |
+| Release | [SuperPPT v0.1.2](https://github.com/NeoMei/SuperPPT/releases/tag/v0.1.2)（当前版本）；历史版本 [v0.1.1](https://github.com/NeoMei/SuperPPT/releases/tag/v0.1.1)、[v0.1.0](https://github.com/NeoMei/SuperPPT/releases/tag/v0.1.0) |
+| 发布产物 | `superppt-0.1.2.tgz` + `SHA256SUMS`，由 tag workflow 生成校验和与 sigstore artifact attestation |
+| 上游 main HEAD（本文复核时） | `v0.1.2` tag commit |
+| 三平台 CI | ubuntu / macos / windows 均为发布门禁 |
 
-重要：`v0.1.0` tag 指向 `2923c07`，早于三个 Windows 修复提交，其产物在 Windows 上存在 Style Lock 创建失败的问题（原因见第 5 节）；`v0.1.1` 已包含全部修复，Windows 环境请使用 v0.1.1 或 main。macOS 两个版本均不受影响。
+重要：`v0.1.0` tag 指向 `2923c07`，早于三个 Windows 修复提交，其产物在 Windows 上存在 Style Lock 创建失败的问题（原因见第 5 节）；`v0.1.1` 已包含首轮修复，`v0.1.2` 进一步加入完整 Windows 原子发布、跨平台全量门禁和依赖审计。Windows 环境请使用 v0.1.2 或 main。
 
 ## 2. Windows 快速验证
 
@@ -25,7 +25,7 @@ npm ci
 npm run verify:portable
 ```
 
-预期结果：源码测试 100/100、编译产物测试 100/100、`tsc` 类型检查、构建、`npm audit`（0 漏洞）全部通过。这与 GitHub CI 在 windows-latest 上执行的命令完全一致。
+预期结果：源码测试、编译产物测试、`tsc` 类型检查、构建和严格依赖审计全部通过。这与 GitHub CI 在 windows-latest 上执行的命令完全一致。依赖审计仅临时接受 PptxGenJS 4.0.1 的未使用 `image-size` 声明所带来的两个无可安装修复版本的公告；该例外绑定精确版本、验证发布代码不可达，并于 2026-10-03 到期复审。任何新增公告或依赖变化都会失败。
 
 注意：请直接在 `main` 上验证。不要 checkout `v0.1.0` tag 做验证——那个提交不含 Windows 修复，Style Lock 相关的 4 个测试会失败。
 
@@ -36,19 +36,19 @@ npm run verify:portable
 | 门禁 | 能否运行 | 说明 |
 | --- | --- | --- |
 | `npm run verify:portable` | 可以 | 三平台 CI 同款门禁，无外部环境依赖 |
-| `npm run verify:full` | 不行 | 依赖 Codex 私有 workspace runtime（`@oai/artifact-tool` 等），仅在 Codex 主机可用；完整源码/编译 636 项测试已在 macOS Codex 主机通过两轮 |
-| 真实端到端（生成 PPT → WPS 编辑） | 需额外环境 | 需要 Codex/Agent 宿主、本地 `ai-image-to-ppt` 与 `image-to-editable-pptx` 依赖、WPS Office；便携套件全部使用 fixture，从不调用真实提供者 |
-| `npm run test:release-install` | 不建议 | 该门禁设计为发布工作流（ubuntu）专用；其 `execFile("npm")` 调用方式在 Windows 上有已知兼容问题（见第 6 节） |
+| `npm run verify:full` | 可以 | 使用仓库自有 PPTX 服务，完整执行源码测试、编译测试、类型检查、构建、依赖审计和 diff 检查；命令本身已改为跨平台，不再要求 Bash 或私有 workspace runtime |
+| 真实端到端（生成 PPT → WPS 编辑） | 分阶段可行 | SuperPPT 组装、editable 转换和 WPS 编辑可在 Windows 原生运行；`ai-image-to-ppt` 的生成/host-image import 为保持 no-follow、目录描述符和硬链接发布保证而在非 POSIX 平台 fail closed，生成阶段需在 WSL/Linux/macOS 完成。便携套件不调用付费提供者 |
+| `npm run test:release-install` | 可以 | 真实打包、仅生产依赖安装和 CLI 启动冒烟；通过当前 Node 与 `npm_execpath` 调用 npm，兼容 Windows。 |
 
 ## 4. 常用命令速查
 
-```bash
+```powershell
 npm run verify:portable    # 便携门禁（Windows 可用）
-npm run verify:full        # 完整运行时门禁（仅 Codex 主机）
+npm run verify:full        # 完整跨平台门禁
 npm run test:portable      # 仅便携测试
 npm run lint:types         # 类型检查
 npm run build              # 构建 dist/
-npm run release:check      # 发布契约检查（版本/tag/工作流绑定）
+npm run release:check -- --root "$($PWD.Path)" --tag v0.1.2  # 发布契约检查（版本/tag/工作流绑定）
 npm run cli                # CLI 入口（tsx src/cli.ts）
 ```
 
@@ -69,8 +69,8 @@ npm run cli                # CLI 入口（tsx src/cli.ts）
 
 ## 6. 已知未处理事项
 
-- `tests/release-install.test.ts` 仍直接 `execFile("npm")`，在 Windows 手动运行 `npm run test:release-install` 会失败。该门禁只在 ubuntu 发布工作流执行，如需在 Windows 本地跑发布安装冒烟，可套用 `npm_execpath` 方案修复。
-- v0.1.0 发布产物不含 Windows 修复；v0.1.1 已按既有 tag 工作流补发并包含全部修复。
+- v0.1.0 发布产物不含 Windows 修复；Windows 环境应使用 v0.1.2。
+- `ai-image-to-ppt` 的生成和 host-image import 原生 Windows 不受支持，这是其已声明的安全边界；可在 Windows 运行 `python scripts/run_windows_tests.py` 验证 export、editable-input preparation、routing、recovery、validation 和 vision-check 等受支持能力。
 
 ## 7. 架构与契约文档索引
 

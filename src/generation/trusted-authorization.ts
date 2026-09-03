@@ -9,6 +9,7 @@ import { z } from "zod";
 import type { GateSnapshotDescriptor } from "../project/evidence.js";
 import { syncDirectory } from "../project/durable.js";
 import { promoteExclusive } from "../project/exclusive.js";
+import { canonicalPotential } from "../project/paths.js";
 import { readOwnedRegularFile } from "../project/safe-file.js";
 import { readProject, readProjectForTrustedAuthorization } from "../project/store.js";
 import {
@@ -592,7 +593,12 @@ async function trustConfiguration(projectRoot: string): Promise<TestTrustConfigu
     if (!isAbsolute(environmentRoot)) throw new Error("SUPERPPT_AUTHORIZATION_TRUST_ROOT must be absolute");
     return { root: resolve(environmentRoot), deterministicKeySeed: "", operations: undefined };
   }
-  return { root: defaultTrustRoot(), deterministicKeySeed: "", operations: undefined };
+  const root = defaultTrustRoot();
+  return {
+    root: process.platform === "win32" ? await canonicalPotential(root) : root,
+    deterministicKeySeed: "",
+    operations: undefined,
+  };
 }
 
 async function assertNoSymlinkComponents(path: string): Promise<void> {
@@ -649,7 +655,8 @@ async function ensurePrivateDirectory(path: string): Promise<string> {
   }
   await assertNoSymlinkComponents(absolute);
   const info = await lstat(absolute);
-  if (info.isSymbolicLink() || !info.isDirectory() || await realpath(absolute) !== absolute) {
+  const canonical = await realpath(absolute);
+  if (info.isSymbolicLink() || !info.isDirectory() || canonical !== absolute) {
     throw new Error("trusted authorization directory is unsafe");
   }
   if (process.platform !== "win32" && (info.mode & 0o777) !== 0o700) {

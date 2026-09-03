@@ -1,8 +1,9 @@
 import { randomUUID } from "node:crypto";
-import { lstat, mkdir, readdir, rename, stat } from "node:fs/promises";
+import { lstat, mkdir, readdir, stat } from "node:fs/promises";
 import { join } from "node:path";
 
 import { syncDirectory, writeDurableExclusive } from "./durable.js";
+import { renameSafe } from "./exclusive.js";
 import { validateProjectRoot } from "./paths.js";
 import {
   readRegularFileNoFollow,
@@ -162,7 +163,7 @@ async function archiveStale(leaseRoot: string, staleAfterMs: number): Promise<vo
   for (const entry of await entries(leaseRoot)) {
     if (!isStale(entry, staleAfterMs)) continue;
     const staleName = entry.name.replace(/\.(pending|active)\.json$/, ".stale.json");
-    await rename(join(leaseRoot, entry.name), join(leaseRoot, staleName)).catch((error: unknown) => {
+    await renameSafe(join(leaseRoot, entry.name), join(leaseRoot, staleName)).catch((error: unknown) => {
       if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
     });
   }
@@ -209,7 +210,7 @@ export async function withProjectLease<T>(
       const pending = available.filter((entry) => entry.status === "pending").sort(compareRequests);
       if (pending[0]?.request?.id === id && pending[0].request.token === token) {
         const activeName = `${id}.active.json`;
-        await rename(join(leaseRoot, requestName), join(leaseRoot, activeName));
+        await renameSafe(join(leaseRoot, requestName), join(leaseRoot, activeName));
         requestName = activeName;
         await syncDirectory(leaseRoot);
         continue;
@@ -217,7 +218,7 @@ export async function withProjectLease<T>(
     }
     if (Date.now() - startedAt >= waitTimeoutMs) {
       const timedOut = `${id}.timed-out.json`;
-      await rename(join(leaseRoot, requestName), join(leaseRoot, timedOut)).catch(() => undefined);
+      await renameSafe(join(leaseRoot, requestName), join(leaseRoot, timedOut)).catch(() => undefined);
       await syncDirectory(leaseRoot);
       throw new Error(`project ${leaseName} lease timed out`);
     }
@@ -240,7 +241,7 @@ export async function withProjectLease<T>(
     return result;
   } finally {
     const finalName = `${id}.${succeeded ? "completed" : "failed"}.json`;
-    await rename(join(leaseRoot, requestName), join(leaseRoot, finalName));
+    await renameSafe(join(leaseRoot, requestName), join(leaseRoot, finalName));
     await syncDirectory(leaseRoot);
   }
 }

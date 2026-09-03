@@ -1,6 +1,6 @@
 {
   "name": "superppt",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "Create high-detail image-first PPTX decks with versioned planning and editable page revisions.",
   "author": {
     "name": "NeoMei",
@@ -39,8 +39,9 @@
     "build": "tsc -p tsconfig.json",
     "test:compiled": "node --import tsx scripts/test.ts --compiled",
     "test:portable:compiled": "node --experimental-detect-module --test dist/tests/cli-input.test.js dist/tests/deck.test.js dist/tests/plugin-package.test.js dist/tests/presentation-service.test.js dist/tests/publication.test.js dist/tests/release-readiness.test.js dist/tests/styles.test.js dist/tests/test-runtime.test.js dist/tests/trust-boundary.test.js dist/tests/workflow-contract.test.js",
-    "verify:portable": "node scripts/verify-contract.mjs && npm run test:portable && npm run lint:types && npm run build && npm run test:portable:compiled && npm audit",
-    "verify:full": "bash scripts/verify.sh",
+    "verify:portable": "node scripts/verify-contract.mjs && npm run test:portable && npm run lint:types && npm run build && npm run test:portable:compiled && npm run audit:dependencies",
+    "audit:dependencies": "node scripts/audit-dependencies.mjs",
+    "verify:full": "node scripts/verify-full.mjs",
     "test:release-install": "node scripts/run-release-install-smoke.mjs",
     "release:check": "node scripts/verify-release.mjs",
     "cli": "tsx src/cli.ts"

@@ -1262,7 +1262,7 @@ test("fails closed if revisions is swapped to a symlink during pending, snapshot
   t.after(async () => rm(applyOutside, { recursive: true, force: true }));
   await assert.rejects(applyRevision(applyRoot, plan, plan.change, {
     operations: { afterRevisionsDirectoryOpened: () => swapRevisions(applyRoot, applyOutside) },
-  }), /changed while accessing revision evidence|immutable artifact evidence|missing.*unsafe|ENOTDIR/);
+  }), /changed while accessing revision evidence|immutable artifact evidence|missing.*unsafe|ENOTDIR|reparse point/);
   assert.deepEqual(await readFile(join(applyOutside, "superppt.json"), "utf8").catch(() => null), null);
 
   const rollbackRoot = await project(t, "superppt-rollback-read-race-");

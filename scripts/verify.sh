@@ -9,4 +9,5 @@ npm test
 npm run lint:types
 npm run build
 npm run test:compiled
+npm run audit:dependencies
 git diff --check

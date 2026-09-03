@@ -3477,17 +3477,18 @@ test("delegation CLI admits an exact immutable job tuple and settles its private
     switches: [],
   }), { mode: 0o600 });
 
-  await chmod(resultPath, 0o644);
-  await assert.rejects(invoke([
-    "record-image-result",
-    "--project", fixture.root,
-    "--job", jobPath,
-    "--result", resultPath,
-    "--route-report", reportPath,
-  ]), /result file must be private \(mode 0600\)/);
-  assert.equal((await readCallLedger(fixture.root)).at(-1)?.entryKind, "admission");
-
-  await chmod(resultPath, 0o600);
+  if (process.platform !== "win32") {
+    await chmod(resultPath, 0o644);
+    await assert.rejects(invoke([
+      "record-image-result",
+      "--project", fixture.root,
+      "--job", jobPath,
+      "--result", resultPath,
+      "--route-report", reportPath,
+    ]), /result file must be private \(mode 0600\)/);
+    assert.equal((await readCallLedger(fixture.root)).at(-1)?.entryKind, "admission");
+    await chmod(resultPath, 0o600);
+  }
   const recorded = await invoke([
     "record-image-result",
     "--project", fixture.root,

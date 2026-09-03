@@ -56,10 +56,10 @@ test("publishes one strict three-action complete-deck review boundary", () => {
   }), /unrecognized/i);
 });
 
-test("runs portable verification on Linux, macOS, and Windows with Node 22.6", async () => {
+test("runs portable and full verification cross-platform with Node 22.6", async () => {
   const [workflow, verifier, contractVerifier, packageDocument] = await Promise.all([
     json(".github/workflows/ci.yml"),
-    text("scripts/verify.sh"),
+    text("scripts/verify-full.mjs"),
     text("scripts/verify-contract.mjs"),
     json("package.json"),
   ]);
@@ -72,13 +72,13 @@ test("runs portable verification on Linux, macOS, and Windows with Node 22.6", a
   assert.equal(workflow.jobs.portable.steps[1].with["node-version"], "22.6.0");
   assert.ok(workflow.jobs.portable.steps.some((step: { run?: string }) => step.run === "npm run verify:portable"));
   assert.ok(workflow.jobs.portable.steps.every((step: { run?: string }) => step.run !== "bash scripts/verify.sh"));
-  assert.match(verifier, /node scripts\/verify-contract\.mjs/);
-  assert.match(verifier, /npm test/);
-  assert.match(verifier, /npm run lint:types/);
-  assert.match(verifier, /npm run build/);
-  assert.match(verifier, /npm run test:compiled/);
-  assert.match(verifier, /git diff --check/);
+  assert.match(verifier, /verify-contract\.mjs/);
+  for (const command of ["test", "lint:types", "build", "test:compiled", "audit:dependencies"]) {
+    assert.match(verifier, new RegExp(`"${command.replace(":", "\\:")}"`));
+  }
+  assert.match(verifier, /"git", \["diff", "--check"\]/);
   assert.doesNotMatch(verifier, /bash scripts\/verify\.sh/);
+  assert.equal(packageDocument.scripts["verify:full"], "node scripts/verify-full.mjs");
   assert.match(contractVerifier, /unfinished placeholders found/);
   for (const required of ["tests/presentation-service.test.ts", "tests/deck.test.ts"]) {
     assert.match(packageDocument.scripts["test:portable"], new RegExp(required.replace(".", "\\.")));

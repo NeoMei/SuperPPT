@@ -460,7 +460,7 @@ test("assembles a review-only candidate and promotes it only after exact deck re
   const afterCandidate = await readProject(fixture.root);
   assert.deepEqual(afterCandidate.exports, before.exports);
   assert.equal(afterCandidate.outputRevisions?.length ?? 0, 0);
-  assert.match(candidate.destination, /output\/candidates\/[0-9a-f-]{36}$/);
+  assert.match(candidate.destination, /output[\\/]candidates[\\/][0-9a-f-]{36}$/);
   assert.ok(Object.values(candidate.artifacts).every(({ path }) => path.startsWith(`output/candidates/${candidate.candidateId}/`)));
 
   const review = await publishDeckReview(fixture.root, candidate.candidateId);
@@ -480,7 +480,7 @@ test("assembles a review-only candidate and promotes it only after exact deck re
   assert.ok(action.delivery);
   const delivery = action.delivery;
   assert.equal(delivery.revisionNumber, 1);
-  assert.match(delivery.destination, /output\/revisions\/1$/);
+  assert.match(delivery.destination, /output[\\/]revisions[\\/]1$/);
   assert.deepEqual((await readProject(fixture.root)).exports, delivery.artifacts);
 });
 

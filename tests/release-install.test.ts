@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
+import type { ExecFileOptionsWithStringEncoding } from "node:child_process";
 import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -8,6 +9,15 @@ import { promisify } from "node:util";
 
 const execFileAsync = promisify(execFile);
 const enabled = process.env.SUPERPPT_RELEASE_SMOKE === "1";
+
+function runNpm(
+  arguments_: string[],
+  options: ExecFileOptionsWithStringEncoding,
+) {
+  const npmExecPath = process.env.npm_execpath;
+  if (!npmExecPath) throw new Error("release install smoke requires npm_execpath");
+  return execFileAsync(process.execPath, [npmExecPath, ...arguments_], options);
+}
 
 test("the release archive installs without dev dependencies and starts the real CLI", {
   skip: enabled ? false : "release archive smoke is an explicit release gate",
@@ -27,7 +37,7 @@ test("the release archive installs without dev dependencies and starts the real 
   delete npmEnvironment.NPM_CONFIG_ALLOW_SCRIPTS;
   delete npmEnvironment.npm_config_allow_scripts;
 
-  const packed = await execFileAsync("npm", ["pack", "--pack-destination", archiveDirectory, "--json"], {
+  const packed = await runNpm(["pack", "--pack-destination", archiveDirectory, "--json"], {
     cwd: process.cwd(),
     env: npmEnvironment,
     maxBuffer: 4 * 1024 * 1024,
@@ -35,7 +45,7 @@ test("the release archive installs without dev dependencies and starts the real 
   const [{ filename }] = JSON.parse(packed.stdout) as Array<{ filename: string }>;
   const archive = join(archiveDirectory, filename);
   await writeFile(join(consumer, "package.json"), `${JSON.stringify({ private: true }, null, 2)}\n`);
-  await execFileAsync("npm", ["install", "--omit=dev", archive], {
+  await runNpm(["install", "--omit=dev", archive], {
     cwd: consumer,
     env: npmEnvironment,
     maxBuffer: 4 * 1024 * 1024,
@@ -45,9 +55,9 @@ test("the release archive installs without dev dependencies and starts the real 
   const installedPackage = JSON.parse(await readFile(join(installedRoot, "package.json"), "utf8")) as {
     version: string;
   };
-  assert.equal(installedPackage.version, "0.1.1");
+  assert.equal(installedPackage.version, "0.1.2");
   await assert.rejects(
-    execFileAsync("npm", ["run", "cli", "--", "release-smoke-invalid"], {
+    runNpm(["run", "cli", "--", "release-smoke-invalid"], {
       cwd: installedRoot,
       env: {
         ...npmEnvironment,

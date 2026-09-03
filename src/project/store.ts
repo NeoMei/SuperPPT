@@ -1,9 +1,10 @@
 import { createHash, randomUUID } from "node:crypto";
-import { lstat, readFile, readdir, realpath, rename } from "node:fs/promises";
+import { lstat, readFile, readdir, realpath } from "node:fs/promises";
 import { join } from "node:path";
 import { z } from "zod";
 
 import { syncDirectory, writeDurableExclusive } from "./durable.js";
+import { renameSafe } from "./exclusive.js";
 import {
   sha256Evidence,
   validateCurrentPresentationBinding,
@@ -663,7 +664,7 @@ async function persistProject(
     () => operations.checkpoint?.("staged-written", staging),
   );
   await operations.checkpoint?.("staged-synced", staging);
-  await (operations.promote ?? rename)(staging, target);
+  await (operations.promote ?? renameSafe)(staging, target);
   await operations.checkpoint?.("manifest-promoted", staging);
   await syncDirectory(owned.root);
   await operations.checkpoint?.("parent-synced", staging);
