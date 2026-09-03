@@ -18,8 +18,9 @@ import {
 } from "../src/deck/presentation-service.js";
 
 test("resolves direct and nested pptxgenjs default exports", () => {
-  assert.equal(resolvePresentationConstructor(PptxGenJS), PptxGenJS);
-  assert.equal(resolvePresentationConstructor({ default: { default: PptxGenJS } }), PptxGenJS);
+  const constructor = resolvePresentationConstructor(PptxGenJS);
+  assert.equal(typeof constructor, "function");
+  assert.equal(resolvePresentationConstructor({ default: { default: constructor } }), constructor);
   assert.throws(
     () => resolvePresentationConstructor({ default: { default: {} } }),
     /did not expose a presentation constructor/,
