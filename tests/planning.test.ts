@@ -33,7 +33,7 @@ import { readProject, updateProject, writeProject } from "../src/project/store.j
 import { applyRevision, approveImpact, publishImpactPlan } from "../src/revisions/apply.js";
 import { authenticateStyleSelection } from "../src/styles/selection.js";
 import { StyleSampleSelectionSchema } from "../src/styles/schemas.js";
-import { canonicalJson, createProvisionalStyleLock } from "../src/styles/style-lock.js";
+import { canonicalJson, createProvisionalStyleLock, readStyleLock } from "../src/styles/style-lock.js";
 import { writeCanonicalStyleSample } from "./helpers/style-sample.js";
 import { finalizeDelegatedStyleSampleForTest } from "./helpers/delegated-style-sample.js";
 
@@ -1837,4 +1837,5 @@ test("CLI publishes authoritative style evidence before the existing approval ga
   await run(["publish-style-sample", "--project", root]);
   await run(["approve", "--project", root, "--gate", "style-sample"]);
   assert.equal(await assertGateCurrent(root, "style-sample"), true);
+  assert.equal((await readStyleLock(root)).approvalState, "approved");
 });

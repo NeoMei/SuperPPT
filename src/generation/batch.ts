@@ -23,6 +23,7 @@ import { type ImageGenerationJob } from "./job-schemas.js";
 import { withGenerationLease } from "./lease.js";
 import { assertJobAuthorized, assertRegeneratedSlideJobBinding, prepareImageGenerationJob, readImageGenerationJob } from "./jobs.js";
 import { type ImagePageResult } from "./schemas.js";
+import { assertTrustedGenerationAuthorizationCurrent } from "./trusted-authorization.js";
 
 const DeckGateSchema = z.enum(["outline", "slide-specs", "style-sample", "generation-authorization"]);
 const QualityCorrectionSchema = z.object({
@@ -89,6 +90,22 @@ async function assertCurrentDeckGates(root: string): Promise<void> {
   }
 }
 
+async function jobAuthorizationSuperseded(root: string, job: ImageGenerationJob): Promise<boolean> {
+  if (job.kind === "style-sample" || !job.authorizationTrust) return false;
+  try {
+    await assertTrustedGenerationAuthorizationCurrent(
+      root,
+      job.authorizationTrust,
+      job.authorizationPlan,
+      job.authorizationGate,
+    );
+    return false;
+  } catch (error: unknown) {
+    if (error instanceof Error && error.message === "trusted authorization is not the external current approval") return true;
+    throw error;
+  }
+}
+
 async function currentGenerationJobs(root: string): Promise<ImageGenerationJob[]> {
   let entries;
   try {
@@ -108,6 +125,7 @@ async function currentGenerationJobs(root: string): Promise<ImageGenerationJob[]
     const manifest = await readProject(root);
     if (job.projectRevisionId !== manifest.currentRevision.id) continue;
     await assertJobAuthorized(root, job);
+    if (await jobAuthorizationSuperseded(root, job)) continue;
     jobs.push(job);
   }
   return jobs.sort((left, right) => left.createdAt.localeCompare(right.createdAt));

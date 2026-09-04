@@ -36,6 +36,7 @@ import { readProject } from "./project/store.js";
 import { applyCompleteDeckReviewAction } from "./project/promotion.js";
 import { authenticateFinalDeck } from "./project/final-delivery.js";
 import { authenticateStyleSelection, StyleSelectionRequestSchema } from "./styles/selection.js";
+import { approveStyleLock } from "./styles/style-lock.js";
 import { readCliJsonInput } from "./cli-input.js";
 import {
   applyRevision,
@@ -518,6 +519,7 @@ async function main(argv: string[]): Promise<void> {
     }
     const gate = planningGate(requestedGate);
     await approveGate(root, gate);
+    if (gate === "style-sample") await approveStyleLock(root);
     const nextRequiredAction = gate === "outline"
       ? "author and validate the slide specifications, then show them to the user"
       : gate === "slide-specs"
