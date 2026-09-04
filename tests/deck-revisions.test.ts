@@ -36,6 +36,10 @@ test("final delivery filename is semantic, portable, and never falls back to dec
   assert.equal(finalDeckFileName("客户/方案:终稿"), "客户-方案-终稿.pptx");
   assert.equal(finalDeckFileName("deck"), "SuperPPT.pptx");
   assert.equal(finalDeckFileName("CON.txt"), "SuperPPT.pptx");
+  assert.ok(
+    Buffer.byteLength(finalDeckFileName("演".repeat(200)), "utf8") <= 246,
+    "the semantic base name must reserve room for a collision hash within a 255-byte filename",
+  );
 });
 
 async function createDeckCandidate(

@@ -260,6 +260,7 @@ async function main(argv: string[]): Promise<void> {
     if (!action || !["edit-page", "return-upstream", "confirm-delivery"].includes(action)) {
       throw new Error("complete-deck-review action must be edit-page, return-upstream, or confirm-delivery");
     }
+    if (action === "confirm-delivery") requireInjectedLocalHandoff();
     const root = options.get("--project")!;
     const outcome = await applyCompleteDeckReviewAction(root, {
       action,
@@ -277,7 +278,7 @@ async function main(argv: string[]): Promise<void> {
     }
     const [revision, finalDeck] = await Promise.all([
       readLocalDeckRevision(root, current.revisionId),
-      authenticateFinalDeck(root, current, project.formalDelivery, project.exports.pptx),
+      authenticateFinalDeck(root, current, project.formalDelivery, project.exports.pptx, project.currentRevision.id),
     ]);
     outputJson({
       ...outcome,
@@ -303,7 +304,7 @@ async function main(argv: string[]): Promise<void> {
       ? { formal: project.formalDelivery, artifact: project.exports.pptx }
       : null;
     const presented = finalDelivery
-      ? await authenticateFinalDeck(root, current, finalDelivery.formal, finalDelivery.artifact)
+      ? await authenticateFinalDeck(root, current, finalDelivery.formal, finalDelivery.artifact, project.currentRevision.id)
       : current;
     outputJson(completeDeckOutput(project.title, {
       revisionId: presented.revisionId,

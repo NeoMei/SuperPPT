@@ -636,3 +636,42 @@ test("local-link preflight fails before touching an invalid project", async () =
     },
   );
 });
+
+test("confirm delivery requires local handoff capabilities before mutating the project", async (t) => {
+  const project = await cliProject(t);
+  const current = await readCurrentDeckPointer(project.root);
+  await assert.rejects(
+    runCli([
+      "complete-deck-review", "--project", project.root, "--action", "confirm-delivery",
+      "--revision-id", current.revisionId, "--sha256", current.sha256,
+    ], JSON.stringify({
+      source: "agent-host",
+      localFilesystem: false,
+      localFileLinks: false,
+    })),
+    (error: unknown) => {
+      assert.match(String((error as { stderr?: string }).stderr ?? error), /local filesystem|local file links/i);
+      return true;
+    },
+  );
+  assert.equal((await readProject(project.root)).stage, "deck-review");
+  assert.deepEqual(await readdir(join(project.root, "交付")).catch(() => []), []);
+});
+
+test("current deck link rejects final artifact metadata from another project revision", async (t) => {
+  const project = await cliProject(t);
+  const current = await readCurrentDeckPointer(project.root);
+  await runCliJson([
+    "complete-deck-review", "--project", project.root, "--action", "confirm-delivery",
+    "--revision-id", current.revisionId, "--sha256", current.sha256,
+  ]);
+  const manifestPath = join(project.root, "superppt.json");
+  const manifest = JSON.parse(await readFile(manifestPath, "utf8")) as Record<string, any>;
+  manifest.exports.pptx.revisionId = randomUUID();
+  await writeFile(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`);
+
+  await assert.rejects(runCli(["current-deck-link", "--project", project.root]), (error: unknown) => {
+    assert.match(String((error as { stderr?: string }).stderr ?? error), /revision|final delivery|bind/i);
+    return true;
+  });
+});

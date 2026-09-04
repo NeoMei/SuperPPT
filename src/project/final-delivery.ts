@@ -9,6 +9,7 @@ import type { Artifact, FormalDeckDeliveryBinding } from "./schemas.js";
 
 const DELIVERY_DIRECTORY = "交付";
 const RESERVED_WINDOWS_NAME = /^(?:CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])(?:\..*)?$/i;
+const MAX_COLLISION_SAFE_STEM_BYTES = 241;
 
 export type PublishedFinalDeck = {
   revisionId: string;
@@ -17,6 +18,18 @@ export type PublishedFinalDeck = {
   sha256: string;
 };
 
+function truncateUtf8(value: string, maximumBytes: number): string {
+  let result = "";
+  let byteLength = 0;
+  for (const character of value) {
+    const characterBytes = Buffer.byteLength(character, "utf8");
+    if (byteLength + characterBytes > maximumBytes) break;
+    result += character;
+    byteLength += characterBytes;
+  }
+  return result;
+}
+
 export function finalDeckFileName(title: string): string {
   let stem = title.normalize("NFKC")
     .replace(/\s+/g, " ")
@@ -24,7 +37,10 @@ export function finalDeckFileName(title: string): string {
     .replace(/\.pptx$/i, "")
     .replace(/[\\/:*?"<>|\u0000-\u001f]/g, "-")
     .replace(/[. ]+$/g, "");
-  stem = Array.from(stem).slice(0, 96).join("").replace(/[. ]+$/g, "");
+  stem = truncateUtf8(
+    Array.from(stem).slice(0, 96).join(""),
+    MAX_COLLISION_SAFE_STEM_BYTES,
+  ).replace(/[. ]+$/g, "");
   if (!stem || RESERVED_WINDOWS_NAME.test(stem) || /^deck$/i.test(stem)) stem = "SuperPPT";
   return `${stem}.pptx`;
 }
@@ -34,6 +50,7 @@ export async function authenticateFinalDeck(
   current: CurrentDeckPointer,
   formal: FormalDeckDeliveryBinding,
   artifact: Artifact,
+  projectRevisionId: string,
 ): Promise<PublishedFinalDeck> {
   if (!/^交付\/[^/]+\.pptx$/i.test(artifact.path)) {
     throw new Error("final delivery must use one shallow semantic PPTX path");
@@ -44,6 +61,7 @@ export async function authenticateFinalDeck(
     || formal.sha256 !== current.sha256
     || formal.absolutePath !== absolutePath
     || artifact.sha256 !== current.sha256
+    || artifact.revisionId !== projectRevisionId
   ) throw new Error("final delivery does not bind the exact current complete deck");
   if (sha256Evidence(await readOwnedRegularFile(root, artifact.path)) !== current.sha256) {
     throw new Error("final delivery PPTX changed after publication");
