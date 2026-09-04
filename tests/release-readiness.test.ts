@@ -83,6 +83,8 @@ test("release builds without write authority and publishes without repository co
   assert.deepEqual(publish.needs, ["build"]);
   assert.equal(publish.steps.some((step: { uses?: string }) => step.uses?.startsWith("actions/checkout@")), false);
   assert.equal(publish.steps.some((step: { run?: string }) => /npm (?:ci|run|pack)/.test(step.run ?? "")), false);
+  const releaseCommand = publish.steps.find((step: { run?: string }) => step.run?.includes("gh release create"))?.run ?? "";
+  assert.match(releaseCommand, /--repo \"\$GITHUB_REPOSITORY\"/);
 });
 
 test("repository ignores the exact failed initialization evidence directory shape", async () => {
