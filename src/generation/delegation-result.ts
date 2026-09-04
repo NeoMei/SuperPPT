@@ -318,6 +318,20 @@ function pageWithoutTimestamp(page: ImagePageResult): Omit<ImagePageResult, "rec
   return content;
 }
 
+function isQaCompletingUpgrade(prior: ImagePageResult, next: ImagePageResult): boolean {
+  if (
+    prior.status !== "success"
+    || prior.presentationQa !== null
+    || prior.styleConsistency !== "not-reviewed"
+    || next.presentationQa === null
+    || next.styleConsistency === "not-reviewed"
+  ) return false;
+  return sameJson(
+    pageWithoutTimestamp({ ...prior, presentationQa: null, styleConsistency: "not-reviewed" }),
+    pageWithoutTimestamp({ ...next, presentationQa: null, styleConsistency: "not-reviewed" }),
+  );
+}
+
 async function readExistingPage(root: string, jobId: string, slideId: string, attempt: number): Promise<ImagePageResult | null> {
   try {
     const bytes = await readOwnedRegularFile(root, `generation/jobs/${jobId}/results/${slideId}-${attempt}.json`);
@@ -763,11 +777,13 @@ export async function recordDelegatedResult(
       authenticated.page.slideId,
       authenticated.page.attempt,
     );
-    if (existing && !sameJson(pageWithoutTimestamp(existing), pageWithoutTimestamp(candidate))) {
+    const qaCompletingReplay = existing !== null && isQaCompletingUpgrade(existing, candidate);
+    if (existing && !qaCompletingReplay && !sameJson(pageWithoutTimestamp(existing), pageWithoutTimestamp(candidate))) {
       throw new Error("conflicting delegated result replay");
     }
     const priorPages = await pageResults(canonicalRoot, authenticated.job);
-    const mergedPages = [...priorPages.filter(({ slideId }) => slideId !== candidate.slideId), existing ?? candidate].sort((left, right) =>
+    const effectivePage = qaCompletingReplay ? candidate : existing ?? candidate;
+    const mergedPages = [...priorPages.filter(({ slideId }) => slideId !== candidate.slideId), effectivePage].sort((left, right) =>
       authenticated.job.pages.findIndex(({ slideId }) => slideId === left.slideId)
       - authenticated.job.pages.findIndex(({ slideId }) => slideId === right.slideId)
     );
@@ -778,7 +794,10 @@ export async function recordDelegatedResult(
       if (priorAggregate.pages.length > mergedPages.length) {
         throw new Error("delegated aggregate contains pages absent from immutable intake records");
       }
-      if (!priorAggregate.pages.every((page, index) => sameJson(page, mergedPages[index]))) {
+      if (!priorAggregate.pages.every((page, index) => {
+        const merged = mergedPages[index];
+        return merged !== undefined && (sameJson(page, merged) || isQaCompletingUpgrade(page, merged));
+      })) {
         throw new Error("delegated aggregate conflicts with immutable page results");
       }
       if (
@@ -788,10 +807,11 @@ export async function recordDelegatedResult(
     }
 
     const publishedAuthentication = await authenticateIntake(canonicalRoot, raw, true);
-    const publishedCandidate = existing ?? ImagePageResultSchema.parse({
+    const authenticatedCandidate = ImagePageResultSchema.parse({
       ...candidate,
       artifacts: publishedAuthentication.artifacts,
     });
+    const publishedCandidate = qaCompletingReplay ? authenticatedCandidate : existing ?? authenticatedCandidate;
     if (existing) await reauthenticateStoredPage(canonicalRoot, authenticated.job, existing, authenticated.intake.batchReport, ledger);
     if (!existing) {
       const project = openGenerationDirectory(canonicalRoot);
@@ -801,6 +821,21 @@ export async function recordDelegatedResult(
       const results = jobDir.child("results");
       try { results.writeExclusive(`${publishedCandidate.slideId}-${publishedCandidate.attempt}.json`, canonicalContractFile(publishedCandidate)); }
       finally {
+        results.close(); jobDir.close(); jobs.close(); generation.close(); project.close();
+      }
+    } else if (qaCompletingReplay) {
+      const project = openGenerationDirectory(canonicalRoot);
+      const generation = project.child("generation", false);
+      const jobs = generation.child("jobs", false);
+      const jobDir = jobs.child(authenticated.job.jobId, false);
+      const results = jobDir.child("results");
+      try {
+        results.replace(
+          `${publishedCandidate.slideId}-${publishedCandidate.attempt}.json`,
+          canonicalContractFile(publishedCandidate),
+          `.qa-completing-${randomUUID()}.json`,
+        );
+      } finally {
         results.close(); jobDir.close(); jobs.close(); generation.close(); project.close();
       }
     }
@@ -824,11 +859,28 @@ export async function recordDelegatedResult(
     let aggregateCurrent = false;
     if (priorAggregate) {
       if (priorAggregate.pages.length === aggregate.pages.length) {
+        let aggregateUpgraded = false;
+        const comparablePages = aggregate.pages.map((page, index) => {
+          const priorPage = priorAggregate.pages[index]!;
+          if (sameJson(priorPage, page)) return page;
+          if (isQaCompletingUpgrade(priorPage, page)) {
+            aggregateUpgraded = true;
+            return priorPage;
+          }
+          return page;
+        });
         const { updatedAt: _priorUpdatedAt, ...priorContent } = priorAggregate;
         const { updatedAt: _aggregateUpdatedAt, ...aggregateContent } = aggregate;
-        if (!sameJson(priorContent, aggregateContent)) throw new Error("conflicting delegated aggregate replay");
-        result = priorAggregate;
-        aggregateCurrent = true;
+        const comparableContent = {
+          ...aggregateContent,
+          pages: comparablePages,
+          outcome: aggregateOutcome(authenticated.job, comparablePages, authenticated.intake.batchReport),
+        };
+        if (!sameJson(priorContent, comparableContent)) throw new Error("conflicting delegated aggregate replay");
+        if (!aggregateUpgraded) {
+          result = priorAggregate;
+          aggregateCurrent = true;
+        }
       }
     }
     if (!aggregateCurrent) {

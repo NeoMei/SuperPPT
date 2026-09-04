@@ -3523,3 +3523,163 @@ test("delegation CLI admits an exact immutable job tuple and settles its private
   const status = await invoke(["generation-status", "--project", fixture.root]);
   assert.equal(JSON.parse(status.stdout).pages[0].status, "accepted");
 });
+
+test("qa-completing replay upgrades a not-reviewed deck page and unblocks the serial gate", async (t) => {
+  const fixture = await authorizedDeckProject(t, "superppt-delegated-qa-completing-replay-");
+  const job = await prepareImageGenerationJob(fixture.root, { kind: "deck", aiDependency: fixture.aiDependency });
+  const page = job.pages[0]!;
+  const report: SerialStickyReport = {
+    batch_mode: "serial-sticky-monotonic",
+    stopped: false,
+    search_candidate: "api-openai",
+    sticky_candidate: "api-openai",
+    pages: [{ page: 1, outcome: "success", candidate: "api-openai", summary: "" }],
+    switches: [],
+  };
+  const masterPath = join(fixture.root, ...page.target.split("/"));
+  await sharp({ create: { width: 1920, height: 1080, channels: 3, background: "#314159" } }).png().toFile(masterPath);
+  const admission = await admitDelegatedGenerationCall(fixture.root, {
+    jobId: job.jobId,
+    slideId: page.slideId,
+    attempt: page.attempt,
+    requestOrdinal: 1,
+  });
+  const baseIntake = {
+    jobId: job.jobId,
+    slideId: page.slideId,
+    attempt: page.attempt,
+    requestOrdinal: 1,
+    admissionToken: admission.admissionToken,
+    dependency: {
+      status: "success" as const,
+      provider: "openai" as const,
+      channel: "api" as const,
+      output_path: masterPath,
+      safe_message: "",
+    },
+    batchReport: report,
+    actualPromptSha256: page.promptSha256,
+    styleLockSha256: job.styleLockSha256,
+    styleRecipeSha256: job.styleLock.styleRecipeSha256,
+    referenceUsage: job.styleLock.referenceArtifacts.map(({ path, sha256 }) => ({ path, sha256, usage: "used" as const })),
+    presentationQa: null,
+  };
+  const first = await recordDelegatedResult(fixture.root, baseIntake);
+  assert.equal(first.pages[0]!.status, "success");
+  assert.equal(first.pages[0]!.styleConsistency, "not-reviewed");
+
+  const completingIntake = {
+    ...baseIntake,
+    presentationQa: passingPresentationQa(job, page, await normalizedImageSha256(masterPath)),
+  };
+  const completed = await recordDelegatedResult(fixture.root, completingIntake);
+  assert.equal(completed.pages[0]!.styleConsistency, "accepted");
+  const stored = JSON.parse(await readFile(
+    join(fixture.root, "generation", "jobs", job.jobId, "results", `${page.slideId}-${page.attempt}.json`),
+    "utf8",
+  ));
+  assert.equal(stored.styleConsistency, "accepted");
+  const manifest = await readProject(fixture.root);
+  assert.equal(
+    manifest.slides.find(({ id }) => id === page.slideId)?.image?.sha256,
+    completed.pages[0]!.artifacts!.normalized.sha256,
+  );
+
+  const page2 = job.pages[1]!;
+  await assert.doesNotReject(admitDelegatedGenerationCall(fixture.root, {
+    jobId: job.jobId,
+    slideId: page2.slideId,
+    attempt: page2.attempt,
+    requestOrdinal: 2,
+  }));
+});
+
+test("qa-completing replay of the final deck page upgrades the aggregate outcome to success", async (t) => {
+  const fixture = await authorizedDeckProject(t, "superppt-delegated-qa-completing-final-page-");
+  const job = await prepareImageGenerationJob(fixture.root, { kind: "deck", aiDependency: fixture.aiDependency });
+  assert.ok(job.pages.length >= 2);
+  for (const [index, page] of job.pages.entries()) {
+    const masterPath = join(fixture.root, ...page.target.split("/"));
+    await sharp({ create: { width: 1920, height: 1080, channels: 3, background: "#314159" } }).png().toFile(masterPath);
+    const admission = await admitDelegatedGenerationCall(fixture.root, {
+      jobId: job.jobId,
+      slideId: page.slideId,
+      attempt: page.attempt,
+      requestOrdinal: index + 1,
+    });
+    const cumulative: SerialStickyReport = {
+      batch_mode: "serial-sticky-monotonic",
+      stopped: false,
+      search_candidate: "api-openai",
+      sticky_candidate: "api-openai",
+      pages: job.pages.slice(0, index + 1).map((_candidate, pageIndex) => ({
+        page: pageIndex + 1,
+        outcome: "success" as const,
+        candidate: "api-openai" as const,
+        summary: "",
+      })),
+      switches: [],
+    };
+    const baseIntake = {
+      jobId: job.jobId,
+      slideId: page.slideId,
+      attempt: page.attempt,
+      requestOrdinal: index + 1,
+      admissionToken: admission.admissionToken,
+      dependency: {
+        status: "success" as const,
+        provider: "openai" as const,
+        channel: "api" as const,
+        output_path: masterPath,
+        safe_message: "",
+      },
+      batchReport: cumulative,
+      actualPromptSha256: page.promptSha256,
+      styleLockSha256: job.styleLockSha256,
+      styleRecipeSha256: job.styleLock.styleRecipeSha256,
+      referenceUsage: job.styleLock.referenceArtifacts.map(({ path, sha256 }) => ({ path, sha256, usage: "used" as const })),
+      presentationQa: null,
+    };
+    const first = await recordDelegatedResult(fixture.root, baseIntake);
+    assert.equal(first.pages.at(-1)!.styleConsistency, "not-reviewed");
+    const completingIntake = {
+      ...baseIntake,
+      presentationQa: passingPresentationQa(job, page, await normalizedImageSha256(masterPath)),
+    };
+    const completed = await recordDelegatedResult(fixture.root, completingIntake);
+    assert.equal(completed.pages.at(-1)!.styleConsistency, "accepted");
+    if (index === job.pages.length - 1) {
+      assert.equal(completed.outcome, "success");
+      const stored = JSON.parse(await readFile(
+        join(fixture.root, "generation", "jobs", job.jobId, "result.json"),
+        "utf8",
+      ));
+      assert.equal(stored.outcome, "success");
+    }
+  }
+});
+
+test("prepareDeckJob does not reuse a deck job whose authorization was superseded", async (t) => {
+  const fixture = await authorizedDeckProject(t, "superppt-deck-superseded-authorization-");
+  const wedged = await prepareDeckJob(fixture.root, fixture.aiDependency);
+  await publishGenerationAuthorizationPlan(fixture.root, {
+    aiDependency: fixture.aiDependency,
+    callBudget: 3,
+  });
+  await approveGate(fixture.root, "generation-authorization");
+  await assert.rejects(admitDelegatedGenerationCall(fixture.root, {
+    jobId: wedged.jobId,
+    slideId: wedged.pages[0]!.slideId,
+    attempt: wedged.pages[0]!.attempt,
+    requestOrdinal: 1,
+  }), /matching authorization|external current approval/);
+  const replacement = await prepareDeckJob(fixture.root, fixture.aiDependency);
+  assert.notEqual(replacement.jobId, wedged.jobId);
+  assert.notEqual(replacement.authorizationDigest, wedged.authorizationDigest);
+  await assert.doesNotReject(admitDelegatedGenerationCall(fixture.root, {
+    jobId: replacement.jobId,
+    slideId: replacement.pages[0]!.slideId,
+    attempt: replacement.pages[0]!.attempt,
+    requestOrdinal: 1,
+  }));
+});
