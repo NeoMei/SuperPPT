@@ -358,18 +358,23 @@ function preservesArtifactEvidence(
 }
 
 function isExactCurrentDeckReviewReset(
+  root: string,
   previous: ProjectManifest,
   next: ProjectManifest,
 ): boolean {
+  const deliveryArtifact = previous.exports.pptx;
   if (
     previous.stage !== "delivered"
     || next.stage !== "deck-review"
     || !previous.currentDeck
     || !previous.formalDelivery
+    || !deliveryArtifact
     || previous.formalDelivery.revisionId !== previous.currentDeck.revisionId
     || previous.formalDelivery.sha256 !== previous.currentDeck.sha256
-    || previous.exports.pptx?.path !== previous.currentDeck.relativePath
-    || previous.exports.pptx.sha256 !== previous.currentDeck.sha256
+    || !/^交付\/[^/]+\.pptx$/i.test(deliveryArtifact.path)
+    || previous.formalDelivery.absolutePath !== join(root, ...deliveryArtifact.path.split("/"))
+    || deliveryArtifact.revisionId !== previous.currentRevision.id
+    || deliveryArtifact.sha256 !== previous.currentDeck.sha256
     || !previous.exports.acceptance
     || next.exports.pptx !== null
     || next.exports.acceptance !== null
@@ -565,7 +570,7 @@ async function persistProject(
       : owned.manifest;
   if (
     !preservesArtifactEvidence(owned.manifest, valid)
-    && !isExactCurrentDeckReviewReset(owned.manifest, valid)
+    && !isExactCurrentDeckReviewReset(owned.root, owned.manifest, valid)
     && !(mode === "revision-append"
       && owned.manifest.stage === "delivered"
       && owned.manifest.clientSmokeCopyAnchor?.state === "completed")

@@ -22,7 +22,7 @@ WPS 或 PowerPoint 是预览与编辑界面。每次编辑响应只交付一个�
 - 连续修改：“再改第 N 页”始终按最新对账 topology 解析，下一个 candidate 从上一次采纳的精确字节创建。
 - 恢复：“恢复上一版”只移动 current pointer，不重写任何历史 PPTX。手动采纳、Agent 确认/拒绝和 rollback 都回到 `deck-review`，重绑 exact current revision/SHA 并清除旧交付绑定。
 
-完整 deck 审阅的三选一使用 `complete-deck-review --action <edit-page|return-upstream|confirm-delivery> --revision-id --sha256 [--slide-id]`。`edit-page` 会持久化一个只能消费一次的 exact current revision/SHA/stable slide binding；manual/Agent prepare 缺失、错页、stale 或重放时必须在创建 candidate/session 前拒绝并且零残留。只有 `confirm-delivery` 进入 `delivered`；formal delivery、exports、acceptance 和 client metadata 全部引用同一 exact current revision/absolute path/SHA，不复制或重写 PPTX。固定 revision acceptance 路径可幂等重放与崩溃恢复；已有相同 evidence 重用，冲突则 fail closed 且不删除用户文件。旧 `acceptance-smoke-copy`、`acceptance-record` 实现与入口不再发布。
+完整 deck 审阅的三选一使用 `complete-deck-review --action <edit-page|return-upstream|confirm-delivery> --revision-id --sha256 [--slide-id]`。`edit-page` 会持久化一个只能消费一次的 exact current revision/SHA/stable slide binding；manual/Agent prepare 缺失、错页、stale 或重放时必须在创建 candidate/session 前拒绝并且零残留。只有 `confirm-delivery` 进入 `delivered`：内部 immutable current 仍保留在版本目录且不重写，同时把完全相同的字节发布为项目根下 `交付/<语义化项目名>.pptx`；formal delivery、exports、acceptance 和 client metadata 全部绑定这个浅层交付路径、同一 current revision 与 SHA。若同名用户文件内容不同，不覆盖它，而使用带短 SHA 的确定性文件名。确认命令直接返回这一份最终文件的唯一可点击链接。固定 revision acceptance 路径可幂等重放与崩溃恢复；已有相同 evidence 重用，冲突则 fail closed 且不删除用户文件。旧 `acceptance-smoke-copy`、`acceptance-record` 实现与入口不再发布。
 
 可编辑边界依旧取决于 `image-to-editable-pptx` 的可验证提取结果：只有指定对象成功提取后才可编辑；可靠文字与透明素材走 editable 路由，主插画、背景、整体布局和未提取对象走定向重生路由。这不是整套全可编辑。
 
