@@ -1,9 +1,9 @@
-import { lstat, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
+import { lstat, mkdtemp, realpath, rm, writeFile } from "node:fs/promises";
 import { basename, dirname, isAbsolute, join, relative } from "node:path";
 
-import JSZip from "jszip";
 import PptxGenJS from "pptxgenjs";
 
+import { readBoundedPptxArchiveFile } from "../deck-revisions/archive.js";
 import { promoteExclusive } from "../project/exclusive.js";
 import {
   pxToInchX,
@@ -54,7 +54,7 @@ function serializeDefaultLanguage(source: string): string {
 }
 
 async function normalizeOwnedOoxml(path: string): Promise<void> {
-  const archive = await JSZip.loadAsync(await readFile(path));
+  const archive = await readBoundedPptxArchiveFile(path);
   const slidePaths = Object.keys(archive.files).filter((name) => /^ppt\/slides\/slide\d+\.xml$/.test(name));
   for (const slidePath of slidePaths) {
     const slide = archive.file(slidePath);

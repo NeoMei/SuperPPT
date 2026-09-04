@@ -15,6 +15,7 @@ import type { ProjectManifest } from "../project/schemas.js";
 import { inspectLocalPptx, type InspectedLocalPptx } from "./inspect.js";
 import { completeReviewRequiredObjects } from "./review-required.js";
 import { reconcileSlideTopology } from "./topology.js";
+import { readBoundedPptxArchiveFile, readBoundedPptxFile } from "./archive.js";
 import {
   CurrentDeckPointerSchema,
   DeckAdoptionEvidenceSchema,
@@ -563,7 +564,7 @@ export async function bootstrapInitialDeckRevision(
       const existing = await inspectLocalPptx(absolutePath);
       if (existing.sha256 !== source.sha256) throw new Error("initial bootstrap deck residue does not match source bytes");
     } else {
-      await writeDurableExclusive(absolutePath, await readRegularFileNoFollow(source.absolutePath));
+      await writeDurableExclusive(absolutePath, await readBoundedPptxFile(source.absolutePath));
       await syncDirectory(directory);
     }
     const copied = await inspectLocalPptx(absolutePath);
@@ -681,7 +682,7 @@ export async function createDeckCandidate(
     try {
       await mkdir(candidateRoot, { mode: 0o700 });
       await mkdir(editSessionRoot, { mode: 0o700 });
-      const source = await readRegularFileNoFollow(parent.absolutePath);
+      const source = await readBoundedPptxFile(parent.absolutePath);
       await writeDurableExclusive(join(candidateRoot, "deck.pptx"), source);
       await syncDirectory(candidateRoot);
       const authenticatedCandidate = await inspectLocalPptx(join(candidateRoot, "deck.pptx"));
@@ -768,8 +769,8 @@ async function actualManualChangedSlideIds(
   topology: SlideTopology,
 ): Promise<string[]> {
   const [before, after] = await Promise.all([
-    JSZip.loadAsync(await readRegularFileNoFollow(parent.absolutePath)),
-    JSZip.loadAsync(await readRegularFileNoFollow(candidatePath)),
+    readBoundedPptxArchiveFile(parent.absolutePath),
+    readBoundedPptxArchiveFile(candidatePath),
   ]);
   const priorByStableId = new Map(parent.slideTopology.entries.map((entry) => [entry.stableSlideId, entry]));
   const changed: string[] = [];

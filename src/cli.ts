@@ -1,4 +1,4 @@
-import { resolve } from "node:path";
+import { basename, resolve } from "node:path";
 
 import { attestWorkflowDependencies, preflightDependencies } from "./dependencies/preflight.js";
 import { resolveSkillDependencies } from "./dependencies/resolve.js";
@@ -34,6 +34,7 @@ import { initializeProject } from "./project/initialize.js";
 import { readRegularFileNoFollow } from "./project/safe-file.js";
 import { readProject } from "./project/store.js";
 import { applyCompleteDeckReviewAction } from "./project/promotion.js";
+import { authenticateFinalDeck } from "./project/final-delivery.js";
 import { authenticateStyleSelection, StyleSelectionRequestSchema } from "./styles/selection.js";
 import { readCliJsonInput } from "./cli-input.js";
 import {
@@ -189,9 +190,10 @@ function completeDeckOutput(
     mode?: "manual" | "agent";
     sessionId?: string;
     targetSlideId?: string;
+    linkLabel?: string;
   },
 ): Record<string, unknown> {
-  const linkLabel = `${title}.pptx`;
+  const linkLabel = deck.linkLabel ?? `${title}.pptx`;
   return {
     kind: "complete-local-pptx",
     ...(deck.mode ? { mode: deck.mode } : {}),
@@ -258,12 +260,37 @@ async function main(argv: string[]): Promise<void> {
     if (!action || !["edit-page", "return-upstream", "confirm-delivery"].includes(action)) {
       throw new Error("complete-deck-review action must be edit-page, return-upstream, or confirm-delivery");
     }
-    outputJson(await applyCompleteDeckReviewAction(options.get("--project")!, {
+    if (action === "confirm-delivery") requireInjectedLocalHandoff();
+    const root = options.get("--project")!;
+    const outcome = await applyCompleteDeckReviewAction(root, {
       action,
       revisionId: options.get("--revision-id")!,
       deckSha256: options.get("--sha256")!,
       ...(action === "edit-page" ? { slideId: options.get("--slide-id")! } : {}),
-    }));
+    });
+    if (action !== "confirm-delivery") {
+      outputJson(outcome);
+      return;
+    }
+    const [project, current] = await Promise.all([readProject(root), readCurrentDeckPointer(root)]);
+    if (!project.formalDelivery || !project.exports.pptx) {
+      throw new Error("confirmed final delivery metadata is missing");
+    }
+    const [revision, finalDeck] = await Promise.all([
+      readLocalDeckRevision(root, current.revisionId),
+      authenticateFinalDeck(root, current, project.formalDelivery, project.exports.pptx, project.currentRevision.id),
+    ]);
+    outputJson({
+      ...outcome,
+      finalDeck: completeDeckOutput(project.title, {
+        revisionId: finalDeck.revisionId,
+        absolutePath: finalDeck.absolutePath,
+        sha256: finalDeck.sha256,
+        slideCount: revision.slideTopology.entries.length,
+        reviewRequiredObjects: revisionReviewObjects(revision),
+        linkLabel: basename(finalDeck.absolutePath),
+      }),
+    });
     return;
   }
 
@@ -273,12 +300,19 @@ async function main(argv: string[]): Promise<void> {
     const root = options.get("--project")!;
     const [project, current] = await Promise.all([readProject(root), readCurrentDeckPointer(root)]);
     const revision = await readLocalDeckRevision(root, current.revisionId);
+    const finalDelivery = project.stage === "delivered" && project.formalDelivery && project.exports.pptx
+      ? { formal: project.formalDelivery, artifact: project.exports.pptx }
+      : null;
+    const presented = finalDelivery
+      ? await authenticateFinalDeck(root, current, finalDelivery.formal, finalDelivery.artifact, project.currentRevision.id)
+      : current;
     outputJson(completeDeckOutput(project.title, {
-      revisionId: current.revisionId,
-      absolutePath: current.absolutePath,
-      sha256: current.sha256,
+      revisionId: presented.revisionId,
+      absolutePath: presented.absolutePath,
+      sha256: presented.sha256,
       slideCount: revision.slideTopology.entries.length,
       reviewRequiredObjects: revisionReviewObjects(revision),
+      ...(finalDelivery ? { linkLabel: basename(presented.absolutePath) } : {}),
     }));
     return;
   }

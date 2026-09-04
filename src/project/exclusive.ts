@@ -4,6 +4,7 @@ import koffi from "koffi";
 
 type NativeRename = (source: string, target: string, replace?: boolean) => number;
 
+const HOST_PLATFORM = process.platform;
 const RENAME_NOREPLACE = 1;
 const RENAME_EXCL = 4;
 const AT_FDCWD = -100;
@@ -22,7 +23,7 @@ let nativeError = (): number => koffi.errno();
 
 function loadNativeRename(): NativeRename {
   if (nativeRename) return nativeRename;
-  if (process.platform === "darwin") {
+  if (HOST_PLATFORM === "darwin") {
     const system = koffi.load("/usr/lib/libSystem.B.dylib");
     const renameExclusive = system.func(
       "int renamex_np(const char *source, const char *target, unsigned int flags)",
@@ -30,7 +31,7 @@ function loadNativeRename(): NativeRename {
     nativeRename = (source, target) => renameExclusive(source, target, RENAME_EXCL);
     return nativeRename;
   }
-  if (process.platform === "linux") {
+  if (HOST_PLATFORM === "linux") {
     let system;
     try {
       system = koffi.load("libc.so.6");
@@ -43,7 +44,7 @@ function loadNativeRename(): NativeRename {
     nativeRename = (source, target) => renameNoReplace(AT_FDCWD, source, AT_FDCWD, target, RENAME_NOREPLACE);
     return nativeRename;
   }
-  if (process.platform === "win32") {
+  if (HOST_PLATFORM === "win32") {
     const system = koffi.load("kernel32.dll");
     // MoveFileExW without the \\?\ long-path prefix cannot operate on paths that
     // reach the MAX_PATH boundary, even when Node's own file APIs created them.
@@ -66,26 +67,26 @@ function loadNativeRename(): NativeRename {
     nativeError = () => lastError;
     return nativeRename;
   }
-  throw new Error(`exclusive project promotion is unsupported on ${process.platform}`);
+  throw new Error(`exclusive project promotion is unsupported on ${HOST_PLATFORM}`);
 }
 
 export async function promoteExclusive(source: string, target: string): Promise<void> {
-  const attempts = process.platform === "win32" ? 4 : 1;
+  const attempts = HOST_PLATFORM === "win32" ? 4 : 1;
   for (let attempt = 0; attempt < attempts; attempt += 1) {
     if (loadNativeRename()(source, target, false) === 0) return;
     const errno = nativeError();
-    let targetExists = process.platform === "win32"
+    let targetExists = HOST_PLATFORM === "win32"
       ? errno === ERROR_FILE_EXISTS || errno === ERROR_ALREADY_EXISTS
       : errno === koffi.os.errno.EEXIST;
     if (
-      process.platform === "win32"
+      HOST_PLATFORM === "win32"
       && (errno === ERROR_ACCESS_DENIED || errno === ERROR_SHARING_VIOLATION)
     ) {
       targetExists = await lstat(target).then(() => true, () => false);
     }
     if (
       !targetExists
-      && process.platform === "win32"
+      && HOST_PLATFORM === "win32"
       && (errno === ERROR_ACCESS_DENIED || errno === ERROR_SHARING_VIOLATION)
       && attempt + 1 < attempts
     ) {
@@ -105,7 +106,7 @@ export async function promoteExclusive(source: string, target: string): Promise<
 
 /** Replace a target atomically, with write-through durability on Windows. */
 export async function renameSafe(source: string, target: string): Promise<void> {
-  if (process.platform === "win32") {
+  if (HOST_PLATFORM === "win32") {
     const result = loadNativeRename()(source, target, true);
     if (result === 0) return;
     const errno = nativeError();

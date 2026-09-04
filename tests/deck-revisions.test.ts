@@ -21,6 +21,7 @@ import { DeckEditSessionSchema, LocalDeckRevisionSchema } from "../src/deck-revi
 import { initializeProject } from "../src/project/initialize.js";
 import { readProject, updateProject } from "../src/project/store.js";
 import { applyCompleteDeckReviewAction } from "../src/project/promotion.js";
+import { finalDeckFileName } from "../src/project/final-delivery.js";
 import { authorizeCompleteDeckEdit } from "./helpers/deck-edit.js";
 
 const P = "http://schemas.openxmlformats.org/presentationml/2006/main";
@@ -29,6 +30,17 @@ const REL = "http://schemas.openxmlformats.org/package/2006/relationships";
 const P14 = "http://schemas.microsoft.com/office/powerpoint/2010/main";
 
 const digest = (value: Buffer | string): string => createHash("sha256").update(value).digest("hex");
+
+test("final delivery filename is semantic, portable, and never falls back to deck.pptx", () => {
+  assert.equal(finalDeckFileName(" 季度报告.pptx "), "季度报告.pptx");
+  assert.equal(finalDeckFileName("客户/方案:终稿"), "客户-方案-终稿.pptx");
+  assert.equal(finalDeckFileName("deck"), "SuperPPT.pptx");
+  assert.equal(finalDeckFileName("CON.txt"), "SuperPPT.pptx");
+  assert.ok(
+    Buffer.byteLength(finalDeckFileName("演".repeat(200)), "utf8") <= 246,
+    "the semantic base name must reserve room for a collision hash within a 255-byte filename",
+  );
+});
 
 async function createDeckCandidate(
   root: string,
@@ -677,6 +689,64 @@ test("completed initial bootstrap retry preserves exact delivered evidence byte-
   assert.equal(manifest.stage, "delivered");
   assert.equal(manifest.formalDelivery?.revisionId, initial.revisionId);
   assert.equal(manifest.exports.pptx?.sha256, initial.sha256);
+});
+
+test("confirm delivery publishes a shallow semantic PPTX while preserving the internal revision", async (t) => {
+  const value = await initialBootstrapFixture(t);
+  const initial = await bootstrapInitialDeckRevision(value.root, value.options);
+
+  await applyCompleteDeckReviewAction(value.root, {
+    action: "confirm-delivery",
+    revisionId: initial.revisionId,
+    deckSha256: initial.sha256,
+  });
+
+  const internalPath = join(value.root, "output", "deck-revisions", initial.revisionId, "deck.pptx");
+  const deliveryPath = join(value.root, "交付", "Deck revisions.pptx");
+  const manifest = await readProject(value.root);
+  assert.equal(manifest.formalDelivery?.absolutePath, deliveryPath);
+  assert.equal(manifest.exports.pptx?.path, "交付/Deck revisions.pptx");
+  assert.deepEqual(await readFile(deliveryPath), await readFile(internalPath));
+  assert.equal(digest(await readFile(deliveryPath)), initial.sha256);
+});
+
+test("final delivery never overwrites a different user-owned semantic filename", async (t) => {
+  const value = await initialBootstrapFixture(t);
+  const initial = await bootstrapInitialDeckRevision(value.root, value.options);
+  const deliveryRoot = join(value.root, "交付");
+  const userFile = join(deliveryRoot, "Deck revisions.pptx");
+  await mkdir(deliveryRoot);
+  await writeFile(userFile, "user-owned");
+
+  await applyCompleteDeckReviewAction(value.root, {
+    action: "confirm-delivery",
+    revisionId: initial.revisionId,
+    deckSha256: initial.sha256,
+  });
+
+  const manifest = await readProject(value.root);
+  const expectedName = `Deck revisions-${initial.sha256.slice(0, 8)}.pptx`;
+  assert.equal(await readFile(userFile, "utf8"), "user-owned");
+  assert.equal(manifest.exports.pptx?.path, `交付/${expectedName}`);
+  assert.equal(manifest.formalDelivery?.absolutePath, join(deliveryRoot, expectedName));
+  assert.equal(digest(await readFile(join(deliveryRoot, expectedName))), initial.sha256);
+});
+
+test("final delivery refuses a linked delivery directory without writing outside the project", async (t) => {
+  if (process.platform === "win32") return t.skip("directory symlink setup requires elevated Windows privileges");
+  const value = await initialBootstrapFixture(t);
+  const initial = await bootstrapInitialDeckRevision(value.root, value.options);
+  const outside = await mkdtemp(join(tmpdir(), "superppt-delivery-outside-"));
+  t.after(() => rm(outside, { recursive: true, force: true }));
+  await symlink(outside, join(value.root, "交付"), "dir");
+
+  await assert.rejects(applyCompleteDeckReviewAction(value.root, {
+    action: "confirm-delivery",
+    revisionId: initial.revisionId,
+    deckSha256: initial.sha256,
+  }), /directory|changed|unsafe|openat|symbolic|loop/i);
+  assert.deepEqual(await readdir(outside), []);
+  assert.equal((await readProject(value.root)).stage, "deck-review");
 });
 
 test("completed initial bootstrap retry returns a later authenticated current descendant without rollback", async (t) => {

@@ -22,7 +22,7 @@ WPS 或 PowerPoint 是预览与编辑界面。每次编辑响应只交付一个�
 - 连续修改：“再改第 N 页”始终按最新对账 topology 解析，下一个 candidate 从上一次采纳的精确字节创建。
 - 恢复：“恢复上一版”只移动 current pointer，不重写任何历史 PPTX。手动采纳、Agent 确认/拒绝和 rollback 都回到 `deck-review`，重绑 exact current revision/SHA 并清除旧交付绑定。
 
-完整 deck 审阅的三选一使用 `complete-deck-review --action <edit-page|return-upstream|confirm-delivery> --revision-id --sha256 [--slide-id]`。`edit-page` 会持久化一个只能消费一次的 exact current revision/SHA/stable slide binding；manual/Agent prepare 缺失、错页、stale 或重放时必须在创建 candidate/session 前拒绝并且零残留。只有 `confirm-delivery` 进入 `delivered`；formal delivery、exports、acceptance 和 client metadata 全部引用同一 exact current revision/absolute path/SHA，不复制或重写 PPTX。固定 revision acceptance 路径可幂等重放与崩溃恢复；已有相同 evidence 重用，冲突则 fail closed 且不删除用户文件。旧 `acceptance-smoke-copy`、`acceptance-record` 实现与入口不再发布。
+完整 deck 审阅的三选一使用 `complete-deck-review --action <edit-page|return-upstream|confirm-delivery> --revision-id --sha256 [--slide-id]`。`edit-page` 会持久化一个只能消费一次的 exact current revision/SHA/stable slide binding；manual/Agent prepare 缺失、错页、stale 或重放时必须在创建 candidate/session 前拒绝并且零残留。只有 `confirm-delivery` 进入 `delivered`：内部 immutable current 仍保留在版本目录且不重写，同时把完全相同的字节发布为项目根下 `交付/<语义化项目名>.pptx`；formal delivery、exports、acceptance 和 client metadata 全部绑定这个浅层交付路径、同一 current revision 与 SHA。若同名用户文件内容不同，不覆盖它，而使用带短 SHA 的确定性文件名。确认命令直接返回这一份最终文件的唯一可点击链接。固定 revision acceptance 路径可幂等重放与崩溃恢复；已有相同 evidence 重用，冲突则 fail closed 且不删除用户文件。旧 `acceptance-smoke-copy`、`acceptance-record` 实现与入口不再发布。
 
 可编辑边界依旧取决于 `image-to-editable-pptx` 的可验证提取结果：只有指定对象成功提取后才可编辑；可靠文字与透明素材走 editable 路由，主插画、背景、整体布局和未提取对象走定向重生路由。这不是整套全可编辑。
 
@@ -41,9 +41,9 @@ npm run test:release-install
 
 `verify:portable` 是 GitHub 公共 runner 的 Linux/macOS/Windows 门禁。`verify:full` 同样可跨平台运行，并覆盖完整源码、编译产物、类型检查、构建和严格依赖审计；它使用仓库自有的 PPTX 服务，不依赖 Codex 私有 workspace runtime。`test:release-install` 会真实打包、按 `--omit=dev` 安装并启动 CLI。发布前全部门禁都必须通过。
 
-V1 只通过 GitHub/Codex 插件渠道发布，不发布 npm 包，`package.json` 因此保持 `private: true`。发布 tag 必须与插件版本完全一致（当前为 `v0.1.2`），tag commit 必须已在 `main`；tag workflow 会重新执行 portable gate、生成 `.tgz` 与 `SHA256SUMS`、写入 GitHub artifact provenance，并一次性创建 GitHub Release。
+V1 只通过 GitHub/Codex 插件渠道发布，不发布 npm 包，`package.json` 因此保持 `private: true`。发布 tag 必须与插件版本完全一致（当前为 `v0.1.3`），tag commit 必须已在 `main`；tag workflow 会重新执行 portable gate、生成 `.tgz` 与 `SHA256SUMS`、写入 GitHub artifact provenance，并一次性创建 GitHub Release。
 
-发布状态：v0.1.0、v0.1.1 与 v0.1.2 均通过 tag workflow 创建 GitHub Release，并由校验和与 artifact attestation 保护；npm 保持不发布。v0.1.0 产物构建于 Windows 修复合入前，Windows 环境请使用 v0.1.2，并参考 [Windows 交接与验证指南](docs/Windows交接与验证指南.md)。在 macOS 上接力开发、联调和继续发布，请按 [macOS 交接与接力开发指南](docs/macOS交接与接力开发指南.md) 执行。
+发布状态：v0.1.0 至 v0.1.3 均通过 tag workflow 创建 GitHub Release，并由校验和与 artifact attestation 保护；npm 保持不发布。v0.1.0 产物构建于 Windows 修复合入前，Windows 环境请使用 v0.1.3，并参考 [Windows 交接与验证指南](docs/Windows交接与验证指南.md)。在 macOS 上接力开发、联调和继续发布，请按 [macOS 交接与接力开发指南](docs/macOS交接与接力开发指南.md) 执行。
 
 ## V1 限制
 

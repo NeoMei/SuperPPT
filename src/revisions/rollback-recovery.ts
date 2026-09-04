@@ -57,12 +57,8 @@ export async function recoverRollbackTransactionLocked(
     && current.baseIdentity === evidence.journal.baseManifestSha256
     && current.manifest.currentRevision.id === evidence.journal.baseRevisionId
   ) {
-    await finalizeRollbackJournal(root, evidence.journal.transactionId, options.operations);
-    return {
-      outcome: "before",
-      targetRevisionId: evidence.journal.targetRevisionId,
-      rollbackRevisionId: evidence.journal.rollbackRevisionId,
-    };
+    desired = evidence.before;
+    outcome = "before";
   } else if (marker) {
     const { rollbackTransaction: _marker, ...withoutMarker } = current.manifest;
     const baseIdentity = sha256Evidence(manifestBytes(ProjectManifestSchema.parse(withoutMarker)));
@@ -90,7 +86,7 @@ export async function recoverRollbackTransactionLocked(
   }
   await writeProjectFileSet(root, desired, options.operations);
   await assertFileSet(root, desired);
-  if (outcome === "before") {
+  if (outcome === "before" && marker) {
     await abortProjectRollbackTransaction(root, options.operations);
   }
   await finalizeRollbackJournal(root, evidence.journal.transactionId, options.operations);

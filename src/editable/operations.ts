@@ -30,6 +30,7 @@ import {
   type PromoteEditableIntent,
 } from "./schemas.js";
 import { CONVERTER_OUTPUT_DIRECTORY } from "./adapter.js";
+import { MAX_EDITABLE_IMAGE_PIXELS } from "./limits.js";
 
 export const EditOperationSchema = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("replace-text"), elementId: z.string().min(1), text: z.string() }).strict(),
@@ -157,9 +158,10 @@ async function ensureChildDirectory(parent: string, name: string): Promise<strin
 
 async function transparentPng(bytes: Buffer): Promise<boolean> {
   try {
-    const metadata = await sharp(bytes).metadata();
+    const metadata = await sharp(bytes, { failOn: "error", limitInputPixels: MAX_EDITABLE_IMAGE_PIXELS }).metadata();
     if (metadata.format !== "png" || !metadata.hasAlpha) return false;
-    const { data, info } = await sharp(bytes).ensureAlpha().raw().toBuffer({ resolveWithObject: true });
+    const { data, info } = await sharp(bytes, { failOn: "error", limitInputPixels: MAX_EDITABLE_IMAGE_PIXELS })
+      .ensureAlpha().raw().toBuffer({ resolveWithObject: true });
     const alpha = info.channels - 1;
     for (let index = alpha; index < data.length; index += info.channels) {
       if (data[index]! < 255) return true;
@@ -214,7 +216,7 @@ export async function prepareReplacementAssets(
     const target = join(replacements, name);
     await writeDurableExclusive(target, bytes);
     const copied = await readRegularFileNoFollow(target);
-    if (sha256(copied) !== sha256(bytes) || !await transparentPng(copied)) {
+    if (sha256(copied) !== sha256(bytes)) {
       throw new Error("replacement asset copy failed validation");
     }
     await syncDirectory(replacements);

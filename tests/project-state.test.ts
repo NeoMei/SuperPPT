@@ -85,6 +85,17 @@ test("initializes the complete owned workspace and reopens it", async (t) => {
   }
 });
 
+test("rejects an oversized project manifest even when its JSON remains valid", async (t) => {
+  const parent = await temporaryParent(t, "superppt-project-size-");
+  const root = join(parent, "demo");
+  await initializeProject({ root, title: "bounded manifest", idFactory: () => PROJECT_ID });
+  const manifestPath = join(root, "superppt.json");
+  const original = await readFile(manifestPath);
+  await writeFile(manifestPath, Buffer.concat([original, Buffer.alloc(16 * 1024 * 1024, 0x20)]));
+
+  await assert.rejects(readProject(root), /directory is not owned|size|limit/i);
+});
+
 test("generation authorization and complete-deck review stages accept authenticated evidence", async (t) => {
   const parent = await temporaryParent(t, "superppt-guided-stage-model-");
   const root = join(parent, "demo");

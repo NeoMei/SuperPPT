@@ -1,6 +1,6 @@
 {
   "name": "superppt",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "description": "Create high-detail image-first PPTX decks with versioned planning and editable page revisions.",
   "author": {
     "name": "NeoMei",

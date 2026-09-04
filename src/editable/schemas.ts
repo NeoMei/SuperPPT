@@ -1,6 +1,8 @@
 import { isAbsolute } from "node:path";
 import { z } from "zod";
 
+import { MAX_EDIT_OPERATIONS } from "./limits.js";
+
 export const Sha256Schema = z.string().regex(/^[a-f0-9]{64}$/);
 
 export const ReviewRequiredObjectSchema = z.object({
@@ -459,7 +461,7 @@ export const EditPlanSchema = z.discriminatedUnion("route", [
       ),
       z.object({ kind: z.literal("move-asset"), elementId: z.string().min(1), bbox: EditableBBoxSchema }).strict(),
       z.object({ kind: z.literal("replace-asset"), elementId: z.string().min(1), assetPath: z.string().min(1) }).strict(),
-    ])).min(1),
+    ])).min(1).max(MAX_EDIT_OPERATIONS),
   }).strict(),
 ]);
 

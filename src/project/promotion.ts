@@ -33,6 +33,7 @@ import { type Artifact, type ProjectManifest } from "./schemas.js";
 import { assertProjectMutationNotFrozen, readProject, updateProject } from "./store.js";
 import { withGenerationLease } from "../generation/lease.js";
 import { readCurrentDeckPointer, readLocalDeckRevision } from "../deck-revisions/store.js";
+import { publishFinalDeck } from "./final-delivery.js";
 
 export { promoteExclusive } from "./exclusive.js";
 
@@ -150,10 +151,13 @@ export async function applyCompleteDeckReviewAction(
         : request.action === "confirm-delivery"
           ? "delivered" as const
           : "deck-review" as const;
-      const delivery = {
-        revisionId: current.revisionId,
-        absolutePath: current.absolutePath,
-        sha256: current.sha256,
+      const delivery = request.action === "confirm-delivery"
+        ? await publishFinalDeck(canonicalRoot, manifest.title, current)
+        : null;
+      const deliveryBinding = delivery && {
+        revisionId: delivery.revisionId,
+        absolutePath: delivery.absolutePath,
+        sha256: delivery.sha256,
       };
       let acceptanceArtifact: { path: string; sha256: string; revisionId: string } | null = null;
       if (request.action === "confirm-delivery") {
@@ -167,10 +171,10 @@ export async function applyCompleteDeckReviewAction(
             bytes.toString("utf8") !== `${JSON.stringify(existing, null, 2)}\n`
             || existing.projectId !== manifest.projectId
             || existing.projectRevisionId !== manifest.currentRevision.id
-            || JSON.stringify(existing.completeDeck) !== JSON.stringify(delivery)
-            || JSON.stringify(existing.formalDelivery) !== JSON.stringify(delivery)
-            || JSON.stringify(existing.exports.pptx) !== JSON.stringify(delivery)
-            || JSON.stringify(existing.client.completeDeck) !== JSON.stringify(delivery)
+            || JSON.stringify(existing.completeDeck) !== JSON.stringify(deliveryBinding)
+            || JSON.stringify(existing.formalDelivery) !== JSON.stringify(deliveryBinding)
+            || JSON.stringify(existing.exports.pptx) !== JSON.stringify(deliveryBinding)
+            || JSON.stringify(existing.client.completeDeck) !== JSON.stringify(deliveryBinding)
             || existing.reviewAction.action !== "confirm-delivery"
             || existing.reviewAction.revisionId !== current.revisionId
             || existing.reviewAction.deckSha256 !== current.sha256
@@ -186,15 +190,16 @@ export async function applyCompleteDeckReviewAction(
             if (error instanceof Error && /existing acceptance conflicts/.test(error.message)) throw error;
             throw new Error("existing acceptance conflicts with the exact current complete deck", { cause: error });
           }
+          if (!delivery) throw new Error("final delivery publication is missing");
           const acceptance = ExactCurrentDeckAcceptanceSchema.parse({
             schemaVersion: 1,
             kind: "exact-current-complete-deck-acceptance",
             projectId: manifest.projectId,
             projectRevisionId: manifest.currentRevision.id,
-            completeDeck: delivery,
-            formalDelivery: delivery,
-            exports: { pptx: delivery },
-            client: { completeDeck: delivery },
+            completeDeck: deliveryBinding,
+            formalDelivery: deliveryBinding,
+            exports: { pptx: deliveryBinding },
+            client: { completeDeck: deliveryBinding },
             reviewAction: evidence,
             actionEvidenceSha256: evidence.actionEvidenceSha256,
             confirmedAt: evidence.actedAt,
@@ -225,10 +230,10 @@ export async function applyCompleteDeckReviewAction(
             slideId: request.slideId,
           } : null,
           ...(request.action === "confirm-delivery" ? {
-            formalDelivery: delivery,
+            formalDelivery: deliveryBinding!,
             exports: {
               pptx: {
-                path: current.relativePath,
+                path: delivery!.relativePath,
                 sha256: current.sha256,
                 revisionId: live.currentRevision.id,
               },

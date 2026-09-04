@@ -2,12 +2,11 @@ import { createHash } from "node:crypto";
 import { lstat, realpath } from "node:fs/promises";
 import { dirname, isAbsolute, posix, relative, sep } from "node:path";
 
-import JSZip from "jszip";
-
 import { validateProjectRoot } from "../project/paths.js";
 import { readRegularFileNoFollow } from "../project/safe-file.js";
 import { readProject } from "../project/store.js";
 import { scanOoxmlRanges, type OoxmlElementRange } from "./ooxml.js";
+import { loadBoundedPptxArchive, MAX_PPTX_ARCHIVE_BYTES } from "./archive.js";
 
 const PRESENTATION = "http://schemas.openxmlformats.org/presentationml/2006/main";
 const DOCUMENT_RELATIONSHIPS = "http://schemas.openxmlformats.org/officeDocument/2006/relationships";
@@ -66,9 +65,9 @@ function projectRootForDeck(path: string): string {
 
 async function stableDeckRead(path: string): Promise<Buffer> {
   const firstStat = await lstat(path, { bigint: true });
-  const first = await readRegularFileNoFollow(path);
+  const first = await readRegularFileNoFollow(path, { maxBytes: MAX_PPTX_ARCHIVE_BYTES });
   const middleStat = await lstat(path, { bigint: true });
-  const second = await readRegularFileNoFollow(path);
+  const second = await readRegularFileNoFollow(path, { maxBytes: MAX_PPTX_ARCHIVE_BYTES });
   const secondStat = await lstat(path, { bigint: true });
   const stable = [firstStat, middleStat, secondStat].every((info) =>
     info.isFile()
@@ -131,12 +130,7 @@ export async function inspectLocalPptx(path: string): Promise<InspectedLocalPptx
     throw new Error("PPTX inspection path must be an owned complete-deck artifact");
   }
   const bytes = await stableDeckRead(canonical);
-  let zip: JSZip;
-  try {
-    zip = await JSZip.loadAsync(bytes);
-  } catch (error: unknown) {
-    throw new Error("PPTX package is invalid", { cause: error });
-  }
+  const zip = await loadBoundedPptxArchive(bytes);
   for (const required of ["[Content_Types].xml", "ppt/presentation.xml", "ppt/_rels/presentation.xml.rels"]) {
     if (!zip.file(required)) throw new Error(`PPTX package is missing ${required}`);
   }

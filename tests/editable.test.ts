@@ -480,6 +480,49 @@ test("validates converter package, Node version, and exact source before executi
   assert.equal(calls, 0);
 });
 
+test("scrubs ambient secrets and runtime injection hooks before invoking the converter", async (t) => {
+  const root = await temporary(t, "superppt-editable-child-env-");
+  const sourcePng = join(root, "source.png");
+  const outDir = join(root, "output");
+  const plugin = await converterRoot(t);
+  await writeFile(sourcePng, await png(1280, 720));
+  const injected = {
+    SUPERPPT_PROVIDER_SECRET: "provider-secret",
+    NODE_OPTIONS: "--require=/tmp/ambient-hook.cjs",
+    PYTHONPATH: "/tmp/ambient-python-hook",
+    npm_config_allow_scripts: "untrusted-package",
+  } as const;
+  const previous = Object.fromEntries(Object.keys(injected).map((name) => [name, process.env[name]]));
+  Object.assign(process.env, injected);
+  t.after(() => {
+    for (const [name, value] of Object.entries(previous)) {
+      if (value === undefined) delete process.env[name];
+      else process.env[name] = value;
+    }
+  });
+
+  await runEditableConversion({
+    converterRoot: plugin,
+    sourcePng,
+    outDir,
+    execute: async (_command, _args, options) => {
+      for (const [name, value] of Object.entries(injected)) {
+        assert.notEqual(options.env[name], value, `${name} must not cross the converter boundary`);
+      }
+      assert.equal(options.env.PATH, process.env.PATH);
+      await mkdir(outDir);
+      await writeFakeConverterOutput(outDir, sourcePng);
+      return { stdout: "", stderr: "" };
+    },
+  });
+});
+
+test("keeps editable file limits active at the descriptor read boundary", async () => {
+  const source = await readFile(join(process.cwd(), "src", "editable", "adapter.ts"), "utf8");
+  assert.match(source, /readRegularFileNoFollow\(path, \{ maxBytes: maximum \}\)/);
+  assert.doesNotMatch(source, /return await readRegularFileNoFollow\(path\);/);
+});
+
 test("fully decodes PNG source pixels before invoking the converter", async (t) => {
   const root = await temporary(t, "superppt-editable-truncated-");
   const plugin = await converterRoot(t);
@@ -861,6 +904,36 @@ test("caps replacement PNG input before reading or decoding it", async (t) => {
     await truncate(path, size);
     await assert.rejects(prepareReplacementAssets({ route: "editable", operations: [{ kind: "replace-asset", elementId: "icon-1", assetPath: path }] }, revision), /replacement asset size limit/);
   }
+});
+
+test("rejects replacement PNGs whose decoded pixel count exceeds the image budget", async (t) => {
+  const root = await temporary(t, "superppt-editable-replacement-pixels-");
+  const revision = (await replacementStaging(t)).root;
+  const oversized = join(root, "oversized-pixels.png");
+  await writeFile(oversized, await png(5000, 4000, true));
+
+  await assert.rejects(
+    prepareReplacementAssets({
+      route: "editable",
+      operations: [{ kind: "replace-asset", elementId: "icon-1", assetPath: oversized }],
+    }, revision),
+    /pixel limit|replacement asset.*transparent PNG/,
+  );
+});
+
+test("caps edit plans and direct deck routes at 128 operations", () => {
+  const operations = Array.from({ length: 129 }, (_, index) => ({
+    kind: "replace-text" as const,
+    elementId: `text-${index}`,
+    text: "updated",
+  }));
+  assert.throws(() => EditPlanSchema.parse({ route: "editable", operations }));
+  assert.throws(() => DeckEditRouteSchema.parse({
+    route: "direct-edit",
+    currentRevisionId: "10000000-0000-4000-8000-000000000001",
+    slideId: "20000000-0000-4000-8000-000000000002",
+    operations,
+  }));
 });
 
 test("replacement preparation rejects sealed revisions and symlink-ancestor staging aliases", async (t) => {

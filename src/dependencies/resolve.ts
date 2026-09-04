@@ -7,6 +7,7 @@ import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 
 import { readAnchoredRegularFile } from "../project/safe-file.js";
+import { isolatedChildEnvironment } from "../process/environment.js";
 
 import {
   AiImageCapabilityManifestSchema,
@@ -125,7 +126,9 @@ async function sha256(path: string): Promise<string> {
 
 async function gitRevision(root: string): Promise<string | null> {
   try {
-    const { stdout } = await execFileAsync("git", ["-C", root, "rev-parse", "HEAD"]);
+    const { stdout } = await execFileAsync("git", ["-C", root, "rev-parse", "HEAD"], {
+      env: isolatedChildEnvironment(),
+    });
     const revision = stdout.trim();
     return revision === "" ? null : revision;
   } catch {

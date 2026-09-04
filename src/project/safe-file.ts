@@ -8,7 +8,10 @@ export type SafeReadOperations = {
   afterFileOpen?: (path: string) => Promise<void> | void;
   afterOpen?: (path: string) => Promise<void> | void;
   afterRead?: (path: string) => Promise<void> | void;
+  maxBytes?: number;
 };
+
+export const DEFAULT_SAFE_READ_MAX_BYTES = 256 * 1024 * 1024;
 
 function sameFile(left: BigIntStats, right: BigIntStats): boolean {
   return left.dev === right.dev && left.ino === right.ino;
@@ -59,6 +62,28 @@ async function boundedDescriptorRead(
   }
   if (offset === 0 || offset > maximum) throw new Error("bounded input size is invalid");
   return Buffer.concat(chunks, offset);
+}
+
+async function readDescriptor(
+  handle: Awaited<ReturnType<typeof open>>,
+  maximum: number,
+  expectedSize: number,
+): Promise<Buffer> {
+  if (
+    !Number.isSafeInteger(maximum)
+    || maximum <= 0
+    || !Number.isSafeInteger(expectedSize)
+    || expectedSize < 0
+    || expectedSize > maximum
+  ) throw new Error("bounded input size is invalid");
+  const value = Buffer.alloc(expectedSize);
+  let offset = 0;
+  while (offset < expectedSize) {
+    const { bytesRead } = await handle.read(value, offset, expectedSize - offset, offset);
+    if (bytesRead === 0) break;
+    offset += bytesRead;
+  }
+  return offset === expectedSize ? value : value.subarray(0, offset);
 }
 
 /**
@@ -152,13 +177,21 @@ export async function readRegularFileNoFollow(
   path: string,
   operations: SafeReadOperations = {},
 ): Promise<Buffer> {
+  const maximum = operations.maxBytes ?? DEFAULT_SAFE_READ_MAX_BYTES;
+  if (!Number.isSafeInteger(maximum) || maximum <= 0) {
+    throw new Error(`planning artifact size limit is invalid: ${path}`);
+  }
   let before: BigIntStats;
   try {
     before = await lstat(path, { bigint: true });
   } catch (error: unknown) {
     throw new Error(`planning artifact must be a regular file: ${path}`, { cause: error });
   }
-  if (before.isSymbolicLink() || !before.isFile()) {
+  if (
+    before.isSymbolicLink()
+    || !before.isFile()
+    || before.size > BigInt(maximum)
+  ) {
     throw new Error(`planning artifact must be a regular file: ${path}`);
   }
 
@@ -170,7 +203,7 @@ export async function readRegularFileNoFollow(
       throw new Error(`planning artifact changed while reading: ${path}`);
     }
     await operations.afterOpen?.(path);
-    const value = await handle.readFile();
+    const value = await readDescriptor(handle, maximum, Number(opened.size));
     const afterOpen = await handle.stat({ bigint: true });
     const after = await lstat(path, { bigint: true });
     if (
@@ -191,6 +224,10 @@ export async function readRegularFileSnapshotNoFollow(
   path: string,
   operations: SafeReadOperations = {},
 ): Promise<Buffer> {
+  const maximum = operations.maxBytes ?? DEFAULT_SAFE_READ_MAX_BYTES;
+  if (!Number.isSafeInteger(maximum) || maximum <= 0) {
+    throw new Error(`planning artifact size limit is invalid: ${path}`);
+  }
   const noFollow = process.platform === "win32" ? 0 : (constants.O_NOFOLLOW ?? 0);
   for (let attempt = 0; attempt < SNAPSHOT_OPEN_ATTEMPTS; attempt += 1) {
     let before: BigIntStats;
@@ -199,7 +236,11 @@ export async function readRegularFileSnapshotNoFollow(
     } catch (error: unknown) {
       throw new Error(`planning artifact must be a regular file: ${path}`, { cause: error });
     }
-    if (before.isSymbolicLink() || !before.isFile()) {
+    if (
+      before.isSymbolicLink()
+      || !before.isFile()
+      || before.size > BigInt(maximum)
+    ) {
       throw new Error(`planning artifact must be a regular file: ${path}`);
     }
     await operations.afterPathStat?.(path);
@@ -219,7 +260,7 @@ export async function readRegularFileSnapshotNoFollow(
         throw new Error(`planning artifact changed while reading: ${path}`);
       }
       await operations.afterOpen?.(path);
-      const value = await handle.readFile();
+      const value = await readDescriptor(handle, maximum, Number(opened.size));
       const afterOpen = await handle.stat({ bigint: true });
       if (!sameOpenedSnapshot(opened, afterOpen)) {
         throw new Error(`planning artifact changed while reading: ${path}`);

@@ -740,6 +740,22 @@ test("recovers rollback journals at every durable crash boundary", async (t) => 
   }
 });
 
+test("pre-marker rollback recovery restores protected files before finalizing", async (t) => {
+  const fixture = await authenticatedRollbackVersions(t, "superppt-rollback-pre-marker-protected-");
+  await assert.rejects(rollbackToRevision(fixture.root, fixture.targetId, {
+    operations: {
+      rollbackCheckpoint: (step) => {
+        if (step === "journal-published") throw new Error("leave pre-marker journal");
+      },
+    },
+  }), /leave pre-marker journal/);
+
+  await writeFile(join(fixture.root, "brief.json"), "tampered after journal publication\n");
+  await recoverRollbackTransaction(fixture.root);
+  assert.deepEqual(await readFile(join(fixture.root, "brief.json")), fixture.beforeFiles.get("brief.json"));
+  await assert.rejects(access(join(fixture.root, "revisions", "rollback-transaction")), { code: "ENOENT" });
+});
+
 test("keeps a partial rollback fail-closed across persistent writes and later converges", async (t) => {
   const fixture = await authenticatedRollbackVersions(t, "superppt-rollback-persistent-");
   const persistentFailure = {

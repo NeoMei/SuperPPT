@@ -24,6 +24,8 @@ import { SOURCE_HEIGHT_PX, SOURCE_WIDTH_PX } from "./geometry.js";
 import { createPresentation } from "./pptx.js";
 import { publishInitialSlideIdentities } from "../deck-revisions/identity.js";
 import { bootstrapInitialDeckRevision } from "../deck-revisions/store.js";
+import { readBoundedPptxArchiveFile } from "../deck-revisions/archive.js";
+import { MAX_EDITABLE_IMAGE_PIXELS } from "../editable/limits.js";
 
 export type ImagePage = {
   id: string;
@@ -77,7 +79,7 @@ async function validateImage(
   }
   let decodedInfo: { width: number; height: number };
   try {
-    const decoded = await sharp(bytes, { failOn: "error" }).raw().toBuffer({ resolveWithObject: true });
+    const decoded = await sharp(bytes, { failOn: "error", limitInputPixels: MAX_EDITABLE_IMAGE_PIXELS }).raw().toBuffer({ resolveWithObject: true });
     decodedInfo = decoded.info;
   } catch (error: unknown) {
     throw new Error(`render is not a complete image for page ${page.id}`, { cause: error });
@@ -85,7 +87,7 @@ async function validateImage(
   if (decodedInfo.width !== SOURCE_WIDTH_PX || decodedInfo.height !== SOURCE_HEIGHT_PX) {
     throw new Error(`render must decode to 1920x1080 for page ${page.id}`);
   }
-  const original = await sharp(bytes, { failOn: "error" }).metadata();
+  const original = await sharp(bytes, { failOn: "error", limitInputPixels: MAX_EDITABLE_IMAGE_PIXELS }).metadata();
   if (original.format !== "png" && original.format !== "jpeg") {
     throw new Error(`render format must be PNG or JPEG for page ${page.id}`);
   }
@@ -423,7 +425,7 @@ async function verifyOutputs(
   renders: FinalRender[],
   paths: { pptx: string },
 ): Promise<void> {
-  const zip = await JSZip.loadAsync(await readRegularFileNoFollow(paths.pptx));
+  const zip = await readBoundedPptxArchiveFile(paths.pptx);
   const slides = Object.keys(zip.files).filter((name) => /^ppt\/slides\/slide\d+\.xml$/.test(name));
   if (slides.length !== renders.length) throw new Error("PPTX slide count does not match final renders");
   for (const [index, render] of renders.entries()) {

@@ -19,7 +19,7 @@ test("packages the approved SuperPPT identity", async () => {
   ]);
 
   assert.equal(pkg.name, "superppt");
-  assert.equal(pkg.version, "0.1.2");
+  assert.equal(pkg.version, "0.1.3");
   assert.equal(pkg.engines.node, ">=22.6");
   assert.deepEqual(pkg.author, { name: "NeoMei", url: "https://github.com/NeoMei" });
   assert.equal(pkg.license, "MIT");

@@ -144,7 +144,7 @@ function validateRoutingReport(job: ImageGenerationJob, intake: z.output<typeof 
 async function readImageArtifact(root: string, path: string, label: string): Promise<Buffer> {
   let bytes: Buffer;
   try {
-    bytes = await readOwnedRegularFile(root, path);
+    bytes = await readOwnedRegularFile(root, path, { maxBytes: MAX_IMAGE_BYTES });
   } catch (error: unknown) {
     throw new Error(`${label} artifact is unavailable or unsafe`, { cause: error });
   }
@@ -199,7 +199,7 @@ async function authenticatedArtifacts(
     .toBuffer();
   let normalizedBytes: Buffer | null = null;
   try {
-    normalizedBytes = await readOwnedRegularFile(root, normalizedPath);
+    normalizedBytes = await readOwnedRegularFile(root, normalizedPath, { maxBytes: MAX_IMAGE_BYTES });
     const metadata = await sharp(normalizedBytes, { failOn: "error", limitInputPixels: MAX_IMAGE_PIXELS }).metadata();
     if (metadata.width !== 1920 || metadata.height !== 1080 || metadata.format !== "png") {
       throw new Error("existing normalized artifact has invalid dimensions");
@@ -215,7 +215,7 @@ async function authenticatedArtifacts(
   }
   if (publishNormalized) {
     let alreadyPublished = true;
-    try { await readOwnedRegularFile(root, normalizedPath); } catch (error: unknown) {
+    try { await readOwnedRegularFile(root, normalizedPath, { maxBytes: MAX_IMAGE_BYTES }); } catch (error: unknown) {
       if (!isMissing(error)) throw error;
       alreadyPublished = false;
     }

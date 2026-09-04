@@ -236,7 +236,7 @@ async function publishPlanningViews(
       await syncDirectory(parent);
       await options.operations?.checkpoint?.("snapshot-published");
 
-      const journalRoot = join(canonicalRoot, ".superppt-view-journals");
+      const journalRoot = join(canonicalRoot, journalName);
       await ensureDirectory(journalRoot);
       const pending = join(journalRoot, `${publicationId}.pending.json`);
       await writeDurableExclusive(pending, `${JSON.stringify(pointer, null, 2)}\n`);

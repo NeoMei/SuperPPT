@@ -5,6 +5,20 @@ import { z } from "zod";
 import { RoleSchema } from "../planning/schemas.js";
 import { ArtifactSchema, Sha256Schema } from "../project/schemas.js";
 
+const CREDENTIAL_LIKE_DIAGNOSTIC = /(?:\bauthorization\s*:|\bbearer\s+[A-Za-z0-9._~+\/-]{8,}|\b(?:api[_-]?key|access[_-]?token|password|secret|x-amz-signature)\b\s*[:=]\s*(?!\[REDACTED\])\S+|\b(?:sk|rk|pk)-[A-Za-z0-9_-]{12,}|https?:\/\/\S+[?&](?:token|key|signature|sig|x-amz-credential)=)/i;
+
+function delegatedDiagnostic(maximum: number, requireText = false) {
+  let schema = z.string().refine(
+    (value) => Array.from(value).length <= maximum,
+    `delegated diagnostic exceeds ${maximum} characters`,
+  ).refine(
+    (value) => !CREDENTIAL_LIKE_DIAGNOSTIC.test(value) && !/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f-\u009f]/u.test(value),
+    "delegated diagnostic contains secret-like or unsafe text",
+  );
+  if (requireText) schema = schema.min(1);
+  return schema;
+}
+
 export const QualityDecisionSchema = z.object({
   ok: z.boolean(),
   issues: z.array(z.string().min(1)),
@@ -55,7 +69,7 @@ export const DependencyGenerationResultSchema = z.object({
   provider: z.enum(["openai", "gemini", "doubao"]),
   channel: z.enum(["host", "api"]),
   output_path: z.string().min(1).nullable(),
-  safe_message: z.string().refine((value) => Array.from(value).length <= 300, "safe_message exceeds 300 characters"),
+  safe_message: delegatedDiagnostic(300),
 }).strict().superRefine((result, context) => {
   if (result.status === "success") {
     if (!result.output_path || !isAbsolute(result.output_path)) {
@@ -79,7 +93,7 @@ const SerialStickyPageSchema = z.object({
   page: z.number().int().positive(),
   outcome: z.enum(["success", "cached", "fatal", "exhausted"]),
   candidate: RoutingCandidateSchema.nullable(),
-  summary: z.string(),
+  summary: delegatedDiagnostic(2_000),
 }).strict().superRefine((page, context) => {
   const requiresCandidate = page.outcome === "success" || page.outcome === "fatal";
   if (requiresCandidate !== (page.candidate !== null)) {
@@ -91,7 +105,7 @@ const SerialStickySwitchSchema = z.object({
   page: z.number().int().positive(),
   from: RoutingCandidateSchema,
   to: RoutingCandidateSchema,
-  reason: z.string().min(1),
+  reason: delegatedDiagnostic(500, true),
 }).strict();
 
 export const SerialStickyReportSchema = z.object({

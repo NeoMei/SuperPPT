@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
-import { lstat, readFile, readdir, realpath } from "node:fs/promises";
+import { readdir, realpath } from "node:fs/promises";
 import { join } from "node:path";
 import { z } from "zod";
 
@@ -54,6 +54,8 @@ import type { RevisionEvidenceOperations } from "../revisions/anchored-fs.js";
 
 export const MARKER = ".superppt-project.json";
 export const MANIFEST = "superppt.json";
+const MAX_OWNERSHIP_MARKER_BYTES = 64 * 1024;
+const MAX_PROJECT_MANIFEST_BYTES = 16 * 1024 * 1024;
 
 const PresentedDeckEditSessionSchema = z.object({
   sessionId: z.string().uuid(),
@@ -356,18 +358,23 @@ function preservesArtifactEvidence(
 }
 
 function isExactCurrentDeckReviewReset(
+  root: string,
   previous: ProjectManifest,
   next: ProjectManifest,
 ): boolean {
+  const deliveryArtifact = previous.exports.pptx;
   if (
     previous.stage !== "delivered"
     || next.stage !== "deck-review"
     || !previous.currentDeck
     || !previous.formalDelivery
+    || !deliveryArtifact
     || previous.formalDelivery.revisionId !== previous.currentDeck.revisionId
     || previous.formalDelivery.sha256 !== previous.currentDeck.sha256
-    || previous.exports.pptx?.path !== previous.currentDeck.relativePath
-    || previous.exports.pptx.sha256 !== previous.currentDeck.sha256
+    || !/^交付\/[^/]+\.pptx$/i.test(deliveryArtifact.path)
+    || previous.formalDelivery.absolutePath !== join(root, ...deliveryArtifact.path.split("/"))
+    || deliveryArtifact.revisionId !== previous.currentRevision.id
+    || deliveryArtifact.sha256 !== previous.currentDeck.sha256
     || !previous.exports.acceptance
     || next.exports.pptx !== null
     || next.exports.acceptance !== null
@@ -489,13 +496,6 @@ export function createOwnershipMarker(
   });
 }
 
-async function requireRegularFile(path: string): Promise<void> {
-  const info = await lstat(path);
-  if (info.isSymbolicLink() || !info.isFile()) {
-    throw new Error("project directory is not owned by SuperPPT");
-  }
-}
-
 async function ownedProject(root: string): Promise<{
   root: string;
   manifest: ProjectManifest;
@@ -506,15 +506,14 @@ async function ownedProject(root: string): Promise<{
   try {
     const markerPath = join(canonical, MARKER);
     const manifestPath = join(canonical, MANIFEST);
-    await requireRegularFile(markerPath);
+    const markerBytes = await readRegularFileNoFollow(markerPath, { maxBytes: MAX_OWNERSHIP_MARKER_BYTES });
     const marker = OwnershipMarkerSchema.parse(
-      JSON.parse(await readFile(markerPath, "utf8")),
+      JSON.parse(markerBytes.toString("utf8")),
     );
     if (marker.canonicalRoot !== canonical) {
       throw new Error("marker root mismatch");
     }
-    await requireRegularFile(manifestPath);
-    const manifestBytes = await readFile(manifestPath);
+    const manifestBytes = await readRegularFileNoFollow(manifestPath, { maxBytes: MAX_PROJECT_MANIFEST_BYTES });
     const manifest = ProjectManifestSchema.parse(JSON.parse(manifestBytes.toString("utf8")));
     if (marker.projectId !== manifest.projectId) {
       throw new Error("marker project mismatch");
@@ -571,7 +570,7 @@ async function persistProject(
       : owned.manifest;
   if (
     !preservesArtifactEvidence(owned.manifest, valid)
-    && !isExactCurrentDeckReviewReset(owned.manifest, valid)
+    && !isExactCurrentDeckReviewReset(owned.root, owned.manifest, valid)
     && !(mode === "revision-append"
       && owned.manifest.stage === "delivered"
       && owned.manifest.clientSmokeCopyAnchor?.state === "completed")

@@ -1,18 +1,18 @@
 # SuperPPT Windows 交接与验证指南
 
-更新日期：2026-09-03。本文面向在 Windows 机器上接手 SuperPPT 验证与后续开发的同学，说明当前发布状态、可执行的验证步骤、测试能力边界，以及 Windows 相关修复的背景。
+更新日期：2026-09-05。本文面向在 Windows 机器上接手 SuperPPT 验证与后续开发的同学，说明当前发布状态、可执行的验证步骤、测试能力边界，以及 Windows 相关修复的背景。
 
 ## 1. 当前发布状态
 
 | 项 | 状态 |
 | --- | --- |
 | 仓库 | https://github.com/NeoMei/SuperPPT （公开） |
-| Release | [SuperPPT v0.1.2](https://github.com/NeoMei/SuperPPT/releases/tag/v0.1.2)（当前版本）；历史版本 [v0.1.1](https://github.com/NeoMei/SuperPPT/releases/tag/v0.1.1)、[v0.1.0](https://github.com/NeoMei/SuperPPT/releases/tag/v0.1.0) |
-| 发布产物 | `superppt-0.1.2.tgz` + `SHA256SUMS`，由 tag workflow 生成校验和与 sigstore artifact attestation |
-| 上游 main HEAD（本文复核时） | `v0.1.2` tag commit |
+| Release | [SuperPPT v0.1.3](https://github.com/NeoMei/SuperPPT/releases/tag/v0.1.3)（当前版本）；历史版本 [v0.1.2](https://github.com/NeoMei/SuperPPT/releases/tag/v0.1.2)、[v0.1.1](https://github.com/NeoMei/SuperPPT/releases/tag/v0.1.1)、[v0.1.0](https://github.com/NeoMei/SuperPPT/releases/tag/v0.1.0) |
+| 发布产物 | `superppt-0.1.3.tgz` + `SHA256SUMS`，由 tag workflow 生成校验和与 sigstore artifact attestation |
+| 上游 main HEAD（本文复核时） | `v0.1.3` tag commit |
 | 三平台 CI | ubuntu / macos / windows 均为发布门禁 |
 
-重要：`v0.1.0` tag 指向 `2923c07`，早于三个 Windows 修复提交，其产物在 Windows 上存在 Style Lock 创建失败的问题（原因见第 5 节）；`v0.1.1` 已包含首轮修复，`v0.1.2` 进一步加入完整 Windows 原子发布、跨平台全量门禁和依赖审计。Windows 环境请使用 v0.1.2 或 main。
+重要：`v0.1.0` tag 指向 `2923c07`，早于三个 Windows 修复提交，其产物在 Windows 上存在 Style Lock 创建失败的问题（原因见第 5 节）；`v0.1.1` 已包含首轮修复，`v0.1.2` 进一步加入完整 Windows 原子发布、跨平台全量门禁和依赖审计，`v0.1.3` 加入浅层语义交付路径与交付身份强化。Windows 环境请使用 v0.1.3 或 main。
 
 ## 2. Windows 快速验证
 
@@ -48,7 +48,7 @@ npm run verify:full        # 完整跨平台门禁
 npm run test:portable      # 仅便携测试
 npm run lint:types         # 类型检查
 npm run build              # 构建 dist/
-npm run release:check -- --root "$($PWD.Path)" --tag v0.1.2  # 发布契约检查（版本/tag/工作流绑定）
+npm run release:check -- --root "$($PWD.Path)" --tag v0.1.3  # 发布契约检查（版本/tag/工作流绑定）
 npm run cli                # CLI 入口（tsx src/cli.ts）
 ```
 
@@ -69,7 +69,7 @@ npm run cli                # CLI 入口（tsx src/cli.ts）
 
 ## 6. 已知未处理事项
 
-- v0.1.0 发布产物不含 Windows 修复；Windows 环境应使用 v0.1.2。
+- v0.1.0 发布产物不含 Windows 修复；Windows 环境应使用 v0.1.3。
 - `ai-image-to-ppt` 的生成和 host-image import 原生 Windows 不受支持，这是其已声明的安全边界；可在 Windows 运行 `python scripts/run_windows_tests.py` 验证 export、editable-input preparation、routing、recovery、validation 和 vision-check 等受支持能力。
 
 ## 7. 架构与契约文档索引

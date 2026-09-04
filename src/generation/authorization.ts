@@ -13,6 +13,7 @@ import { loadValidatedPlan } from "../planning/load.js";
 import { SlideSpecSchema } from "../planning/schemas.js";
 import { validateExecutionGateEvidence, validateOrdinaryGateEvidence } from "../project/evidence.js";
 import { readOwnedRegularFile, readRegularFileNoFollow } from "../project/safe-file.js";
+import { isolatedChildEnvironment } from "../process/environment.js";
 import { assertProjectMutationNotFrozen, readProject } from "../project/store.js";
 import { canonicalStyleSample } from "../styles/sample-contract.js";
 import { compileSlidePrompt } from "../styles/prompt-compiler.js";
@@ -109,7 +110,9 @@ async function assertGitRevisionCurrent(root: string, expected: string | null): 
   if (expected === null) return;
   let current: string;
   try {
-    current = (await execFileAsync("git", ["-C", root, "rev-parse", "HEAD"])).stdout.trim();
+    current = (await execFileAsync("git", ["-C", root, "rev-parse", "HEAD"], {
+      env: isolatedChildEnvironment(),
+    })).stdout.trim();
   } catch (error: unknown) {
     throw new Error("ai-image-to-ppt Skill Git revision changed", { cause: error });
   }

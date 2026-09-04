@@ -106,23 +106,42 @@ if (
   || ciJob.steps?.some((step) => String(step.run ?? "").includes("scripts/verify.sh"))
 ) fail("public CI must run the portable gate on the exact three-OS matrix");
 
-const releaseJob = release.jobs?.release;
-const releaseRuns = releaseJob?.steps?.map((step) => step.run).filter(Boolean) ?? [];
+const releaseBuildJob = release.jobs?.build;
+const releasePublishJob = release.jobs?.publish;
+const releaseBuildRuns = releaseBuildJob?.steps?.map((step) => step.run).filter(Boolean) ?? [];
+const releasePublishRuns = releasePublishJob?.steps?.map((step) => step.run).filter(Boolean) ?? [];
+const actionPins = {
+  checkout: "actions/checkout@11d5960a326750d5838078e36cf38b85af677262",
+  setupNode: "actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020",
+  attest: "actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6",
+  uploadArtifact: "actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02",
+  downloadArtifact: "actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093",
+};
+const ciUses = ciJob?.steps?.map((step) => step.uses).filter(Boolean) ?? [];
+const releaseBuildUses = releaseBuildJob?.steps?.map((step) => step.uses).filter(Boolean) ?? [];
+const releasePublishUses = releasePublishJob?.steps?.map((step) => step.uses).filter(Boolean) ?? [];
 if (
   release.name !== "Release"
   || JSON.stringify(release.on) !== JSON.stringify({ push: { tags: ["v*"] } })
-  || release.permissions?.contents !== "write"
-  || release.permissions?.["id-token"] !== "write"
-  || release.permissions?.attestations !== "write"
-  || release.permissions?.["artifact-metadata"] !== "write"
-  || releaseJob?.["runs-on"] !== "ubuntu-latest"
-  || !releaseJob.steps?.some((step) => step.run === "npm run verify:portable")
-  || !releaseJob.steps?.some((step) => step.run === "npm run test:release-install")
-  || !releaseRuns.some((run) => run.includes("npm run release:check -- --root") && run.includes("$GITHUB_REF_NAME"))
-  || !releaseRuns.some((run) => run.includes("npm pack --pack-destination release-artifacts"))
-  || !releaseRuns.some((run) => run.includes("sha256sum") && run.includes("SHA256SUMS"))
-  || !releaseJob.steps?.some((step) => step.uses === "actions/attest@v4" && step.with?.["subject-path"] === "release-artifacts/*")
-  || !releaseRuns.some((run) => run.includes("gh release create") && run.includes("--verify-tag"))
+  || JSON.stringify(release.permissions) !== JSON.stringify({ contents: "read" })
+  || JSON.stringify(releaseBuildJob?.permissions) !== JSON.stringify({ contents: "read" })
+  || releaseBuildJob?.["runs-on"] !== "ubuntu-latest"
+  || !releaseBuildJob.steps?.some((step) => step.run === "npm run verify:portable")
+  || !releaseBuildJob.steps?.some((step) => step.run === "npm run test:release-install")
+  || !releaseBuildRuns.some((run) => run.includes("git merge-base --is-ancestor") && run.includes("node scripts/verify-release.mjs") && run.includes("$GITHUB_REF_NAME"))
+  || !releaseBuildRuns.some((run) => run.includes("npm pack --pack-destination release-artifacts"))
+  || !releaseBuildRuns.some((run) => run.includes("sha256sum") && run.includes("SHA256SUMS"))
+  || JSON.stringify(releasePublishJob?.needs) !== JSON.stringify(["build"])
+  || releasePublishJob?.permissions?.contents !== "write"
+  || releasePublishJob?.permissions?.["id-token"] !== "write"
+  || releasePublishJob?.permissions?.attestations !== "write"
+  || releasePublishJob?.permissions?.["artifact-metadata"] !== "write"
+  || releasePublishJob?.["runs-on"] !== "ubuntu-latest"
+  || !releasePublishJob.steps?.some((step) => step.uses === actionPins.attest && step.with?.["subject-path"] === "release-artifacts/*")
+  || !releasePublishRuns.some((run) => run.includes("gh release create") && run.includes("--verify-tag"))
+  || JSON.stringify(ciUses) !== JSON.stringify([actionPins.checkout, actionPins.setupNode])
+  || JSON.stringify(releaseBuildUses) !== JSON.stringify([actionPins.checkout, actionPins.setupNode, actionPins.uploadArtifact])
+  || JSON.stringify(releasePublishUses) !== JSON.stringify([actionPins.downloadArtifact, actionPins.attest])
 ) fail("tag release workflow must verify, package, checksum, attest, and publish one GitHub Release");
 
 const scripts = pkg.scripts ?? {};

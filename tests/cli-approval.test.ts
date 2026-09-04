@@ -188,15 +188,20 @@ test("manual commands return one clickable complete PPTX and adopt only saved-an
   ]);
   assert.equal(delivery.stage, "delivered");
   const delivered = await readProject(project.root);
+  const finalPath = join(project.root, "交付", "本地完整演示.pptx");
   assert.equal(delivered.formalDelivery?.revisionId, adopted.currentRevisionId);
-  assert.equal(delivered.formalDelivery?.absolutePath, prepared.absolutePath);
+  assert.equal(delivered.formalDelivery?.absolutePath, finalPath);
   assert.equal(delivered.formalDelivery?.sha256, adopted.sha256);
-  assert.equal(delivered.exports.pptx?.path, `output/deck-revisions/${adopted.currentRevisionId}/deck.pptx`);
+  assert.equal(delivered.exports.pptx?.path, "交付/本地完整演示.pptx");
   const acceptance = JSON.parse(await readFile(join(project.root, delivered.exports.acceptance!.path), "utf8"));
   assert.deepEqual(acceptance.completeDeck, delivered.formalDelivery);
   assert.deepEqual(acceptance.formalDelivery, delivered.formalDelivery);
   assert.deepEqual(acceptance.exports.pptx, delivered.formalDelivery);
   assert.deepEqual(acceptance.client.completeDeck, delivered.formalDelivery);
+  assert.deepEqual(await readFile(finalPath), savedBytes, "final delivery is a byte-identical shallow publication");
+  const finalLink = await runCliJson(["current-deck-link", "--project", project.root]);
+  assert.equal(finalLink.absolutePath, finalPath);
+  assert.equal(finalLink.linkLabel, "本地完整演示.pptx");
   assert.deepEqual(await readFile(prepared.absolutePath), savedBytes, "manual adopt through acceptance remains byte-identical");
 });
 
@@ -212,15 +217,21 @@ test("complete-deck-review CLI authenticates all three choices and confirm-deliv
   ]);
   assert.equal(confirmed.action, "confirm-delivery");
   assert.equal(confirmed.stage, "delivered");
+  const finalPath = join(project.root, "交付", "本地完整演示.pptx");
+  assert.equal(confirmed.finalDeck.kind, "complete-local-pptx");
+  assert.equal(confirmed.finalDeck.absolutePath, finalPath);
+  assert.equal(confirmed.finalDeck.linkLabel, "本地完整演示.pptx");
+  assert.equal(confirmed.finalDeck.markdownLink, `[本地完整演示.pptx](<${finalPath}>)`);
+  assert.doesNotMatch(confirmed.finalDeck.absolutePath, /deck-revisions/);
   const manifest = await readProject(project.root);
   assert.equal(manifest.stage, "delivered");
   assert.deepEqual(manifest.formalDelivery, {
     revisionId: project.revisionId,
-    absolutePath: project.absolutePath,
+    absolutePath: finalPath,
     sha256: digest(before),
   });
   assert.deepEqual(manifest.exports.pptx, {
-    path: `output/deck-revisions/${project.revisionId}/deck.pptx`,
+    path: "交付/本地完整演示.pptx",
     sha256: digest(before),
     revisionId: manifest.currentRevision.id,
   });
@@ -231,6 +242,7 @@ test("complete-deck-review CLI authenticates all three choices and confirm-deliv
   assert.deepEqual(acceptance.exports.pptx, manifest.formalDelivery);
   assert.deepEqual(acceptance.client.completeDeck, manifest.formalDelivery);
   assert.equal(acceptance.actionEvidenceSha256, confirmed.evidence.actionEvidenceSha256);
+  assert.deepEqual(await readFile(finalPath), before, "formal delivery publishes exact bytes at a shallow semantic path");
   assert.deepEqual(await readFile(project.absolutePath), before, "formal delivery must not rewrite current PPTX bytes");
 
   const stale = await cliProject(t);
@@ -623,4 +635,43 @@ test("local-link preflight fails before touching an invalid project", async () =
       return true;
     },
   );
+});
+
+test("confirm delivery requires local handoff capabilities before mutating the project", async (t) => {
+  const project = await cliProject(t);
+  const current = await readCurrentDeckPointer(project.root);
+  await assert.rejects(
+    runCli([
+      "complete-deck-review", "--project", project.root, "--action", "confirm-delivery",
+      "--revision-id", current.revisionId, "--sha256", current.sha256,
+    ], JSON.stringify({
+      source: "agent-host",
+      localFilesystem: false,
+      localFileLinks: false,
+    })),
+    (error: unknown) => {
+      assert.match(String((error as { stderr?: string }).stderr ?? error), /local filesystem|local file links/i);
+      return true;
+    },
+  );
+  assert.equal((await readProject(project.root)).stage, "deck-review");
+  assert.deepEqual(await readdir(join(project.root, "交付")).catch(() => []), []);
+});
+
+test("current deck link rejects final artifact metadata from another project revision", async (t) => {
+  const project = await cliProject(t);
+  const current = await readCurrentDeckPointer(project.root);
+  await runCliJson([
+    "complete-deck-review", "--project", project.root, "--action", "confirm-delivery",
+    "--revision-id", current.revisionId, "--sha256", current.sha256,
+  ]);
+  const manifestPath = join(project.root, "superppt.json");
+  const manifest = JSON.parse(await readFile(manifestPath, "utf8")) as Record<string, any>;
+  manifest.exports.pptx.revisionId = randomUUID();
+  await writeFile(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`);
+
+  await assert.rejects(runCli(["current-deck-link", "--project", project.root]), (error: unknown) => {
+    assert.match(String((error as { stderr?: string }).stderr ?? error), /revision|final delivery|bind/i);
+    return true;
+  });
 });
