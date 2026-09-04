@@ -1,6 +1,6 @@
 # SuperPPT macOS 交接与接力开发指南
 
-更新日期：2026-09-04。本文面向在 macOS 上继续开发、联调和发布 SuperPPT 的接手者。以下状态已在 Windows 交接机上复核；到 Mac 后仍应按本文重新跑门禁，不要把历史通过结果当作当前机器的结果。
+更新日期：2026-09-05。本文面向在 macOS 上继续开发、联调和发布 SuperPPT 的接手者。以下状态已在 Windows 交接机上复核；到 Mac 后仍应按本文重新跑门禁，不要把历史通过结果当作当前机器的结果。
 
 ## 1. 交接状态
 
@@ -8,13 +8,11 @@ SuperPPT 由三个独立 Git 仓库协作，不是 monorepo，也不通过根仓
 
 | 仓库 | 当前交接基线 | 发布状态 |
 | --- | --- | --- |
-| [NeoMei/SuperPPT](https://github.com/NeoMei/SuperPPT) | `v0.1.2` tag 为 `3fc5f950b9dba4819199a58dbce9b5430eb739d9`；`main` 还包含本文档提交 | [v0.1.2](https://github.com/NeoMei/SuperPPT/releases/tag/v0.1.2) 已正常发布 |
+| [NeoMei/SuperPPT](https://github.com/NeoMei/SuperPPT) | `v0.1.3` tag / `main` | [v0.1.3](https://github.com/NeoMei/SuperPPT/releases/tag/v0.1.3) 已正常发布 |
 | [NeoMei/ai-image-to-ppt](https://github.com/NeoMei/ai-image-to-ppt) | `main` 为 `86deb88f50cc9305ad215da716dda1624424d0a8` | 当前没有独立版本/tag 发布约定，以 `main` 和能力清单为准 |
-| [NeoMei/image-to-editable-pptx](https://github.com/NeoMei/image-to-editable-pptx) | `main` / `v0.2.1` 为 `8013ebfef3e08000ce35e1275f2640866b71df5c` | [GitHub v0.2.1](https://github.com/NeoMei/image-to-editable-pptx/releases/tag/v0.2.1) 已发布；npm registry 仍是 `0.2.0` |
+| [NeoMei/image-to-editable-pptx](https://github.com/NeoMei/image-to-editable-pptx) | `v0.2.2` tag / `main` | [GitHub v0.2.2](https://github.com/NeoMei/image-to-editable-pptx/releases/tag/v0.2.2) 与 npm `0.2.2` 已发布 |
 
-SuperPPT v0.1.2 的最终 Release workflow 已通过：[Actions run 33785072029](https://github.com/NeoMei/SuperPPT/actions/runs/33785072029)。发布资产为 `superppt-0.1.2.tgz` 和 `SHA256SUMS`；tgz 的 SHA-256 是 `222e33d64d83f0c5ecf78f8db3da9dc4296fba0204dad0a5d745e3c6528c7659`。
-
-当前唯一明确未完成的发布事项：`image-to-editable-pptx@0.2.1` 尚未发布到 npm。GitHub Release 已存在，不要重复建 tag 或 Release；完成 npm 登录后只补 npm 发布。
+SuperPPT v0.1.3 的 Release workflow 会生成 `superppt-0.1.3.tgz` 与 `SHA256SUMS`，并为发布资产写入 artifact attestation。`image-to-editable-pptx@0.2.2` 同时完成 GitHub Release 与 npm 发布，两个渠道必须保持同版本。
 
 ## 2. Mac 首次拉取与目录布局
 
@@ -83,7 +81,7 @@ cd "$STACK/SuperPPT"
 npm run verify:portable
 npm run verify:full
 npm run test:release-install
-npm run release:check -- --root "$PWD" --tag v0.1.2
+npm run release:check -- --root "$PWD" --tag v0.1.3
 ```
 
 `verify:portable` 与 GitHub 的 Linux/macOS/Windows 公共 runner 门禁一致。`verify:full` 会继续执行完整源码和编译产物测试、类型检查、构建、依赖审计及 diff 检查。
@@ -154,14 +152,14 @@ AI provider 的 host-first 路由和可选 API 凭证请以 `ai-image-to-ppt/SKI
 - SuperPPT 是 image-first：只保证成功提取的文字/素材可编辑，背景、主插画、整体布局和未可靠提取对象不承诺全可编辑。
 - V1 输入只接受描述、粘贴文本或 Markdown，不直接摄取 DOCX、PDF 或既有 PPTX。
 - SuperPPT 根包保持 `private: true`，只走 GitHub/Codex 插件发布，不发 npm。
-- `image-to-editable-pptx@0.2.1` 的 GitHub Release 已完成，但 npm registry 仍为 `0.2.0`。
+- `image-to-editable-pptx@0.2.2` 的 GitHub Release 与 npm registry 已保持一致。
 - SuperPPT 与 editable 的依赖审计临时接受 PptxGenJS 4.0.1 未使用的 `image-size` 声明带来的两个不可达公告；例外绑定精确版本，并在 2026-10-03 到期复审。依赖变化或新增公告应继续 fail closed。
 - macOS 默认文件系统通常大小写不敏感；CI 的 Linux runner 大小写敏感。新增或重命名文件后应依赖 Git 记录真实 case，并确保 `verify:portable` 在 CI 继续通过。
 - 不要把 AI 原始图、可编辑转换目录、用户内容或恢复目录当作源码提交。恢复警告里报告的路径可能包含敏感内容，应先人工处理再清理。
 
-## 8. 补发 image-to-editable-pptx 0.2.1 到 npm
+## 8. 验证 image-to-editable-pptx 发布链
 
-这是接手后优先完成的发布任务。只在 `image-to-editable-pptx` 工作树干净、`main` 指向 `8013ebf...`、完整门禁通过且 npm 账号已获授权时执行：
+只有在 `image-to-editable-pptx` 工作树干净、完整门禁通过且 npm 账号已获授权时执行新版本发布：
 
 ```bash
 cd "$STACK/image-to-editable-pptx"
@@ -176,7 +174,7 @@ npm publish --access public
 npm view image-to-editable-pptx version
 ```
 
-预期最后一条返回 `0.2.1`。如果 npm 已存在该版本，不要重复发布；先检查包页面、发布者和 tarball 内容。不要修改版本号来绕过登录、权限、2FA 或 provenance 问题。
+预期最后一条返回当前 GitHub Release 对应的版本。若 npm 已存在该版本，不要重复发布；先检查包页面、发布者和 tarball 内容。不要修改版本号来绕过登录、权限、2FA 或 provenance 问题。
 
 ## 9. 后续发布规则
 
