@@ -1,6 +1,6 @@
 import { execFile } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
-import { lstat, mkdir, readFile, realpath, rm, unlink } from "node:fs/promises";
+import { lstat, mkdir, realpath, rm, unlink } from "node:fs/promises";
 import { basename, dirname, extname, isAbsolute, join, posix, relative, resolve } from "node:path";
 import { isDeepStrictEqual, promisify } from "node:util";
 import JSZip from "jszip";
@@ -20,7 +20,10 @@ import { syncDirectory, writeDurableExclusive } from "../project/durable.js";
 import { validateProjectRoot } from "../project/paths.js";
 import { readOwnedRegularFile, readRegularFileNoFollow } from "../project/safe-file.js";
 import { assertProjectMutationNotFrozen, readProject, sha256 as projectSha256 } from "../project/store.js";
+import { isolatedChildEnvironment } from "../process/environment.js";
 import { scanOoxmlRanges, type OoxmlElementRange } from "../deck-revisions/ooxml.js";
+import { loadBoundedPptxArchive } from "../deck-revisions/archive.js";
+import { MAX_EDITABLE_IMAGE_PIXELS } from "./limits.js";
 import {
   AuthenticatedEditableConversionSchema,
   ConversionRecordSchema,
@@ -199,7 +202,7 @@ async function boundedRegularFile(path: string, maximum: number, label: string):
     throw new Error(`${label} must be a regular non-symlink file`);
   }
   try {
-    return await readRegularFileNoFollow(path);
+    return await readRegularFileNoFollow(path, { maxBytes: maximum });
   } catch (error: unknown) {
     throw new Error(`${label} must be a regular non-symlink file`, { cause: error });
   }
@@ -257,8 +260,8 @@ async function exactPng(path: string, width: number, height: number, label: stri
   const bytes = await boundedRegularFile(path, MAX_OUTPUT, label);
   let metadata;
   try {
-    metadata = await sharp(bytes).metadata();
-    await sharp(bytes).raw().toBuffer();
+    metadata = await sharp(bytes, { failOn: "error", limitInputPixels: MAX_EDITABLE_IMAGE_PIXELS }).metadata();
+    await sharp(bytes, { failOn: "error", limitInputPixels: MAX_EDITABLE_IMAGE_PIXELS }).raw().toBuffer();
   } catch (error: unknown) {
     throw new Error(`${label} must be a valid PNG`, { cause: error });
   }
@@ -271,8 +274,8 @@ async function exactPng(path: string, width: number, height: number, label: stri
 async function decodedPng(path: string, label: string): Promise<Buffer> {
   const bytes = await boundedRegularFile(path, MAX_OUTPUT, label);
   try {
-    const metadata = await sharp(bytes).metadata();
-    await sharp(bytes).raw().toBuffer();
+    const metadata = await sharp(bytes, { failOn: "error", limitInputPixels: MAX_EDITABLE_IMAGE_PIXELS }).metadata();
+    await sharp(bytes, { failOn: "error", limitInputPixels: MAX_EDITABLE_IMAGE_PIXELS }).raw().toBuffer();
     if (metadata.format !== "png") throw new Error("not PNG");
   } catch (error: unknown) {
     throw new Error(`${label} must be a valid PNG`, { cause: error });
@@ -305,9 +308,10 @@ async function exactOwnedPreparedPng(revisionRoot: string, path: string): Promis
 
 async function transparentPng(bytes: Buffer): Promise<boolean> {
   try {
-    const metadata = await sharp(bytes).metadata();
+    const metadata = await sharp(bytes, { failOn: "error", limitInputPixels: MAX_EDITABLE_IMAGE_PIXELS }).metadata();
     if (metadata.format !== "png" || !metadata.hasAlpha) return false;
-    const { data, info } = await sharp(bytes).ensureAlpha().raw().toBuffer({ resolveWithObject: true });
+    const { data, info } = await sharp(bytes, { failOn: "error", limitInputPixels: MAX_EDITABLE_IMAGE_PIXELS })
+      .ensureAlpha().raw().toBuffer({ resolveWithObject: true });
     const alpha = info.channels - 1;
     for (let index = alpha; index < data.length; index += info.channels) {
       if (data[index]! < 255) return true;
@@ -610,12 +614,7 @@ export async function inspectOfficialEditableDonor(
   evidence?: { cleanBackgroundSha256: string; assets: Record<string, string> },
   expectedObjectNames = DEFAULT_EDITABLE_OUTPUT_CONTRACT.objectNames,
 ): Promise<OfficialEditableDonorInspection> {
-  let zip: JSZip;
-  try {
-    zip = await JSZip.loadAsync(bytes);
-  } catch (error: unknown) {
-    throw new Error("official editable donor PPTX is invalid", { cause: error });
-  }
+  const zip = await loadBoundedPptxArchive(bytes);
   const names = Object.keys(zip.files).filter((name) => !zip.files[name]!.dir);
   const forbidden = names.find((name) =>
     /(?:vbaProject|\/embeddings\/|\/activeX\/|\/charts\/|\/diagrams\/)/i.test(name)
@@ -740,8 +739,8 @@ export async function inspectOfficialEditableDonor(
       const mediaBytes = await zip.file(targetPart)!.async("nodebuffer");
       let metadata;
       try {
-        metadata = await sharp(mediaBytes).metadata();
-        await sharp(mediaBytes).raw().toBuffer();
+        metadata = await sharp(mediaBytes, { failOn: "error", limitInputPixels: MAX_EDITABLE_IMAGE_PIXELS }).metadata();
+        await sharp(mediaBytes, { failOn: "error", limitInputPixels: MAX_EDITABLE_IMAGE_PIXELS }).raw().toBuffer();
       } catch (error: unknown) {
         throw new Error("official editable donor image relationship is not a decodable PNG", { cause: error });
       }
@@ -999,7 +998,8 @@ export async function prepareConversionInput(source: string, target: string): Pr
   } catch (error: unknown) {
     if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
   }
-  const output = await sharp(input).resize(1280, 720, { fit: "cover", position: "centre" }).png().toBuffer();
+  const output = await sharp(input, { failOn: "error", limitInputPixels: MAX_EDITABLE_IMAGE_PIXELS })
+    .resize(1280, 720, { fit: "cover", position: "centre" }).png().toBuffer();
   await writeDurableExclusive(target, output);
   await syncDirectory(parent);
   await exactPng(target, 1280, 720, "conversion input");
@@ -1028,7 +1028,7 @@ export async function runEditableConversion(options: {
       ["run", invocation.script, invocation.separator, invocation.subcommand, invocation.inputFlag, options.sourcePng, invocation.outputFlag, options.outDir],
       {
         cwd: converterRoot,
-        env: { ...process.env },
+        env: isolatedChildEnvironment(),
         windowsHide: true,
         maxBuffer: 4 * 1024 * 1024,
       },
@@ -1259,7 +1259,7 @@ export async function convertProjectPage(options: {
   if (sourceMaster.revisionId !== manifest.currentRevision.id) throw new Error("editable conversion final render is stale");
   const render = await readOwnedRegularFile(root, sourceMaster.path);
   if (projectSha256(render) !== sourceMaster.sha256) throw new Error("editable conversion final render hash mismatch");
-  const metadata = await sharp(render).metadata();
+  const metadata = await sharp(render, { failOn: "error", limitInputPixels: MAX_EDITABLE_IMAGE_PIXELS }).metadata();
   if (metadata.width !== 1920 || metadata.height !== 1080) throw new Error("editable conversion requires the current 1920x1080 page render");
 
   const revisionId = options.idFactory?.() ?? randomUUID();
@@ -1295,7 +1295,7 @@ export async function convertProjectPage(options: {
     try {
       prepared = await executePrepare("python3", [scriptPath, join(root, ...sourceMaster.path.split("/")), sourcePng], {
         cwd: options.dependencies.ai.root,
-        env: { ...process.env },
+        env: isolatedChildEnvironment(),
         windowsHide: true,
         maxBuffer: 1024 * 1024,
       });
@@ -1393,7 +1393,9 @@ export async function convertProjectPage(options: {
     return { ...converted, revisionId, revisionRoot, sourcePng, conversionRecord };
   } catch (error: unknown) {
     try {
-      const marker = EditableConversionStagingMarkerSchema.parse(JSON.parse(await readFile(stagingMarkerPath, "utf8")));
+      const marker = EditableConversionStagingMarkerSchema.parse(JSON.parse(
+        (await boundedRegularFile(stagingMarkerPath, MAX_JSON, "conversion staging marker")).toString("utf8"),
+      ));
       const info = await lstat(revisionRoot);
       if (
         JSON.stringify(marker) !== JSON.stringify(stagingMarker)

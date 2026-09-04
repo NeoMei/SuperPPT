@@ -2,6 +2,7 @@ import { z } from "zod";
 
 import { EditableManifestV2Schema, Sha256Schema } from "./schemas.js";
 import { EditOperationSchema, type EditOperation } from "./operations.js";
+import { MAX_EDIT_OPERATIONS } from "./limits.js";
 import {
   ChangeRequestSchema,
   ImpactPlanSchema,
@@ -13,13 +14,13 @@ export const DeckEditRouteSchema = z.discriminatedUnion("route", [
     route: z.literal("direct-edit"),
     currentRevisionId: z.string().uuid(),
     slideId: z.string().uuid(),
-    operations: z.array(EditOperationSchema).min(1),
+    operations: z.array(EditOperationSchema).min(1).max(MAX_EDIT_OPERATIONS),
   }).strict(),
   z.object({
     route: z.literal("activate-editable"),
     currentRevisionId: z.string().uuid(),
     slideId: z.string().uuid(),
-    operations: z.array(EditOperationSchema),
+    operations: z.array(EditOperationSchema).max(MAX_EDIT_OPERATIONS),
   }).strict(),
   z.object({
     route: z.literal("regenerate-slide"),
@@ -43,7 +44,7 @@ export const DeckEditRequestSchema = z.object({
     "composition",
   ]),
   instruction: z.string().trim().min(1).optional(),
-  operations: z.array(EditOperationSchema).optional(),
+  operations: z.array(EditOperationSchema).max(MAX_EDIT_OPERATIONS).optional(),
 }).strict();
 
 export const DeckEditContextSchema = z.object({

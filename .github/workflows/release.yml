@@ -3,36 +3,60 @@
   "on": {
     "push": { "tags": ["v*"] }
   },
-  "permissions": {
-    "contents": "write",
-    "id-token": "write",
-    "attestations": "write",
-    "artifact-metadata": "write"
-  },
+  "permissions": { "contents": "read" },
   "jobs": {
-    "release": {
+    "build": {
+      "permissions": { "contents": "read" },
       "runs-on": "ubuntu-latest",
       "timeout-minutes": 20,
       "steps": [
-        { "uses": "actions/checkout@v4", "with": { "fetch-depth": 0 } },
         {
-          "uses": "actions/setup-node@v4",
+          "uses": "actions/checkout@11d5960a326750d5838078e36cf38b85af677262",
+          "with": { "fetch-depth": 0, "persist-credentials": false }
+        },
+        {
+          "uses": "actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020",
           "with": { "node-version": "22.6.0", "cache": "npm" }
+        },
+        {
+          "name": "Verify tag and main ancestry",
+          "run": "git fetch origin main\ngit merge-base --is-ancestor \"$GITHUB_SHA\" origin/main\nnode scripts/verify-release.mjs --root \"$GITHUB_WORKSPACE\" --tag \"$GITHUB_REF_NAME\""
         },
         { "run": "npm ci" },
         { "run": "npm run verify:portable" },
         { "run": "npm run test:release-install" },
         {
-          "name": "Verify tag and main ancestry",
-          "run": "git fetch origin main\ngit merge-base --is-ancestor \"$GITHUB_SHA\" origin/main\nnpm run release:check -- --root \"$GITHUB_WORKSPACE\" --tag \"$GITHUB_REF_NAME\""
-        },
-        {
           "name": "Build checksummed plugin archive",
           "run": "mkdir -p release-artifacts\nnpm pack --pack-destination release-artifacts\n(cd release-artifacts && sha256sum *.tgz > SHA256SUMS)"
         },
         {
+          "uses": "actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02",
+          "with": {
+            "name": "release-artifacts",
+            "path": "release-artifacts/",
+            "if-no-files-found": "error"
+          }
+        }
+      ]
+    },
+    "publish": {
+      "needs": ["build"],
+      "permissions": {
+        "contents": "write",
+        "id-token": "write",
+        "attestations": "write",
+        "artifact-metadata": "write"
+      },
+      "runs-on": "ubuntu-latest",
+      "timeout-minutes": 10,
+      "steps": [
+        {
+          "uses": "actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093",
+          "with": { "name": "release-artifacts", "path": "release-artifacts" }
+        },
+        {
           "name": "Attest release artifacts",
-          "uses": "actions/attest@v4",
+          "uses": "actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6",
           "with": { "subject-path": "release-artifacts/*" }
         },
         {

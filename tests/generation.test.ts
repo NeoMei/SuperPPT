@@ -83,6 +83,25 @@ const PACKAGE_RELATIONSHIPS = "http://schemas.openxmlformats.org/package/2006/re
 const POWERPOINT_2010 = "http://schemas.microsoft.com/office/powerpoint/2010/main";
 const HOST_CAPABILITIES = { source: "agent-host" as const, localFilesystem: true, localFileLinks: true };
 
+test("delegated diagnostic schemas reject credential-like text", () => {
+  const dependency = {
+    status: "local_failure" as const,
+    provider: "openai" as const,
+    channel: "api" as const,
+    output_path: null,
+    safe_message: "Authorization: Bearer canary-token-value",
+  };
+  assert.throws(() => DependencyGenerationResultSchema.parse(dependency), /diagnostic|secret/i);
+  assert.throws(() => SerialStickyReportSchema.parse({
+    batch_mode: "serial-sticky-monotonic",
+    stopped: true,
+    search_candidate: "host-openai",
+    sticky_candidate: null,
+    pages: [{ page: 1, outcome: "fatal", candidate: "host-openai", summary: "api_key=canary-secret-value" }],
+    switches: [],
+  }), /diagnostic|secret/i);
+});
+
 async function directory(t: TestContext, prefix: string): Promise<string> {
   const root = await mkdtemp(join(tmpdir(), prefix));
   t.after(async () => {

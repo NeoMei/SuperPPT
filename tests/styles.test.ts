@@ -16,6 +16,7 @@ import { authenticateStyleSelection } from "../src/styles/selection.js";
 import { finalizeDelegatedStyleSampleForTest } from "./helpers/delegated-style-sample.js";
 import { applyRevision, approveImpact, publishImpactPlan } from "../src/revisions/apply.js";
 import { readProject } from "../src/project/store.js";
+import { readStyleSampleArtifacts, STYLE_SAMPLE_ARTIFACTS } from "../src/styles/sample-contract.js";
 
 const catalogPath = "skills/superppt/assets/styles/catalog.json";
 const promptSpec = { title: "AI Agent 协作系统", role: "content" as const, coreMessage: "Specialists cooperate", requiredText: ["AI Agent 协作系统"], visualSubject: "central orchestration core", composition: "one focal hub with six satellites", relationships: ["hub routes work"], forbidden: ["watermark"] };
@@ -55,6 +56,22 @@ test("loads the built-in catalog independently of the process working directory"
   } finally {
     process.chdir(original);
   }
+});
+
+test("rejects oversized style metadata before loading the complete artifact set", async (t) => {
+  const root = await realpath(await mkdtemp(join(tmpdir(), "superppt-style-artifact-limit-")));
+  t.after(async () => rm(root, { recursive: true, force: true }));
+  for (const path of STYLE_SAMPLE_ARTIFACTS) {
+    const absolute = join(root, ...path.split("/"));
+    await mkdir(dirname(absolute), { recursive: true });
+    await writeFile(absolute, "{}\n");
+  }
+  await writeFile(
+    join(root, ...STYLE_SAMPLE_ARTIFACTS[0].split("/")),
+    Buffer.concat([Buffer.from("{}"), Buffer.alloc(1024 * 1024, 0x20)]),
+  );
+
+  await assert.rejects(readStyleSampleArtifacts(root), /regular file|size|limit/i);
 });
 
 test("catalog schema rejects duplicate style IDs", () => {

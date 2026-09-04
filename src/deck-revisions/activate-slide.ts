@@ -17,9 +17,15 @@ import { withProjectLease } from "../project/lock.js";
 import { readRegularFileNoFollow } from "../project/safe-file.js";
 import { readProject } from "../project/store.js";
 import { inspectLocalPptx, type InspectedLocalPptx } from "./inspect.js";
+import {
+  loadBoundedPptxArchive,
+  readBoundedPptxArchiveFile,
+  readBoundedPptxFile,
+} from "./archive.js";
 import { extractElementRange, scanOoxmlRanges, type OoxmlElementRange } from "./ooxml.js";
 import { DeckEditSessionSchema } from "./schemas.js";
 import { readLocalDeckRevision } from "./store.js";
+import { MAX_EDITABLE_IMAGE_PIXELS } from "../editable/limits.js";
 
 const P = "http://schemas.openxmlformats.org/presentationml/2006/main";
 const R = "http://schemas.openxmlformats.org/officeDocument/2006/relationships";
@@ -307,7 +313,9 @@ function targetObjectInspection(xml: string, authenticated: AuthenticatedEditabl
 
 async function memberHashes(zip: JSZip, pattern: RegExp): Promise<Map<string, string>> {
   const names = Object.keys(zip.files).filter((name) => pattern.test(name) && !zip.files[name]!.dir);
-  return new Map(await Promise.all(names.map(async (name) => [name, digest(await zip.file(name)!.async("nodebuffer"))] as const)));
+  const hashes = new Map<string, string>();
+  for (const name of names) hashes.set(name, digest(await zip.file(name)!.async("nodebuffer")));
+  return hashes;
 }
 
 function resolveRelationshipPart(sourcePart: string, target: string): string {
@@ -360,7 +368,11 @@ async function validateStagedTargetPackage(
     }
     const bytes = await zip.file(addition.mediaPart)?.async("nodebuffer");
     if (!bytes || digest(bytes) !== addition.sha256) throw new Error("staged image media hash mismatch");
-    try { const metadata = await sharp(bytes).metadata(); await sharp(bytes).raw().toBuffer(); if (metadata.format !== "png") throw new Error("not PNG"); }
+    try {
+      const metadata = await sharp(bytes, { failOn: "error", limitInputPixels: MAX_EDITABLE_IMAGE_PIXELS }).metadata();
+      await sharp(bytes, { failOn: "error", limitInputPixels: MAX_EDITABLE_IMAGE_PIXELS }).raw().toBuffer();
+      if (metadata.format !== "png") throw new Error("not PNG");
+    }
     catch (error: unknown) { throw new Error("staged image media is not a decodable PNG", { cause: error }); }
   }
   const typesXml = await zip.file("[Content_Types].xml")?.async("string");
@@ -419,7 +431,7 @@ export async function activateEditableSlideInDeck(options: {
       conversionRoot: options.conversionRoot,
       slideId: options.slideId,
     });
-    const donorBytes = await readRegularFileNoFollow(join(root, ...authenticated.donorPptxPath.split("/")));
+    const donorBytes = await readBoundedPptxFile(join(root, ...authenticated.donorPptxPath.split("/")));
     if (digest(donorBytes) !== authenticated.donorPptxSha256) throw new Error("official donor hash changed after authentication");
     const target = before.slides[options.slideIndex]!;
     const donor = await inspectOfficialEditableDonor(donorBytes, authenticated.manifest, {
@@ -463,13 +475,13 @@ export async function activateEditableSlideInDeck(options: {
       }
       staged = before.sha256 === intent.newCandidateSha256 ? before : await inspectLocalPptx(stagedPath);
       if (staged.sha256 !== intent.newCandidateSha256) throw new Error("activation staged residue hash does not match durable intent");
-      const recoveryZip = await JSZip.loadAsync(await readRegularFileNoFollow(before.sha256 === intent.newCandidateSha256 ? candidatePath : stagedPath));
+      const recoveryZip = await readBoundedPptxArchiveFile(before.sha256 === intent.newCandidateSha256 ? candidatePath : stagedPath);
       targetInspection = targetObjectInspection(await recoveryZip.file(intent.targetSlidePart)!.async("string"), authenticated);
     } else {
       if (metadata.session.preparedSha256 !== before.sha256) throw new Error("candidate prepared hash does not match current complete deck bytes");
-      const candidateBytes = await readRegularFileNoFollow(candidatePath);
+      const candidateBytes = await readBoundedPptxFile(candidatePath);
       if (digest(candidateBytes) !== before.sha256) throw new Error("candidate changed before editable staging");
-      const candidateZip = await JSZip.loadAsync(candidateBytes);
+      const candidateZip = await loadBoundedPptxArchive(candidateBytes);
       const targetSlide = candidateZip.file(target.slidePart);
       if (!targetSlide) throw new Error("candidate target slide part is missing");
       const targetXml = await targetSlide.async("string");
@@ -513,7 +525,7 @@ export async function activateEditableSlideInDeck(options: {
           throw new Error("editable activation changed an untouched slide part");
         }
       }
-      const stagedZip = await JSZip.loadAsync(await readRegularFileNoFollow(stagedPath));
+      const stagedZip = await readBoundedPptxArchiveFile(stagedPath);
       await validateStagedTargetPackage(stagedZip, target.slidePart, targetRelationshipsPart, relationshipAdditions);
       const afterProtected = await memberHashes(stagedZip, /^ppt\/(?:notesSlides|comments)\//);
       if (JSON.stringify([...afterProtected]) !== JSON.stringify([...beforeProtected])) {
@@ -536,7 +548,7 @@ export async function activateEditableSlideInDeck(options: {
     if (before.sha256 === intent.oldCandidateSha256) {
       await options.operations?.beforeAtomicReplace?.(stagedPath);
       const candidateInfo = await lstat(candidatePath);
-      if (candidateInfo.isSymbolicLink() || !candidateInfo.isFile() || digest(await readRegularFileNoFollow(candidatePath)) !== intent.oldCandidateSha256) {
+      if (candidateInfo.isSymbolicLink() || !candidateInfo.isFile() || digest(await readBoundedPptxFile(candidatePath)) !== intent.oldCandidateSha256) {
         throw new Error("candidate changed during staging race check");
       }
       await rename(stagedPath, candidatePath);

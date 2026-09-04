@@ -2,13 +2,11 @@ import { randomBytes, randomUUID } from "node:crypto";
 import { lstat, realpath, rename, unlink } from "node:fs/promises";
 import { dirname, join } from "node:path";
 
-import JSZip from "jszip";
-
 import { syncDirectory, writeDurableExclusive } from "../project/durable.js";
 import { withProjectLease } from "../project/lock.js";
 import { isSameOrAncestor } from "../project/paths.js";
-import { readRegularFileNoFollow } from "../project/safe-file.js";
 import { inspectLocalPptx } from "./inspect.js";
+import { readBoundedPptxArchiveFile } from "./archive.js";
 import { scanOoxmlRanges, type OoxmlElementRange } from "./ooxml.js";
 import { type SlideTopology } from "./schemas.js";
 import { finalizeSlideTopology } from "./topology.js";
@@ -135,7 +133,7 @@ export async function publishInitialSlideIdentities(
     const used = new Set(before.slides.flatMap((slide) => slide.creationId === null ? [] : [slide.creationId]));
     const assigned = before.slides.map((slide) => slide.creationId ?? allocateCreationId(used));
     if (before.slides.some((slide) => slide.creationId === null)) {
-      const zip = await JSZip.loadAsync(await readRegularFileNoFollow(canonical));
+      const zip = await readBoundedPptxArchiveFile(canonical);
       for (const [position, slide] of before.slides.entries()) {
         if (slide.creationId !== null) continue;
         const file = zip.file(slide.slidePart);

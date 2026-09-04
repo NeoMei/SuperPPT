@@ -139,18 +139,13 @@ npm run cli -- preflight \
 1. 运行第 4 节的三个仓库门禁，并确认三个工作树干净。
 2. 运行第 5 节 preflight，保存非敏感输出作为本次联调证据。
 3. 按 `skills/superppt/SKILL.md` 创建一个最小 3 页项目，依次完成内容确认、风格选择、样页确认和生成授权。不要绕过 gate 或直接伪造中间 JSON。
-4. 在每次在线调用前向用户披露出站文本、参考图用途、页数/调用次数和输出位置。凭证只能放在环境变量或权限为 `600` 的 `~/.secrets/*` 文件，不得出现在 CLI 参数、仓库或日志中。
+4. 在每次在线调用前向用户披露出站文本、参考图用途、页数/调用次数和输出位置。凭证必须由 macOS 钥匙串（Keychain）或等价的获批凭证管理器即时取得，只注入需要它的受控子进程；不得持久化、放入会话级 shell 环境，也不得出现在 CLI 参数、仓库或日志中。
 5. 用 `ai-image-to-ppt` 生成严格 16:9 主图；需要可编辑页时，用 `scripts/prepare_editable_input.py` 生成独立的 `1280x720 PNG` 输入，再交给 `image-to-editable-pptx`。
 6. 检查 editable 输出的 `manifest.json`、`run-ledger.json`、三张 QA 图和 `slide-editable.pptx`。`reviewRequired: true` 不能自动当作验收通过。
 7. 由 SuperPPT 组装唯一完整 PPTX，并走完整 deck review；只有 `confirm-delivery` 才进入 delivered。
 8. 在 PowerPoint/WPS 中打开成品，移动代表性前景、编辑文字、执行撤销、保存、关闭并重新打开，确认修改持久化且未破坏背景与层级。
 
-`image-to-editable-pptx` 的网络 `analyze` / `run` 需要：
-
-```bash
-export DASHSCOPE_API_KEY='<your-api-key>'
-export DASHSCOPE_WORKSPACE_ID='<your-workspace-id>'
-```
+`image-to-editable-pptx` 的网络 `analyze` / `run` 需要百炼凭证。先通过系统的安全交互界面将它们存入 macOS 钥匙串，不要把真实值粘贴到 shell 命令或历史中。获批的运行包装器应在调用前一刻读取凭证，将 `DASHSCOPE_API_KEY` 和 `DASHSCOPE_WORKSPACE_ID` 只注入需要它的受控子进程，并在进程结束后丢弃内存中的值。一旦怀疑暴露，立即停止调用，先在提供者侧撤销并轮换凭证，完成影响评估后才能重试。
 
 AI provider 的 host-first 路由和可选 API 凭证请以 `ai-image-to-ppt/SKILL.md` 与 `references/capabilities.json` 为准。浏览器已登录不代表 host capability 可调用。
 

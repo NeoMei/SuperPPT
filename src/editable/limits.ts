@@ -1,0 +1,2 @@
+export const MAX_EDIT_OPERATIONS = 128;
+export const MAX_EDITABLE_IMAGE_PIXELS = 4096 * 4096;

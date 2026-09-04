@@ -7,12 +7,17 @@ import { z } from "zod";
 
 import { type EditableManifestV2, EditableManifestV2Schema } from "../editable/schemas.js";
 import { EditOperationSchema, UnsupportedEditableTargetError, type EditOperation } from "../editable/operations.js";
+import { MAX_EDITABLE_IMAGE_PIXELS, MAX_EDIT_OPERATIONS } from "../editable/limits.js";
 import { withGenerationLease } from "../generation/lease.js";
 import { syncDirectory, writeDurableExclusive } from "../project/durable.js";
 import { withProjectLease } from "../project/lock.js";
 import { readProject } from "../project/store.js";
-import { readRegularFileNoFollow } from "../project/safe-file.js";
 import { inspectLocalPptx } from "./inspect.js";
+import {
+  loadBoundedPptxArchive,
+  readBoundedPptxArchiveFile,
+  readBoundedPptxFile,
+} from "./archive.js";
 import sharp from "sharp";
 
 import { extractElementRange, scanOoxmlRanges, type OoxmlElementRange } from "./ooxml.js";
@@ -32,7 +37,7 @@ const EditActualSlideObjectsOptionsSchema = z.object({
   candidatePath: z.string().min(1),
   slideId: UuidSchema,
   manifest: EditableManifestV2Schema,
-  operations: z.array(EditOperationSchema).min(1),
+  operations: z.array(EditOperationSchema).min(1).max(MAX_EDIT_OPERATIONS),
 }).strict();
 
 export type EditedDeckResult = {
@@ -299,7 +304,9 @@ function applyOperation(xml: string, manifest: EditableManifestV2, operation: Ed
 
 async function memberHashes(zip: JSZip): Promise<Map<string, string>> {
   const names = Object.keys(zip.files).filter((name) => !zip.files[name]!.dir);
-  return new Map(await Promise.all(names.map(async (name) => [name, digest(await zip.file(name)!.async("nodebuffer"))] as const)));
+  const hashes = new Map<string, string>();
+  for (const name of names) hashes.set(name, digest(await zip.file(name)!.async("nodebuffer")));
+  return hashes;
 }
 
 function appendRelationship(xml: string, id: string, target: string): string {
@@ -362,7 +369,7 @@ export async function replaceRegeneratedSlideShapeTree(options: {
     }).strict().optional(),
   }).strict().parse(options);
   if (digest(valid.normalizedImage) !== valid.normalizedImageSha256) throw new Error("regenerated normalized image hash does not match authenticated bytes");
-  const metadata = await sharp(valid.normalizedImage, { failOn: "error" }).metadata();
+  const metadata = await sharp(valid.normalizedImage, { failOn: "error", limitInputPixels: MAX_EDITABLE_IMAGE_PIXELS }).metadata();
   if (metadata.format !== "png" || metadata.width !== 1920 || metadata.height !== 1080) {
     throw new Error("regenerated normalized image must be an exact 1920x1080 PNG");
   }
@@ -391,9 +398,9 @@ export async function replaceRegeneratedSlideShapeTree(options: {
       || actual.presentationSlideId !== target.presentationSlideId || actual.creationId !== target.creationId) {
       throw new Error("slide regeneration target does not bind the current reconciled topology");
     }
-    const bytes = await readRegularFileNoFollow(candidatePath);
+    const bytes = await readBoundedPptxFile(candidatePath);
     if (digest(bytes) !== before.sha256) throw new Error("slide regeneration candidate changed during stable read");
-    const zip = await JSZip.loadAsync(bytes);
+    const zip = await loadBoundedPptxArchive(bytes);
     const beforeMembers = await memberHashes(zip);
     const slideFile = zip.file(target.slidePart);
     if (!slideFile) throw new Error("slide regeneration target part is missing");
@@ -433,7 +440,7 @@ export async function replaceRegeneratedSlideShapeTree(options: {
           throw new Error("slide regeneration changed an untouched slide part");
         }
       }
-      const stagedZip = await JSZip.loadAsync(await readRegularFileNoFollow(stagingPath));
+      const stagedZip = await readBoundedPptxArchiveFile(stagingPath);
       const afterMembers = await memberHashes(stagedZip);
       const allowedChanges = new Set([target.slidePart, relationshipsPart, "[Content_Types].xml"]);
       for (const [name, hash] of beforeMembers) {
@@ -445,7 +452,7 @@ export async function replaceRegeneratedSlideShapeTree(options: {
         throw new Error("slide regeneration staged media does not match authenticated normalized bytes");
       }
       const currentInfo = await lstat(candidatePath);
-      if (currentInfo.isSymbolicLink() || !currentInfo.isFile() || digest(await readRegularFileNoFollow(candidatePath)) !== before.sha256) {
+      if (currentInfo.isSymbolicLink() || !currentInfo.isFile() || digest(await readBoundedPptxFile(candidatePath)) !== before.sha256) {
         throw new Error("slide regeneration candidate changed during publication race check");
       }
       await rename(stagingPath, candidatePath);
@@ -531,9 +538,9 @@ export async function editActualSlideObjects(options: {
       || actual.creationId !== target.creationId) {
       throw new Error("direct edit target does not bind the current reconciled slide topology");
     }
-    const candidateBytes = await readRegularFileNoFollow(candidatePath);
+    const candidateBytes = await readBoundedPptxFile(candidatePath);
     if (digest(candidateBytes) !== before.sha256) throw new Error("direct edit candidate changed during stable read");
-    const zip = await JSZip.loadAsync(candidateBytes);
+    const zip = await loadBoundedPptxArchive(candidateBytes);
     const targetFile = zip.file(target.slidePart);
     if (!targetFile) throw new Error("direct edit target slide part is missing");
     const beforeMembers = await memberHashes(zip);
@@ -553,7 +560,7 @@ export async function editActualSlideObjects(options: {
       if (stagedInfo.isSymbolicLink() || !stagedInfo.isFile()) throw new Error("direct edit staging is unsafe");
       const after = await inspectLocalPptx(stagingPath);
       assertStableTopology(before, after, "direct edit");
-      const stagedZip = await JSZip.loadAsync(await readRegularFileNoFollow(stagingPath));
+      const stagedZip = await readBoundedPptxArchiveFile(stagingPath);
       const afterMembers = await memberHashes(stagedZip);
       for (const [name, hash] of beforeMembers) {
         if (name !== target.slidePart && afterMembers.get(name) !== hash) {
@@ -561,7 +568,7 @@ export async function editActualSlideObjects(options: {
         }
       }
       const currentInfo = await lstat(candidatePath);
-      if (currentInfo.isSymbolicLink() || !currentInfo.isFile() || digest(await readRegularFileNoFollow(candidatePath)) !== before.sha256) {
+      if (currentInfo.isSymbolicLink() || !currentInfo.isFile() || digest(await readBoundedPptxFile(candidatePath)) !== before.sha256) {
         throw new Error("direct edit candidate changed during publication race check");
       }
       await rename(stagingPath, candidatePath);

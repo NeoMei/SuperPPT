@@ -25,7 +25,7 @@ import {
 import { normalizeInput } from "../src/planning/intake.js";
 import { renderBrief, renderOutline, renderSlideSpec } from "../src/planning/render.js";
 import { BriefSchema, OutlineSchema, SlideSpecSchema } from "../src/planning/schemas.js";
-import { publishPlanViews, publishStyleSample, readPublishedOutlineViews, readPublishedPlanViews, readPublishedStyleSample, recoverPlanViews } from "../src/planning/views.js";
+import { publishOutlineViews, publishPlanViews, publishStyleSample, readPublishedOutlineViews, readPublishedPlanViews, readPublishedStyleSample, recoverPlanViews } from "../src/planning/views.js";
 import { initializeProject } from "../src/project/initialize.js";
 import { addDescriptorIntegrity, sha256Evidence } from "../src/project/evidence.js";
 import { withProjectLease } from "../src/project/lock.js";
@@ -1353,6 +1353,22 @@ test("publishes review views as one authoritative revision tree", async (t) => {
   assert.equal(await readFile(join(root, "brief.md"), "utf8"), read.brief);
 });
 
+test("planning approval views render untrusted Markdown-like fields as literal text", () => {
+  const injectedBrief = BriefSchema.parse({
+    ...brief,
+    title: "Trusted title\n# Forged heading",
+    purpose: "![remote](https://example.invalid/pixel)",
+    mustCover: ["safe\n- forged item"],
+    constraints: ["<img src=x onerror=alert(1)>"] ,
+  });
+  const rendered = renderBrief(injectedBrief);
+  assert.equal((rendered.match(/^# /gm) ?? []).length, 1);
+  assert.doesNotMatch(rendered, /\n# Forged heading/);
+  assert.doesNotMatch(rendered, /!\[remote\]\(https:/);
+  assert.doesNotMatch(rendered, /<img\b/i);
+  assert.match(rendered, /Forged heading/);
+});
+
 test("view publication failures expose only an old or new complete authoritative set", async (t) => {
   const root = await project(t, "superppt-views-failure-");
   await writeValidPlan(root);
@@ -1760,6 +1776,21 @@ test("CLI publishes and approves the outline before any slide specs exist", asyn
   assert.equal(await assertGateCurrent(root, "outline"), true);
   await assert.rejects(run(["validate-plan", "--project", root]), /spec IDs must exactly match outline IDs/);
   assert.equal((await readPublishedOutlineViews(root)).slides[SLIDE_IDS[0]], undefined);
+});
+
+test("outline publication records recovery in the outline journal directory", async (t) => {
+  const root = await project(t, "superppt-outline-journal-");
+  await writeFile(join(root, "brief.json"), `${JSON.stringify(brief, null, 2)}\n`);
+  await writeFile(join(root, "outline.json"), `${JSON.stringify(outline, null, 2)}\n`);
+
+  await assert.rejects(publishOutlineViews(root, {
+    operations: { checkpoint(step) { if (step === "authority-published") throw new Error("leave outline pending"); } },
+  }), /leave outline pending/);
+
+  const outlineJournals = await readdir(join(root, ".superppt-outline-view-journals"));
+  assert.ok(outlineJournals.some((name) => name.endsWith(".pending.json")));
+  await publishOutlineViews(root);
+  assert.ok((await readdir(join(root, ".superppt-outline-view-journals"))).some((name) => name.endsWith(".completed")));
 });
 
 test("CLI publishes authoritative style evidence before the existing approval gate", async (t) => {

@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
-import { lstat, readFile, readdir, realpath } from "node:fs/promises";
+import { readdir, realpath } from "node:fs/promises";
 import { join } from "node:path";
 import { z } from "zod";
 
@@ -54,6 +54,8 @@ import type { RevisionEvidenceOperations } from "../revisions/anchored-fs.js";
 
 export const MARKER = ".superppt-project.json";
 export const MANIFEST = "superppt.json";
+const MAX_OWNERSHIP_MARKER_BYTES = 64 * 1024;
+const MAX_PROJECT_MANIFEST_BYTES = 16 * 1024 * 1024;
 
 const PresentedDeckEditSessionSchema = z.object({
   sessionId: z.string().uuid(),
@@ -489,13 +491,6 @@ export function createOwnershipMarker(
   });
 }
 
-async function requireRegularFile(path: string): Promise<void> {
-  const info = await lstat(path);
-  if (info.isSymbolicLink() || !info.isFile()) {
-    throw new Error("project directory is not owned by SuperPPT");
-  }
-}
-
 async function ownedProject(root: string): Promise<{
   root: string;
   manifest: ProjectManifest;
@@ -506,15 +501,14 @@ async function ownedProject(root: string): Promise<{
   try {
     const markerPath = join(canonical, MARKER);
     const manifestPath = join(canonical, MANIFEST);
-    await requireRegularFile(markerPath);
+    const markerBytes = await readRegularFileNoFollow(markerPath, { maxBytes: MAX_OWNERSHIP_MARKER_BYTES });
     const marker = OwnershipMarkerSchema.parse(
-      JSON.parse(await readFile(markerPath, "utf8")),
+      JSON.parse(markerBytes.toString("utf8")),
     );
     if (marker.canonicalRoot !== canonical) {
       throw new Error("marker root mismatch");
     }
-    await requireRegularFile(manifestPath);
-    const manifestBytes = await readFile(manifestPath);
+    const manifestBytes = await readRegularFileNoFollow(manifestPath, { maxBytes: MAX_PROJECT_MANIFEST_BYTES });
     const manifest = ProjectManifestSchema.parse(JSON.parse(manifestBytes.toString("utf8")));
     if (marker.projectId !== manifest.projectId) {
       throw new Error("marker project mismatch");

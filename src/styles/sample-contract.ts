@@ -22,6 +22,8 @@ export const STYLE_SAMPLE_ARTIFACTS = [
 ] as const;
 
 export const STYLE_SAMPLE_COMPLETION_RECEIPT = "style/sample/completion.json";
+const MAX_STYLE_METADATA_BYTES = 1024 * 1024;
+export const MAX_STYLE_SAMPLE_BYTES = 100 * 1024 * 1024;
 
 const ReceiptArtifactSchema = z.object({
   path: z.string().min(1),
@@ -107,7 +109,7 @@ export async function canonicalStyleSample(root: string): Promise<CanonicalStyle
   const [manifest, plan, selectionBytes] = await Promise.all([
     readProject(root),
     loadValidatedPlan(root),
-    readOwnedRegularFile(root, STYLE_SAMPLE_ARTIFACTS[0]),
+    readOwnedRegularFile(root, STYLE_SAMPLE_ARTIFACTS[0], { maxBytes: MAX_STYLE_METADATA_BYTES }),
   ]);
   const selection = StyleSampleSelectionSchema.parse(JSON.parse(selectionBytes.toString("utf8")));
   if (selection.schemaVersion === 2 && selection.projectRevisionId !== manifest.currentRevision.id) {
@@ -133,7 +135,9 @@ export async function canonicalStyleSample(root: string): Promise<CanonicalStyle
 export async function readStyleSampleArtifacts(root: string): Promise<StyleSampleArtifacts> {
   return Object.fromEntries(await Promise.all(STYLE_SAMPLE_ARTIFACTS.map(async (path) => [
     path,
-    await readOwnedRegularFile(root, path),
+    await readOwnedRegularFile(root, path, {
+      maxBytes: path === STYLE_SAMPLE_ARTIFACTS[3] ? MAX_STYLE_SAMPLE_BYTES : MAX_STYLE_METADATA_BYTES,
+    }),
   ]))) as StyleSampleArtifacts;
 }
 

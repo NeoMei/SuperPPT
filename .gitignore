@@ -5,4 +5,6 @@ dist/
 /.superpowers/sdd/2026-08-30-local-full-deck-editing/task-7-wps-acceptance/
 .DS_Store
 output/
+/.artifacts/
 *.failed-runs/
+.*.superppt-init-*.failed-run/
