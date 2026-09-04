@@ -138,7 +138,7 @@ if (
   || releasePublishJob?.permissions?.["artifact-metadata"] !== "write"
   || releasePublishJob?.["runs-on"] !== "ubuntu-latest"
   || !releasePublishJob.steps?.some((step) => step.uses === actionPins.attest && step.with?.["subject-path"] === "release-artifacts/*")
-  || !releasePublishRuns.some((run) => run.includes("gh release create") && run.includes("--verify-tag"))
+  || !releasePublishRuns.some((run) => run.includes("gh release create") && run.includes("--repo \"$GITHUB_REPOSITORY\"") && run.includes("--verify-tag"))
   || JSON.stringify(ciUses) !== JSON.stringify([actionPins.checkout, actionPins.setupNode])
   || JSON.stringify(releaseBuildUses) !== JSON.stringify([actionPins.checkout, actionPins.setupNode, actionPins.uploadArtifact])
   || JSON.stringify(releasePublishUses) !== JSON.stringify([actionPins.downloadArtifact, actionPins.attest])

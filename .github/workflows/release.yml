@@ -62,7 +62,7 @@
         {
           "name": "Publish immutable GitHub Release",
           "env": { "GH_TOKEN": "${{ github.token }}" },
-          "run": "gh release create \"$GITHUB_REF_NAME\" release-artifacts/* --verify-tag --generate-notes --title \"SuperPPT $GITHUB_REF_NAME\""
+          "run": "gh release create \"$GITHUB_REF_NAME\" release-artifacts/* --repo \"$GITHUB_REPOSITORY\" --verify-tag --generate-notes --title \"SuperPPT $GITHUB_REF_NAME\""
         }
       ]
     }
