@@ -2,8 +2,7 @@ import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { access, mkdir, readFile, mkdtemp, rename, rm, symlink } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { basename, dirname, join } from "node:path";
-import { fileURLToPath } from "node:url";
+import { join } from "node:path";
 import test, { type TestContext } from "node:test";
 
 import JSZip from "jszip";
@@ -16,6 +15,7 @@ import {
   resolvePresentationConstructor,
   writePresentation,
 } from "../src/deck/presentation-service.js";
+import { repositorySourcePath } from "./repository-source.js";
 
 test("resolves direct and nested pptxgenjs default exports", () => {
   const constructor = resolvePresentationConstructor(PptxGenJS);
@@ -142,18 +142,11 @@ async function assertIndependentSource(path: string): Promise<void> {
   assert.doesNotMatch(source, /@oai\/artifact-tool|codex-primary-runtime|codex-runtimes|RUNTIME_NODE|RUNTIME_NODE_MODULES|RUNTIME_BIN_DIR/);
 }
 
-function repositoryFile(...segments: string[]): string {
-  const testDirectory = dirname(fileURLToPath(import.meta.url));
-  const parent = dirname(testDirectory);
-  const root = basename(parent) === "dist" ? dirname(parent) : parent;
-  return join(root, ...segments);
-}
-
 test("SuperPPT owned presentation-service source exists and is independent", async () => {
-  await assertIndependentSource(repositoryFile("src", "deck", "presentation-service.ts"));
+  await assertIndependentSource(await repositorySourcePath("src/deck/presentation-service.ts"));
 });
 
 test("SuperPPT PPTX writer and test runner remain independent from Codex artifact runtime", async () => {
-  await assertIndependentSource(repositoryFile("src", "deck", "pptx.ts"));
-  await assertIndependentSource(repositoryFile("scripts", "test.ts"));
+  await assertIndependentSource(await repositorySourcePath("src/deck/pptx.ts"));
+  await assertIndependentSource(await repositorySourcePath("scripts/test.ts"));
 });
