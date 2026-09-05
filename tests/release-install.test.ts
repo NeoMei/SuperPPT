@@ -1,78 +1,30 @@
-import assert from "node:assert/strict";
-import { execFile } from "node:child_process";
-import type { ExecFileOptionsWithStringEncoding } from "node:child_process";
-import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
-import test from "node:test";
-import { promisify } from "node:util";
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
+import { mkdtemp, rm, readFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { repositorySourcePath } from './repository-source.js';
 
-const execFileAsync = promisify(execFile);
-const enabled = process.env.SUPERPPT_RELEASE_SMOKE === "1";
-
-function runNpm(
-  arguments_: string[],
-  options: ExecFileOptionsWithStringEncoding,
-) {
-  const npmExecPath = process.env.npm_execpath;
-  if (!npmExecPath) throw new Error("release install smoke requires npm_execpath");
-  return execFileAsync(process.execPath, [npmExecPath, ...arguments_], options);
-}
-
-test("the release archive installs without dev dependencies and starts the real CLI", {
-  skip: enabled ? false : "release archive smoke is an explicit release gate",
-  timeout: 180_000,
-}, async (t) => {
-  const root = await mkdtemp(join(tmpdir(), "superppt-release-install-"));
-  t.after(async () => rm(root, { recursive: true, force: true }));
-  const archiveDirectory = join(root, "archive");
-  const consumer = join(root, "consumer");
-  const npmUserConfig = join(root, "npmrc");
-  await Promise.all([mkdir(archiveDirectory), mkdir(consumer)]);
-  await writeFile(npmUserConfig, "");
-  const npmEnvironment: NodeJS.ProcessEnv = {
-    ...process.env,
-    NPM_CONFIG_USERCONFIG: npmUserConfig,
-  };
-  delete npmEnvironment.NPM_CONFIG_ALLOW_SCRIPTS;
-  delete npmEnvironment.npm_config_allow_scripts;
-
-  const packed = await runNpm(["pack", "--pack-destination", archiveDirectory, "--json"], {
-    cwd: process.cwd(),
-    env: npmEnvironment,
-    maxBuffer: 4 * 1024 * 1024,
-  });
-  const [{ filename }] = JSON.parse(packed.stdout) as Array<{ filename: string }>;
-  const archive = join(archiveDirectory, filename);
-  await writeFile(join(consumer, "package.json"), `${JSON.stringify({ private: true }, null, 2)}\n`);
-  await runNpm(["install", "--omit=dev", archive], {
-    cwd: consumer,
-    env: npmEnvironment,
-    maxBuffer: 4 * 1024 * 1024,
-  });
-
-  const installedRoot = join(consumer, "node_modules", "superppt");
-  const installedPackage = JSON.parse(await readFile(join(installedRoot, "package.json"), "utf8")) as {
-    version: string;
-  };
-  assert.equal(installedPackage.version, "0.1.3");
-  await assert.rejects(
-    runNpm(["run", "cli", "--", "release-smoke-invalid"], {
-      cwd: installedRoot,
-      env: {
-        ...npmEnvironment,
-        SUPERPPT_HOST_CAPABILITIES: JSON.stringify({
-          source: "agent-host",
-          localFilesystem: true,
-          localFileLinks: true,
-        }),
-      },
-      maxBuffer: 4 * 1024 * 1024,
-    }),
-    (error: Error & { stderr?: string }) => {
-      assert.match(error.stderr ?? "", /unknown command: release-smoke-invalid/);
-      assert.doesNotMatch(error.stderr ?? "", /tsx: (?:command )?not found|ERR_MODULE_NOT_FOUND/);
-      return true;
-    },
-  );
+test('packed plugin installs independently and runs complete public CLI workflows', { skip: process.env.SUPERPPT_RELEASE_SMOKE !== '1', timeout: 180000 }, async t => {
+  const root = await repositorySourcePath('.'), temporary = await mkdtemp(join(tmpdir(), 'superppt-package-'));
+  t.after(() => rm(temporary, { recursive: true, force: true }));
+  const run = promisify(execFile), npm = process.env.npm_execpath;
+  assert.ok(npm, 'run via npm run test:release-install');
+  const packed = JSON.parse((await run(process.execPath, [npm!, 'pack', '--json', '--pack-destination', temporary], { cwd: root })).stdout);
+  await run('tar', ['-xzf', join(temporary, packed[0].filename), '-C', temporary]);
+  const installed = join(temporary, 'package');
+  const installEnv = { ...process.env };
+  // npm exports a user's global allow-scripts setting to lifecycle children,
+  // then rejects that environment override for a nested project install.
+  delete installEnv.npm_config_allow_scripts;
+  // npm tarballs omit package-lock.json; consumers install declared runtime deps.
+  await run(process.execPath, [npm!, 'install', '--omit=dev'], { cwd: installed, env: installEnv, timeout: 90000, maxBuffer: 4 * 1024 * 1024 });
+  const pkg = JSON.parse(await readFile(join(installed, 'package.json'), 'utf8'));
+  assert.equal(pkg.dependencies.koffi, undefined);
+  const testEnv = { ...process.env, SUPERPPT_TEST_ROOT: installed };
+  delete (testEnv as NodeJS.ProcessEnv).NODE_TEST_CONTEXT;
+  const result = await run(process.execPath, ['--import', 'tsx', '--test', '--test-reporter=spec', join(root, 'tests/fast-cli.test.ts')], { cwd: root, env: testEnv, timeout: 90000, maxBuffer: 4 * 1024 * 1024 });
+  assert.match(result.stdout, /pass 2/);
 });

@@ -1,6 +1,6 @@
 interface:
   display_name: "SuperPPT"
-  short_description: "Guide image-first PPT creation through staged review"
-  default_prompt: "Use $superppt to guide me step by step from my content to a reviewed presentation."
+  short_description: "Create image-first decks with three key decisions"
+  default_prompt: "Use $superppt to turn my content into a reviewed PPTX with three key decisions and automatic machine steps."
 policy:
   allow_implicit_invocation: true

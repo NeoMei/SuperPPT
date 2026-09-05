@@ -1,3 +1,5 @@
+> 历史规格：当前执行以 [2026-09-05 Fast Workflow](../specs/2026-09-05-superppt-fast-workflow-design.md) 及已实现的五命令流程为准；本文不再规定运行步骤。
+
 # SuperPPT 与 ai-image-to-ppt 薄委托设计
 
 - 日期：2026-08-28

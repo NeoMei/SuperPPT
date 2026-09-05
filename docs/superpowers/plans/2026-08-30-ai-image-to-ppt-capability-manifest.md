@@ -1,3 +1,5 @@
+> 历史规格：当前执行以 [2026-09-05 Fast Workflow](../specs/2026-09-05-superppt-fast-workflow-design.md) 及已实现的五命令流程为准；本文不再规定运行步骤。
+
 # AI Image to PPT Capability Manifest Implementation Plan
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.

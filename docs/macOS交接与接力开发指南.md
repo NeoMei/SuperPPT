@@ -1,3 +1,5 @@
+> 旧版本交接记录。vNext 当前流程见 [README](../README.md) 与 [验证记录](verification/2026-09-05-fast-workflow.md)。旧命令不再可用；历史跨平台结论不自动适用于本次重构。
+
 # SuperPPT macOS 交接与接力开发指南
 
 更新日期：2026-09-05。本文面向在 macOS 上继续开发、联调和发布 SuperPPT 的接手者。以下状态已在 Windows 交接机上复核；到 Mac 后仍应按本文重新跑门禁，不要把历史通过结果当作当前机器的结果。

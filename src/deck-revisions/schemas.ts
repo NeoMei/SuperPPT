@@ -2,15 +2,9 @@ import { createHash } from "node:crypto";
 
 import { z } from "zod";
 
-import { ReviewRequiredObjectSchema } from "../editable/schemas.js";
+
 
 const Sha256Schema = z.string().regex(/^[a-f0-9]{64}$/);
-const RevisionDeckPathSchema = z.string().regex(/^output\/deck-revisions\/[0-9a-f-]{36}\/deck\.pptx$/);
-
-function pathRevisionId(path: string): string | undefined {
-  return path.split("/")[2];
-}
-
 export const SlideTopologyEntrySchema = z.object({
   stableSlideId: z.string().uuid(),
   slidePart: z.string().regex(/^ppt\/slides\/slide[0-9]+\.xml$/),
@@ -81,105 +75,7 @@ export const SlideTopologySchema = z.object({
   }
 });
 
-export const LocalDeckRevisionSchema = z.object({
-  schemaVersion: z.literal(1),
-  revisionId: z.string().uuid(),
-  parentRevisionId: z.string().uuid().nullable(),
-  projectId: z.string().uuid(),
-  projectRevisionId: z.string().uuid(),
-  reason: z.enum(["initial", "manual-edit", "agent-edit", "slide-regeneration"]),
-  relativePath: RevisionDeckPathSchema,
-  sha256: Sha256Schema,
-  slideTopology: SlideTopologySchema,
-  editableSlideIds: z.array(z.string().uuid()),
-  changedSlideIds: z.array(z.string().uuid()),
-  reviewRequiredObjectsBySlideId: z.record(
-    z.string().uuid(),
-    z.array(ReviewRequiredObjectSchema),
-  ).default({}),
-  createdAt: z.string().datetime(),
-}).strict().superRefine((revision, context) => {
-  if (pathRevisionId(revision.relativePath) !== revision.revisionId) {
-    context.addIssue({ code: "custom", path: ["relativePath"], message: "revision deck path must match revisionId" });
-  }
-  const activeSlideIds = new Set(revision.slideTopology.entries.map((entry) => entry.stableSlideId));
-  for (const slideId of revision.editableSlideIds) {
-    if (!activeSlideIds.has(slideId)) {
-      context.addIssue({ code: "custom", path: ["editableSlideIds"], message: "editable slide IDs must exist in the current topology" });
-    }
-  }
-  for (const slideId of Object.keys(revision.reviewRequiredObjectsBySlideId)) {
-    if (!revision.editableSlideIds.includes(slideId)) {
-      context.addIssue({ code: "custom", path: ["reviewRequiredObjectsBySlideId", slideId], message: "review-required objects must bind an editable slide" });
-    }
-  }
-});
-
-export const DeckEditSessionSchema = z.object({
-  schemaVersion: z.literal(1),
-  sessionId: z.string().uuid(),
-  candidateRevisionId: z.string().uuid(),
-  parentRevisionId: z.string().uuid(),
-  mode: z.enum(["manual", "agent"]),
-  targetSlideId: z.string().uuid(),
-  state: z.enum(["prepared", "external-editing", "awaiting-confirmation", "adopting", "adopted", "rejected"]),
-  candidateRelativePath: RevisionDeckPathSchema,
-  preparedSha256: Sha256Schema,
-  presentedSha256: Sha256Schema.nullable(),
-  reviewRequiredObjects: z.array(ReviewRequiredObjectSchema).default([]),
-  createdAt: z.string().datetime(),
-  completedAt: z.string().datetime().nullable(),
-}).strict().superRefine((session, context) => {
-  if (pathRevisionId(session.candidateRelativePath) !== session.candidateRevisionId) {
-    context.addIssue({ code: "custom", path: ["candidateRelativePath"], message: "candidate deck path must match candidateRevisionId" });
-  }
-});
-
-export const CurrentDeckPointerSchema = z.object({
-  schemaVersion: z.literal(1),
-  revisionId: z.string().uuid(),
-  relativePath: RevisionDeckPathSchema,
-  sha256: Sha256Schema,
-  updatedAt: z.string().datetime(),
-}).strict().superRefine((pointer, context) => {
-  if (pathRevisionId(pointer.relativePath) !== pointer.revisionId) {
-    context.addIssue({ code: "custom", path: ["relativePath"], message: "current deck path must match revisionId" });
-  }
-});
-
-export const DeckAdoptionEvidenceSchema = z.object({
-  schemaVersion: z.literal(1),
-  adoptionId: z.string().uuid(),
-  mode: z.enum(["manual", "agent"]),
-  candidateRevisionId: z.string().uuid(),
-  previousRevisionId: z.string().uuid().nullable(),
-  adoptedSha256: Sha256Schema,
-  slideTopologySha256: Sha256Schema,
-  userSignal: z.literal("saved-and-closed").nullable(),
-  confirmedSha256: Sha256Schema.nullable(),
-  adoptedAt: z.string().datetime(),
-}).strict().superRefine((evidence, context) => {
-  if (
-    evidence.mode === "manual"
-    && (evidence.userSignal !== "saved-and-closed" || evidence.confirmedSha256 !== null)
-  ) {
-    context.addIssue({ code: "custom", message: "manual adoption requires the saved-and-closed signal" });
-  }
-  if (
-    evidence.mode === "agent"
-    && (evidence.userSignal !== null || evidence.confirmedSha256 !== evidence.adoptedSha256)
-  ) {
-    context.addIssue({ code: "custom", message: "agent adoption requires exact candidate confirmation" });
-  }
-});
 
 export type SlideTopology = z.infer<typeof SlideTopologySchema>;
 export type SlideTopologyEntry = z.infer<typeof SlideTopologyEntrySchema>;
 export type DeletedSlideIdentity = z.infer<typeof DeletedSlideIdentitySchema>;
-export type LocalDeckRevision = z.infer<typeof LocalDeckRevisionSchema>;
-export type DeckEditSession = z.infer<typeof DeckEditSessionSchema>;
-export type CurrentDeckPointer = z.infer<typeof CurrentDeckPointerSchema>;
-export type DeckAdoptionEvidence = z.infer<typeof DeckAdoptionEvidenceSchema>;
-export type ResolvedLocalDeckRevision = LocalDeckRevision & { absolutePath: string };
-export type ResolvedDeckEditSession = DeckEditSession & { absolutePath: string };
-export type ResolvedCurrentDeckPointer = CurrentDeckPointer & { absolutePath: string };
