@@ -1,91 +1,18 @@
 {
-  "contractVersion": 3,
+  "schemaVersion": "superppt-task-vnext",
+  "resolution": "explicit installed skill roots",
   "dependencies": [
     {
       "skill": "ai-image-to-ppt",
-      "cliFlag": "--ai-skill",
-      "resolution": "explicit-only",
-      "required": ["SKILL.md", "references/capabilities.json"],
-      "capabilityManifest": {
-        "path": "references/capabilities.json",
-        "schemaVersion": 1,
-        "contracts": {
-          "generationResult": 1,
-          "serialStickyRouterReport": 1,
-          "hostImageImport": 1,
-          "editableInput": 1
-        },
-        "scripts": {
-          "generationResult": "scripts/generation_result.py",
-          "hostRoutingPolicy": "scripts/host_routing_policy.py",
-          "importHostImage": "scripts/import_host_image.py",
-          "prepareEditableInput": "scripts/prepare_editable_input.py",
-          "apiGenerator": "scripts/gen_slide.py",
-          "normalizedExport": "scripts/export_images.py"
-        },
-        "routingOrder": [
-          { "provider": "openai", "channel": "host", "modelSelection": "host-owned" },
-          { "provider": "openai", "channel": "api", "defaultModel": "gpt-image-2" },
-          { "provider": "gemini", "channel": "host", "modelSelection": "host-owned" },
-          { "provider": "gemini", "channel": "api", "defaultModel": "gemini-3.1-flash-image" },
-          { "provider": "doubao", "channel": "host", "modelSelection": "host-owned" },
-          { "provider": "doubao", "channel": "api", "defaultModel": "doubao-seedream-5-0-260128" }
-        ],
-        "outputs": {
-          "normalizedSlide": { "format": "image", "width": 1920, "height": 1080 },
-          "editableInput": { "format": "png", "width": 1280, "height": 720 }
-        }
-      }
+      "input": "aiSkillRoot",
+      "role": "whole image batch; host-first routing owned by dependency"
     },
     {
       "skill": "image-to-editable-pptx",
-      "cliFlag": "--editable-skill",
-      "resolution": "explicit-only",
-      "required": [
-        "package.json",
-        ".codex-plugin/plugin.json",
-        "skills/image-to-editable-pptx/SKILL.md",
-        "src/cli.ts"
-      ],
-      "consumerProfile": {
-        "package": {
-          "name": "image-to-editable-pptx",
-          "version": ">=0.2.0 <0.3.0",
-          "stable": true,
-          "nodeEngine": ">=22.6",
-          "cliScript": "tsx src/cli.ts"
-        },
-        "plugin": {
-          "name": "image-to-editable-pptx",
-          "versionMatchesPackage": true,
-          "skills": "./skills/"
-        },
-        "invocation": {
-          "command": "npm",
-          "script": "cli",
-          "separator": "--",
-          "subcommand": "run",
-          "inputFlag": "--image",
-          "outputFlag": "--out"
-        },
-        "outputContract": {
-          "ownershipMarker": {
-            "path": ".image-to-editable-pptx-output.json",
-            "markerVersion": 1,
-            "appId": "image-to-editable-pptx",
-            "artifactKind": "published-output"
-          },
-          "manifest": { "path": "manifest.json", "version": 2 },
-          "ledger": { "path": "run-ledger.json", "version": 2 },
-          "officialDonor": "slide-editable.pptx",
-          "objectNames": {
-            "background": "asset-background",
-            "text": "text-<id>",
-            "shape": "shape-<id>-<label>",
-            "asset": "asset-<id>"
-          }
-        }
-      }
+      "input": "editableSkillRoot",
+      "version": "0.2.x",
+      "role": "selected-page editable donor"
     }
-  ]
+  ],
+  "preflight": "entry fingerprints once per job; never scan source trees"
 }

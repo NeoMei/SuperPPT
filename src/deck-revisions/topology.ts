@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
 
-import type { InspectedLocalPptx, InspectedSlidePart } from "./inspect.js";
+import type { InspectedLocalPptx, InspectedSlidePart } from "./task-inspect.js";
 import { SlideTopologySchema, type DeletedSlideIdentity, type SlideTopology, type SlideTopologyEntry } from "./schemas.js";
 
 export type ReconciledSlideTopology = {

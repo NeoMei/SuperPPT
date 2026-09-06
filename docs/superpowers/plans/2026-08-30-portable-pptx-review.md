@@ -1,3 +1,5 @@
+> 历史规格：当前执行以 [2026-09-05 Fast Workflow](../specs/2026-09-05-superppt-fast-workflow-design.md) 及已实现的五命令流程为准；本文不再规定运行步骤。
+
 # Portable PPTX Review Implementation Plan
 
 > **Superseded on 2026-08-30:** The confirmed product direction no longer includes Review adapters, Codex/native viewers, Web Office, WPS image fallbacks, PDF, montage, or post-save sealing copies. Implement [`2026-08-30-local-full-deck-editing.md`](./2026-08-30-local-full-deck-editing.md) instead. This file remains only as historical design context and must not be executed.

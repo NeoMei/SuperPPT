@@ -1,114 +1,37 @@
-import { z } from "zod";
-import { ArtifactSchema, Sha256Schema } from "../project/schemas.js";
+import { z } from 'zod';
 
-const Strings = z.array(z.string().min(1)).min(1);
-const PageRoleSchema = z.enum(["cover", "section", "content", "process", "comparison", "data", "summary"]);
+const Id = z.string().regex(/^[a-z0-9-]+$/);
+export const CreativityLevelSchema = z.union([z.literal(1), z.literal(2), z.literal(3)]);
+export const VariantSelectionSchema = z.object({ level: CreativityLevelSchema, paletteId: Id }).strict();
+const Template = z.string().min(1).refine(text =>
+  ['PALETTE', 'CONTENT_RELATIONSHIPS', 'SLIDE_COPY'].every(slot => text.split('{{' + slot + '}}').length === 2),
+  'Template requires exactly one palette, relationships and copy slot');
 
 export const StyleRecipeSchema = z.object({
-  id: z.string().regex(/^[a-z0-9-]+$/),
-  name: z.string().min(1),
-  preview: z.string().min(1).optional(),
-  palette: Strings,
-  materials: Strings,
-  lighting: Strings,
-  medium: Strings,
-  typography: Strings,
-  detailLanguage: Strings,
-  compositionRules: Strings,
-  forbidden: Strings,
-  pageVariants: z.record(PageRoleSchema, z.string().min(1)),
-}).strict();
-
+  id: Id, name: z.string().min(1),
+  tiers: z.array(z.object({ level: CreativityLevelSchema, promptTemplate: Template }).strict()).min(1).max(3),
+  palettes: z.array(z.object({ id: Id, name: z.string().min(1), prompt: z.string().min(1) }).strict()).min(1),
+  previews: z.array(z.object({ level: CreativityLevelSchema, paletteId: Id, path: z.string().min(1) }).strict()),
+}).strict().superRefine((style, ctx) => {
+  const levels = style.tiers.map(t => t.level), palettes = style.palettes.map(p => p.id);
+  const previews = style.previews.map(p => p.level + '/' + p.paletteId);
+  if (new Set(levels).size !== levels.length || new Set(palettes).size !== palettes.length || new Set(previews).size !== previews.length)
+    ctx.addIssue({ code: 'custom', message: 'Style options must be unique' });
+  if (style.previews.some(p => !levels.includes(p.level) || !palettes.includes(p.paletteId)))
+    ctx.addIssue({ code: 'custom', message: 'Preview must reference an available tier and palette' });
+});
 export const StyleCatalogSchema = z.object({
-  catalogVersion: z.literal(1),
-  selectionMode: z.literal("single"),
-  styles: z.array(StyleRecipeSchema.extend({ preview: z.string().min(1) })).min(8).max(12),
-}).strict().superRefine((value, context) => {
-  const ids = value.styles.map(({ id }) => id);
-  if (new Set(ids).size !== ids.length) {
-    context.addIssue({ code: "custom", message: "style IDs must be unique", path: ["styles"] });
-  }
-  value.styles.forEach((style, index) => {
-    if (style.preview !== `previews/${style.id}.jpg`) {
-      context.addIssue({
-        code: "custom",
-        message: "style preview must match its style ID",
-        path: ["styles", index, "preview"],
-      });
-    }
-  });
+  catalogVersion: z.literal(2), selectionMode: z.literal('single'),
+  styles: z.array(StyleRecipeSchema).min(1).max(10),
+}).strict().superRefine((catalog, ctx) => {
+  if (new Set(catalog.styles.map(s => s.id)).size !== catalog.styles.length)
+    ctx.addIssue({ code: 'custom', message: 'Style IDs must be unique' });
 });
-
-export const VisualDirectorSchema = z.object({
-  foreground: Strings,
-  midground: Strings,
-  background: Strings,
-  microDetails: Strings,
-  readingOrder: Strings,
-  textSafeArea: z.string().min(1),
+// Snapshot only the selected variant: later catalog changes cannot alter a running deck.
+export const ResolvedStyleSchema = z.object({
+  id: Id, name: z.string().min(1), level: CreativityLevelSchema, paletteId: Id,
+  promptTemplate: z.string().min(1),
 }).strict();
-
-export const StyleSelectionSchema = z.discriminatedUnion("kind", [
-  z.object({ kind: z.literal("catalog"), styleId: z.string().min(1) }).strict(),
-  z.object({
-    kind: z.literal("custom"),
-    name: z.string().min(1),
-    description: z.string().min(1),
-    recipe: StyleRecipeSchema,
-  }).strict(),
-]);
-
-export const StyleSampleSelectionSchema = z.union([
-  z.object({
-    schemaVersion: z.literal(2),
-    projectRevisionId: z.string().uuid(),
-    representativeSlideId: z.string().uuid(),
-    selection: StyleSelectionSchema,
-    styleLockSha256: Sha256Schema,
-  }).strict(),
-  z.object({
-    schemaVersion: z.literal(1),
-    representativeSlideId: z.string().uuid(),
-    selection: StyleSelectionSchema,
-  }).strict(),
-  z.object({
-    // Kept solely to read pre-lock project fixtures. New selections must be
-    // discriminated so catalog and custom recipes share one lock lifecycle.
-    schemaVersion: z.literal(1),
-    styleId: z.string().regex(/^[a-z0-9-]+$/),
-    representativeSlideId: z.string().uuid(),
-  }).strict(),
-]);
-
-export const StyleReferenceSchema = z.object({
-  path: z.string().startsWith("style/references/"),
-  sha256: Sha256Schema,
-  role: z.enum(["art-direction", "content-reference"]),
-}).strict();
-
-export const StyleLockSchema = z.object({
-  contractVersion: z.literal(1),
-  projectId: z.string().uuid(),
-  revisionId: z.string().uuid(),
-  approvalState: z.enum(["provisional", "approved"]),
-  recipe: StyleRecipeSchema,
-  styleRecipeSha256: Sha256Schema,
-  approvedSample: ArtifactSchema.nullable(),
-  referenceArtifacts: z.array(StyleReferenceSchema),
-  applyDependencyDefaultStyle: z.literal(false),
-  createdAt: z.string().datetime(),
-}).strict().superRefine((value, context) => {
-  if (value.approvalState === "provisional" && value.approvedSample !== null) {
-    context.addIssue({ code: "custom", path: ["approvedSample"], message: "provisional style locks cannot bind an approved sample" });
-  }
-  if (value.approvalState === "approved" && value.approvedSample === null) {
-    context.addIssue({ code: "custom", path: ["approvedSample"], message: "approved style locks require an authenticated sample" });
-  }
-});
-
 export type StyleRecipe = z.infer<typeof StyleRecipeSchema>;
-export type VisualDirector = z.infer<typeof VisualDirectorSchema>;
-export type StyleSelection = z.infer<typeof StyleSelectionSchema>;
-export type StyleSampleSelection = z.infer<typeof StyleSampleSelectionSchema>;
-export type StyleReference = z.infer<typeof StyleReferenceSchema>;
-export type StyleLock = z.infer<typeof StyleLockSchema>;
+export type ResolvedStyle = z.infer<typeof ResolvedStyleSchema>;
+export type VariantSelection = z.infer<typeof VariantSelectionSchema>;

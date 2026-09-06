@@ -147,8 +147,8 @@ if (
 const scripts = pkg.scripts ?? {};
 if (
   scripts["verify:full"] !== "node scripts/verify-full.mjs"
-  || !String(scripts["test:portable"] ?? "").includes("tests/publication.test.ts")
-  || !String(scripts["test:portable:compiled"] ?? "").includes("dist/tests/publication.test.js")
+  || !String(scripts["test:portable"] ?? "").includes("scripts/test.ts")
+  || !String(scripts["test:portable:compiled"] ?? "").includes("--compiled")
   || !String(scripts["verify:portable"] ?? "").includes("test:portable")
   || !String(scripts["verify:portable"] ?? "").includes("test:portable:compiled")
   || scripts["release:check"] !== "node scripts/verify-release.mjs"

@@ -1,7 +1,7 @@
 {
   "name": "superppt",
-  "version": "0.1.3",
-  "description": "Create high-detail image-first PPTX decks with versioned planning and editable page revisions.",
+  "version": "0.2.0",
+  "description": "Create image-first PPTX decks with three decisions, batch generation and selected-page edits.",
   "author": {
     "name": "NeoMei",
     "url": "https://github.com/NeoMei"
@@ -34,11 +34,11 @@
   ],
   "scripts": {
     "test": "node --import tsx scripts/test.ts",
-    "test:portable": "node --import tsx --test tests/cli-input.test.ts tests/deck.test.ts tests/plugin-package.test.ts tests/presentation-service.test.ts tests/publication.test.ts tests/release-readiness.test.ts tests/styles.test.ts tests/test-runtime.test.ts tests/trust-boundary.test.ts tests/workflow-contract.test.ts",
+    "test:portable": "node --import tsx scripts/test.ts",
     "lint:types": "tsc -p tsconfig.json --noEmit",
-    "build": "tsc -p tsconfig.json",
+    "build": "node scripts/build.mjs",
     "test:compiled": "node --import tsx scripts/test.ts --compiled",
-    "test:portable:compiled": "node --experimental-detect-module --test dist/tests/cli-input.test.js dist/tests/deck.test.js dist/tests/plugin-package.test.js dist/tests/presentation-service.test.js dist/tests/publication.test.js dist/tests/release-readiness.test.js dist/tests/styles.test.js dist/tests/test-runtime.test.js dist/tests/trust-boundary.test.js dist/tests/workflow-contract.test.js",
+    "test:portable:compiled": "node --import tsx scripts/test.ts --compiled",
     "verify:portable": "node scripts/verify-contract.mjs && npm run test:portable && npm run lint:types && npm run build && npm run test:portable:compiled && npm run audit:dependencies",
     "audit:dependencies": "node scripts/audit-dependencies.mjs",
     "verify:full": "node scripts/verify-full.mjs",
@@ -48,7 +48,6 @@
   },
   "dependencies": {
     "jszip": "3.10.1",
-    "koffi": "3.1.6",
     "pptxgenjs": "4.0.1",
     "saxes": "^6.0.0",
     "sharp": "^0.35.3",

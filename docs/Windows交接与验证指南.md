@@ -1,3 +1,5 @@
+> 旧版本交接记录。vNext 当前流程见 [README](../README.md) 与 [验证记录](verification/2026-09-05-fast-workflow.md)。旧命令不再可用；历史跨平台结论不自动适用于本次重构。
+
 # SuperPPT Windows 交接与验证指南
 
 更新日期：2026-09-05。本文面向在 Windows 机器上接手 SuperPPT 验证与后续开发的同学，说明当前发布状态、可执行的验证步骤、测试能力边界，以及 Windows 相关修复的背景。

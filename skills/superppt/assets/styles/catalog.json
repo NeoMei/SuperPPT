@@ -1,506 +1,237 @@
 {
-  "catalogVersion": 1,
+  "catalogVersion": 2,
   "selectionMode": "single",
   "styles": [
     {
-      "id": "ink-future",
-      "name": "水墨未来",
-      "preview": "previews/ink-future.jpg",
-      "palette": [
-        "carbon black",
-        "rice-paper ivory",
-        "mineral cyan"
+      "id": "tactile",
+      "name": "立体",
+      "tiers": [
+        {
+          "level": 1,
+          "promptTemplate": "生成一张完整的 16:9 中文 PPT 页面。这是「创意度 1 档」设计：请你自己理解文案，独立决定适合的正文排版。\n\n目标：文字是明确的视觉主角，观众通过标题层级、段落分组、留白和重点强调快速理解内容。第一档以精致排版为主、图形为辅；保留所选风格的材质工艺与辨识度，不因为降低创意档位就降低完成度。\n\n风格主要体现在标题、文字表面、轻薄文字底衬、细分隔和少量小图标上。可以用简单、克制的承载面辅助阅读，但不要将内容组塑造成具象物件，不用大幅插画、场景、视觉隐喻或复杂结构解释内容。图标若有，只作为小型阅读提示，不成为每组的视觉主体。以文字的节奏和空间关系形成设计感，避免装饰挤占正文；具体布局由你决定。不要生成没有来源数据的统计图，也不要把方案目标画成已验证的成效。\n\n边界：文字准确、可辨认。顶部保留独立、整齐的标题和副标题区域，标题本身具有所选风格，正文图形不侵入标题。完整不透明背景。下方文案逐字保留、每句只出现一次，不添加可见解释、标签、序号或生成指令。图内所有可辨认文字也必须来自下方文案。不要生成没有来源数据的统计图，也不要把方案目标画成已验证的成效。输出只有完成的幻灯片。\n\nStyle material and typography:\nrefined matte tactile graphic design with subtle resin surface qualities.  Small icons and understated supporting surfaces may retain delicate shallow bevels and restrained contact shadows, with soft upper-left light. IMPORTANT LEVEL-1 TITLE: flat bold Chinese geometric sans-serif in solid the selected dark main color, a barely perceptible matte surface texture only. All headings are typographic ink-like flat letters, with no extrusion, no visible side faces, no bevelled letter edges, no relief or cast shadow. Title distinction comes from type weight, spacing, color and a short flat warm-accent-colored rule, not dimensional lettering. Supporting text crisp flat the selected dark main color. No glossy plastic, metal, preselected castle or factory. Material depth, if any, belongs only to the small supporting graphic elements. The material and palette are this style's selected test variant, not universal rules.\n\nSelected palette (shared across creativity levels):\n{{PALETTE}}\n\n内容关系：{{CONTENT_RELATIONSHIPS}}\n\n逐字使用的完整文案：\n{{SLIDE_COPY}}\n"
+        },
+        {
+          "level": 2,
+          "promptTemplate": "生成一张完整的 16:9 中文 PPT 页面。这是「创意度 2 档」设计：请你自己理解文案，独立决定适合的视觉构思与正文构图。\n\n目标：观众不仅能读到文字，也能从设计中理解文案中各组内容的含义及它们之间的关系。第二档是有设计感的信息呈现：通过适度的内容相关承载、图标、层次和分组关系组织文字，视觉精致但不张扬。保留所选风格的材质工艺，不因为降低创意档位就降低完成度。\n\n每组标题、完整说明与相关图形共同设计，承载形态由内容与文字篇幅决定。主体是清晰而巧妙的信息组织，图形提供局部的语义强调；不把整页设计成大型具象场景、夸张物件展示或戏剧化视觉隐喻。保持适量留白与自然阅读，不要求文字变形成物体，也不退回纯文字清单。具体造型与布局由你决定。不要生成没有来源数据的统计图，也不要把方案目标画成已验证的成效。\n\n边界：文字准确、可辨认。顶部保留独立、整齐的标题和副标题区域，标题本身具有所选风格，正文图形不侵入标题。完整不透明背景。下方文案逐字保留、每句只出现一次，不添加可见解释、标签、序号或生成指令。图内所有可辨认文字也必须来自下方文案。不要生成没有来源数据的统计图，也不要把方案目标画成已验证的成效。输出只有完成的幻灯片。\n\nStyle material and typography:\nrefined tactile sculpted matte resin.  Delicate bevels, soft upper-left studio light, restrained contact shadows. Title bold Chinese geometric sans in shallow selected-main-color relief. Supporting text crisp the selected dark main color. No glossy plastic, metal, preselected castle or factory. Depth coherent. The material and palette are this style's selected test variant, not universal rules.\n\nSelected palette (shared across creativity levels):\n{{PALETTE}}\n\n内容关系：{{CONTENT_RELATIONSHIPS}}\n\n逐字使用的完整文案：\n{{SLIDE_COPY}}\n"
+        },
+        {
+          "level": 3,
+          "promptTemplate": "生成一张完整的 16:9 中文 PPT 页面。这是「创意度 3 档」设计：请你自己理解文案，独立决定最能表达内容含义的视觉构思与正文构图。\n\n目标：观众不仅能读到文字，也能从图形中直观理解文案中各组内容的含义及它们之间的关系。视觉表达大胆、有惊艳感，可以夸张视觉形式，但不夸大数据或捏造效果。文字、数字、图标与内容驱动的图形自然成为同一个设计，不能只是漂亮背景上贴几段文字，也不必把每个字强行改造成物体。具体选用什么形象、如何呈现，由你决定。\n\n将每组标题、完整说明与表达其含义的立体图形作为一个整体来构思，让完整文案的篇幅参与决定承载图形的尺度和形态。承载文字的结构本身也表达这一组的内容含义，不是给普通文字框加立体边框，也不是上半页排四个场景、下半页集中排四组平面说明。读文字和看图形应发生在同一个有意义的视觉结构中；保留舒适的阅读面，不必让每个字变形成物体。具体形象与构图由你理解内容后决定，不预设场景或造型。第三档追求表达巧妙、大胆，而不是装饰多。不要生成没有来源数据的统计图，也不要把方案目标画成已验证的成效。\n\n边界：文字准确、可辨认。顶部保留独立、整齐的标题和副标题区域，标题本身具有所选风格，正文图形不侵入标题。完整不透明背景。下方文案逐字保留、每句只出现一次，不添加可见解释、标签、序号或生成指令。图内所有可辨认文字也必须来自下方文案。不要生成没有来源数据的统计图，也不要把方案目标画成已验证的成效。输出只有完成的幻灯片。\n\nStyle material and typography:\nrefined tactile sculpted matte resin.  Delicate bevels, soft upper-left studio light, restrained contact shadows. Title bold Chinese geometric sans in shallow selected-main-color relief. Supporting text crisp the selected dark main color. No glossy plastic, metal, preselected castle or factory. Depth coherent. The material and palette are this style's selected test variant, not universal rules.\n\nSelected palette (shared across creativity levels):\n{{PALETTE}}\n\n内容关系：{{CONTENT_RELATIONSHIPS}}\n\n逐字使用的完整文案：\n{{SLIDE_COPY}}\n"
+        }
       ],
-      "materials": [
-        "fibrous xuan paper",
-        "metallic ink"
+      "palettes": [
+        {
+          "id": "cool",
+          "name": "偏冷",
+          "prompt": "Porcelain-white background #EDF3F5; opaque dark ocean-blue typography #163D54; ocean teal-blue #367C94 as the primary colored resin and emblems; pale sky-blue #A9CCD9 on subordinate resin surfaces; a few coral-peach #E98767 highlights on key numerals and the short title rule. Keep coral small but clearly visible to counterbalance the cool blue family. Most carrier faces remain porcelain white; meaningful objects mix blue, teal and white, never all the same blue."
+        },
+        {
+          "id": "mid",
+          "name": "基准中线",
+          "prompt": "Softly neutral clean off-white background and most carrier faces, still welcoming, without yellow/cream haze, smoky gray or icy blue. Deep teal headings/text and meaningful dark areas; mineral teal supporting colored resin surfaces; a small warm orange/vermilion accent on key text/numerals and the title rule. Most pale furniture remains clean off-white. Neutral studio lighting and restrained neutral contact shadows. Preserve distinct off-white, deep teal, mineral teal and small warm accent roles. This is the accepted neutral reference palette, not black-white-gray. No paper texture or watercolor; keep the selected matte resin material."
+        },
+        {
+          "id": "warm",
+          "name": "偏暖",
+          "prompt": "Clean light cream background and carrier faces #F5ECDA; opaque dark teal typography #214744; warm soft terracotta #D98260 as the main colored resin on selected meaningful objects; fresh sage-teal #7DA99A as a clearly visible complementary supporting color on other objects and recesses; a small honey-apricot #E7AD4C accent on key numerals and title rule. Retain teal as a cool counterpoint; the whole image must NOT become brown, sepia, beige monochrome or yellow-lit. Use clean neutral studio illumination, warmness comes from selected material colors."
+        }
       ],
-      "lighting": [
-        "misty backlight",
-        "silver edge glow"
-      ],
-      "medium": [
-        "Chinese ink painting",
-        "precision technical illustration"
-      ],
-      "typography": [
-        "restrained Song-style title",
-        "small modern annotation"
-      ],
-      "detailLanguage": [
-        "dry-brush circuitry",
-        "layered ink mist",
-        "microscopic seal marks"
-      ],
-      "compositionRules": [
-        "asymmetric void and density",
-        "one ink focal mass",
-        "flowing visual current"
-      ],
-      "forbidden": [
-        "tourist poster",
-        "cartoon panda",
-        "random calligraphy"
-      ],
-      "pageVariants": {
-        "cover": "one iconic hero scene with generous title-safe atmosphere",
-        "section": "one transitional visual threshold with a single chapter cue",
-        "content": "layered explanatory scene with one focal subject and supporting evidence",
-        "process": "directional sequence with unmistakable start, transitions, and outcome",
-        "comparison": "balanced opposing regions with a visible shared evaluation axis",
-        "data": "integrated evidence field where charts belong to the scene rather than float above it",
-        "summary": "converging visual synthesis with one memorable closing image"
-      }
+      "previews": [
+        {
+          "level": 1,
+          "paletteId": "cool",
+          "path": "previews/tactile-1-cool.jpg"
+        },
+        {
+          "level": 1,
+          "paletteId": "warm",
+          "path": "previews/tactile-1-warm.jpg"
+        },
+        {
+          "level": 2,
+          "paletteId": "cool",
+          "path": "previews/tactile-2-cool.jpg"
+        },
+        {
+          "level": 2,
+          "paletteId": "mid",
+          "path": "previews/tactile-2-mid.jpg"
+        },
+        {
+          "level": 2,
+          "paletteId": "warm",
+          "path": "previews/tactile-2-warm.jpg"
+        },
+        {
+          "level": 3,
+          "paletteId": "cool",
+          "path": "previews/tactile-3-cool.jpg"
+        },
+        {
+          "level": 3,
+          "paletteId": "mid",
+          "path": "previews/tactile-3-mid.jpg"
+        },
+        {
+          "level": 3,
+          "paletteId": "warm",
+          "path": "previews/tactile-3-warm.jpg"
+        }
+      ]
     },
     {
-      "id": "scientific-atlas",
-      "name": "科学图鉴",
-      "preview": "previews/scientific-atlas.jpg",
-      "palette": [
-        "bone white",
-        "specimen green",
-        "cobalt blue"
+      "id": "glass",
+      "name": "玻璃",
+      "tiers": [
+        {
+          "level": 1,
+          "promptTemplate": "生成一张完整的 16:9 中文 PPT 页面。这是「创意度 1 档」设计：请你自己理解文案，独立决定适合的正文排版。\n\n目标：文字是明确的视觉主角，观众通过标题层级、段落分组、留白和重点强调快速理解内容。第一档以精致排版为主、图形为辅；保留所选风格的材质工艺与辨识度，不因为降低创意档位就降低完成度。\n\n风格主要体现在标题、文字表面、轻薄文字底衬、细分隔和少量小图标上。可以用简单、克制的承载面辅助阅读，但不要将内容组塑造成具象物件，不用大幅插画、场景、视觉隐喻或复杂结构解释内容。图标若有，只作为小型阅读提示，不成为每组的视觉主体。以文字的节奏和空间关系形成设计感，避免装饰挤占正文；具体布局由你决定。不要生成没有来源数据的统计图，也不要把方案目标画成已验证的成效。\n\n边界：文字准确、可辨认。顶部保留独立、整齐的标题和副标题区域，标题本身具有所选风格，正文图形不侵入标题。完整不透明背景。下方文案逐字保留、每句只出现一次，不添加可见解释、标签、序号或生成指令。图内所有可辨认文字也必须来自下方文案。不要生成没有来源数据的统计图，也不要把方案目标画成已验证的成效。输出只有完成的幻灯片。\n\nStyle material and typography:\nexceptionally refined THIN frosted glass with convincing transparency and delicately lit edges.  Use the same selected background palette across all three creativity levels. Creativity changes the graphic expression, not the background color. Do not introduce gray or a smoky cast. Keep the thin-edge highlights, shadow contrast and glass translucency distinct even with this lighter background. Keep it smooth and uncluttered, with no grain, mottling, fog or decorative dot patterns.\n\nThe broad glass faces are highly transmissive, with a very light neutral frost rather than milky white fill. The background color and any small content-related forms behind them remain clearly visible, gently softened by diffusion. A few small forms may partly cross behind an edge: the exposed part is crisp, the covered part remains visible but softly blurred. Keep all such forms secondary to text, without large objects or a scene. Frost means soft light transmission, not coarse surface texture.\n\nCRITICAL MATERIAL DETAIL: the glass must feel like an extremely thin tangible surface, not a flat white UI rectangle. Use one coherent soft upper-left light source. Each edge has a fine bright highlight on the light-facing side, a delicate cooler dark edge on the opposite side, and a tiny soft shadow immediately outside it. Let highlight intensity change naturally around the corners. This bright/dark pairing gives the perimeter subtle physical presence while the center stays clear and light. Do not draw a uniform white stroke around every side. A minute edge thickness is desirable; thick rims, heavy bevels, chunky acrylic, bulky side walls and liquid lens distortions are not. Keep shadows clean and restrained, never muddy.\n\nFlat crisp Chinese geometric sans typography sits on the glass, untouched by background blur. Title is independent, flat bold the selected dark main color with a short warm-accent rule. Preserve precise alignment, elegant spacing and understated small icons. Creativity level 1 remains text-led; material craftsmanship can be excellent without increasing graphic complexity. No unrelated stars, ornamental quotation marks, dot matrices or repeated decorative icons. Let the full text determine the layout. This palette is the current test choice, not a universal rule.\n\nSelected palette (shared across creativity levels):\n{{PALETTE}}\n\n内容关系：{{CONTENT_RELATIONSHIPS}}\n\n逐字使用的完整文案：\n{{SLIDE_COPY}}\n"
+        },
+        {
+          "level": 2,
+          "promptTemplate": "生成一张完整的 16:9 中文 PPT 页面。这是「创意度 2 档」设计：请你自己理解文案，独立决定适合的视觉构思与正文构图。\n\n目标：观众不仅能读到文字，也能从设计中理解文案中各组内容的含义及它们之间的关系。第二档是有设计感的信息呈现：通过适度的内容相关承载、图标、层次和分组关系组织文字，视觉精致但不张扬。保留所选风格的材质工艺，不因为降低创意档位就降低完成度。\n\n每组标题、完整说明与相关图形共同设计，承载形态由内容与文字篇幅决定。主体是清晰而巧妙的信息组织，图形提供局部的语义强调；不把整页设计成大型具象场景、夸张物件展示或戏剧化视觉隐喻。保持适量留白与自然阅读，不要求文字变形成物体，也不退回纯文字清单。具体造型与布局由你决定。不要生成没有来源数据的统计图，也不要把方案目标画成已验证的成效。\n\n边界：文字准确、可辨认。顶部保留独立、整齐的标题和副标题区域，标题本身具有所选风格，正文图形不侵入标题。完整不透明背景。下方文案逐字保留、每句只出现一次，不添加可见解释、标签、序号或生成指令。图内所有可辨认文字也必须来自下方文案。不要生成没有来源数据的统计图，也不要把方案目标画成已验证的成效。输出只有完成的幻灯片。\n\n所选风格与本档材质表现：\nfinely crafted frosted and optical glass. Mostly colorless or subtly palette-tinted glass, with carefully proportioned slender thickness, precise polished edges and delicate bevels. Distinguish optically clear areas, fine satin frosting and subtle precision-etched details; use this material contrast to articulate content. Refraction is subtle and locally controlled, with clean interior transmission, soft contact shadows and a few crisp restrained highlights. Typography has fine engraved or inlaid craftsmanship while remaining dark and readable. Title: selected-main-color geometric Chinese sans with a fine etched edge and short selected-accent underline. The finish feels light, precise and considered, not chunky molded acrylic or a crystal souvenir. Avoid heavy tubular rims, swollen bevels, excessive shine, decorative water droplets/ripples, trophies and unrelated crystal ornament. No warm stone, castle or generic futuristic dashboard. These are material qualities, not instructions for specific objects or layout; derive the forms freely from the content. This palette is only the selected test variant.\n\nSelected palette (shared across creativity levels):\n{{PALETTE}}\n\n内容关系：{{CONTENT_RELATIONSHIPS}}\n\n逐字使用的完整文案：\n{{SLIDE_COPY}}\n"
+        },
+        {
+          "level": 3,
+          "promptTemplate": "生成一张完整的 16:9 中文 PPT 页面。这是「创意度 3 档」设计：请你自己理解文案，独立决定最能表达内容含义的视觉构思与正文构图。\n\n目标：观众不仅能读到文字，也能从图形中直观理解文案中各组内容的含义及它们之间的关系。视觉表达大胆、有惊艳感，可以夸张视觉形式，但不夸大数据或捏造效果。文字、数字、图标与内容驱动的图形自然成为同一个设计，不能只是漂亮背景上贴几段文字，也不必把每个字强行改造成物体。具体选用什么形象、如何呈现，由你决定。\n\n将每组标题、完整说明与表达其含义的玻璃图形作为一个整体来设计。玻璃不只是旁边的插画，也自然承载这一组文字；承载形态由内容决定，不限定为卡片、圆环或固定场景。让文字的篇幅参与决定图形的尺度与构图，避免先摆好物件，再把正文挤到图外。保持完整文案与自然阅读，不要求文字变形成物体。第三档追求表达巧妙、大胆，而不是融合比例高或装饰多。不要生成没有来源数据的统计图，也不要把方案目标画成已验证的成效。\n\n边界：文字准确、可辨认。顶部保留独立、整齐的标题和副标题区域，标题本身具有所选风格，正文图形不侵入标题。完整不透明背景。下方文案逐字保留、每句只出现一次，不添加可见解释、标签、序号或生成指令。图内所有可辨认文字也必须来自下方文案。场景中的导视牌、书脊、屏幕、白板、地图等也属于页面文案，不是可以自由补写文字的背景道具：用无文字的直观图标、无标注的抽象纹理或留白表达；如需在这些载体上放文字，只能自然承载下方原文且全页不重复。不要生成没有来源数据的统计图，也不要把方案目标画成已验证的成效。输出只有完成的幻灯片。\n\nStyle material and typography:\nfinely crafted frosted and optical glass.  Mostly colorless or subtly palette-tinted glass, with carefully proportioned slender thickness, precise polished edges and delicate bevels. Distinguish optically clear areas, fine satin frosting and subtle precision-etched details; use this material contrast to articulate content. Refraction is subtle and locally controlled, with clean interior transmission, soft contact shadows and a few crisp restrained highlights. Typography has fine engraved or inlaid craftsmanship while remaining dark and readable. Title: main-color geometric Chinese sans with a fine etched edge and short warm-accent underline. The finish feels light, precise and considered, not chunky molded acrylic or a crystal souvenir. Avoid heavy tubular rims, swollen bevels, excessive shine, decorative water droplets/ripples, trophies and unrelated crystal ornament. No warm stone, castle or generic futuristic dashboard. These are material qualities, not instructions for specific objects or layout; derive the forms freely from the content. This palette is only the selected test variant.\n\nSelected palette (shared across creativity levels):\n{{PALETTE}}\n\n内容关系：{{CONTENT_RELATIONSHIPS}}\n\n逐字使用的完整文案：\n{{SLIDE_COPY}}\n"
+        }
       ],
-      "materials": [
-        "archival paper",
-        "glass specimen plate"
+      "palettes": [
+        {
+          "id": "cool",
+          "name": "偏冷",
+          "prompt": "Black-blue cold palette, not violet-blue: a clean luminous pale ice-white backdrop #EFF4F7 with a very subtle true-blue undertone. Opaque nearly-black ink navy #0B1E2B for the title, headings and body text. Deep midnight blue #17384D is the primary chromatic identity on selected meaningful icons, graphic details and precise glass edge reflections; restrained steel blue #416C85 supports it, with a small amount of pale icy blue #B4DEEB for airy cool highlights. The coldness comes from crisp black-blue depth against the light clear glass, not from purple, bright royal-blue saturation or darkening the whole slide. Make the dark blue details visibly present but keep their total area limited so the text stays dominant. Glass bodies and broad faces remain optically transparent and mostly colorless, transmitting the light background; only fine edges, localized refraction and selected semantic details carry the black-blue color. Preserve delicate bright/dark edge contrast without metallic rims or smoky gray slabs. Title underline uses steel blue or icy blue, overriding the generic warm-accent wording in the material block. No violet, purple, lavender, periwinkle, magenta, coral, orange or yellow. No all-over blue filter, dark backdrop, neon, dirty gray haze or black opaque glass."
+        },
+        {
+          "id": "mid",
+          "name": "基准中线",
+          "prompt": "The original reference palette for this glass style: very pale clean cool-blue background #EAF3FA; opaque deep midnight-blue typography #12314D; cyan #20B6CF as the key accent, with restrained cobalt #356EEA supporting glints and meaningful icon details. Glass remains mostly colorless or very subtly cool-tinted, transmitting the light background. This style's reference midpoint is naturally cool; do not neutralize it into black-white-gray. Use cyan for the short title underline, as in this original reference palette; this palette-specific title color overrides the generic warm-accent color wording in the material block. Keep the backdrop clean without a smoky gray cast. No added warm accent is required in this original palette."
+        },
+        {
+          "id": "warm",
+          "name": "偏暖",
+          "prompt": "Very pale clean warm ivory backdrop #F6F0E6; opaque deep blue-teal text #153E50. Glass bodies remain optically clear/colorless with only a trace of warm ambient transmission, not yellow amber blocks. Fresh lake-teal #58A8B1 remains a substantial cool supporting accent on graphic lines and icon details, balanced by warm apricot-coral #E49A74 on selected semantic details, key numerals and the title rule. Keep blue-teal and warm apricot both visible. Warmer RELATIVE to the original ice-blue palette, not absolutely orange or brown. No sepia wash, yellow light, brown text, gold metal trim or metallic objects."
+        }
       ],
-      "lighting": [
-        "museum daylight",
-        "fine raking light"
-      ],
-      "medium": [
-        "natural-history plate",
-        "scientific cutaway illustration"
-      ],
-      "typography": [
-        "engraved serif heading",
-        "precise specimen labels"
-      ],
-      "detailLanguage": [
-        "cross-section anatomy",
-        "calibration ticks",
-        "hand-inked micro labels"
-      ],
-      "compositionRules": [
-        "central specimen hierarchy",
-        "numbered evidence clusters",
-        "disciplined annotation routes"
-      ],
-      "forbidden": [
-        "school worksheet",
-        "clip art",
-        "unlabeled decoration"
-      ],
-      "pageVariants": {
-        "cover": "one iconic hero scene with generous title-safe atmosphere",
-        "section": "one transitional visual threshold with a single chapter cue",
-        "content": "layered explanatory scene with one focal subject and supporting evidence",
-        "process": "directional sequence with unmistakable start, transitions, and outcome",
-        "comparison": "balanced opposing regions with a visible shared evaluation axis",
-        "data": "integrated evidence field where charts belong to the scene rather than float above it",
-        "summary": "converging visual synthesis with one memorable closing image"
-      }
+      "previews": [
+        {
+          "level": 1,
+          "paletteId": "mid",
+          "path": "previews/glass-1-mid.jpg"
+        },
+        {
+          "level": 1,
+          "paletteId": "warm",
+          "path": "previews/glass-1-warm.jpg"
+        },
+        {
+          "level": 2,
+          "paletteId": "mid",
+          "path": "previews/glass-2-mid.jpg"
+        },
+        {
+          "level": 2,
+          "paletteId": "warm",
+          "path": "previews/glass-2-warm.jpg"
+        },
+        {
+          "level": 3,
+          "paletteId": "cool",
+          "path": "previews/glass-3-cool.jpg"
+        },
+        {
+          "level": 3,
+          "paletteId": "mid",
+          "path": "previews/glass-3-mid.jpg"
+        },
+        {
+          "level": 3,
+          "paletteId": "warm",
+          "path": "previews/glass-3-warm.jpg"
+        }
+      ]
     },
     {
-      "id": "isometric-miniature",
-      "name": "三维微缩",
-      "preview": "previews/isometric-miniature.jpg",
-      "palette": [
-        "warm stone",
-        "oxidized teal",
-        "signal orange"
-      ],
-      "materials": [
-        "cast resin",
-        "brushed aluminum"
-      ],
-      "lighting": [
-        "soft studio key",
-        "miniature practical lights"
-      ],
-      "medium": [
-        "isometric diorama",
-        "high-end product visualization"
-      ],
-      "typography": [
-        "compact geometric title",
-        "physical wayfinding labels"
-      ],
-      "detailLanguage": [
-        "tiny operators",
-        "cable conduits",
-        "machined panel seams"
-      ],
-      "compositionRules": [
-        "single miniature world",
-        "readable vertical strata",
-        "controlled 30-degree perspective"
-      ],
-      "forbidden": [
-        "toy-like plastic",
-        "empty cubes",
-        "flat icon grid"
-      ],
-      "pageVariants": {
-        "cover": "one iconic hero scene with generous title-safe atmosphere",
-        "section": "one transitional visual threshold with a single chapter cue",
-        "content": "layered explanatory scene with one focal subject and supporting evidence",
-        "process": "directional sequence with unmistakable start, transitions, and outcome",
-        "comparison": "balanced opposing regions with a visible shared evaluation axis",
-        "data": "integrated evidence field where charts belong to the scene rather than float above it",
-        "summary": "converging visual synthesis with one memorable closing image"
-      }
-    },
-    {
-      "id": "cinematic-editorial",
-      "name": "电影编辑",
-      "preview": "previews/cinematic-editorial.jpg",
-      "palette": [
-        "charcoal",
-        "paper cream",
-        "editorial crimson"
-      ],
-      "materials": [
-        "matte photographic paper",
-        "fine film grain"
-      ],
-      "lighting": [
-        "dramatic window light",
-        "soft negative fill"
-      ],
-      "medium": [
-        "cinematic photography",
-        "premium magazine layout"
-      ],
-      "typography": [
-        "large editorial serif",
-        "quiet grotesk captions"
-      ],
-      "detailLanguage": [
-        "contact-sheet fragments",
-        "subtle crop marks",
-        "tonal fabric detail"
-      ],
-      "compositionRules": [
-        "one photographic thesis",
-        "editorial tension",
-        "clear reading rhythm"
-      ],
-      "forbidden": [
-        "stock-photo collage",
-        "busy magazine cover",
-        "fake brand marks"
-      ],
-      "pageVariants": {
-        "cover": "one iconic hero scene with generous title-safe atmosphere",
-        "section": "one transitional visual threshold with a single chapter cue",
-        "content": "layered explanatory scene with one focal subject and supporting evidence",
-        "process": "directional sequence with unmistakable start, transitions, and outcome",
-        "comparison": "balanced opposing regions with a visible shared evaluation axis",
-        "data": "integrated evidence field where charts belong to the scene rather than float above it",
-        "summary": "converging visual synthesis with one memorable closing image"
-      }
-    },
-    {
-      "id": "swiss-avantgarde",
-      "name": "先锋瑞士",
-      "preview": "previews/swiss-avantgarde.jpg",
-      "palette": [
-        "warm white",
-        "absolute black",
-        "vermilion"
-      ],
-      "materials": [
-        "uncoated paper",
-        "screen-print ink"
-      ],
-      "lighting": [
-        "flat gallery light",
-        "sharp paper shadow"
-      ],
-      "medium": [
-        "Swiss editorial design",
-        "constructivist print composition"
-      ],
-      "typography": [
-        "oversized grotesk type",
-        "micro-grid captions"
-      ],
-      "detailLanguage": [
-        "registration crosses",
-        "halftone image fields",
-        "hairline grid coordinates"
-      ],
-      "compositionRules": [
-        "radical asymmetric grid",
-        "high contrast scale",
-        "precise negative space"
-      ],
-      "forbidden": [
-        "generic corporate template",
-        "rounded cards",
-        "decorative gradients"
-      ],
-      "pageVariants": {
-        "cover": "one iconic hero scene with generous title-safe atmosphere",
-        "section": "one transitional visual threshold with a single chapter cue",
-        "content": "layered explanatory scene with one focal subject and supporting evidence",
-        "process": "directional sequence with unmistakable start, transitions, and outcome",
-        "comparison": "balanced opposing regions with a visible shared evaluation axis",
-        "data": "integrated evidence field where charts belong to the scene rather than float above it",
-        "summary": "converging visual synthesis with one memorable closing image"
-      }
-    },
-    {
-      "id": "cinematic-tech",
-      "name": "电影科技",
-      "preview": "previews/cinematic-tech.jpg",
-      "palette": [
-        "midnight blue",
-        "electric cyan",
-        "restrained coral"
-      ],
-      "materials": [
-        "smoked glass",
-        "brushed metal"
-      ],
-      "lighting": [
-        "volumetric key light",
-        "cyan rim light"
-      ],
-      "medium": [
-        "cinematic concept art",
-        "photoreal 3D"
-      ],
-      "typography": [
-        "clear title safe area",
-        "precise sans serif"
-      ],
-      "detailLanguage": [
-        "fine circuitry",
-        "particle paths",
-        "micro-etched labels"
-      ],
-      "compositionRules": [
-        "one dominant focal point",
-        "layered depth",
-        "controlled information zones"
-      ],
-      "forbidden": [
-        "neon gamer UI",
-        "hologram clutter",
-        "unreadable microtext"
-      ],
-      "pageVariants": {
-        "cover": "one iconic hero scene with generous title-safe atmosphere",
-        "section": "one transitional visual threshold with a single chapter cue",
-        "content": "layered explanatory scene with one focal subject and supporting evidence",
-        "process": "directional sequence with unmistakable start, transitions, and outcome",
-        "comparison": "balanced opposing regions with a visible shared evaluation axis",
-        "data": "integrated evidence field where charts belong to the scene rather than float above it",
-        "summary": "converging visual synthesis with one memorable closing image"
-      }
-    },
-    {
-      "id": "luxury-photographic",
-      "name": "奢华摄影",
-      "preview": "previews/luxury-photographic.jpg",
-      "palette": [
-        "obsidian",
-        "champagne",
-        "deep emerald"
-      ],
-      "materials": [
-        "satin metal",
-        "polished stone"
-      ],
-      "lighting": [
-        "sculpted studio light",
-        "warm reflected glow"
-      ],
-      "medium": [
-        "luxury still life",
-        "architectural photography"
-      ],
-      "typography": [
-        "refined high-contrast serif",
-        "spaced small capitals"
-      ],
-      "detailLanguage": [
-        "stone veining",
-        "controlled reflections",
-        "fine textile weave"
-      ],
-      "compositionRules": [
-        "hero-object staging",
-        "calm premium spacing",
-        "photographic depth planes"
-      ],
-      "forbidden": [
-        "jewelry advertisement cliché",
-        "gold overload",
-        "generic office portrait"
-      ],
-      "pageVariants": {
-        "cover": "one iconic hero scene with generous title-safe atmosphere",
-        "section": "one transitional visual threshold with a single chapter cue",
-        "content": "layered explanatory scene with one focal subject and supporting evidence",
-        "process": "directional sequence with unmistakable start, transitions, and outcome",
-        "comparison": "balanced opposing regions with a visible shared evaluation axis",
-        "data": "integrated evidence field where charts belong to the scene rather than float above it",
-        "summary": "converging visual synthesis with one memorable closing image"
-      }
-    },
-    {
-      "id": "tactile-craft",
-      "name": "材质手作",
-      "preview": "previews/tactile-craft.jpg",
-      "palette": [
-        "clay white",
-        "indigo thread",
-        "saffron"
-      ],
-      "materials": [
-        "handmade paper",
-        "stitched textile"
-      ],
-      "lighting": [
-        "north-window daylight",
-        "warm table bounce"
-      ],
-      "medium": [
-        "paper sculpture",
-        "editorial craft photography"
-      ],
-      "typography": [
-        "humanist serif title",
-        "hand-set label strips"
-      ],
-      "detailLanguage": [
-        "torn fiber edges",
-        "visible stitches",
-        "embossed symbols"
-      ],
-      "compositionRules": [
-        "one crafted centerpiece",
-        "layered paper depth",
-        "material-led hierarchy"
-      ],
-      "forbidden": [
-        "children's scrapbook",
-        "messy glue marks",
-        "random stickers"
-      ],
-      "pageVariants": {
-        "cover": "one iconic hero scene with generous title-safe atmosphere",
-        "section": "one transitional visual threshold with a single chapter cue",
-        "content": "layered explanatory scene with one focal subject and supporting evidence",
-        "process": "directional sequence with unmistakable start, transitions, and outcome",
-        "comparison": "balanced opposing regions with a visible shared evaluation axis",
-        "data": "integrated evidence field where charts belong to the scene rather than float above it",
-        "summary": "converging visual synthesis with one memorable closing image"
-      }
-    },
-    {
-      "id": "architectural-blueprint",
-      "name": "建筑蓝图",
-      "preview": "previews/architectural-blueprint.jpg",
-      "palette": [
-        "blueprint navy",
-        "chalk white",
-        "safety amber"
-      ],
-      "materials": [
-        "vellum",
-        "anodized aluminum"
-      ],
-      "lighting": [
-        "cool drafting-table light",
-        "precise edge illumination"
-      ],
-      "medium": [
-        "architectural drawing",
-        "technical axonometric rendering"
-      ],
-      "typography": [
-        "condensed technical title",
-        "monospaced dimension notes"
-      ],
-      "detailLanguage": [
-        "section hatches",
-        "dimension chains",
-        "component callouts"
-      ],
-      "compositionRules": [
-        "governing structural axis",
-        "measured modular grid",
-        "clear section-to-detail hierarchy"
-      ],
-      "forbidden": [
-        "illegible CAD screenshot",
-        "random engineering numbers",
-        "flat wireframe only"
-      ],
-      "pageVariants": {
-        "cover": "one iconic hero scene with generous title-safe atmosphere",
-        "section": "one transitional visual threshold with a single chapter cue",
-        "content": "layered explanatory scene with one focal subject and supporting evidence",
-        "process": "directional sequence with unmistakable start, transitions, and outcome",
-        "comparison": "balanced opposing regions with a visible shared evaluation axis",
-        "data": "integrated evidence field where charts belong to the scene rather than float above it",
-        "summary": "converging visual synthesis with one memorable closing image"
-      }
-    },
-    {
-      "id": "narrative-fantasy",
-      "name": "叙事幻想",
-      "preview": "previews/narrative-fantasy.jpg",
-      "palette": [
-        "twilight violet",
-        "moonlit silver",
-        "ember orange"
-      ],
-      "materials": [
-        "weathered stone",
-        "translucent crystal"
-      ],
-      "lighting": [
-        "moonlit atmosphere",
-        "warm narrative beacon"
-      ],
-      "medium": [
-        "narrative concept art",
-        "matte-painting realism"
-      ],
-      "typography": [
-        "elegant storybook serif",
-        "restrained cartographic labels"
-      ],
-      "detailLanguage": [
-        "symbolic constellations",
-        "weathered map lines",
-        "miniature story events"
-      ],
-      "compositionRules": [
-        "one narrative journey",
-        "foreground-to-horizon progression",
-        "symbolic evidence landmarks"
-      ],
-      "forbidden": [
-        "game loading screen",
-        "fantasy character poster",
-        "ornamental noise"
-      ],
-      "pageVariants": {
-        "cover": "one iconic hero scene with generous title-safe atmosphere",
-        "section": "one transitional visual threshold with a single chapter cue",
-        "content": "layered explanatory scene with one focal subject and supporting evidence",
-        "process": "directional sequence with unmistakable start, transitions, and outcome",
-        "comparison": "balanced opposing regions with a visible shared evaluation axis",
-        "data": "integrated evidence field where charts belong to the scene rather than float above it",
-        "summary": "converging visual synthesis with one memorable closing image"
-      }
+      "id": "ink",
+      "name": "水墨",
+      "tiers": [
+        {
+          "level": 1,
+          "promptTemplate": "生成一张完整的 16:9 中文 PPT 页面。这是「创意度 1 档」设计：请你自己理解文案，独立决定适合的正文排版。\n\n目标：文字是明确的视觉主角，观众通过标题层级、段落分组、留白和重点强调快速理解内容。第一档以精致排版为主、图形为辅；保留所选风格的材质工艺与辨识度，不因为降低创意档位就降低完成度。\n\n风格主要体现在标题、文字表面、轻薄文字底衬、细分隔和少量小图标上。可以用简单、克制的承载面辅助阅读，但不要将内容组塑造成具象物件，不用大幅插画、场景、视觉隐喻或复杂结构解释内容。图标若有，只作为小型阅读提示，不成为每组的视觉主体。以文字的节奏和空间关系形成设计感，避免装饰挤占正文；具体布局由你决定。不要生成没有来源数据的统计图，也不要把方案目标画成已验证的成效。\n\n边界：文字准确、可辨认。顶部保留独立、整齐的标题和副标题区域，标题本身具有所选风格，正文图形不侵入标题。完整不透明背景。下方文案逐字保留、每句只出现一次，不添加可见解释、标签、序号或生成指令。图内所有可辨认文字也必须来自下方文案。不要生成没有来源数据的统计图，也不要把方案目标画成已验证的成效。输出只有完成的幻灯片。\n\nStyle material and typography:\ncontemporary Chinese ink on natural xuan paper, with the selected palette specified separately. Faint paper grain and intentional dry/wet brush contrast. Title clean bold Song-style Chinese, black. Supporting text crisp dark Chinese. Two-dimensional ink/paper graphic design, not 3D resin or glass. No generic landscape, bamboo, dragon, meaningless calligraphy or seals. This palette is only the selected test variant.\n\nSelected palette (shared across creativity levels):\n{{PALETTE}}\n\n内容关系：{{CONTENT_RELATIONSHIPS}}\n\n逐字使用的完整文案：\n{{SLIDE_COPY}}\n"
+        },
+        {
+          "level": 2,
+          "promptTemplate": "生成一张完整的 16:9 中文 PPT 页面。这是「创意度 2 档」设计：请你自己理解文案，独立决定适合的视觉构思与正文构图。\n\n目标：观众不仅能读到文字，也能从设计中理解文案中各组内容的含义及它们之间的关系。第二档是有设计感的信息呈现：通过适度的内容相关承载、图标、层次和分组关系组织文字，视觉精致但不张扬。保留所选风格的材质工艺，不因为降低创意档位就降低完成度。\n\n每组标题、完整说明与相关图形共同设计，承载形态由内容与文字篇幅决定。主体是清晰而巧妙的信息组织，图形提供局部的语义强调；不把整页设计成大型具象场景、夸张物件展示或戏剧化视觉隐喻。保持适量留白与自然阅读，不要求文字变形成物体，也不退回纯文字清单。具体造型与布局由你决定。不要生成没有来源数据的统计图，也不要把方案目标画成已验证的成效。\n\n边界：文字准确、可辨认。顶部保留独立、整齐的标题和副标题区域，标题本身具有所选风格，正文图形不侵入标题。完整不透明背景。下方文案逐字保留、每句只出现一次，不添加可见解释、标签、序号或生成指令。图内所有可辨认文字也必须来自下方文案。不要生成没有来源数据的统计图，也不要把方案目标画成已验证的成效。输出只有完成的幻灯片。\n\nStyle material and typography:\ncontemporary Chinese ink on natural xuan paper, with the selected palette specified separately. Faint paper grain and intentional dry/wet brush contrast. Title clean bold Song-style Chinese, black. Supporting text crisp dark Chinese. Two-dimensional ink/paper graphic design, not 3D resin or glass. No generic landscape, bamboo, dragon, meaningless calligraphy or seals. This palette is only the selected test variant.\n\nSelected palette (shared across creativity levels):\n{{PALETTE}}\n\n内容关系：{{CONTENT_RELATIONSHIPS}}\n\n逐字使用的完整文案：\n{{SLIDE_COPY}}\n"
+        },
+        {
+          "level": 3,
+          "promptTemplate": "生成一张完整的 16:9 中文 PPT 页面。这是「创意度 3 档」设计：请你自己理解文案，独立决定最能表达内容含义的视觉构思与正文构图。\n\n目标：观众不仅能读到文字，也能从图形中直观理解文案中各组内容的含义及它们之间的关系。视觉表达大胆、有惊艳感，可以夸张视觉形式，但不夸大数据或捏造效果。文字、数字、图标与内容驱动的图形自然成为同一个设计，不能只是漂亮背景上贴几段文字，也不必把每个字强行改造成物体。具体选用什么形象、如何呈现，由你决定。\n\n图形先准确表达内容，再让核心文字自然参与图形表达。核心标题、关键词或关键数字应成为有意义的视觉表达的一部分，而不是全部放在插画旁边。第三档追求表达巧妙、大胆，而不是融合比例高或装饰多。不要生成没有来源数据的统计图，也不要把方案目标画成已验证的成效。\n\n边界：文字准确、可辨认。顶部保留独立、整齐的标题和副标题区域，标题本身具有所选风格，正文图形不侵入标题。完整不透明背景。下方文案逐字保留、每句只出现一次，不添加可见解释、标签、序号或生成指令。图内所有可辨认文字也必须来自下方文案。不要生成没有来源数据的统计图，也不要把方案目标画成已验证的成效。输出只有完成的幻灯片。\n\nStyle material and typography:\ncontemporary Chinese ink on natural xuan paper, with the selected palette specified separately. Faint paper grain and intentional dry/wet brush contrast. Title clean bold Song-style Chinese, black. Supporting text crisp dark Chinese. Two-dimensional ink/paper graphic design, not 3D resin or glass. No generic landscape, bamboo, dragon, meaningless calligraphy or seals. This palette is only the selected test variant.\n\nSelected palette (shared across creativity levels):\n{{PALETTE}}\n\n内容关系：{{CONTENT_RELATIONSHIPS}}\n\n逐字使用的完整文案：\n{{SLIDE_COPY}}\n"
+        }
+      ],
+      "palettes": [
+        {
+          "id": "cool",
+          "name": "偏冷",
+          "prompt": "Clean subtly cool natural xuan-paper #EEF2ED, dark blue-black ink text #1D303B; mineral blue #346B8A as the principal wash and colored headings; fresh mineral jade #6BA99B for subordinate wash details; small warm cinnabar-orange #C56349 accents on key numerals and short title stroke. Retain genuine black ink variation, paper white and blue-green washes together; the small warm accent supplies contrast. Not grayscale, not a blue filter over everything."
+        },
+        {
+          "id": "mid",
+          "name": "基准中线",
+          "prompt": "contemporary Chinese ink on ivory xuan-paper #F4EFE3, carbon black #202522 text and ink, mineral teal #287C78 restrained wash, vermilion #B9462F selectively emphasizes key result numerals and a short title underline."
+        },
+        {
+          "id": "warm",
+          "name": "偏暖",
+          "prompt": "Clean lightly warm off-white natural xuan paper #F6F3ED, without yellow, mustard, ochre or sepia background cast. Deep teal ink text #214744. Fresh sage-teal #7DA99A and clearly distinct soft terracotta/coral #D98260 are the two coordinated color families on content-related washes and meaningful objects. The coral areas supply the relative warmth while teal supplies a cool complementary counterpoint. Small warmer orange #D87547 emphasizes key numerals or title stroke. Keep substantial clean paper and black/dark-teal linework. Do not color everything green or everything coral; avoid aged parchment and olive-brown washes."
+        }
+      ],
+      "previews": [
+        {
+          "level": 1,
+          "paletteId": "cool",
+          "path": "previews/ink-1-cool.jpg"
+        },
+        {
+          "level": 1,
+          "paletteId": "mid",
+          "path": "previews/ink-1-mid.jpg"
+        },
+        {
+          "level": 1,
+          "paletteId": "warm",
+          "path": "previews/ink-1-warm.jpg"
+        },
+        {
+          "level": 2,
+          "paletteId": "cool",
+          "path": "previews/ink-2-cool.jpg"
+        },
+        {
+          "level": 2,
+          "paletteId": "mid",
+          "path": "previews/ink-2-mid.jpg"
+        },
+        {
+          "level": 2,
+          "paletteId": "warm",
+          "path": "previews/ink-2-warm.jpg"
+        },
+        {
+          "level": 3,
+          "paletteId": "cool",
+          "path": "previews/ink-3-cool.jpg"
+        },
+        {
+          "level": 3,
+          "paletteId": "mid",
+          "path": "previews/ink-3-mid.jpg"
+        },
+        {
+          "level": 3,
+          "paletteId": "warm",
+          "path": "previews/ink-3-warm.jpg"
+        }
+      ]
     }
   ]
 }

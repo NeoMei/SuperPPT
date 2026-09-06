@@ -1,58 +1,56 @@
 ---
 name: superppt
-description: Guide users from a topic, pasted content, or Markdown to a high-detail image-first presentation, with review-gated delivery and editable selected-page revisions.
+description: Use when users want to make a high-detail presentation from a topic, pasted content or Markdown, or revise selected pages of a SuperPPT task.
 ---
 
 # SuperPPT
 
-Use a real guided conversation. The visible route is：内容导入/描述 → 针对内容追问 → `outline` → `slide-specs` → `style-selection` 紧凑单选风格 → `style-sample-generation` → `style-sample` → `generation-authorization` → 逐页串行生成 → `deck-review` → 修改某页 / 返回前序 / 确认交付。每个用户决定都要停下来等待；不得从导入静默跑到最终 PPT，也不得把反馈拖到交付时才收集。
+将内容做成高细节、图片优先的整套 PPTX。默认只在三个决定处等待：
+内容方案与选款（风格 → 档位 → 配色，同时授权样页）→ 样页回看（同时授权整套）→ 完整 PPTX 回看与交付。
+风格只能单选。详细输入见 [CLI 与机器工作](references/依赖说明.md)。
 
-Before advancing, read [references/阶段契约.json](references/阶段契约.json). It is the 唯一 wait/continue authority. Its eight entries are all mandatory user waits: stop, present that entry's `userVisibleArtifact`, and wait for one of its `allowedNextActions`. Machine validation cannot advance a stage or imply approval. 每次只问一个与当前内容直接相关的问题，或展示一组当前决定；同时摘要已经知道的内容，让用户能即时纠正。确认建立可恢复基线，不锁死前序阶段。
+## 操作节奏
 
-## Start or resume
+先解析本 Skill 的物理安装位置，插件根目录是其所在目录的上两层。
+通过当前宿主技能目录明确解析 ai-image-to-ppt 和 image-to-editable-pptx，不扫描用户主目录。
+新建空任务目录，执行 start；中断的本版任务执行 continue。
+旧任务不迁移、不读取继续，也不删除。需要时另建新目录。
 
-Resolve this Skill through symlinks and treat the plugin root as two levels above its physical containing directory. For an existing project, verify `.superppt-project.json`, then read `superppt.json` and `项目状态.md`; refuse an unowned directory. For a new project, collect only missing title/location, run `preflight`, initialize, and preserve the description, pasted text, or Markdown bytes as `source/original.md`. V1 does not ingest DOCX, PDF, or PPTX.
+以 continue 返回值行动：
 
-Read [references/工作区契约.md](references/工作区契约.md) before project mutations. Read [references/依赖说明.md](references/依赖说明.md) for exact Task 10 CLI routes, private inputs, dependency resolution, outbound disclosure, and failure handling. The CLI has no `--help` contract; never invent commands or flags.
+- kind: work：立即读取 inputPath，完成机器工作并回传 result；不问用户“是否继续”。
+- kind: decision：展示当前内容供用户决定，收到对应选择后执行 decide。
+- kind: attention：解释具体缺失产物、失败或未明请求；不声称成功，不自动追加付费。
+- kind: done：直接展示返回的语义文件名 PPTX 链接。
 
-## Guided planning
+规划时一次写完整 Brief、Outline、逐页 SlideSpec 和可用真实风格候选。
+读取 assets/styles/catalog.json，当前提供立体、玻璃、水墨。按“风格 → 档位 → 配色”展开已有选项：档位显示 1／2／3，配色使用该风格的偏冷／基准中线／偏暖。
+用 details.previewBase 加 previews[].path 展示所选 level、paletteId 对应的已有图片。没有精确预览时，明确说明缺图；可分别展示同风格的档位参考与配色参考，逐张标明差异，不把参考图冒充该组合，不现场生图选款。这仍是同一次 plan-review，不增加逐步确认关卡。
+保留源内容结构、来源覆盖和精确 requiredText（包含独立标题及全部可见文字，不删减、不限制行数）。relationships 只描述内容含义与关系；实际背景、承载图形和构图由生图模型根据内容决定。
+只追问影响结果的缺失事实，不分别确认大纲、逐页说明和风格。
 
-After import, ask only missing questions that materially change audience, purpose, duration/page count, narrative emphasis, required facts, or constraints. Do not run a generic questionnaire or repeat generic “确认吗？”. Agent orchestration writes validated `brief.json`, then a complete ordered outline with stable UUIDs, page roles, purpose, and source coverage. Show it and stop at `outline`.
+## 生图与检查
 
-After outline approval, author every `slides/<stable-id>/spec.json`/`.md`. Make the core message, exact safe text, visual subject, composition and spatial relationships, source evidence, and forbidden content inspectable. Show every page description and stop separately at `slide-specs`; style work cannot substitute for this checkpoint.
+在 plan-review 展示完整方案、选中组合的样页内容 prompt、参考图用途、1 次调用预算和输出位置；确认选款即授权样页。内容 prompt 从 details.samplePromptsPath 按 styleId/level/paletteId 取出，不把所有组合的长 prompt 展开到对话。
+在 sample-review 展示实际样页、整套 prompt、参考图用途、整套页数、复用页数、新生成页数与新增调用预算、输出位置；确认即授权整套。按 details.callBudget 披露和提交新增预算，不把整套页数当调用数。
+用户确认无须修改的样页直接进入正式 PPT 的原对应页，不重画、不换图；只生成未缓存页。三页正常路径共调用三次：样页一次，剩余两页两次。内容、风格、档位、配色或用途改变时重新规划，按新批次缓存状态执行；用户要求重画某页时走 regenerate-page。未通过内容检查的样页不能替用户批准。
+两处同时披露 details.submissionNote：实际出站文本 = 原内容 prompt + 两个换行 + 此用途说明。用途取已有 brief 的 purpose、audience，不新增分析或确认步骤。
 
-## Compact single-select style
+每个 generate-batch work 整体交给 ai-image-to-ppt 一次，沿用其 SerialStickyRouter 和当前可调用宿主能力。
+按 [批次工作说明](references/依赖说明.md#批次执行) 执行：串行、成功页复用、每次请求前累计预算、正常路径只回传一个聚合结果。
+使用 job.styleLock.recipe 中锁定的 id、level、paletteId、promptTemplate、逐页确切 prompt 和批准样页；样页到整套沿用同一快照，不重新挑配色或重写档位。只替换每页内容关系与完整文案，不再叠加前中后景、微装饰或预设构图，不追加依赖默认风格。宿主原图 raw 与严格 16:9 master 都保留。
+实际提交宿主或 API 时，原样发送 beginRequest 返回的完整 prompt：它在原内容后附加真实用途说明，让模型自行决定适当表达。该说明不是画面文案；不改内容规划、正文、风格、档位或配色，不增加预筛查或模型调用，也不承诺通过安全过滤。拒绝仍按既有失败流程处理。
+原图不能直接当成可编辑 PPTX。两个依赖保持独立，不复制其实现。
 
-Read `assets/styles/catalog.json`. Recommend a content-relevant compact subset—通常只推荐三种—using the real preview images in one tight grid. Each card carries high-information recipe cues for palette, medium/material, lighting, composition, and detail language; offer the remaining catalog only on request. 风格只能单选；never multi-select, accept a dependency default, or use oversized empty cards.
+review-images 时实际查看全部图片，逐项核对文字、风格、层级与禁用内容。
+检查通过后 CLI 自动组装整套 PPTX。最后展示一个完整 PPTX 链接以及“修改某页 / 返回修改内容或风格 / 确认交付”。
 
-At `style-selection`, stop for one user choice, then call `style-selection --project <root> --input <private-json>` with the exact current project revision and representative stable slide ID. Persist authenticated v2 selection evidence with the exact Style Lock SHA from the same choice. A matching current v1 selection is migrated atomically by this public route to canonical v2; v1 itself is read/migration-only and must never authorize publication of a sample-generation plan. Exact retries recover lock-written, selection-written, or manifest-before-update interruptions; mismatched selection, lock, or revision evidence stays byte-exact and fails closed. After a revision change, retire stale evidence only when it belongs to this project and a strictly older revision whose direct child descriptor anchor authenticates immutable snapshot-v2 copies of the exact selection, lock, and recipe bytes. Use the persisted retirement transaction so interruption after any removal resumes; never perform three unjournaled unlinks. Project rollback restores the same exact three files plus `manifest.style` and `style-selection` stage from that descriptor-bound revision snapshot even before a style-sample gate exists. A legacy v1 snapshot remains readable only when it claims no style chain; missing, linked, extra, or hash-conflicting style snapshot evidence fails closed without changing live bytes. Self-consistency or revision membership alone never authorizes deletion. Persist exactly one immutable Style Lock with `applyDependencyDefaultStyle: false`; without this authenticated selection, sample authorization must stop. A style-sample job binds the provisional Style Lock's exact recipe/hash/reference snapshots with `approvedSample: null`, plus the representative page spec/prompt and one-call authorization. Only the authenticated sample can promote that lock. Deck and page-regeneration jobs instead require the approved Style Lock with an authenticated non-null approved sample, plus each page-specific spec/prompt and generation authorization. Pass every sealed byte/path/hash unchanged. If provider/channel changes, do not ask the user to restate the approved style. SuperPPT performs editorial planning; it does not render images, choose a provider, or alter the dependency's host routing.
+## 改稿与完成
 
-## Rich, auditable prompts
+用户主动返工时使用 [修改路由](references/修改路由.md)。
+手动：给完整候选文件链接，等待“已保存并关闭”；采纳用户保存的原文件，不重新组装。
+Agent：只修改目标页，展示完整候选，确认后才切换当前版本。图像页按需仅转换这一页。
+每次修改从最新完整文件开始；未修改页和已有人工调整保留。恢复上一版只切换当前指针。
 
-Compile each sample/page prompt deterministically from the approved spec and Style Lock. Describe a dominant focal subject, reading order, foreground/midground/background, material, lighting, scale, spatial relationships, evidence, meaningful illustration and micro-detail, page-role composition, exact text-safe area, and negative constraints. Richness must explain the content, not add decorative clutter, pseudo-labels, random glyphs, fake microtext, logos, or watermarks. Request only approved `requiredText` verbatim.
-
-## External generation authorization
-
-Before each paid/external authorization, show the exact 出站文本 and prompts, every 参考图 and its user-visible usage (`style-reference`, `subject-reference`, or `art-direction`), page/call count, output location, and that the host Agent will invoke `ai-image-to-ppt`. The job schema persists `style-reference` and `subject-reference` as immutable `content-reference` artifacts; this disclosure label never changes their bytes, path, order, or hash. `art-direction` 不支持时停止并解释；never silently downgrade it.
-
-For the sample, publish its one-call plan and stop at `style-sample-generation`. Only when that authorization is current, resolve and read the resolved `ai-image-to-ppt/SKILL.md`, prepare the immutable job, obtain the exact one-time `admit-image-call`, invoke the Skill with the sealed inputs unchanged, and feed its structured result through `record-image-result`. Publish the real sample and stop again at `style-sample`.
-
-After sample approval, publish the whole-deck plan and stop at `generation-authorization`. Repeat the same admitted delegation page by page, serially. Never run pages in parallel and do not regenerate already successful pages. Provider/channel fallback remains inside `ai-image-to-ppt`; report the actual structured route result without choosing a provider on the user's behalf.
-
-## Review, revision, and editing
-
-At `deck-review`, run `current-deck-link`, show its single clickable complete local PPTX link, and stop with exactly `修改某页 / 返回前序 / 确认交付` (`edit-page / return-upstream / confirm-delivery`). Submit that choice through `complete-deck-review --action ... --revision-id ... --sha256 ...` (plus `--slide-id` only for `edit-page`). `edit-page` creates one persisted, one-time pending binding to that exact current revision, SHA-256, and stable slide ID. Manual or Agent preparation must atomically consume it; missing, wrong-slide, stale, or replayed bindings fail closed before any candidate/session creation and leave zero residue. Every terminal edit outcome clears it. WPS or PowerPoint is the review and editing interface. Only `confirm-delivery` bound to that exact current revision and SHA-256 may cross the delivery gate. It preserves the immutable internal current PPTX, publishes byte-identical bytes at the shallow semantic path `交付/<项目标题>.pptx`, binds formal delivery, exports, acceptance, and client metadata to that final path/current revision/SHA, enters `delivered`, and directly returns that file's single clickable link. It never exposes `output/deck-revisions/<uuid>/deck.pptx` as the final delivery; a conflicting user-owned filename is not overwritten and receives a deterministic short-SHA suffix. Fixed-path acceptance is idempotent and crash-recoverable only for byte-identical evidence; conflict fails closed without deleting user files. Never use generic `approve` or present two competing final handoff artifacts.
-
-The user may return to any earlier stage. Follow [references/修改路由.md](references/修改路由.md): map `修改大纲 / 修改第 N 页描述 / 换风格` to the existing change schema, publish the immutable impact plan, present its actual affected stable IDs, invalidated outputs, `restartStage`, and SHA-256, then stop and wait for `确认`. Only after that exact confirmation may `approve-impact` and `apply-impact` run; resume from the plan's `restartStage`, never a hard-coded generation stage.
-
-When a page edit is requested, resolve its stable ID, classify `direct-edit / activate-editable / regenerate-slide`, and disclose the chosen route in one sentence. Only reliably extracted text and transparent assets are editable; never describe the whole image page as editable. If the user has not already chosen a mode, ask exactly `需要我帮你修改，还是由你手动修改？`; accept natural unambiguous answers and reject contradictory dual-mode language.
-
-Every manual adoption, Agent confirmation/rejection, and rollback returns to `deck-review` bound to the newly current revision and SHA; prior formal-delivery, export, acceptance, and client bindings are cleared. For manual mode, run `resolve-current-deck-page` for page N against the current reconciled topology. Pass its stable ID and exact `revisionId` unchanged to `prepare-manual-deck --revision-id`; if that revision is no longer current, stop and resolve again instead of continuing on a newer revision. Show exactly one Markdown link whose target is the returned absolute complete local PPTX path, disclose every `reviewRequiredObjects` label, say WPS/PowerPoint is the preview and editor, then stop. Do not continue for `已保存`; continue only after the user says exactly `已保存并关闭`. Translate it to the internal `saved-and-closed` signal and invoke `adopt-saved-deck`; stable-read, validate, reconcile moved/inserted/deleted pages, compute actual moved/inserted/deleted/XML-changed stable IDs, publish metadata, and move current to that exact file without another PPTX write. WPS-native unmanaged inserted pages remain directly available for a later manual full-deck edit without converter activation.
-
-For Agent mode, create the complete candidate from exact current bytes, modify only the resolved target page, then show exactly one complete local PPTX Markdown link, the `reviewRequiredObjects` labels, a concise change summary, and presented SHA-256. Stop and wait for exactly `确认`; current must remain unchanged before that signal. Bind confirmation to the presented hash before `confirm-agent-deck`, or use `reject-deck-candidate` on rejection. For `再改第 N 页`, resolve N again from the latest reconciled topology and start from the newly current exact bytes. Use `rollback-deck` for `恢复上一版`; it moves only the pointer. State-only acknowledgements direct back to `current-deck-link` and do not expose a raw path. Detailed direct/activate/regenerate and upstream routes are in [references/修改路由.md](references/修改路由.md).
-
-Read [references/门禁清单.md](references/门禁清单.md) whenever presenting, authorizing, approving, rejecting, or reopening a decision.
-
-## Acceptance boundary
-
-Automated fixtures prove the full-deck contract, not real WPS behavior. Real manual acceptance requires a fresh controlled project and a human to open the exact manual candidate, edit the target text/alignment, move that page, insert one page, delete another, save in place, close the application, and then provide `已保存并关闭`. Record before-save, saved, and post-adoption hashes; adoption must leave the saved bytes unchanged. Then resolve a next page from reconciled topology, verify the new candidate preserves the prior saved change, exercise the Agent path through exact-hash `确认`, and verify pointer-only rollback. If those GUI actions were not actually performed, report manual, next-page, and Agent GUI acceptance as pending. Never infer GUI success from a fixture.
+交付输出为 交付/<项目标题>.pptx，字节与已确认当前文件相同。只给一个最终文件链接。
+自动化测试不能证明 WPS/PowerPoint 实际编辑效果；没有做 GUI 编辑、保存和重新打开，就明确未验证。
