@@ -21,7 +21,8 @@ for (const n of [3, 12]) test(`public CLI ${n} pages: 8 commands, 3 decisions, o
   let commands = 0, decisions = 0, batches = 0, requests = 0;
   async function command(action: string, flags: string[] = []) {
     commands++;
-    return JSON.parse((await run(process.execPath, [...(compiled ? [] : ['--import', 'tsx']), cli, action, '--project', root, ...flags], { cwd: runtime })).stdout);
+    // Match the declared minimum Node runtime: do not rely on newer syntax detection.
+    return JSON.parse((await run(process.execPath, [...(compiled ? ['--no-experimental-detect-module'] : ['--import', 'tsx']), cli, action, '--project', root, ...flags], { cwd: runtime })).stdout);
   }
   const state = async () => JSON.parse(await readFile(join(root, 'superppt.json'), 'utf8'));
   async function submit(reply: any, payload: unknown) {

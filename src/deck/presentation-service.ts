@@ -1,7 +1,6 @@
 import { lstat, mkdtemp, realpath, rm, writeFile } from "node:fs/promises";
 import { basename, dirname, isAbsolute, join, relative } from "node:path";
-
-import PptxGenJS from "pptxgenjs";
+import { createRequire } from "node:module";
 
 import { readBoundedPptxArchiveFile } from "../deck-revisions/archive.js";
 import { promoteExclusive } from "../project/exclusive.js";
@@ -13,6 +12,9 @@ import {
   SLIDE_WIDTH_IN,
 } from "./geometry.js";
 import type { PptxPage } from "./pptx.js";
+
+// Use the library's Node entry; its ESM .js export lacks a module type declaration.
+const PptxGenJS: unknown = createRequire(import.meta.url)("pptxgenjs");
 
 const dataUri = (bytes: Buffer, contentType: "image/png" | "image/jpeg"): string =>
   `data:${contentType};base64,${bytes.toString("base64")}`;
