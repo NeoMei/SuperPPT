@@ -11,6 +11,7 @@
 | [视觉设计与选款规范](visual-design-and-selection.md) | 当前需求基线：风格、三档创意、配色、两轮选款、提示词与样页复用；逐项区分实现和缺口 |
 | [设计决定记录](decisions.md) | 原始诉求、取舍过程、被替代方向、确认样例的线索 |
 | [选款展示页定稿文案](style-showcase-copy.md) | 本轮十风格扩展共用的 SuperPPT 亮点广告文案；文案已确认，新图未生成 |
+| [十风格与新增画风定义](style-art-directions.md) | 新增经典手绘、教材图解等七种画风；已有三种原模板不被新描述覆盖或追加 |
 | [精简工作流设计](../superpowers/specs/2026-09-05-superppt-fast-workflow-design.md) | 三个业务决策点、自动推进、整套生成、修改与交付；后续视觉与选款决定以本目录为准 |
 | [运行 Skill](../../skills/superppt/SKILL.md) | Agent 当前实际执行指引；不等于所有产品需求均已实现 |
 | [风格资产与溯源](../../skills/superppt/assets/styles/README.md) | 当前模板来源、色板、预览对应实验轮次、缺图和视觉接受边界 |
