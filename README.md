@@ -29,5 +29,6 @@ npm run verify:portable 运行可移植检查；npm run test:release-install 验
 跨系统生成能力受独立依赖和宿主支持限制，本机测试不代表 Windows/WPS 验收。
 v0.2.0 以 macOS 实际使用为优先；跨平台 CI 通过也不等于 Windows 宿主生图与 Office 编辑已验收。
 
-本次重构规格：[Fast workflow](docs/superpowers/specs/2026-09-05-superppt-fast-workflow-design.md)。
-旧 specs 仅保留历史，不再决定当前运行步骤。实现没有 strict/audit 模式、审计链、HMAC、外部权限注册或旧项目迁移。
+需求总入口：[当前规范与实现状态](docs/specs/README.md)，包含[视觉设计与选款规范](docs/specs/visual-design-and-selection.md)、[设计决定记录](docs/specs/decisions.md)及精简工作流链接。
+两轮选款（全部风格 → 所选风格的全部档位与配色组合）已确认为需求，尚待完整实现与交互验收；当前选项数据和顺序约定不代表这一呈现流程已经完成。
+早期 specs 与九种经典预设提案按入口标记保留历史。实现没有 strict/audit 模式、审计链、HMAC、外部权限注册或旧项目迁移。
