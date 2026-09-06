@@ -18,7 +18,7 @@ for (const n of [3, 12]) test(`public CLI ${n} pages: 8 commands, 3 decisions, o
   const source = join(dirname(root), 'source.json'), deps = join(dirname(root), 'roots.json');
   await writeFile(source, JSON.stringify({ title: 'CLI完整汇报', text: '测试原文' }));
   await writeFile(deps, JSON.stringify({ aiSkillRoot: fixture.ai, editableSkillRoot: fixture.editable }));
-  let commands = 0, decisions = 0, batches = 0;
+  let commands = 0, decisions = 0, batches = 0, requests = 0;
   async function command(action: string, flags: string[] = []) {
     commands++;
     return JSON.parse((await run(process.execPath, [...(compiled ? [] : ['--import', 'tsx']), cli, action, '--project', root, ...flags], { cwd: runtime })).stdout);
@@ -41,20 +41,26 @@ for (const n of [3, 12]) test(`public CLI ${n} pages: 8 commands, 3 decisions, o
     if (job.kind === 'deck') batches++;
     const pages = [];
     for (const page of job.pages) {
+      if (page.cached) {
+        pages.push({ slideId: page.slideId, status: 'cached', artifact: page.cached, raw: null, provider: null, channel: null, referencesUsed: [] });
+        continue;
+      }
       const outgoing = await batch.beginRequest(root, job.jobId, page.slideId);
+      requests++;
       assert.ok(outgoing.startsWith(page.prompt + '\n\n'));
       assert.ok(outgoing.includes('实际用途：解释任务'));
       assert.ok(outgoing.includes('面向受众：用户'));
       const result = { slideId: page.slideId, status: 'success', artifact: await fixtureImage(root, page.target), raw: null, provider: 'fixture', channel: 'api', referencesUsed: [] };
       await batch.finishRequest(root, job.jobId, result); pages.push(result);
     }
-    return submit(reply, { jobId: job.jobId, outcome: 'success', requestCount: n === 0 ? 0 : pages.length, pages, routeSummary: ['fixture: no model calls'] });
+    return submit(reply, { jobId: job.jobId, outcome: 'success', requestCount: (await batch.readBatchCheckpoint(root, job.jobId)).requestCount, pages, routeSummary: ['fixture: no model calls'] });
   }
   let reply = await command('start', ['--input', source, '--dependencies', deps]);
   reply = await submit(reply, plan);
   reply = await decide(reply, 'select-style-and-generate-sample', { styleId: plan.styles[0].id, level: 2, paletteId: 'mid', callBudget: 1 });
   reply = await generate(reply);
-  reply = await decide(reply, 'approve-sample-and-generate-deck', { callBudget: n });
+  assert.equal(reply.details.callBudget, n - 1);
+  reply = await decide(reply, 'approve-sample-and-generate-deck', { callBudget: reply.details.callBudget });
   reply = await generate(reply);
   const s = await state(), cp = await batch.readBatchCheckpoint(root, s.activeJobId);
   reply = await submit(reply, { pages: plan.slides.map(p => ({ slideId: p.slideId, sha256: cp.completed[p.slideId].sha256, requiredText: [{ text: '标题', present: true }], styleConsistent: true, hierarchyClear: true, forbiddenContentAbsent: true, notes: 'fixture only' })) });
@@ -63,7 +69,8 @@ for (const n of [3, 12]) test(`public CLI ${n} pages: 8 commands, 3 decisions, o
   assert.equal(reply.kind, 'done'); assert.equal(commands, 8); assert.equal(decisions, 3); assert.equal(batches, 1);
   assert.deepEqual(await readFile(join(root, reply.deck.relativePath)), await readFile(join(root, current.relativePath)));
   const checkpoints = await batch.readBatchCheckpoint(root, s.activeJobId);
-  assert.equal(checkpoints.requestCount, n);
+  assert.equal(checkpoints.requestCount, n - 1);
+  assert.equal(requests, n);
   for (const old of ['approve', 'preflight', 'admit-image-call']) {
     await assert.rejects(() => command(old));
   }

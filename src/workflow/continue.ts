@@ -7,6 +7,7 @@ import { publishPlan, planDetails, renderPlanReview } from './planning.js';
 import { acceptBatchResult, BatchResultSchema, readBatchJob, readBatchCheckpoint, jobPath } from '../generation/task-batch.js';
 import { assembleTaskDeck, readTaskSession, readTaskRevision, deckLink, presentTaskEdit } from '../deck-revisions/task-deck.js';
 import { submissionNote } from '../generation/image-intent.js';
+import { reuseCompletedPages } from './reuse.js';
 
 export async function taskReply(root: string): Promise<WorkflowReply> {
   const s = await readTask(root);
@@ -28,7 +29,11 @@ export async function taskReply(root: string): Promise<WorkflowReply> {
     const plan = PlanBundleSchema.parse(await readTaskJson(root, s.planPath!));
     const promptsPath = `planning/${s.contentRevision}/deck-prompts.json`;
     const job = await readBatchJob(root, s.activeJobId!);
-    return { kind: 'decision', id: s.pendingDecision.id, stage: s.stage, view: `样页：${await taskPath(root, result.pages[0].artifact!.path)}\n按此风格生成整套（${plan.slides.length} 页，默认最多 ${plan.slides.length} 次外部调用）。`, details: { sample: result.pages[0].artifact, promptsPath, submissionNote: submissionNote(job.generationIntent), references: plan.references, pageCount: plan.slides.length, output: `${root}/generation`, executor: 'ai-image-to-ppt' } };
+    const prompts = await readTaskJson(root, promptsPath) as Record<string, string>;
+    const preview = await reuseCompletedPages(root, plan, { ...job, kind: 'deck', styleLock: { ...job.styleLock, approvalState: 'approved', approvedSample: result.pages[0].artifact }, pages: plan.outline.slides.map(p => ({ slideId: p.id, prompt: prompts[p.id], target: '', cached: null })) });
+    const reusedSlideIds = preview.pages.filter(p => p.cached).map(p => p.slideId);
+    const generationPageCount = preview.pages.length - reusedSlideIds.length;
+    return { kind: 'decision', id: s.pendingDecision.id, stage: s.stage, view: `样页：${await taskPath(root, result.pages[0].artifact!.path)}\n确认无修改后复用样页及其他未变页面（整套 ${plan.slides.length} 页，复用 ${reusedSlideIds.length} 页，新生成 ${generationPageCount} 页，默认最多新增 ${generationPageCount} 次外部调用）。`, details: { sample: result.pages[0].artifact, promptsPath, submissionNote: submissionNote(job.generationIntent), references: plan.references, pageCount: plan.slides.length, generationPageCount, reusedSlideIds, callBudget: generationPageCount, output: `${root}/generation`, executor: 'ai-image-to-ppt' } };
   }
   if (!s.currentDeck) throw new Error('Current complete PPTX missing');
   return { kind: 'decision', id: s.pendingDecision.id, stage: 'deck-review', view: `${deckLink(root, s.currentDeck)}\n修改某页 / 返回修改内容或风格 / 确认交付`, details: s.currentDeck };

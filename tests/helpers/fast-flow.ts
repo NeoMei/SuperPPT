@@ -39,7 +39,7 @@ export async function readyDeck(n = 3) {
   let reply = await submitWork(root, await continueTask(root), plan);
   reply = await decideTask(root, { decisionId: (await readTask(root)).pendingDecision!.id, action: 'select-style-and-generate-sample', styleId: plan.styles[0].id, level: 2, paletteId: 'mid', callBudget: 1 });
   reply = await generateFixture(root, reply);
-  reply = await decideTask(root, { decisionId: (await readTask(root)).pendingDecision!.id, action: 'approve-sample-and-generate-deck', callBudget: n });
+  reply = await decideTask(root, { decisionId: (await readTask(root)).pendingDecision!.id, action: 'approve-sample-and-generate-deck', callBudget: n - 1 });
   reply = await generateFixture(root, reply);
   const cp = await readBatchCheckpoint(root, (await readTask(root)).activeJobId!);
   reply = await submitWork(root, reply, { pages: plan.slides.map(p => ({ slideId: p.slideId, sha256: cp.completed[p.slideId].sha256, requiredText: [{ text: '标题', present: true }], styleConsistent: true, hierarchyClear: true, forbiddenContentAbsent: true, notes: 'fixture' })) });

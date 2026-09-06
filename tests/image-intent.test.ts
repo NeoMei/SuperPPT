@@ -72,9 +72,10 @@ test('changing only the purpose or audience invalidates image reuse, not content
     if (review.kind !== 'decision') throw Error('decision expected');
     work = await decideTask(root, { decisionId: review.id, action: 'approve-sample-and-generate-deck', callBudget: 3 });
     const deck = await readBatchJob(root, (await readTask(root)).activeJobId!);
-    assert.ok(deck.pages.every(p => p.cached === null));
-    const outgoing = await beginRequest(root, deck.jobId, deck.pages[0].slideId);
-    assert.equal(outgoing, deck.pages[0].prompt + '\n\n' + (review.details as any).submissionNote);
+    assert.deepEqual(deck.pages.map(p => !!p.cached), [true, false, false]);
+    assert.equal(deck.pages[0].cached!.path, sample.pages[0].target);
+    const outgoing = await beginRequest(root, deck.jobId, deck.pages[1].slideId);
+    assert.equal(outgoing, deck.pages[1].prompt + '\n\n' + (review.details as any).submissionNote);
     assert.ok(outgoing.includes(revised.brief.purpose));
     assert.ok(outgoing.includes(revised.brief.audience));
   }
