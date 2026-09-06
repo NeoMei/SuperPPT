@@ -3,13 +3,14 @@ import sharp from 'sharp';
 import { z } from 'zod';
 import { readTask, readTaskJson, writeTaskJson, readArtifact, withTaskLock, hash, json, missing } from '../project/task-store.js';
 import { preflightJob } from '../dependencies/task-dependencies.js';
-import { StyleRecipeSchema } from '../styles/schemas.js';
+import { ResolvedStyleSchema } from '../styles/schemas.js';
+import { GenerationIntentSchema, submissionNote } from './image-intent.js';
 
 export const FileRef = z.object({ path: z.string(), sha256: z.string().regex(/^[a-f0-9]{64}$/) });
-export const TaskStyleSchema = z.object({ recipe: StyleRecipeSchema, representativeSlideId: z.string().uuid(), approvalState: z.enum(['provisional', 'approved']), approvedSample: FileRef.nullable(), references: z.array(FileRef.extend({ role: z.enum(['art-direction', 'content-reference']) })).default([]), applyDependencyDefaultStyle: z.literal(false) });
+export const TaskStyleSchema = z.object({ recipe: ResolvedStyleSchema, representativeSlideId: z.string().uuid(), approvalState: z.enum(['provisional', 'approved']), approvedSample: FileRef.nullable(), references: z.array(FileRef.extend({ role: z.enum(['art-direction', 'content-reference']) })).default([]), applyDependencyDefaultStyle: z.literal(false) });
 export const BatchJobSchema = z.object({
   jobId: z.string().uuid(), contentRevision: z.string().uuid(), kind: z.enum(['style-sample', 'deck', 'page-regeneration']),
-  styleLock: TaskStyleSchema, callBudget: z.number().int().nonnegative(),
+  styleLock: TaskStyleSchema, generationIntent: GenerationIntentSchema, callBudget: z.number().int().nonnegative(),
   pages: z.array(z.object({ slideId: z.string().uuid(), prompt: z.string(), target: z.string(), cached: FileRef.nullable() })).min(1),
   createdAt: z.string(),
 }).strict();
@@ -54,8 +55,8 @@ export async function validateImage(root: string, ref: z.infer<typeof FileRef>):
   await image.raw().toBuffer();
 }
 // Ordinary progress bookkeeping. Called inside the Agent's batch, not as public CLI routes.
-export async function beginRequest(root: string, jobId: string, slideId: string): Promise<void> {
-  await withTaskLock(root, async () => {
+export async function beginRequest(root: string, jobId: string, slideId: string): Promise<string> {
+  return withTaskLock(root, async () => {
     const job = await readBatchJob(root, jobId), cp = await readBatchCheckpoint(root, jobId), s = await readTask(root);
     if (s.activeJobId !== jobId || s.contentRevision !== job.contentRevision) throw new Error('Job is not active');
     if (cp.inFlightSlideId) throw new Error('Previous request result is unknown; resolve it before another paid request');
@@ -64,6 +65,8 @@ export async function beginRequest(root: string, jobId: string, slideId: string)
     if (!remainingCalls(job.callBudget, cp)) throw new Error('Call budget exhausted');
     cp.requestCount++; cp.inFlightSlideId = slideId;
     await writeTaskJson(root, `${jobPath(jobId)}/checkpoint.json`, cp);
+    // Keep the compiled page verbatim; only the outbound request includes its actual purpose.
+    return job.pages.find(p => p.slideId === slideId)!.prompt + '\n\n' + submissionNote(job.generationIntent);
   });
 }
 export async function finishRequest(root: string, jobId: string, raw: z.input<typeof PageResultSchema>): Promise<void> {

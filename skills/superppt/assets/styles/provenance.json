@@ -1,0 +1,249 @@
+{
+  "sourceSession": "2026-09-05/01a06fd7-f7ef-7c92-b749-f75828bc27e2",
+  "previews": [
+    {
+      "styleId": "tactile",
+      "level": 1,
+      "paletteId": "cool",
+      "path": "previews/tactile-1-cool.jpg",
+      "sourceImage": "design-system-round37/tactile-1-cool.png",
+      "sourceImageSha256": "75b90a5b085baa9896c4112a058a8e5b3ea8bfc022e8a0812c735eeeffe7b7d6"
+    },
+    {
+      "styleId": "tactile",
+      "level": 1,
+      "paletteId": "warm",
+      "path": "previews/tactile-1-warm.jpg",
+      "sourceImage": "design-system-round38/tactile-1-warm.png",
+      "sourceImageSha256": "9fdcc25a485d068e6148d7d322ea1906f51cd406cda66d7822e33fe898978f07"
+    },
+    {
+      "styleId": "tactile",
+      "level": 2,
+      "paletteId": "cool",
+      "path": "previews/tactile-2-cool.jpg",
+      "sourceImage": "design-system-round35/tactile-cool.png",
+      "sourceImageSha256": "d346725ff69aedb7c660237819c1490a8837904627eb5b894f218727291ce45b"
+    },
+    {
+      "styleId": "tactile",
+      "level": 2,
+      "paletteId": "mid",
+      "path": "previews/tactile-2-mid.jpg",
+      "sourceImage": "design-system-round36/tactile-mid.png",
+      "sourceImageSha256": "ef5fffee7362268558d9104258d26b06d50a1e40acc65614401706556df8bc8c"
+    },
+    {
+      "styleId": "tactile",
+      "level": 2,
+      "paletteId": "warm",
+      "path": "previews/tactile-2-warm.jpg",
+      "sourceImage": "design-system-round35/tactile-warm.png",
+      "sourceImageSha256": "57d55b4f61a17a6216430b8df1069092cd7a7dde11d19b4ef8f49e8f4c574aab"
+    },
+    {
+      "styleId": "tactile",
+      "level": 3,
+      "paletteId": "cool",
+      "path": "previews/tactile-3-cool.jpg",
+      "sourceImage": "design-system-round39/tactile-3-cool.png",
+      "sourceImageSha256": "6b8e9e52905037f7e51324be6be6edcf00fede0bb62a8d0c302cce2cccb9be89"
+    },
+    {
+      "styleId": "tactile",
+      "level": 3,
+      "paletteId": "mid",
+      "path": "previews/tactile-3-mid.jpg",
+      "sourceImage": "design-system-round41/tactile-3-mid.png",
+      "sourceImageSha256": "5c130cae3ff25eb434605f1b7a6b5a99cf4c294ef7fb83da8b6cb2e70b8021b1"
+    },
+    {
+      "styleId": "tactile",
+      "level": 3,
+      "paletteId": "warm",
+      "path": "previews/tactile-3-warm.jpg",
+      "sourceImage": "design-system-round40/tactile-3-warm.png",
+      "sourceImageSha256": "aa4a306b702e68abe6a130149e1c81f5b3224bb6bbf17904f4a5cf016588e16d"
+    },
+    {
+      "styleId": "glass",
+      "level": 1,
+      "paletteId": "mid",
+      "path": "previews/glass-1-mid.jpg",
+      "sourceImage": "design-system-round32/glass-1.png",
+      "sourceImageSha256": "3eac8942554d31050f4154673d0b01026a22d1c5131667f17fc2a38bc6652109"
+    },
+    {
+      "styleId": "glass",
+      "level": 1,
+      "paletteId": "warm",
+      "path": "previews/glass-1-warm.jpg",
+      "sourceImage": "design-system-round38/glass-1-warm.png",
+      "sourceImageSha256": "c380cfc7b8688b33361c6398fbc91b46ddad0b7a731128ca31b05b1066db5588"
+    },
+    {
+      "styleId": "glass",
+      "level": 2,
+      "paletteId": "mid",
+      "path": "previews/glass-2-mid.jpg",
+      "sourceImage": "design-system-round31/glass-2.png",
+      "sourceImageSha256": "c25cfee5258341e5549f5477bc0e4cded667f2c02a84b63d1283a942a81560e3"
+    },
+    {
+      "styleId": "glass",
+      "level": 2,
+      "paletteId": "warm",
+      "path": "previews/glass-2-warm.jpg",
+      "sourceImage": "design-system-round35/glass-warm.png",
+      "sourceImageSha256": "2f4085b8e7760219bcea8211c01bd33ac3e5519dc4fb8848f1bddc39eeb3ec29"
+    },
+    {
+      "styleId": "glass",
+      "level": 3,
+      "paletteId": "cool",
+      "path": "previews/glass-3-cool.jpg",
+      "sourceImage": "design-system-round43/glass-3-cool.png",
+      "sourceImageSha256": "2aa2a6f5f0baa91268193262fcdd32b922f620b56521890197338db75fa7462d"
+    },
+    {
+      "styleId": "glass",
+      "level": 3,
+      "paletteId": "mid",
+      "path": "previews/glass-3-mid.jpg",
+      "sourceImage": "design-system-round41/glass-3-mid.png",
+      "sourceImageSha256": "a095c2bb76e71a05c93ec830ad9a8594e4f3bdeb6a01b52c6d6dab77bef01ee0"
+    },
+    {
+      "styleId": "glass",
+      "level": 3,
+      "paletteId": "warm",
+      "path": "previews/glass-3-warm.jpg",
+      "sourceImage": "design-system-round40/glass-3-warm.png",
+      "sourceImageSha256": "6a62851c10d22c227baaf047f0191a925f89cd1fef73d5b9c93088f539bc12a7"
+    },
+    {
+      "styleId": "ink",
+      "level": 1,
+      "paletteId": "cool",
+      "path": "previews/ink-1-cool.jpg",
+      "sourceImage": "design-system-round37/ink-1-cool.png",
+      "sourceImageSha256": "c143cce67b8fc6f29dc7e6f7394bf3daf9bc7fa9abb85469f39cf7ddb2bd5168"
+    },
+    {
+      "styleId": "ink",
+      "level": 1,
+      "paletteId": "mid",
+      "path": "previews/ink-1-mid.jpg",
+      "sourceImage": "design-system-round31/ink-1.png",
+      "sourceImageSha256": "f8683d1dc2dedf4a7dcfd081ad4a062a4a13d89241192974c5e8369345eb656b"
+    },
+    {
+      "styleId": "ink",
+      "level": 1,
+      "paletteId": "warm",
+      "path": "previews/ink-1-warm.jpg",
+      "sourceImage": "design-system-round38/ink-1-warm.png",
+      "sourceImageSha256": "b64df92a1afa08ce91ac708db0210f066f9540528711326a5eb17d8ed3514003"
+    },
+    {
+      "styleId": "ink",
+      "level": 2,
+      "paletteId": "cool",
+      "path": "previews/ink-2-cool.jpg",
+      "sourceImage": "design-system-round35/ink-cool.png",
+      "sourceImageSha256": "822c44fff73c8b61f397b2fb647e30bcf7b123c60fe045e5e4758652090a88c8"
+    },
+    {
+      "styleId": "ink",
+      "level": 2,
+      "paletteId": "mid",
+      "path": "previews/ink-2-mid.jpg",
+      "sourceImage": "design-system-round31/ink-2.png",
+      "sourceImageSha256": "589231451b864621063243ccfd0b28c637db91030d6990a9dee106fd7ba86786"
+    },
+    {
+      "styleId": "ink",
+      "level": 2,
+      "paletteId": "warm",
+      "path": "previews/ink-2-warm.jpg",
+      "sourceImage": "design-system-round36/ink-warm.png",
+      "sourceImageSha256": "5288a23955e44dfcbcbe0716a5bc4ae1aaa0ab6c1da149e6c1023f31043d9191"
+    },
+    {
+      "styleId": "ink",
+      "level": 3,
+      "paletteId": "cool",
+      "path": "previews/ink-3-cool.jpg",
+      "sourceImage": "design-system-round38/ink-3-cool.png",
+      "sourceImageSha256": "b0abf64de933352d55870fa5583986c8c779cd2b833f48d3941b2b76ce5127d4"
+    },
+    {
+      "styleId": "ink",
+      "level": 3,
+      "paletteId": "mid",
+      "path": "previews/ink-3-mid.jpg",
+      "sourceImage": "design-system-round31/ink-3.png",
+      "sourceImageSha256": "210a25c39e02eb48e7fcb3155137d27cc15850536d6f4090d5fd6e3a63d20493"
+    },
+    {
+      "styleId": "ink",
+      "level": 3,
+      "paletteId": "warm",
+      "path": "previews/ink-3-warm.jpg",
+      "sourceImage": "design-system-round37/ink-3-warm.png",
+      "sourceImageSha256": "2de342a01e5abd12f039dd84e4efd4d13d199d4e1c6f6d869fbfc1c17d6494f0"
+    }
+  ],
+  "templateRestorationChecks": [
+    {
+      "source": "experimental-options-v0.3/prompt-templates/tactile-3-cool.txt",
+      "exactRestorationAfterContextSanitation": true
+    },
+    {
+      "source": "experimental-options-v0.3/prompt-templates/tactile-3-mid.txt",
+      "exactRestorationAfterContextSanitation": true
+    },
+    {
+      "source": "experimental-options-v0.3/prompt-templates/tactile-3-warm.txt",
+      "exactRestorationAfterContextSanitation": true
+    },
+    {
+      "source": "experimental-options-v0.3/prompt-templates/glass-3-cool.txt",
+      "exactRestorationAfterContextSanitation": true
+    },
+    {
+      "source": "experimental-options-v0.3/prompt-templates/glass-3-mid.txt",
+      "exactRestorationAfterContextSanitation": true
+    },
+    {
+      "source": "experimental-options-v0.3/prompt-templates/glass-3-warm.txt",
+      "exactRestorationAfterContextSanitation": true
+    },
+    {
+      "source": "experimental-options-v0.3/prompt-templates/glass-1-cool.txt",
+      "exactRestorationAfterContextSanitation": true
+    },
+    {
+      "source": "experimental-options-v0.3/prompt-templates/glass-2-cool.txt",
+      "exactRestorationAfterContextSanitation": true
+    }
+  ],
+  "contextSanitation": {
+    "removedSentence": "这些数字是示例安排而非成效数据。",
+    "replacedText": {
+      "from": "的设计实验",
+      "to": "设计"
+    },
+    "reason": "Remove experimental fixture claims from general production content; retain all visual directions."
+  },
+  "excludedHistoricalSources": [
+    {
+      "styleId": "tactile",
+      "level": 1,
+      "paletteId": "mid",
+      "sourceImage": "design-system-round31/tactile-1.png",
+      "sourceImageSha256": "dd61abbd87b35c8307434d687ffb725dbdb7f8a282518e7d451e81a045af18a2",
+      "reason": "Round31 predates the round36 neutral midpoint palette; omitted from the active catalog."
+    }
+  ]
+}

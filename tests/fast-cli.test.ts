@@ -41,7 +41,10 @@ for (const n of [3, 12]) test(`public CLI ${n} pages: 8 commands, 3 decisions, o
     if (job.kind === 'deck') batches++;
     const pages = [];
     for (const page of job.pages) {
-      await batch.beginRequest(root, job.jobId, page.slideId);
+      const outgoing = await batch.beginRequest(root, job.jobId, page.slideId);
+      assert.ok(outgoing.startsWith(page.prompt + '\n\n'));
+      assert.ok(outgoing.includes('实际用途：解释任务'));
+      assert.ok(outgoing.includes('面向受众：用户'));
       const result = { slideId: page.slideId, status: 'success', artifact: await fixtureImage(root, page.target), raw: null, provider: 'fixture', channel: 'api', referencesUsed: [] };
       await batch.finishRequest(root, job.jobId, result); pages.push(result);
     }
@@ -49,7 +52,7 @@ for (const n of [3, 12]) test(`public CLI ${n} pages: 8 commands, 3 decisions, o
   }
   let reply = await command('start', ['--input', source, '--dependencies', deps]);
   reply = await submit(reply, plan);
-  reply = await decide(reply, 'select-style-and-generate-sample', { styleId: plan.styles[0].id, callBudget: 1 });
+  reply = await decide(reply, 'select-style-and-generate-sample', { styleId: plan.styles[0].id, level: 2, paletteId: 'mid', callBudget: 1 });
   reply = await generate(reply);
   reply = await decide(reply, 'approve-sample-and-generate-deck', { callBudget: n });
   reply = await generate(reply);

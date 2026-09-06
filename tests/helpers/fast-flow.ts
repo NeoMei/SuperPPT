@@ -37,7 +37,7 @@ export async function generateFixture(root: string, reply: WorkflowReply) {
 export async function readyDeck(n = 3) {
   const { root } = await fixtureTask(), plan = await fixturePlan(n);
   let reply = await submitWork(root, await continueTask(root), plan);
-  reply = await decideTask(root, { decisionId: (await readTask(root)).pendingDecision!.id, action: 'select-style-and-generate-sample', styleId: plan.styles[0].id, callBudget: 1 });
+  reply = await decideTask(root, { decisionId: (await readTask(root)).pendingDecision!.id, action: 'select-style-and-generate-sample', styleId: plan.styles[0].id, level: 2, paletteId: 'mid', callBudget: 1 });
   reply = await generateFixture(root, reply);
   reply = await decideTask(root, { decisionId: (await readTask(root)).pendingDecision!.id, action: 'approve-sample-and-generate-deck', callBudget: n });
   reply = await generateFixture(root, reply);

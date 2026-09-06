@@ -1,7 +1,8 @@
 import { access, readFile } from "node:fs/promises";
+import { existsSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { StyleCatalogSchema, StyleRecipeSchema, type StyleRecipe, type StyleSelection } from "./schemas.js";
+import { StyleCatalogSchema, StyleRecipeSchema, VariantSelectionSchema, type ResolvedStyle } from "./schemas.js";
 
 const BUILT_IN_STYLE_CATALOG_RELATIVE_PATH = "skills/superppt/assets/styles/catalog.json";
 
@@ -14,7 +15,7 @@ function builtInCatalogCandidates(): string[] {
 
 export async function loadStyleCatalog(path: string) {
   const value = StyleCatalogSchema.parse(JSON.parse(await readFile(path, "utf8")));
-  for (const style of value.styles) await access(join(dirname(path), style.preview));
+  for (const style of value.styles) for (const preview of style.previews) await access(join(dirname(path), preview.path));
   return value;
 }
 
@@ -30,12 +31,20 @@ export async function loadBuiltInStyleCatalog() {
   throw new Error("built-in style catalog is missing from the SuperPPT plugin root");
 }
 
-export async function resolveStyleRecipe(selection: StyleSelection): Promise<StyleRecipe> {
-  if (selection.kind === "custom") return StyleRecipeSchema.parse(selection.recipe);
-  const catalog = await loadBuiltInStyleCatalog();
-  const recipe = catalog.styles.find(({ id }) => id === selection.styleId);
-  if (!recipe) throw new Error(`unknown built-in style: ${selection.styleId}`);
-  return StyleRecipeSchema.parse(recipe);
+export function builtInStyleAssetsRoot(): string {
+  const path = builtInCatalogCandidates().find(path => existsSync(path));
+  if (!path) throw new Error('Built-in style assets missing');
+  return dirname(path);
+}
+
+export function selectStyleVariant(rawStyle: unknown, rawSelection: unknown): ResolvedStyle {
+  const style = StyleRecipeSchema.parse(rawStyle), selection = VariantSelectionSchema.parse(rawSelection);
+  const tier = style.tiers.find(t => t.level === selection.level);
+  const palette = style.palettes.find(p => p.id === selection.paletteId);
+  if (!tier) throw new Error('Unavailable creativity tier');
+  if (!palette) throw new Error('Unavailable style palette');
+  return { id: style.id, name: style.name, ...selection,
+    promptTemplate: tier.promptTemplate.replace('{{PALETTE}}', () => palette.prompt) };
 }
 
 export function selectRepresentativeSlide<T extends { id: string; role: string; requiredText: string[]; relationships: string[] }>(slides: T[]): T {

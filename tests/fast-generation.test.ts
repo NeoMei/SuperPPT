@@ -1,3 +1,4 @@
+import { selectStyleVariant } from '../src/styles/catalog.js';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
@@ -9,8 +10,8 @@ import { publishBatchJob, beginRequest, finishRequest, acceptBatchResult, readBa
 
 test('batch budget is consumed before requests, completed pages are never regenerated', async () => {
   const { root, ai } = await fixtureTask(), plan = await fixturePlan(), s = await readTask(root), id = randomUUID();
-  const job: BatchJob = { jobId: id, contentRevision: s.contentRevision, kind: 'style-sample', createdAt: new Date().toISOString(), callBudget: 1,
-    styleLock: { recipe: plan.styles[0], representativeSlideId: plan.representativeSlideId, approvalState: 'provisional', approvedSample: null, references: [], applyDependencyDefaultStyle: false },
+  const job: BatchJob = { jobId: id, contentRevision: s.contentRevision, kind: 'style-sample', createdAt: new Date().toISOString(), generationIntent: { purpose: plan.brief.purpose, audience: plan.brief.audience }, callBudget: 1,
+    styleLock: { recipe: selectStyleVariant(plan.styles[0], { level: 2, paletteId: 'mid' }), representativeSlideId: plan.representativeSlideId, approvalState: 'provisional', approvedSample: null, references: [], applyDependencyDefaultStyle: false },
     pages: [{ slideId: plan.representativeSlideId, prompt: '内容', target: `generation/jobs/${id}/images/${plan.representativeSlideId}.png`, cached: null }] };
   await publishBatchJob(root, job); await updateTask(root, s => ({ ...s, activeJobId: id }));
   const preflight = await readFile(join(root, 'generation/jobs/' + id + '/preflight.json'));

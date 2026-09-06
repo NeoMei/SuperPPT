@@ -2,7 +2,7 @@
 
 用三次关键决定，把主题、文字或 Markdown 做成高细节图片型 PPTX；按需仅将指定页重建为可编辑内容。
 
-内容方案 + 单选风格 + 样页授权 → 样页回看 + 整套授权 → 完整 PPTX 回看与交付。
+内容方案 + 选款（风格 → 档位 → 配色）+ 样页授权 → 样页回看 + 整套授权 → 完整 PPTX 回看与交付。
 缺失事实、用户主动改稿和请求失败另行处理；正常机器步骤自动继续。
 
 ## 使用
@@ -10,6 +10,11 @@
 通过 Codex/兼容宿主安装本仓库 Skill，告诉 Agent 你的内容与期望。
 依赖 ai-image-to-ppt 和 image-to-editable-pptx 独立安装，宿主 Agent 负责调用；CLI 不代替宿主图像工具。
 内部接口只有 start、continue、decide、edit、status，详见 [操作说明](skills/superppt/references/依赖说明.md)。
+
+当前设计系统包含立体、玻璃、水墨，各有 1／2／3 档创意及偏冷／基准中线／偏暖配色。
+先展示技能包里的现成预览，再按选中组合生成内容样张；缺少最终配色预览的组合会明确说明，不自动补生图。
+样张与整套共用选项和提示词快照，文案逐字保留，图形和背景根据内容自然设计。
+提交生图时仅附加 brief 中的真实用途和受众，让模型决定适合的呈现；不改内容提示词、正文或设计选项，不增加内容预筛查或模型调用，也不承诺降低误拒率。
 
 只支持新建一次性任务。中断的本版任务可恢复；旧项目不迁移、不兼容，也不删除。
 superppt.json 是单一当前状态；完整候选在确认前不替换当前 PPTX。
@@ -20,6 +25,7 @@ superppt.json 是单一当前状态；完整候选在确认前不替换当前 PP
 Node.js >=22.6，运行 npm ci，然后 npm run verify:full。
 npm run verify:portable 运行可移植检查；npm run test:release-install 验证实际打包与安装。
 跨系统生成能力受独立依赖和宿主支持限制，本机测试不代表 Windows/WPS 验收。
+v0.2.0 以 macOS 实际使用为优先；跨平台 CI 通过也不等于 Windows 宿主生图与 Office 编辑已验收。
 
 本次重构规格：[Fast workflow](docs/superpowers/specs/2026-09-05-superppt-fast-workflow-design.md)。
 旧 specs 仅保留历史，不再决定当前运行步骤。实现没有 strict/audit 模式、审计链、HMAC、外部权限注册或旧项目迁移。

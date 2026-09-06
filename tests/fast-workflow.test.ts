@@ -19,7 +19,7 @@ for (const n of [3, 12]) test(`${n} pages: three decisions, one whole-deck hando
   assert.deepEqual(await continueTask(root), reply);
   reply = await submitWork(root, reply, plan); decisions++;
   assert.equal(reply.kind, 'decision');
-  reply = await decideTask(root, { decisionId: (await readTask(root)).pendingDecision!.id, action: 'select-style-and-generate-sample', styleId: plan.styles[0].id, callBudget: 1 }); generationHandoffs++;
+  reply = await decideTask(root, { decisionId: (await readTask(root)).pendingDecision!.id, action: 'select-style-and-generate-sample', styleId: plan.styles[0].id, level: 2, paletteId: 'mid', callBudget: 1 }); generationHandoffs++;
   reply = await generateFixture(root, reply); decisions++;
   assert.equal(reply.kind, 'decision');
   assert.ok(JSON.stringify(reply).length < 12000, 'sample review should link to deck prompts, not repeat every full prompt in command output');

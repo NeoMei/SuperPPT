@@ -1,7 +1,7 @@
 import { readTask, readTaskJson, missing, json } from '../project/task-store.js';
 import { readBatchJob, readBatchCheckpoint, validateImage, type BatchJob } from '../generation/task-batch.js';
 import { PlanBundleSchema, type PlanBundle } from './contracts.js';
-import { samplePrompts } from './planning.js';
+import { samplePrompts, variantKey } from './planning.js';
 
 export async function reuseCompletedPages(root: string, plan: PlanBundle, job: BatchJob): Promise<BatchJob> {
   const s = await readTask(root);
@@ -9,10 +9,11 @@ export async function reuseCompletedPages(root: string, plan: PlanBundle, job: B
   if (!previous?.jobId || !previous.planPath) return job;
   const prior = await readBatchJob(root, previous.jobId), oldPlan = PlanBundleSchema.parse(await readTaskJson(root, previous.planPath));
   if (json(prior.styleLock.recipe) !== json(job.styleLock.recipe)) return job;
+  if (json(prior.generationIntent) !== json(job.generationIntent)) return job;
   if (json(prior.styleLock.references) !== json(job.styleLock.references)) return job;
   if (job.kind === 'style-sample') {
     const ref = prior.styleLock.approvedSample;
-    if (ref && oldPlan.representativeSlideId === plan.representativeSlideId && samplePrompts(oldPlan)[job.styleLock.recipe.id] === job.pages[0].prompt) {
+    if (ref && oldPlan.representativeSlideId === plan.representativeSlideId && samplePrompts(oldPlan)[variantKey(job.styleLock.recipe)] === job.pages[0].prompt) {
       await validateImage(root, ref); job.pages[0].cached = ref;
     }
   } else if (job.kind === 'deck' && prior.kind === 'deck' && prior.styleLock.approvedSample?.sha256 === job.styleLock.approvedSample?.sha256) {

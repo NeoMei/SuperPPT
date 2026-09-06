@@ -9,7 +9,7 @@ test('combined planning has one decision and preserves page content and art dire
   const first = await publishPlan(root, plan), second = await publishPlan(root, plan);
   assert.deepEqual(first, second);
   assert.equal(first.kind, 'decision');
-  for (const prompt of Object.values(samplePrompts(plan))) { assert.match(prompt, /标题/); assert.match(prompt, /do not append/); }
+  for (const prompt of Object.values(samplePrompts(plan))) { assert.match(prompt, /标题/); assert.doesNotMatch(prompt, /canonical JSON/); }
 });
 test('planning publishes slides in declared order even when input array is shuffled', async () => {
   const { root } = await fixtureTask(), plan = await fixturePlan();

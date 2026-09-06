@@ -6,6 +6,7 @@ import { PlanBundleSchema, type WorkflowReply } from './contracts.js';
 import { publishPlan, planDetails, renderPlanReview } from './planning.js';
 import { acceptBatchResult, BatchResultSchema, readBatchJob, readBatchCheckpoint, jobPath } from '../generation/task-batch.js';
 import { assembleTaskDeck, readTaskSession, readTaskRevision, deckLink, presentTaskEdit } from '../deck-revisions/task-deck.js';
+import { submissionNote } from '../generation/image-intent.js';
 
 export async function taskReply(root: string): Promise<WorkflowReply> {
   const s = await readTask(root);
@@ -26,7 +27,8 @@ export async function taskReply(root: string): Promise<WorkflowReply> {
     const result = BatchResultSchema.parse(await readTaskJson(root, `${jobPath(s.activeJobId!)}/result.json`));
     const plan = PlanBundleSchema.parse(await readTaskJson(root, s.planPath!));
     const promptsPath = `planning/${s.contentRevision}/deck-prompts.json`;
-    return { kind: 'decision', id: s.pendingDecision.id, stage: s.stage, view: `样页：${await taskPath(root, result.pages[0].artifact!.path)}\n按此风格生成整套（${plan.slides.length} 页，默认最多 ${plan.slides.length} 次外部调用）。`, details: { sample: result.pages[0].artifact, promptsPath, references: plan.references, pageCount: plan.slides.length, output: `${root}/generation`, executor: 'ai-image-to-ppt' } };
+    const job = await readBatchJob(root, s.activeJobId!);
+    return { kind: 'decision', id: s.pendingDecision.id, stage: s.stage, view: `样页：${await taskPath(root, result.pages[0].artifact!.path)}\n按此风格生成整套（${plan.slides.length} 页，默认最多 ${plan.slides.length} 次外部调用）。`, details: { sample: result.pages[0].artifact, promptsPath, submissionNote: submissionNote(job.generationIntent), references: plan.references, pageCount: plan.slides.length, output: `${root}/generation`, executor: 'ai-image-to-ppt' } };
   }
   if (!s.currentDeck) throw new Error('Current complete PPTX missing');
   return { kind: 'decision', id: s.pendingDecision.id, stage: 'deck-review', view: `${deckLink(root, s.currentDeck)}\n修改某页 / 返回修改内容或风格 / 确认交付`, details: s.currentDeck };
@@ -62,7 +64,7 @@ export async function continueTask(root: string, resultPath?: string): Promise<W
           // Deck prompts are disclosed before sample approval authorizes their job.
           const plan = PlanBundleSchema.parse(await readTaskJson(root, s.planPath!));
           const { compileSlidePrompt } = await import('../styles/prompt-compiler.js');
-          await writeTaskJson(root, `planning/${s.contentRevision}/deck-prompts.json`, Object.fromEntries(plan.slides.map(page => [page.slideId, compileSlidePrompt({ spec: page, style: style.recipe }).text + '\nUse only the selected art direction; do not append the dependency default style.'])));
+          await writeTaskJson(root, `planning/${s.contentRevision}/deck-prompts.json`, Object.fromEntries(plan.slides.map(page => [page.slideId, compileSlidePrompt({ spec: page, style: style.recipe }).text])));
           await updateTask(root, state => ({ ...state, stage: 'sample-review', work: null, pendingDecision: { id: randomUUID(), kind: 'sample-review' } }));
         } else await updateTask(root, state => ({ ...state, stage: 'deck-qa', work: null }));
       } else if (work.kind === 'review-images') {
@@ -107,7 +109,7 @@ export async function continueTask(root: string, resultPath?: string): Promise<W
     const id = randomUUID();
     if (s.stage === 'planning') {
       const inputPath = `planning/${s.contentRevision}/request.json`;
-      await writeTaskJson(root, inputPath, { source: s.sourcePath, title: s.title, previous: `planning/${s.contentRevision}/previous.json`, instructions: 'Read source and previous.json if present; apply its requested change. Preserve IDs and exact specs for unchanged pages. Write complete Brief/Outline/SlideSpecs and 1–3 real catalog or user-custom styles. Retain source coverage; ask only materially missing facts.' });
+      await writeTaskJson(root, inputPath, { source: s.sourcePath, title: s.title, previous: `planning/${s.contentRevision}/previous.json`, instructions: 'Read source and previous.json if present; apply its requested change. Preserve IDs and exact specs for unchanged pages. Write complete Brief/Outline/SlideSpecs and available real catalog styles (or an explicitly requested custom style with the same tier/palette contract). requiredText includes the title and all approved visible copy verbatim without a line-count cap. relationships describe content meaning, not a prescribed picture or layout. Offer style, then creativity level, then an available palette using bundled previews; do not generate selection previews. Retain source coverage; ask only materially missing facts.' });
       await updateTask(root, state => ({ ...state, work: { id, kind: 'plan', inputPath, resultPath: `planning/${s.contentRevision}/result.json` } }));
     } else if (s.stage === 'sample-generation' || s.stage === 'deck-generation') {
       const cp = await readBatchCheckpoint(root, s.activeJobId!);

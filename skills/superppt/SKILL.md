@@ -6,7 +6,7 @@ description: Use when users want to make a high-detail presentation from a topic
 # SuperPPT
 
 将内容做成高细节、图片优先的整套 PPTX。默认只在三个决定处等待：
-内容方案与风格选择（同时授权样页）→ 样页回看（同时授权整套）→ 完整 PPTX 回看与交付。
+内容方案与选款（风格 → 档位 → 配色，同时授权样页）→ 样页回看（同时授权整套）→ 完整 PPTX 回看与交付。
 风格只能单选。详细输入见 [CLI 与机器工作](references/依赖说明.md)。
 
 ## 操作节奏
@@ -23,18 +23,22 @@ description: Use when users want to make a high-detail presentation from a topic
 - kind: attention：解释具体缺失产物、失败或未明请求；不声称成功，不自动追加付费。
 - kind: done：直接展示返回的语义文件名 PPTX 链接。
 
-规划时一次写完整 Brief、Outline、逐页 SlideSpec 和 1–3 种真实风格候选。
-读取 assets/styles/catalog.json，使用真实预览图紧凑展示。保留源内容结构、来源覆盖和精确 requiredText。
+规划时一次写完整 Brief、Outline、逐页 SlideSpec 和可用真实风格候选。
+读取 assets/styles/catalog.json，当前提供立体、玻璃、水墨。按“风格 → 档位 → 配色”展开已有选项：档位显示 1／2／3，配色使用该风格的偏冷／基准中线／偏暖。
+用 details.previewBase 加 previews[].path 展示所选 level、paletteId 对应的已有图片。没有精确预览时，明确说明缺图；可分别展示同风格的档位参考与配色参考，逐张标明差异，不把参考图冒充该组合，不现场生图选款。这仍是同一次 plan-review，不增加逐步确认关卡。
+保留源内容结构、来源覆盖和精确 requiredText（包含独立标题及全部可见文字，不删减、不限制行数）。relationships 只描述内容含义与关系；实际背景、承载图形和构图由生图模型根据内容决定。
 只追问影响结果的缺失事实，不分别确认大纲、逐页说明和风格。
 
 ## 生图与检查
 
-在 plan-review 展示完整方案、各风格的样页出站 prompt、参考图用途、1 次调用预算和输出位置；选择即授权样页。
+在 plan-review 展示完整方案、选中组合的样页内容 prompt、参考图用途、1 次调用预算和输出位置；确认选款即授权样页。内容 prompt 从 details.samplePromptsPath 按 styleId/level/paletteId 取出，不把所有组合的长 prompt 展开到对话。
 在 sample-review 展示实际样页、整套 prompt、参考图用途、页数、调用预算和输出位置；确认即授权整套。
+两处同时披露 details.submissionNote：实际出站文本 = 原内容 prompt + 两个换行 + 此用途说明。用途取已有 brief 的 purpose、audience，不新增分析或确认步骤。
 
 每个 generate-batch work 整体交给 ai-image-to-ppt 一次，沿用其 SerialStickyRouter 和当前可调用宿主能力。
 按 [批次工作说明](references/依赖说明.md#批次执行) 执行：串行、成功页复用、每次请求前累计预算、正常路径只回传一个聚合结果。
-使用选中的 recipe、逐页 prompt 和批准样页；不追加依赖默认风格。宿主原图 raw 与严格 16:9 master 都保留。
+使用 job.styleLock.recipe 中锁定的 id、level、paletteId、promptTemplate、逐页确切 prompt 和批准样页；样页到整套沿用同一快照，不重新挑配色或重写档位。只替换每页内容关系与完整文案，不再叠加前中后景、微装饰或预设构图，不追加依赖默认风格。宿主原图 raw 与严格 16:9 master 都保留。
+实际提交宿主或 API 时，原样发送 beginRequest 返回的完整 prompt：它在原内容后附加真实用途说明，让模型自行决定适当表达。该说明不是画面文案；不改内容规划、正文、风格、档位或配色，不增加预筛查或模型调用，也不承诺通过安全过滤。拒绝仍按既有失败流程处理。
 原图不能直接当成可编辑 PPTX。两个依赖保持独立，不复制其实现。
 
 review-images 时实际查看全部图片，逐项核对文字、风格、层级与禁用内容。

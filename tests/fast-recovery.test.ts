@@ -21,9 +21,9 @@ test('failed command never commits partial state or consumes a decision receipt'
 test('content revision reuses the sample and two unchanged pages; changed page alone consumes a call', async () => {
   const { root, plan } = await readyDeck();
   let reply = await decideTask(root, { decisionId: (await readTask(root)).pendingDecision!.id, action: 'revise-plan', instruction: 'Change page 3 composition' });
-  const changed = structuredClone(plan); changed.slides[2].composition = '上图下文';
+  const changed = structuredClone(plan); changed.slides[2].relationships = ['新的递进关系'];
   reply = await submitWork(root, reply, changed);
-  reply = await decideTask(root, { decisionId: (await readTask(root)).pendingDecision!.id, action: 'select-style-and-generate-sample', styleId: plan.styles[0].id, callBudget: 1 });
+  reply = await decideTask(root, { decisionId: (await readTask(root)).pendingDecision!.id, action: 'select-style-and-generate-sample', styleId: plan.styles[0].id, level: 2, paletteId: 'mid', callBudget: 1 });
   let job = await readBatchJob(root, (await readTask(root)).activeJobId!);
   assert.ok(job.pages[0].cached);
   reply = await generateFixture(root, reply);
@@ -38,7 +38,7 @@ test('content revision reuses the sample and two unchanged pages; changed page a
 test('two completed pages survive interrupted third request and a separately authorized retry budget', async () => {
   const { root } = await fixtureTask(), plan = await fixturePlan();
   let reply = await submitWork(root, await continueTask(root), plan);
-  reply = await decideTask(root, { decisionId: (await readTask(root)).pendingDecision!.id, action: 'select-style-and-generate-sample', styleId: plan.styles[0].id, callBudget: 1 });
+  reply = await decideTask(root, { decisionId: (await readTask(root)).pendingDecision!.id, action: 'select-style-and-generate-sample', styleId: plan.styles[0].id, level: 2, paletteId: 'mid', callBudget: 1 });
   reply = await generateFixture(root, reply);
   reply = await decideTask(root, { decisionId: (await readTask(root)).pendingDecision!.id, action: 'approve-sample-and-generate-deck', callBudget: 3 });
   const job = await readBatchJob(root, (await readTask(root)).activeJobId!), pages = [];
@@ -67,7 +67,7 @@ test('two completed pages survive interrupted third request and a separately aut
 test('QA failure exposes a correction decision and cannot deliver an unchecked deck', async () => {
   const { root } = await fixtureTask(), plan = await fixturePlan();
   let reply = await submitWork(root, await continueTask(root), plan);
-  reply = await decideTask(root, { decisionId: (await readTask(root)).pendingDecision!.id, action: 'select-style-and-generate-sample', styleId: plan.styles[0].id, callBudget: 1 });
+  reply = await decideTask(root, { decisionId: (await readTask(root)).pendingDecision!.id, action: 'select-style-and-generate-sample', styleId: plan.styles[0].id, level: 2, paletteId: 'mid', callBudget: 1 });
   reply = await generateFixture(root, reply);
   reply = await decideTask(root, { decisionId: (await readTask(root)).pendingDecision!.id, action: 'approve-sample-and-generate-deck', callBudget: 3 });
   reply = await generateFixture(root, reply);

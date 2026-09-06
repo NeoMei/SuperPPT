@@ -74,6 +74,11 @@ test('one-page donor activation and actual text editing retain all other pages, 
   const manifest = { manifestVersion: 2, canvas: { width: 1280, height: 720 }, elements: [element], warnings: [] };
   await writeTaskJson(root, outDir + '/manifest.json', manifest);
   await createPresentation([{ id: 'donor', bytes: input, contentType: 'image/png', mode: 'editable', editable: { id: 'donor', cleanBackground: input, elements: [element] } }], join(root, outDir, 'slide-editable.pptx'));
+  // Real image-to-editable-pptx exporter uses a 13.333-inch long side for 1280x720.
+  const donorPath = join(root, outDir, 'slide-editable.pptx'), donorZip = await JSZip.loadAsync(await readFile(donorPath));
+  const donorPresentation = await donorZip.file('ppt/presentation.xml')!.async('string');
+  donorZip.file('ppt/presentation.xml', donorPresentation.replace(/<p:sldSz\b[^>]*\/>/, '<p:sldSz cx="12191695" cy="6857829"/>'));
+  await atomicWrite(donorPath, await donorZip.generateAsync({ type: 'nodebuffer' }));
   await writeTaskJson(root, outDir + '/run-ledger.json', { ledgerVersion: 2, hashes: { sourceImage: hash(input), manifest: hash(await readFile(join(root, outDir, 'manifest.json'))), pptx: hash(await readFile(join(root, outDir, 'slide-editable.pptx'))) } });
   reply = await submitWork(root, reply, { outDir });
   assert.equal(reply.kind, 'decision'); assert.deepEqual((await readTask(root)).currentDeck, initial);

@@ -10,8 +10,18 @@ const R = 'http://schemas.openxmlformats.org/officeDocument/2006/relationships';
 const REL = 'http://schemas.openxmlformats.org/package/2006/relationships';
 export async function spliceTaskSlide(candidate: string, targetPart: string, donorPath: string): Promise<void> {
   const target = await readBoundedPptxArchiveFile(candidate), donor = await readBoundedPptxArchiveFile(donorPath);
-  const size = async (zip: typeof target) => scanOoxmlRanges(await zip.file('ppt/presentation.xml')!.async('string')).elements.find(e => e.namespaceUri === P && e.localName === 'sldSz')?.attributes.filter(a => a.localName === 'cx' || a.localName === 'cy').map(a => [a.localName, a.value]).sort();
-  if (JSON.stringify(await size(target)) !== JSON.stringify(await size(donor))) throw new Error('Donor slide dimensions differ from the complete deck');
+  const size = async (zip: typeof target) => {
+    const element = scanOoxmlRanges(await zip.file('ppt/presentation.xml')!.async('string')).elements.find(e => e.namespaceUri === P && e.localName === 'sldSz');
+    return ['cx', 'cy'].map(name => Number(element?.attributes.find(a => a.localName === name)?.value));
+  };
+  const [width, height] = await size(target), [donorWidth, donorHeight] = await size(donor);
+  // The independent converter rounds 13 1/3 inches to 13.333. Permit <=0.001 inch
+  // of rounding per axis, not resizing; retain all target geometry and donor shapes.
+  if (![width, height, donorWidth, donorHeight].every(n => Number.isSafeInteger(n) && n > 0)
+    || Math.abs(width - donorWidth) > 914 || Math.abs(height - donorHeight) > 914
+    || Math.abs((width / height) / (donorWidth / donorHeight) - 1) > 0.0001) {
+    throw new Error('Donor slide dimensions differ from the complete deck');
+  }
   const slides = Object.keys(donor.files).filter(n => /^ppt\/slides\/slide\d+\.xml$/.test(n));
   if (slides.length !== 1) throw new Error('Expected one donor slide');
   const donorPart = slides[0], donorXml = await donor.file(donorPart)!.async('string');

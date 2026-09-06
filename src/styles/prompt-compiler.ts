@@ -1,124 +1,16 @@
-import { createHash } from "node:crypto";
-import { z } from "zod";
-import type { SlideSpec } from "../planning/schemas.js";
-import { StyleRecipeSchema, VisualDirectorSchema, type StyleRecipe, type VisualDirector } from "./schemas.js";
-
-type PromptSpec = {
-  title: string;
-  role: keyof StyleRecipe["pageVariants"];
-  coreMessage: string;
-  requiredText: string[];
-  visualSubject: string;
-  composition: string;
-  relationships: string[];
-  forbidden: string[];
-};
-
-const UNIVERSAL_TEXT_FORBIDDEN = [
-  "pseudo-labels",
-  "random glyphs",
-  "decorative copy",
-  "unapproved text",
-  "logo",
-  "watermark",
-] as const;
-
-const PromptSpecSchema = z.object({
-  title: z.string().min(1),
-  role: z.enum(["cover", "section", "content", "process", "comparison", "data", "summary"]),
-  coreMessage: z.string().min(1),
-  requiredText: z.array(z.string().min(1)).max(12),
-  visualSubject: z.string().min(1),
-  composition: z.string().min(1),
-  relationships: z.array(z.string().min(1)),
-  forbidden: z.array(z.string().min(1)),
-});
+import { createHash } from 'node:crypto';
+import { SlideSpecSchema, type SlideSpec } from '../planning/schemas.js';
+import { ResolvedStyleSchema, type ResolvedStyle } from './schemas.js';
 
 export type CompiledPrompt = { text: string; sha256: string };
-
-export function visualDirectorForSpec(
-  rawSpec: PromptSpec | SlideSpec,
-  rawStyle: StyleRecipe,
-): VisualDirector {
-  const spec = PromptSpecSchema.parse(rawSpec);
-  const style = StyleRecipeSchema.parse(rawStyle);
-  const relationship = spec.relationships.length > 0
-    ? spec.relationships.join("; ")
-    : spec.coreMessage;
-  return VisualDirectorSchema.parse({
-    foreground: [
-      `tangible foreground evidence for ${spec.visualSubject}`,
-      `close material detail using ${style.materials.join(", ")}`,
-    ],
-    midground: [
-      `primary subject and relationship structure: ${relationship}`,
-      `spatial composition: ${spec.composition}`,
-    ],
-    background: [
-      `contextual environment supporting ${spec.coreMessage}`,
-      `depth atmosphere shaped by ${style.lighting.join(", ")}`,
-    ],
-    microDetails: [
-      ...style.detailLanguage,
-      "fine object edges, material transitions, and purposeful evidence details",
-    ],
-    readingOrder: [
-      `first: the dominant visual subject ${spec.visualSubject}`,
-      `second: the relationship ${relationship}`,
-      "third: supporting evidence and approved exact copy",
-    ],
-    textSafeArea: spec.role === "cover"
-      ? "reserve one calm high-contrast title-safe region without incidental labels"
-      : "reserve compact high-contrast text-safe regions along the reading path without covering the focal subject",
-  });
-}
-
-function canonicalJson(value: unknown): string {
-  if (value === undefined) return "null";
-  if (value === null || typeof value !== "object") return JSON.stringify(value);
-  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(",")}]`;
-  const record = value as Record<string, unknown>;
-  return `{${Object.keys(record).filter((key) => record[key] !== undefined).sort().map((key) => `${JSON.stringify(key)}:${canonicalJson(record[key])}`).join(",")}}`;
-}
-
-const field = (label: string, value: unknown): string => `${label} (canonical JSON): ${canonicalJson(value)}`;
-
-export function compilePrompt(input: { spec: PromptSpec | SlideSpec; style: StyleRecipe; director: VisualDirector }): CompiledPrompt {
-  const spec = PromptSpecSchema.parse(input.spec);
-  const style = StyleRecipeSchema.parse(input.style);
-  const director = VisualDirectorSchema.parse(input.director);
-  const payload = { director, spec, style };
-  const text = [
-    "Use case: productivity-visual",
-    "Asset type: premium 16:9 presentation slide",
-    field("Page role", spec.role),
-    field("Slide title (semantic context; render only when also present in Text verbatim)", spec.title),
-    field("Core message", spec.coreMessage),
-    field("Style recipe", { id: style.id, name: style.name }),
-    `Style consistency: preserve this exact recipe across the deck while adapting only the page-role composition.`,
-    field("Primary visual subject", spec.visualSubject),
-    field("Composition", { page: spec.composition, rules: style.compositionRules, variant: style.pageVariants[spec.role] }),
-    field("Foreground", director.foreground),
-    field("Midground", director.midground),
-    field("Background", director.background),
-    field("Micro details", director.microDetails),
-    field("Reading order", director.readingOrder),
-    field("Text safe area", director.textSafeArea),
-    field("Relationships", spec.relationships),
-    field("Palette", style.palette),
-    field("Materials", style.materials),
-    field("Lighting", style.lighting),
-    field("Medium", style.medium),
-    field("Typography", style.typography),
-    field("Detail language", style.detailLanguage),
-    field("Text (verbatim)", spec.requiredText),
-    field("Avoid", [...new Set([...UNIVERSAL_TEXT_FORBIDDEN, ...style.forbidden, ...spec.forbidden])]),
-    `BEGIN SUPERPPT CANONICAL INPUT\n${canonicalJson(payload)}\nEND SUPERPPT CANONICAL INPUT`,
-    "Final self-check: preserve one dominant focal point, clear hierarchy, rich object/material/light/space detail across foreground/midground/background, explicit reading order and text-safe areas, exact approved required copy only, exact 16:9 composition, and no pseudo-labels, random glyphs, decorative copy, logo, or watermark.",
-  ].join("\n\n");
-  return { text, sha256: createHash("sha256").update(text).digest("hex") };
-}
-
-export function compileSlidePrompt(input: { spec: PromptSpec | SlideSpec; style: StyleRecipe }): CompiledPrompt {
-  return compilePrompt({ spec: input.spec, style: input.style, director: visualDirectorForSpec(input.spec, input.style) });
+export function compileSlidePrompt(input: { spec: SlideSpec; style: ResolvedStyle }): CompiledPrompt {
+  const spec = SlideSpecSchema.parse(input.spec), style = ResolvedStyleSchema.parse(input.style);
+  const slots: Record<string, string> = {
+    CONTENT_RELATIONSHIPS: spec.relationships.length ? spec.relationships.join('\n') : spec.coreMessage,
+    SLIDE_COPY: spec.requiredText.join('\n'),
+  };
+  // One pass with a callback keeps dollar signs and slot-like source text literal.
+  let text = style.promptTemplate.replace(/{{(CONTENT_RELATIONSHIPS|SLIDE_COPY)}}/g, (_, key: string) => slots[key]);
+  if (spec.forbidden.length) text += '\n\n本页避免：' + spec.forbidden.join('；');
+  return { text, sha256: createHash('sha256').update(text).digest('hex') };
 }
