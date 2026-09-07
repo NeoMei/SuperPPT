@@ -1,0 +1,182 @@
+{
+  "status": "ten-style-showcase-accepted",
+  "createdAt": "2026-09-07",
+  "styles": [
+    {
+      "id": "tactile",
+      "name": "立体",
+      "image": "images/tactile.png",
+      "prompt": "prompts/tactile.txt",
+      "status": "本轮展示已接受",
+      "note": "沿用原三档模板与中线色板，仅换展示文案。图形与说明仍上下分离，出现字母 T 和额外装饰。",
+      "outcome": "success",
+      "sha256": "c7a6625b240b63bd45bef596859e202872c7f486e92a521040bd294249149213",
+      "dimensions": [
+        1664,
+        936
+      ],
+      "priorReviewStatus": "新版待评审",
+      "acceptanceScope": "此张展示样例；不外推至其他档位、配色或任意文案"
+    },
+    {
+      "id": "glass",
+      "name": "玻璃",
+      "image": "images/glass.png",
+      "prompt": "prompts/glass.txt",
+      "status": "本轮展示已接受",
+      "note": "沿用原三档模板与中线色板，仅换展示文案。正文延伸至右上标题高度，并出现 S、T 等额外字母。",
+      "outcome": "success",
+      "sha256": "f057edc8a8ff68c1c278cf7049f8ecc46bee5a5a69549484fb68d25664975be2",
+      "dimensions": [
+        1664,
+        936
+      ],
+      "priorReviewStatus": "新版待评审",
+      "acceptanceScope": "此张展示样例；不外推至其他档位、配色或任意文案"
+    },
+    {
+      "id": "ink",
+      "name": "水墨",
+      "image": "images/ink.png",
+      "prompt": "prompts/ink.txt",
+      "status": "本轮展示已接受",
+      "note": "沿用原三档模板与中线色板，仅换展示文案。图形与说明仍上下分离，素材中出现项目方案等额外文字。",
+      "outcome": "success",
+      "sha256": "9552a4fef9624d3b00920409a3f31bf7dad48666e54278d0381886b58860c3bf",
+      "dimensions": [
+        1664,
+        936
+      ],
+      "priorReviewStatus": "新版待评审",
+      "acceptanceScope": "此张展示样例；不外推至其他档位、配色或任意文案"
+    },
+    {
+      "id": "01-hand-drawn",
+      "name": "经典手绘",
+      "image": "images/01-hand-drawn.png",
+      "prompt": "prompts/01-hand-drawn.txt",
+      "source": "/Users/neomei/.codex/visualizations/2026/09/05/01a06fd7-f7ef-7c92-b749-f75828bc27e2/superppt-ten-styles-r1-iinC5f",
+      "status": "本轮展示已接受",
+      "note": "钢笔淡彩明确；仍是图形配下方说明，新增流程标签、序号及内容大纲等文字，还出现了演示设备。",
+      "outcome": "cached",
+      "sha256": "b96a8ac637bdef1748a7a4b2b5dd0a78f7403fa481451f8bd5b204a9a5960b15",
+      "dimensions": [
+        1664,
+        936
+      ],
+      "priorReviewStatus": "首轮待评审",
+      "acceptanceScope": "此张展示样例；不外推至其他档位、配色或任意文案"
+    },
+    {
+      "id": "02-textbook",
+      "name": "教材图解",
+      "image": "images/02-textbook.png",
+      "prompt": "prompts/02-textbook.txt",
+      "source": "/Users/neomei/.codex/visualizations/2026/09/05/01a06fd7-f7ef-7c92-b749-f75828bc27e2/superppt-ten-styles-r1-iinC5f",
+      "status": "本轮展示已接受",
+      "note": "暖纸底与教材信息卡片明确；五卡片结构的三档创意不足，新增流程标签、序号和字母。",
+      "outcome": "cached",
+      "sha256": "5765cfecd6190943238481990bd7ee67014cbf687e84556adca057aa3b7c4620",
+      "dimensions": [
+        1664,
+        936
+      ],
+      "priorReviewStatus": "首轮待评审",
+      "acceptanceScope": "此张展示样例；不外推至其他档位、配色或任意文案"
+    },
+    {
+      "id": "01-collage",
+      "name": "创意拼贴",
+      "image": "images/01-collage.png",
+      "prompt": "prompts/01-collage.txt",
+      "source": "/Users/neomei/.codex/visualizations/2026/09/06/01a07610-a616-77f3-b5d1-20a97c2aa7b7/swiss-replacement-r1",
+      "status": "本轮展示已接受",
+      "note": "采用用户接受的最初 A 版。保留原有图形配文案的表达，不再进行融合改稿。",
+      "outcome": "cached",
+      "sha256": "1e25dc4d1139133e850719f0c6d50c5a2cc2ed39aea06a0bf3cc4ace3eadeba1",
+      "dimensions": [
+        1664,
+        936
+      ],
+      "priorReviewStatus": "原始 A 版已接受",
+      "acceptanceScope": "此张展示样例；不外推至其他档位、配色或任意文案"
+    },
+    {
+      "id": "04-cinematic-tech",
+      "name": "电影科技",
+      "image": "images/04-cinematic-tech.png",
+      "prompt": "prompts/04-cinematic-tech.txt",
+      "source": "/Users/neomei/.codex/visualizations/2026/09/05/01a06fd7-f7ef-7c92-b749-f75828bc27e2/superppt-ten-styles-r1-iinC5f",
+      "status": "本轮展示已接受",
+      "note": "工业空间与蓝色光影明确；五个展台加下方说明，新增英文和底部流程标签，三档融合不足。",
+      "outcome": "cached",
+      "sha256": "cb11d7096c71f9d55fa96aa420e6098607d43f2803a0a5627c7d9bf819518f6a",
+      "dimensions": [
+        1664,
+        936
+      ],
+      "priorReviewStatus": "首轮待评审",
+      "acceptanceScope": "此张展示样例；不外推至其他档位、配色或任意文案"
+    },
+    {
+      "id": "05-luxury-photo",
+      "name": "奢华摄影",
+      "image": "images/05-luxury-photo.png",
+      "prompt": "prompts/05-luxury-photo.txt",
+      "source": "/Users/neomei/.codex/visualizations/2026/09/05/01a06fd7-f7ef-7c92-b749-f75828bc27e2/superppt-ten-styles-r1-iinC5f",
+      "status": "本轮展示已接受",
+      "note": "摄影布光、材质与编辑排版明确；左文右图分离，偏常规产品广告，加入设备及未提供的界面、纸张文字。",
+      "outcome": "cached",
+      "sha256": "d7dd163e79bd7671d85740aefaf39cfcbf64eae7e39e1d69810cc67abc9ebcc0",
+      "dimensions": [
+        1664,
+        936
+      ],
+      "priorReviewStatus": "首轮待评审",
+      "acceptanceScope": "此张展示样例；不外推至其他档位、配色或任意文案"
+    },
+    {
+      "id": "06-blueprint",
+      "name": "建筑蓝图",
+      "image": "images/06-blueprint.png",
+      "prompt": "prompts/06-blueprint.txt",
+      "source": "/Users/neomei/.codex/visualizations/2026/09/05/01a06fd7-f7ef-7c92-b749-f75828bc27e2/superppt-ten-styles-r1-iinC5f",
+      "status": "本轮展示已接受",
+      "note": "精确细线、轴测建筑与透明色面明确；建筑和下方正文联系偏弱，仍按五栏排列，新增序号。",
+      "outcome": "cached",
+      "sha256": "8590cd30282b0a584c46a1784236e5e8a8a76197269f2f935341e20f5594254a",
+      "dimensions": [
+        1664,
+        936
+      ],
+      "priorReviewStatus": "首轮待评审",
+      "acceptanceScope": "此张展示样例；不外推至其他档位、配色或任意文案"
+    },
+    {
+      "id": "07-fantasy",
+      "name": "叙事幻想",
+      "image": "images/07-fantasy.png",
+      "prompt": "prompts/07-fantasy.txt",
+      "source": "/Users/neomei/.codex/visualizations/2026/09/05/01a06fd7-f7ef-7c92-b749-f75828bc27e2/superppt-ten-styles-r1-iinC5f",
+      "status": "本轮展示已接受",
+      "note": "超现实海面与悬浮场景有辨识度；左文右图分离，把内容关系说明也变成可见文字，新增选择、组合等标签。",
+      "outcome": "cached",
+      "sha256": "67da9eaa783e7fd10e2edf0084da39a3b1bc5bba2c0e25351d9f3b838209a87c",
+      "dimensions": [
+        1664,
+        936
+      ],
+      "priorReviewStatus": "首轮待评审",
+      "acceptanceScope": "此张展示样例；不外推至其他档位、配色或任意文案"
+    }
+  ],
+  "generatedThisTurn": 3,
+  "reused": 7,
+  "runtimeCatalogUnchanged": true,
+  "provider": "host-openai",
+  "switches": [],
+  "scope": "统一广告文案的十风格内部选款展示；并非十风格已上线。",
+  "acceptedAt": "2026-09-07",
+  "acceptanceEvidence": "用户在十风格统一对照页交付后回复：可以",
+  "acceptedCount": 10
+}

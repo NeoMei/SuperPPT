@@ -43,22 +43,29 @@ const roots = [
   "SECURITY.md",
 ];
 const unfinished = /\[(?:TO\x44O):|\bT\x42D\b|\bFIX\x4dE\b/;
+const binaryExtensions = new Set([
+  ".docx", ".gif", ".jpeg", ".jpg", ".mov", ".mp3", ".mp4", ".otf",
+  ".pdf", ".png", ".pptx", ".ttf", ".wav", ".webp", ".woff", ".woff2",
+  ".xlsx", ".zip",
+]);
+
+const scanText = async (entry) => {
+  if (binaryExtensions.has(path.extname(entry).toLowerCase())) return;
+  const content = await readFile(entry, "utf8").catch(() => "");
+  if (unfinished.test(content)) fail(`unfinished placeholders found in ${entry}`);
+};
 
 const scan = async (entry) => {
   const stats = await readdir(entry, { withFileTypes: true }).catch(() => null);
   if (stats === null) {
-    const content = await readFile(entry, "utf8").catch(() => "");
-    if (unfinished.test(content)) fail(`unfinished placeholders found in ${entry}`);
+    await scanText(entry);
     return;
   }
   for (const item of stats) {
     if (item.name === "node_modules" || item.name === "dist") continue;
     const child = path.join(entry, item.name);
     if (item.isDirectory()) await scan(child);
-    else if (item.isFile()) {
-      const content = await readFile(child, "utf8").catch(() => "");
-      if (unfinished.test(content)) fail(`unfinished placeholders found in ${child}`);
-    }
+    else if (item.isFile()) await scanText(child);
   }
 };
 

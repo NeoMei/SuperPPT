@@ -25,7 +25,7 @@ description: Use when users want to make a high-detail presentation from a topic
 
 规划时一次写完整 Brief、Outline、逐页 SlideSpec 和可用真实风格候选。
 默认读取 assets/styles/catalog.json 并原样写入全部十种内置风格，不由 Agent 缩成推荐短名单；用户明确要求的自定义 plan.styles 是权威输入，不用内置目录静默覆盖。按“风格 → 档位 → 配色”展开真实选项：立体、玻璃、水墨保留各自 1／2／3 档和偏冷／基准中线／偏暖；经典手绘、教材图解、创意拼贴、电影科技、奢华摄影、建筑蓝图、叙事幻想仅有 3 档／基准中线。
-plan-review 的 details.selectionPath 指向任务内自包含 HTML：第一轮完整展示全部风格图，进入某个风格后，第二轮一次展示它的档位与配色组合。HTML 不联网、不调用 CLI、不创建生成任务；点击只形成可复制的自然语言回复。用 details.previewBase 加 previews[].path 作为原生内联图片回退；HTML 不可用时按同一顺序展示图片和文本元组。没有精确预览时明确说明缺图并仍允许选择，不生成或冒充预览。这仍是同一次 plan-review，不增加逐步确认关卡。不要声称远程或移动端已经验收。
+新发布 plan-review 的 details.selectionPath 指向任务内自包含 HTML；历史任务没有已发布选择页时会省略该字段并使用文本与原生图片回退。HTML 第一轮完整展示全部风格图，进入某个风格后，第二轮一次展示它的档位与配色组合。HTML 不联网、不调用 CLI、不创建生成任务；点击只形成可复制的自然语言回复。用 details.previewBase 加 previews[].path 作为原生内联图片回退；HTML 不可用时按同一顺序展示图片和文本元组。没有精确预览时明确说明缺图并仍允许选择，不生成或冒充预览。这仍是同一次 plan-review，不增加逐步确认关卡。不要声称远程或移动端已经验收。
 保留源内容结构、来源覆盖和精确 requiredText（包含独立标题及全部可见文字，不删减、不限制行数）。relationships 只描述内容含义与关系；实际背景、承载图形和构图由生图模型根据内容决定。
 只追问影响结果的缺失事实，不分别确认大纲、逐页说明和风格。
 

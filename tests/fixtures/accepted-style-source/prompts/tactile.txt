@@ -1,0 +1,36 @@
+生成一张完整的 16:9 中文 PPT 页面。这是「创意度 3 档」设计：请你自己理解文案，独立决定最能表达内容含义的视觉构思与正文构图。
+
+目标：观众不仅能读到文字，也能从图形中直观理解文案中各组内容的含义及它们之间的关系。视觉表达大胆、有惊艳感，可以夸张视觉形式，但不夸大数据或捏造效果。文字、数字、图标与内容驱动的图形自然成为同一个设计，不能只是漂亮背景上贴几段文字，也不必把每个字强行改造成物体。具体选用什么形象、如何呈现，由你决定。
+
+将每组标题、完整说明与表达其含义的立体图形作为一个整体来构思，让完整文案的篇幅参与决定承载图形的尺度和形态。承载文字的结构本身也表达这一组的内容含义，不是给普通文字框加立体边框，也不是上半页排四个场景、下半页集中排四组平面说明。读文字和看图形应发生在同一个有意义的视觉结构中；保留舒适的阅读面，不必让每个字变形成物体。具体形象与构图由你理解内容后决定，不预设场景或造型。第三档追求表达巧妙、大胆，而不是装饰多。不要生成没有来源数据的统计图，也不要把方案目标画成已验证的成效。
+
+边界：文字准确、可辨认。顶部保留独立、整齐的标题和副标题区域，标题本身具有所选风格，正文图形不侵入标题。完整不透明背景。下方文案逐字保留、每句只出现一次，不添加可见解释、标签、序号或生成指令。图内所有可辨认文字也必须来自下方文案。不要生成没有来源数据的统计图，也不要把方案目标画成已验证的成效。输出只有完成的幻灯片。
+
+Style material and typography:
+refined tactile sculpted matte resin.  Delicate bevels, soft upper-left studio light, restrained contact shadows. Title bold Chinese geometric sans in shallow selected-main-color relief. Supporting text crisp the selected dark main color. No glossy plastic, metal, preselected castle or factory. Depth coherent. The material and palette are this style's selected test variant, not universal rules.
+
+Selected palette (shared across creativity levels):
+Softly neutral clean off-white background and most carrier faces, still welcoming, without yellow/cream haze, smoky gray or icy blue. Deep teal headings/text and meaningful dark areas; mineral teal supporting colored resin surfaces; a small warm orange/vermilion accent on key text/numerals and the title rule. Most pale furniture remains clean off-white. Neutral studio lighting and restrained neutral contact shadows. Preserve distinct off-white, deep teal, mineral teal and small warm accent roles. This is the accepted neutral reference palette, not black-white-gray. No paper texture or watercolor; keep the selected matte resin material.
+
+内容关系：五组亮点分别是丰富模板可供选择、创意强度和配色可搭配、给出内容可形成完整演示、已确认样页直接成为正式页、只对需要修改的页面进行可编辑重建。它们共同说明从内容到设计到成品与局部修改的能力；不指定五卡片或五件物品的固定构图。此段仅为含义说明，不是额外可见文案。
+
+逐字使用的完整文案：
+SuperPPT
+让内容，自带设计感
+
+10 大精选模板
+多种风格，一眼心动
+
+3 档创意 · 专属配色
+清晰或惊艳，由你选择
+
+给出内容，生成整套
+从主题到演示，省心成稿
+
+样页满意，直接沿用
+不重画，不浪费
+
+哪里要改，就改哪里
+指定页面，按需转为可编辑
+
+用途说明：这是一张 SuperPPT 目标版本的内部风格选款与能力介绍样例，供准备制作演示文稿的用户评估画风。十模板是待完成版本的目标，不是当前版本已上线数量；不在画面添加这段用途说明。

@@ -5,6 +5,7 @@ import { promisify } from 'node:util';
 import { join, dirname } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { readFile, writeFile } from 'node:fs/promises';
+import sharp from 'sharp';
 import { fixtureTask, fixturePlan, fixtureImage } from './helpers/fast-task.js';
 import { repositorySourcePath } from './repository-source.js';
 
@@ -14,7 +15,17 @@ for (const n of [3, 12]) test(`public CLI ${n} pages: 8 commands, 3 decisions, o
   const compiled = !process.env.SUPERPPT_TEST_ROOT && import.meta.url.includes('/dist/');
   const cli = join(runtime, compiled ? 'dist/src/cli.js' : 'src/cli.ts');
   const batch = await import(pathToFileURL(join(runtime, compiled ? 'dist/src/generation/task-batch.js' : 'src/generation/task-batch.ts')).href);
+  const catalogModule = await import(pathToFileURL(join(runtime, compiled ? 'dist/src/styles/catalog.js' : 'src/styles/catalog.ts')).href);
   const fixture = await fixtureTask(), root = join(dirname(fixture.root), 'public-task'), plan = await fixturePlan(n);
+  const catalog = await catalogModule.loadBuiltInStyleCatalog();
+  assert.deepEqual(catalog.styles.map((style: any) => style.id), ['tactile', 'glass', 'ink', 'hand-drawn', 'textbook', 'collage', 'cinematic-tech', 'luxury-photo', 'blueprint', 'fantasy']);
+  assert.equal(catalog.styles.filter((style: any) => style.showcase).length, 10);
+  assert.doesNotMatch(JSON.stringify(catalog), /(?:\/Users\/|design-system-round|visualizations|design-session)/);
+  for (const style of catalog.styles) {
+    const metadata = await sharp(join(catalogModule.builtInStyleAssetsRoot(), style.showcase.path)).metadata();
+    assert.deepEqual({ format: metadata.format, width: metadata.width, height: metadata.height }, { format: 'jpeg', width: 1280, height: 720 }, style.id);
+  }
+  plan.styles = catalog.styles;
   const source = join(dirname(root), 'source.json'), deps = join(dirname(root), 'roots.json');
   await writeFile(source, JSON.stringify({ title: 'CLI完整汇报', text: '测试原文' }));
   await writeFile(deps, JSON.stringify({ aiSkillRoot: fixture.ai, editableSkillRoot: fixture.editable }));
@@ -58,10 +69,24 @@ for (const n of [3, 12]) test(`public CLI ${n} pages: 8 commands, 3 decisions, o
   }
   let reply = await command('start', ['--input', source, '--dependencies', deps]);
   reply = await submit(reply, plan);
-  reply = await decide(reply, 'select-style-and-generate-sample', { styleId: plan.styles[0].id, level: 2, paletteId: 'mid', callBudget: 1 });
+  assert.equal(reply.kind, 'decision');
+  assert.equal(reply.details.selection.styles.length, 10);
+  const selector = await readFile(join(root, reply.details.selectionPath), 'utf8');
+  assert.equal((selector.match(/data-action="open-style"/g) ?? []).length, 10);
+  assert.equal((selector.match(/class="style-button"[\s\S]*?<span class="media"><img src="data:image\/jpeg;base64,/g) ?? []).length, 10);
+  assert.doesNotMatch(selector, /(?:src|href)="(?:previews|showcases|https?:\/\/)/);
+  const selected = n === 3 ? { styleId: 'collage', level: 3, paletteId: 'mid' } : { styleId: 'tactile', level: 2, paletteId: 'mid' };
+  reply = await decide(reply, 'select-style-and-generate-sample', { ...selected, callBudget: 1 });
+  const sampleJob = await batch.readBatchJob(root, (await state()).activeJobId);
+  assert.deepEqual({ styleId: sampleJob.styleLock.recipe.id, level: sampleJob.styleLock.recipe.level, paletteId: sampleJob.styleLock.recipe.paletteId }, selected);
   reply = await generate(reply);
   assert.equal(reply.details.callBudget, n - 1);
+  const sampleResult = await batch.readBatchCheckpoint(root, sampleJob.jobId);
   reply = await decide(reply, 'approve-sample-and-generate-deck', { callBudget: reply.details.callBudget });
+  const deckJob = await batch.readBatchJob(root, (await state()).activeJobId);
+  assert.deepEqual(deckJob.styleLock.recipe, sampleJob.styleLock.recipe);
+  assert.deepEqual(deckJob.styleLock.approvedSample, sampleResult.completed[plan.representativeSlideId]);
+  assert.deepEqual(deckJob.pages.find((page: any) => page.slideId === plan.representativeSlideId)?.cached, sampleResult.completed[plan.representativeSlideId]);
   reply = await generate(reply);
   const s = await state(), cp = await batch.readBatchCheckpoint(root, s.activeJobId);
   reply = await submit(reply, { pages: plan.slides.map(p => ({ slideId: p.slideId, sha256: cp.completed[p.slideId].sha256, requiredText: [{ text: '标题', present: true }], styleConsistent: true, hierarchyClear: true, forbiddenContentAbsent: true, notes: 'fixture only' })) });

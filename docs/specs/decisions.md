@@ -4,6 +4,8 @@
 
 当前规范见 [视觉设计与选款](visual-design-and-selection.md)。原实验图在该会话的 `design-system-round*` 与 `experimental-options-v0.3` 中；运行不依赖这些外部目录。已采用内容的仓库内证据见 [资产说明](../../skills/superppt/assets/styles/README.md) 与 [provenance.json](../../skills/superppt/assets/styles/provenance.json)。
 
+当前实现状态（2026-09-07）：十种风格、34 个可选组合、31 张精确组合预览、10 张代表展示图及两轮自包含选择页已进入本地候选并通过自动化打包验证；新增七种只开放 3 档／基准中线。候选尚未发布，真实浏览器点击、剪贴板、窄视口、手机 Remote 与 Windows/WPS 均未验收。下列各项保持当时的历史状态，不回写成当前结论。
+
 ## D-01 先看效果，再定模板（VS-01）
 
 - 原诉求：「先生成一波看看，如果觉得可行，咱们再放进 SuperPPT 的模版定义里面去」。
