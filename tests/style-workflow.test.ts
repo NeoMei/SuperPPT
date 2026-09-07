@@ -1,11 +1,12 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { fixtureTask } from './helpers/fast-task.js';
+import { fixtureTask, fixturePlan } from './helpers/fast-task.js';
 import { generateFixture } from './helpers/fast-flow.js';
 import { publishPlan } from '../src/workflow/planning.js';
 import { decideTask } from '../src/workflow/decide.js';
 import { readTask, readTaskJson } from '../src/project/task-store.js';
 import { readBatchJob } from '../src/generation/task-batch.js';
+import { loadBuiltInStyleCatalog } from '../src/styles/catalog.js';
 
 function plan() {
   const ids = [1, 2, 3].map(i => '00000000-0000-4000-8000-00000000000' + i);
@@ -52,4 +53,25 @@ test('missing and invalid choices leave the current decision and generation stat
     await assert.rejects(decideTask(root, { decisionId: review.id, action: 'select-style-and-generate-sample', styleId: 'glass', callBudget: 1, ...choice }));
     assert.deepEqual(await readTask(root), before);
   }
+});
+test('collage 3/mid creates one immutable sample job while collage 1/cool leaves plan review untouched', async () => {
+  const { root } = await fixtureTask();
+  const candidate = await fixturePlan();
+  candidate.styles = (await loadBuiltInStyleCatalog()).styles;
+  candidate.slides[0]!.relationships = ['月球仓储与咖啡口味彼此独立'];
+  candidate.slides[0]!.requiredText = ['标题', '无关内容仍须完整保留'];
+  const review = await publishPlan(root, candidate);
+  if (review.kind !== 'decision') throw new Error('decision expected');
+  const before = await readTask(root);
+  await assert.rejects(decideTask(root, { decisionId: review.id, action: 'select-style-and-generate-sample', styleId: 'collage', level: 1, paletteId: 'cool', callBudget: 1 }), /Unavailable creativity tier/);
+  assert.deepEqual(await readTask(root), before);
+  const work = await decideTask(root, { decisionId: review.id, action: 'select-style-and-generate-sample', styleId: 'collage', level: 3, paletteId: 'mid', callBudget: 1 });
+  assert.equal(work.kind, 'work');
+  const job = await readBatchJob(root, (await readTask(root)).activeJobId!);
+  assert.deepEqual({ id: job.styleLock.recipe.id, name: job.styleLock.recipe.name, level: job.styleLock.recipe.level, paletteId: job.styleLock.recipe.paletteId },
+    { id: 'collage', name: '创意拼贴', level: 3, paletteId: 'mid' });
+  assert.equal(job.callBudget, 1);
+  assert.equal(job.pages.length, 1);
+  assert.match(job.pages[0]!.prompt, /月球仓储与咖啡口味彼此独立/);
+  assert.match(job.pages[0]!.prompt, /无关内容仍须完整保留/);
 });

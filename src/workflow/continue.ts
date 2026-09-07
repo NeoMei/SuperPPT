@@ -3,7 +3,7 @@ import { readFile } from 'node:fs/promises';
 import { z } from 'zod';
 import { readTask, updateTask, readTaskJson, writeTaskJson, taskTransaction, hash, readArtifact, taskPath } from '../project/task-store.js';
 import { PlanBundleSchema, type WorkflowReply } from './contracts.js';
-import { publishPlan, planDetails, renderPlanReview } from './planning.js';
+import { publishPlan, planReviewReply } from './planning.js';
 import { acceptBatchResult, BatchResultSchema, readBatchJob, readBatchCheckpoint, jobPath } from '../generation/task-batch.js';
 import { assembleTaskDeck, readTaskSession, readTaskRevision, deckLink, presentTaskEdit } from '../deck-revisions/task-deck.js';
 import { submissionNote } from '../generation/image-intent.js';
@@ -22,7 +22,7 @@ export async function taskReply(root: string): Promise<WorkflowReply> {
   }
   if (s.stage === 'plan-review') {
     const plan = PlanBundleSchema.parse(await readTaskJson(root, s.planPath!));
-    return { kind: 'decision', id: s.pendingDecision.id, stage: s.stage, view: renderPlanReview(plan), details: planDetails(plan, s.contentRevision) };
+    return planReviewReply(root, plan, s.contentRevision, s.pendingDecision.id);
   }
   if (s.stage === 'sample-review') {
     const result = BatchResultSchema.parse(await readTaskJson(root, `${jobPath(s.activeJobId!)}/result.json`));
@@ -114,7 +114,7 @@ export async function continueTask(root: string, resultPath?: string): Promise<W
     const id = randomUUID();
     if (s.stage === 'planning') {
       const inputPath = `planning/${s.contentRevision}/request.json`;
-      await writeTaskJson(root, inputPath, { source: s.sourcePath, title: s.title, previous: `planning/${s.contentRevision}/previous.json`, instructions: 'Read source and previous.json if present; apply its requested change. Preserve IDs and exact specs for unchanged pages. Write complete Brief/Outline/SlideSpecs and available real catalog styles (or an explicitly requested custom style with the same tier/palette contract). requiredText includes the title and all approved visible copy verbatim without a line-count cap. relationships describe content meaning, not a prescribed picture or layout. Offer style, then creativity level, then an available palette using bundled previews; do not generate selection previews. Retain source coverage; ask only materially missing facts.' });
+      await writeTaskJson(root, inputPath, { source: s.sourcePath, title: s.title, previous: `planning/${s.contentRevision}/previous.json`, instructions: 'Read source and previous.json if present; apply its requested change. Preserve IDs and exact specs for unchanged pages. Write complete Brief/Outline/SlideSpecs. By default read assets/styles/catalog.json and include every built-in style from the full catalog; preserve an explicitly requested custom style with the same tier/palette contract instead of replacing it. requiredText includes the title and all approved visible copy verbatim without a line-count cap. relationships describe content meaning, not a prescribed picture or layout. The plan review shows all styles first, then each style\'s available creativity levels and palettes together; do not create separate approval rounds or generate selection previews. Retain source coverage; ask only materially missing facts.' });
       await updateTask(root, state => ({ ...state, work: { id, kind: 'plan', inputPath, resultPath: `planning/${s.contentRevision}/result.json` } }));
     } else if (s.stage === 'sample-generation' || s.stage === 'deck-generation') {
       const cp = await readBatchCheckpoint(root, s.activeJobId!);

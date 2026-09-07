@@ -14,7 +14,7 @@ export async function fixturePlan(n = 3) {
     brief: { schemaVersion: 1, title: '效率测试', purpose: '解释任务', audience: '用户', language: 'zh-CN', targetSlides: n, mustCover: ['测试'], constraints: [] },
     outline: { schemaVersion: 1, slides: ids.map((id, order) => ({ id, order, title: `第${order + 1}页`, role: 'content', purpose: '解释', sourceRefs: ['source/original.md'] })) },
     slides: ids.map(slideId => ({ schemaVersion: 1, slideId, title: '标题', role: 'content', coreMessage: '清晰', requiredText: ['标题'], relationships: ['上下关系'], forbidden: ['水印'], sourceRefs: ['source/original.md'] })),
-    styles: catalog.styles.slice(0, 3), representativeSlideId: ids[0],
+    styles: catalog.styles, representativeSlideId: ids[0],
   });
 }
 export async function fixtureTask() {
