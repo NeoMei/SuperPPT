@@ -14,23 +14,37 @@ const catalog = JSON.parse(await readFile(catalogPath, "utf8"));
 const provenance = JSON.parse(await readFile(join(assetRoot, "provenance.json"), "utf8"));
 const paletteIds = ["cool", "mid", "warm"];
 const slots = ["{{PALETTE}}", "{{CONTENT_RELATIONSHIPS}}", "{{SLIDE_COPY}}"];
+const acceptedStyleIds = ["tactile", "glass", "ink", "hand-drawn", "textbook", "collage", "cinematic-tech", "luxury-photo", "blueprint", "fantasy"];
+const acceptedStyleNames = ["立体", "玻璃", "水墨", "经典手绘", "教材图解", "创意拼贴", "电影科技", "奢华摄影", "建筑蓝图", "叙事幻想"];
 const args = process.argv.slice(2);
 const normalize = args.includes("--normalize-previews");
 let sourceRoot;
+let acceptedSourceRoot;
 for (let index = 0; index < args.length; index += 1) {
   if (args[index] === "--normalize-previews") continue;
   if (args[index] === "--design-session-dir" && args[index + 1] && !args[index + 1].startsWith("--")) {
     sourceRoot = resolve(args[++index]);
     continue;
   }
+  if (args[index] === "--accepted-source-dir" && args[index + 1] && !args[index + 1].startsWith("--")) {
+    acceptedSourceRoot = resolve(args[++index]);
+    continue;
+  }
   throw new Error("Unknown or incomplete argument: " + args[index]);
 }
-assert.equal(normalize, Boolean(sourceRoot), "--normalize-previews requires --design-session-dir, and vice versa");
+assert.equal(normalize, Boolean(sourceRoot || acceptedSourceRoot), "--normalize-previews requires at least one source directory, and source directories require --normalize-previews");
+function assertSafeRelativePath(path, label) {
+  assert.ok(typeof path === "string" && path.length > 0, label + ": missing path");
+  assert.ok(!path.startsWith("/") && !/^[a-zA-Z]:\//.test(path) && !path.includes("\\"), label + ": path must be portable and relative");
+  assert.ok(path.split("/").every((part) => part && part !== "." && part !== ".."), label + ": path must remain contained");
+}
 assert.equal(catalog.catalogVersion, 2);
 assert.equal(catalog.selectionMode, "single");
-assert.ok(Array.isArray(catalog.styles) && catalog.styles.length >= 1 && catalog.styles.length <= 10);
+assert.deepEqual(catalog.styles.map((style) => style.id), acceptedStyleIds);
+assert.deepEqual(catalog.styles.map((style) => style.name), acceptedStyleNames);
 assert.equal(new Set(catalog.styles.map((style) => style.id)).size, catalog.styles.length, "Style ids must be unique");
 const previews = [];
+const showcases = [];
 for (const style of catalog.styles) {
   assert.match(style.id, /^[a-z0-9-]+$/);
   assert.ok(typeof style.name === "string" && style.name.trim(), style.id + ": missing name");
@@ -63,9 +77,16 @@ for (const style of catalog.styles) {
     const key = style.id + "-" + preview.level + "-" + preview.paletteId;
     assert.ok(!seen.has(key), "Duplicate preview: " + key);
     seen.add(key);
+    assertSafeRelativePath(preview.path, "Preview " + key);
     assert.equal(preview.path, "previews/" + key + ".jpg", "Preview paths must be portable and combination-specific");
     previews.push({ ...preview, styleId: style.id });
   }
+  assert.ok(style.showcase, style.id + ": missing showcase");
+  assert.ok(style.tiers.some((tier) => tier.level === style.showcase.level), style.id + ": showcase tier unavailable");
+  assert.ok(style.palettes.some((palette) => palette.id === style.showcase.paletteId), style.id + ": showcase palette unavailable");
+  assertSafeRelativePath(style.showcase.path, "Showcase " + style.id);
+  assert.equal(style.showcase.path, "showcases/" + style.id + ".jpg");
+  showcases.push({ ...style.showcase, styleId: style.id });
 }
 assert.equal(provenance.previews.length, previews.length, "Provenance must cover precisely the active previews");
 const sources = new Map(provenance.previews.map((item) => [item.path, item]));
@@ -76,38 +97,95 @@ for (const preview of previews) {
   assert.equal(source.styleId, preview.styleId);
   assert.equal(source.level, preview.level);
   assert.equal(source.paletteId, preview.paletteId);
-  assert.match(source.sourceImage, /^design-system-round\d+\/[a-z0-9-]+\.png$/);
+  assertSafeRelativePath(source.sourceImage, "Preview source " + preview.path);
+  if (source.acceptedSourceId) {
+    assert.equal(source.acceptedSourceId, provenance.acceptedSource.id);
+    assert.match(source.sourceImage, /^images\/[a-z0-9-]+\.png$/);
+  } else {
+    assert.match(source.sourceImage, /^design-system-round\d+\/[a-z0-9-]+\.png$/);
+  }
   assert.match(source.sourceImageSha256, /^[0-9a-f]{64}$/);
 }
 
+assert.equal(provenance.acceptedSource.id, "ten-style-showcase-v1");
+assertSafeRelativePath(provenance.acceptedSource.manifest, "Accepted manifest");
+assert.match(provenance.acceptedSource.manifestSha256, /^[0-9a-f]{64}$/);
+assert.equal(provenance.showcases.length, showcases.length, "Provenance must cover precisely the accepted showcases");
+const showcaseSources = new Map(provenance.showcases.map((item) => [item.path, item]));
+assert.equal(showcaseSources.size, showcases.length, "Duplicate showcase provenance");
+for (const showcase of showcases) {
+  const source = showcaseSources.get(showcase.path);
+  assert.ok(source, "Missing showcase provenance: " + showcase.path);
+  assert.equal(source.styleId, showcase.styleId);
+  assert.equal(source.level, showcase.level);
+  assert.equal(source.paletteId, showcase.paletteId);
+  assert.equal(source.acceptedSourceId, provenance.acceptedSource.id);
+  assertSafeRelativePath(source.sourceImage, "Showcase source image " + showcase.path);
+  assertSafeRelativePath(source.sourcePrompt, "Showcase source prompt " + showcase.path);
+  assert.match(source.sourceImage, /^images\/[a-z0-9-]+\.png$/);
+  assert.match(source.sourcePrompt, /^prompts\/[a-z0-9-]+\.txt$/);
+  assert.match(source.sourceImageSha256, /^[0-9a-f]{64}$/);
+  assert.match(source.sourcePromptSha256, /^[0-9a-f]{64}$/);
+}
+const newStyleIds = acceptedStyleIds.slice(3);
+assert.deepEqual(provenance.recipes.map((recipe) => recipe.styleId), newStyleIds);
+for (const recipe of provenance.recipes) {
+  assertSafeRelativePath(recipe.sourcePrompt, "Recipe source " + recipe.styleId);
+  assert.match(recipe.sourcePromptSha256, /^[0-9a-f]{64}$/);
+  assert.match(recipe.promptTemplateSha256, /^[0-9a-f]{64}$/);
+  assert.match(recipe.palettePromptSha256, /^[0-9a-f]{64}$/);
+  const style = catalog.styles.find((candidate) => candidate.id === recipe.styleId);
+  assert.ok(style, "Recipe style missing: " + recipe.styleId);
+  assert.equal(style.tiers.length, 1, recipe.styleId + ": accepted recipe must expose one tier");
+  assert.equal(style.palettes.length, 1, recipe.styleId + ": accepted recipe must expose one palette");
+  assert.equal(createHash("sha256").update(style.tiers[0].promptTemplate).digest("hex"), recipe.promptTemplateSha256, recipe.styleId + ": prompt template changed");
+  assert.equal(createHash("sha256").update(style.palettes[0].prompt).digest("hex"), recipe.palettePromptSha256, recipe.styleId + ": palette prompt changed");
+}
+assert.deepEqual(provenance.recipeTransformations.map((item) => item.operation), ["replace", "replace-section", "replace-paragraph", "replace-block", "remove"]);
+
 if (normalize) {
   await mkdir(join(assetRoot, "previews"), { recursive: true });
-  for (const preview of previews) {
-    const source = sources.get(preview.path);
-    const bytes = await readFile(join(sourceRoot, source.sourceImage));
+  await mkdir(join(assetRoot, "showcases"), { recursive: true });
+  async function normalizeAsset(target, source, root) {
+    const bytes = await readFile(join(root, source.sourceImage));
     assert.equal(createHash("sha256").update(bytes).digest("hex"), source.sourceImageSha256, "Source changed: " + source.sourceImage);
     const metadata = await sharp(bytes).metadata();
     assert.ok(Math.abs(metadata.width / metadata.height - 16 / 9) < 0.001, "Refuse to crop a non-16:9 source");
     await sharp(bytes)
       .resize(1280, 720, { fit: "fill" })
       .jpeg({ quality: 85, chromaSubsampling: "4:4:4", mozjpeg: true })
-      .toFile(join(assetRoot, preview.path));
+      .toFile(join(assetRoot, target.path));
+  }
+  if (sourceRoot) {
+    for (const preview of previews) {
+      const source = sources.get(preview.path);
+      if (!source.acceptedSourceId) await normalizeAsset(preview, source, sourceRoot);
+    }
+  }
+  if (acceptedSourceRoot) {
+    const manifestBytes = await readFile(join(acceptedSourceRoot, provenance.acceptedSource.manifest));
+    assert.equal(createHash("sha256").update(manifestBytes).digest("hex"), provenance.acceptedSource.manifestSha256, "Accepted manifest changed");
+    for (const preview of previews) {
+      const source = sources.get(preview.path);
+      if (source.acceptedSourceId) await normalizeAsset(preview, source, acceptedSourceRoot);
+    }
+    for (const showcase of showcases) await normalizeAsset(showcase, showcaseSources.get(showcase.path), acceptedSourceRoot);
   }
 }
 
 let totalBytes = 0;
-for (const preview of previews) {
-  const path = join(assetRoot, preview.path);
+for (const asset of [...previews, ...showcases]) {
+  const path = join(assetRoot, asset.path);
   const metadata = await sharp(path).metadata();
-  assert.equal(metadata.format, "jpeg", preview.path);
-  assert.equal(metadata.width, 1280, preview.path);
-  assert.equal(metadata.height, 720, preview.path);
+  assert.equal(metadata.format, "jpeg", asset.path);
+  assert.equal(metadata.width, 1280, asset.path);
+  assert.equal(metadata.height, 720, asset.path);
   const bytes = (await stat(path)).size;
-  assert.ok(bytes <= 500_000, "Preview exceeds 500 KB: " + preview.path);
+  assert.ok(bytes <= 500_000, "Asset exceeds 500 KB: " + asset.path);
   totalBytes += bytes;
 }
 const serialized = JSON.stringify(catalog, null, 2) + "\n";
 if (await readFile(catalogPath, "utf8") !== serialized) await writeFile(catalogPath, serialized);
 const tierCount = catalog.styles.reduce((sum, style) => sum + style.tiers.length, 0);
 const paletteCount = catalog.styles.reduce((sum, style) => sum + style.palettes.length, 0);
-console.log("Validated catalog v2: " + catalog.styles.length + " styles, " + tierCount + " tiers, " + paletteCount + " palettes, " + previews.length + " previews (1280x720 JPEG, " + totalBytes + " bytes). Missing previews do not disable combinations.");
+console.log("Validated catalog v2: " + catalog.styles.length + " styles, " + tierCount + " tiers, " + paletteCount + " palettes, " + previews.length + " previews and " + showcases.length + " showcases (1280x720 JPEG, " + totalBytes + " bytes). Missing previews do not disable combinations.");

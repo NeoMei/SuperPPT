@@ -3,6 +3,11 @@ import { z } from 'zod';
 const Id = z.string().regex(/^[a-z0-9-]+$/);
 export const CreativityLevelSchema = z.union([z.literal(1), z.literal(2), z.literal(3)]);
 export const VariantSelectionSchema = z.object({ level: CreativityLevelSchema, paletteId: Id }).strict();
+const AssetPath = z.string().min(1).refine(path =>
+  !path.startsWith('/') && !/^[a-zA-Z]:\//.test(path) && !path.includes('\\') &&
+  path.split('/').every(part => part !== '' && part !== '.' && part !== '..'),
+  'Asset path must be a portable contained relative path');
+const StyleAsset = z.object({ level: CreativityLevelSchema, paletteId: Id, path: AssetPath }).strict();
 const Template = z.string().min(1).refine(text =>
   ['PALETTE', 'CONTENT_RELATIONSHIPS', 'SLIDE_COPY'].every(slot => text.split('{{' + slot + '}}').length === 2),
   'Template requires exactly one palette, relationships and copy slot');
@@ -11,7 +16,8 @@ export const StyleRecipeSchema = z.object({
   id: Id, name: z.string().min(1),
   tiers: z.array(z.object({ level: CreativityLevelSchema, promptTemplate: Template }).strict()).min(1).max(3),
   palettes: z.array(z.object({ id: Id, name: z.string().min(1), prompt: z.string().min(1) }).strict()).min(1),
-  previews: z.array(z.object({ level: CreativityLevelSchema, paletteId: Id, path: z.string().min(1) }).strict()),
+  previews: z.array(StyleAsset),
+  showcase: StyleAsset.optional(),
 }).strict().superRefine((style, ctx) => {
   const levels = style.tiers.map(t => t.level), palettes = style.palettes.map(p => p.id);
   const previews = style.previews.map(p => p.level + '/' + p.paletteId);
@@ -19,6 +25,10 @@ export const StyleRecipeSchema = z.object({
     ctx.addIssue({ code: 'custom', message: 'Style options must be unique' });
   if (style.previews.some(p => !levels.includes(p.level) || !palettes.includes(p.paletteId)))
     ctx.addIssue({ code: 'custom', message: 'Preview must reference an available tier and palette' });
+  if (style.showcase && (!levels.includes(style.showcase.level) || !palettes.includes(style.showcase.paletteId)))
+    ctx.addIssue({ code: 'custom', message: 'Showcase must reference an available tier and palette' });
+  if (style.showcase && style.showcase.path !== `showcases/${style.id}.jpg`)
+    ctx.addIssue({ code: 'custom', message: 'Showcase path must match its style id' });
 });
 export const StyleCatalogSchema = z.object({
   catalogVersion: z.literal(2), selectionMode: z.literal('single'),

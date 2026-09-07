@@ -15,7 +15,10 @@ function builtInCatalogCandidates(): string[] {
 
 export async function loadStyleCatalog(path: string) {
   const value = StyleCatalogSchema.parse(JSON.parse(await readFile(path, "utf8")));
-  for (const style of value.styles) for (const preview of style.previews) await access(join(dirname(path), preview.path));
+  for (const style of value.styles) {
+    for (const preview of style.previews) await access(join(dirname(path), preview.path));
+    if (style.showcase) await access(join(dirname(path), style.showcase.path));
+  }
   return value;
 }
 
