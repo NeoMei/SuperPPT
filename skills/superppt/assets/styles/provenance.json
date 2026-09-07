@@ -321,6 +321,11 @@
       "to": "中文 PPT 页面"
     },
     {
+      "operation": "replace",
+      "from": "的 SuperPPT 标题和副标题区",
+      "to": "的标题和副标题区"
+    },
+    {
       "operation": "replace-section",
       "source": "内容关系",
       "with": "{{CONTENT_RELATIONSHIPS}}"
@@ -346,49 +351,49 @@
       "styleId": "hand-drawn",
       "sourcePrompt": "prompts/01-hand-drawn.txt",
       "sourcePromptSha256": "128adffa7132a99af189aa1e6ecfe18ac5ac5b1f681dbdac9d305ac8a8fb6849",
-      "promptTemplateSha256": "3b4c3900a4c237442bff0b1f45fd71af0af65e08f42fda5af2140682d28ade6f",
+      "promptTemplateSha256": "3018eca9c5892c7e7de873cc6a838a555810bb45cdbd88494df85f27a6901dc4",
       "palettePromptSha256": "85568d0b5e24134db750a22892d08126a5497be51edec51320bd2d9d67101192"
     },
     {
       "styleId": "textbook",
       "sourcePrompt": "prompts/02-textbook.txt",
       "sourcePromptSha256": "edf37437f26793325255508d53eae1683348b6d8e096d43c5d59a066e994f919",
-      "promptTemplateSha256": "79ccd03f8c70a52412988254a5c6cbc2e70bee8de0674ab5b6ad86164905a67e",
+      "promptTemplateSha256": "1a114441252d0b1361f825647f661e94c1b79b41336691e627ab9897b2d5fe23",
       "palettePromptSha256": "1b87877636250e7caa018a5a93619142f2c6b4802e9f34ecf9ba50ce8b6ee09c"
     },
     {
       "styleId": "collage",
       "sourcePrompt": "prompts/01-collage.txt",
       "sourcePromptSha256": "1d908e8dbef01d9cb11dcdca01641f980302374814c15b80878a28d09671b0f0",
-      "promptTemplateSha256": "2c9972e0062bf880d3e9f210ea0adef432117cf906b4245038f934deaef15909",
+      "promptTemplateSha256": "90e448ce8e21321688d574a7d87257c913a63cf1d27590336682243deec18aa4",
       "palettePromptSha256": "5ad345e829b037e86258ad5d049ec3f61ba1b9fa67ad5b1bf49f75b2c6d105f7"
     },
     {
       "styleId": "cinematic-tech",
       "sourcePrompt": "prompts/04-cinematic-tech.txt",
       "sourcePromptSha256": "5402dfb26e74348f0dafd2b1ac2183137ea084ba3fa792ee1acbc8abaae8adae",
-      "promptTemplateSha256": "35911ad0ea3122d45cf14cb9d5dbec346370a25f1da912dcc33adf938e238f37",
+      "promptTemplateSha256": "1fbfc0ff5b3a084ee38b20052ac9d3ef7bb377cbac5bcd0b81a30086e18e4139",
       "palettePromptSha256": "678fcb68c02e095c2d9de9b3bdfe1b165b6b2cdb7d738ef108f6cdb2558838c3"
     },
     {
       "styleId": "luxury-photo",
       "sourcePrompt": "prompts/05-luxury-photo.txt",
       "sourcePromptSha256": "b5debf5a65afbc2d56a6ee24fbff990c2ec8de2ffef2baa93aedac6e165df2ed",
-      "promptTemplateSha256": "fc97eb7efe2a926a69a1c7a01cdb2a88716a3d4e808571ba799e4803de1315f4",
+      "promptTemplateSha256": "e646a5d86f0e4eb625c430a8564487654cacac3232820c474a5b935311219390",
       "palettePromptSha256": "aa620d7ac3c71b02100a03b0caac4d006c6f2808f519581bca9fa1c1a11a6b11"
     },
     {
       "styleId": "blueprint",
       "sourcePrompt": "prompts/06-blueprint.txt",
       "sourcePromptSha256": "659bd38dc4101cc4ae4b5a4a688ee642188aa5ca5022702335ddcd5f9243dcd6",
-      "promptTemplateSha256": "9533c92e43cae25b7014ecf172bc55a512862ecb4f3ad39590b0250b2e1db5b3",
+      "promptTemplateSha256": "3f022bc5f090018730d92ccc7c0e824a6812260462d854717893250686ddafbe",
       "palettePromptSha256": "6d025b4d8eb90e322ec62a6547d451b2ce685b0497ecc2c5fc13380604fb5128"
     },
     {
       "styleId": "fantasy",
       "sourcePrompt": "prompts/07-fantasy.txt",
       "sourcePromptSha256": "dd01e9b0b52aab88a37e6360af972bcbb73990ef493d00a26b7d39d039a4b7fe",
-      "promptTemplateSha256": "b0547d129e13c59c4622fe0fd32a9d0bca14b535600936819d4ac45e8f663179",
+      "promptTemplateSha256": "9ca51d2fc20495c3fd2dd66af8858a51d6371c243d4e8e199e19a8ad872c1f03",
       "palettePromptSha256": "52b6bb41bd97563ed34a0ce42eefe8aae5fdd758a9cb2500cc7468fe4f554f3d"
     }
   ],

@@ -6,6 +6,31 @@ import { join } from 'node:path';
 import { loadBuiltInStyleCatalog, builtInStyleAssetsRoot } from '../src/styles/catalog.js';
 import type { StyleRecipe } from '../src/styles/schemas.js';
 
+test('clipboard helper reports success only when a clipboard mechanism succeeds', async () => {
+  const { attemptClipboardCopy } = await import('../src/styles/selection-view.js');
+  const calls: string[] = [];
+  assert.equal(await attemptClipboardCopy('选择创意拼贴', {
+    writeText: async text => { calls.push(`async:${text}`); },
+    legacyCopy: text => { calls.push(`legacy:${text}`); return false; },
+  }), true);
+  assert.deepEqual(calls, ['async:选择创意拼贴']);
+
+  calls.length = 0;
+  assert.equal(await attemptClipboardCopy('选择创意拼贴', {
+    writeText: async text => { calls.push(`async:${text}`); throw new Error('denied'); },
+    legacyCopy: text => { calls.push(`legacy:${text}`); return true; },
+  }), true);
+  assert.deepEqual(calls, ['async:选择创意拼贴', 'legacy:选择创意拼贴']);
+
+  assert.equal(await attemptClipboardCopy('选择创意拼贴', {
+    legacyCopy: () => false,
+  }), false);
+  assert.equal(await attemptClipboardCopy('选择创意拼贴', {
+    writeText: async () => { throw new Error('denied'); },
+    legacyCopy: () => { throw new Error('blocked'); },
+  }), false);
+});
+
 test('selection groups all ten styles into 34 available variants and discloses the three missing previews', async () => {
   const module = await import('../src/styles/selection.js').catch(() => ({} as Record<string, unknown>));
   assert.equal(typeof module.styleSelection, 'function');
@@ -65,6 +90,7 @@ test('selection HTML embeds local images, escapes labels, and keeps missing vari
     assert.match(html, /缺少该组合的精确预览/);
     assert.match(html, /data-selectable="true"/);
     assert.match(html, /选择本身不会发送请求/);
+    assert.match(html, /请手动复制上方回复/);
   } finally {
     await rm(directory, { recursive: true, force: true });
   }

@@ -65,7 +65,16 @@ test('accepted recipes compile unrelated copy without leaking showcase advertisi
     const text = compileSlidePrompt({ spec: unrelatedSpec, style }).text;
     assert.ok(text.includes(unrelatedSpec.requiredText.join('\n')), recipe.id);
     assert.ok(text.includes(unrelatedSpec.relationships.join('\n')), recipe.id);
-    assert.doesNotMatch(text, /10 大精选模板|SuperPPT 目标版本|让内容，自带设计感|用途说明|广告展示页/, recipe.id);
+    assert.doesNotMatch(text, /SuperPPT|10 大精选模板|让内容，自带设计感|用途说明|广告展示页/, recipe.id);
+
+    const brandedSpec = {
+      ...unrelatedSpec,
+      title: 'SuperPPT 产品路线',
+      requiredText: ['SuperPPT 产品路线', '先完成迁移', '再验证服务'],
+    };
+    const brandedText = compileSlidePrompt({ spec: brandedSpec, style }).text;
+    assert.equal((brandedText.match(/SuperPPT/g) ?? []).length, 1, recipe.id);
+    assert.ok(brandedText.includes(brandedSpec.requiredText.join('\n')), recipe.id);
   }
 });
 

@@ -17,6 +17,14 @@ const slots = ["{{PALETTE}}", "{{CONTENT_RELATIONSHIPS}}", "{{SLIDE_COPY}}"];
 const acceptedStyleIds = ["tactile", "glass", "ink", "hand-drawn", "textbook", "collage", "cinematic-tech", "luxury-photo", "blueprint", "fantasy"];
 const acceptedStyleNames = ["立体", "玻璃", "水墨", "经典手绘", "教材图解", "创意拼贴", "电影科技", "奢华摄影", "建筑蓝图", "叙事幻想"];
 const acceptedManifestStyleIds = ["tactile", "glass", "ink", "01-hand-drawn", "02-textbook", "01-collage", "04-cinematic-tech", "05-luxury-photo", "06-blueprint", "07-fantasy"];
+const expectedRecipeTransformations = [
+  { operation: "replace", from: "中文 PPT 广告展示页", to: "中文 PPT 页面" },
+  { operation: "replace", from: "的 SuperPPT 标题和副标题区", to: "的标题和副标题区" },
+  { operation: "replace-section", source: "内容关系", with: "{{CONTENT_RELATIONSHIPS}}" },
+  { operation: "replace-paragraph", source: "本轮基准配色", with: "{{PALETTE}}" },
+  { operation: "replace-block", source: "逐字使用的完整文案", with: "{{SLIDE_COPY}}" },
+  { operation: "remove", source: "用途说明", reason: "fixture-specific usage note" },
+];
 const args = process.argv.slice(2);
 const normalize = args.includes("--normalize-previews");
 let sourceRoot;
@@ -38,6 +46,29 @@ function assertSafeRelativePath(path, label) {
   assert.ok(typeof path === "string" && path.length > 0, label + ": missing path");
   assert.ok(!path.startsWith("/") && !/^[a-zA-Z]:\//.test(path) && !path.includes("\\"), label + ": path must be portable and relative");
   assert.ok(path.split("/").every((part) => part && part !== "." && part !== ".."), label + ": path must remain contained");
+}
+function replaceExactlyOnce(value, from, to, label) {
+  assert.equal(value.split(from).length, 2, label + ": expected exactly one source phrase");
+  return value.replace(from, to);
+}
+function extractAcceptedRecipe(sourcePrompt, styleId) {
+  let promptTemplate = sourcePrompt.trimEnd();
+  promptTemplate = replaceExactlyOnce(promptTemplate, "中文 PPT 广告展示页", "中文 PPT 页面", styleId + ": page wording");
+  promptTemplate = replaceExactlyOnce(promptTemplate, "的 SuperPPT 标题和副标题区", "的标题和副标题区", styleId + ": title-area wording");
+  const paletteMatches = [...promptTemplate.matchAll(/\n\n本轮基准配色：\n([^\n]+)(?=\n\n)/g)];
+  assert.equal(paletteMatches.length, 1, styleId + ": expected one palette paragraph");
+  const palettePrompt = paletteMatches[0][1];
+  const relationshipMatches = promptTemplate.match(/内容关系：[^\n]+/g) ?? [];
+  assert.equal(relationshipMatches.length, 1, styleId + ": expected one content relationship section");
+  promptTemplate = promptTemplate.replace(/内容关系：[^\n]+/, "内容关系：{{CONTENT_RELATIONSHIPS}}");
+  promptTemplate = promptTemplate.replace(/\n\n本轮基准配色：\n[^\n]+(?=\n\n)/, "\n\n本轮基准配色：\n{{PALETTE}}");
+  const visibleCopyMatches = promptTemplate.match(/逐字使用的完整文案：\n[\s\S]*?(?=\n\n用途说明：)/g) ?? [];
+  assert.equal(visibleCopyMatches.length, 1, styleId + ": expected one visible-copy block");
+  promptTemplate = promptTemplate.replace(/逐字使用的完整文案：\n[\s\S]*?(?=\n\n用途说明：)/, "逐字使用的完整文案：\n{{SLIDE_COPY}}");
+  const usageMatches = promptTemplate.match(/\n\n用途说明：[^\n]*$/g) ?? [];
+  assert.equal(usageMatches.length, 1, styleId + ": expected one fixture usage note");
+  promptTemplate = promptTemplate.replace(/\n\n用途说明：[^\n]*$/, "") + "\n";
+  return { promptTemplate, palettePrompt };
 }
 assert.equal(catalog.catalogVersion, 2);
 assert.equal(catalog.selectionMode, "single");
@@ -142,7 +173,7 @@ for (const recipe of provenance.recipes) {
   assert.equal(createHash("sha256").update(style.tiers[0].promptTemplate).digest("hex"), recipe.promptTemplateSha256, recipe.styleId + ": prompt template changed");
   assert.equal(createHash("sha256").update(style.palettes[0].prompt).digest("hex"), recipe.palettePromptSha256, recipe.styleId + ": palette prompt changed");
 }
-assert.deepEqual(provenance.recipeTransformations.map((item) => item.operation), ["replace", "replace-section", "replace-paragraph", "replace-block", "remove"]);
+assert.deepEqual(provenance.recipeTransformations, expectedRecipeTransformations, "Recipe transformation contract changed");
 
 if (normalize) {
   await mkdir(join(assetRoot, "previews"), { recursive: true });
@@ -184,6 +215,10 @@ if (normalize) {
       if (recipe) {
         assert.equal(recipe.sourcePrompt, manifestStyle.prompt, "Recipe prompt mapping changed: " + styleId);
         assert.equal(recipe.sourcePromptSha256, source.sourcePromptSha256, "Recipe prompt hash mapping changed: " + styleId);
+        const extracted = extractAcceptedRecipe(promptBytes.toString("utf8"), styleId);
+        const catalogStyle = catalog.styles.find((candidate) => candidate.id === styleId);
+        assert.equal(extracted.promptTemplate, catalogStyle.tiers[0].promptTemplate, "Recipe extraction changed: " + styleId);
+        assert.equal(extracted.palettePrompt, catalogStyle.palettes[0].prompt, "Palette extraction changed: " + styleId);
       }
     }
     for (const preview of previews) {

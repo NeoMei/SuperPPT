@@ -10,6 +10,27 @@ export type StyleSelectionView = {
   selection: StyleSelection;
 };
 
+export type ClipboardCopyApi = {
+  writeText?: (text: string) => Promise<void>;
+  legacyCopy: (text: string) => boolean;
+};
+
+export async function attemptClipboardCopy(text: string, api: ClipboardCopyApi): Promise<boolean> {
+  if (api.writeText) {
+    try {
+      await api.writeText(text);
+      return true;
+    } catch {
+      // Fall through to the legacy path when clipboard permission is unavailable.
+    }
+  }
+  try {
+    return api.legacyCopy(text) === true;
+  } catch {
+    return false;
+  }
+}
+
 const html = (value: unknown) => String(value)
   .replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;')
   .replaceAll('"', '&quot;').replaceAll("'", '&#39;');
@@ -99,9 +120,10 @@ export async function writeStyleSelectionView(root: string, relativePath: string
 ${panels}
 </main><aside class="choice-bar" aria-live="polite"><output id="choice"><code>尚未选择组合</code></output><button type="button" id="copy-choice" disabled>复制回复</button></aside>
 <script>
+${attemptClipboardCopy.toString()}
 const list=document.getElementById('styles-view'),panels=[...document.querySelectorAll('[data-style-panel]')],choice=document.getElementById('choice'),copy=document.getElementById('copy-choice');
 document.addEventListener('click',event=>{const button=event.target.closest('button');if(!button)return;if(button.dataset.action==='open-style'){list.hidden=true;panels.forEach(panel=>panel.hidden=panel.dataset.stylePanel!==button.dataset.styleId);document.getElementById('style-'+button.dataset.styleId).querySelector('button').focus();}if(button.dataset.action==='back'){panels.forEach(panel=>panel.hidden=true);list.hidden=false;list.querySelector('button').focus();}if(button.dataset.action==='choose'){choice.replaceChildren(Object.assign(document.createElement('code'),{textContent:button.dataset.choice}));copy.disabled=false;copy.dataset.choice=button.dataset.choice;}});
-copy.addEventListener('click',async()=>{const text=copy.dataset.choice||'';try{await navigator.clipboard.writeText(text)}catch{const area=document.createElement('textarea');area.value=text;document.body.append(area);area.select();document.execCommand('copy');area.remove()}copy.textContent='已复制';setTimeout(()=>copy.textContent='复制回复',1200)});
+copy.addEventListener('click',async()=>{const text=copy.dataset.choice||'';const copied=await attemptClipboardCopy(text,{writeText:navigator.clipboard&&typeof navigator.clipboard.writeText==='function'?value=>navigator.clipboard.writeText(value):undefined,legacyCopy:value=>{const area=document.createElement('textarea');area.value=value;document.body.append(area);area.select();try{return document.execCommand('copy')===true}finally{area.remove()}}});if(copied){copy.textContent='已复制'}else{const visible=choice.querySelector('code'),selection=window.getSelection?window.getSelection():null;if(visible&&selection){const range=document.createRange();range.selectNodeContents(visible);selection.removeAllRanges();selection.addRange(range)}copy.textContent='复制失败，请手动复制上方回复'}setTimeout(()=>copy.textContent='复制回复',copied?1200:3000)});
 </script></body></html>`;
   await atomicWrite(await taskPath(root, relativePath), document);
   return relativePath;
