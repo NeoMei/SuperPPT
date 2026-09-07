@@ -1,7 +1,9 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
-import { mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
+import { spawn } from 'node:child_process';
+import { existsSync } from 'node:fs';
+import { copyFile, mkdir, mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import sharp from 'sharp';
@@ -10,6 +12,7 @@ import { builtInStyleAssetsRoot, loadBuiltInStyleCatalog, loadStyleCatalog, sele
 import { compileSlidePrompt } from '../src/styles/prompt-compiler.js';
 
 const expectedIds = ['tactile', 'glass', 'ink', 'hand-drawn', 'textbook', 'collage', 'cinematic-tech', 'luxury-photo', 'blueprint', 'fantasy'];
+const acceptedSourceRoot = '/Users/neomei/.codex/visualizations/2026/09/06/01a07610-a616-77f3-b5d1-20a97c2aa7b7/ten-style-showcase-v1';
 const legacyStyleHashes = {
   tactile: '2a1cf9e593e1c3c834177666fc125f463787113848bf82730bd5635772222512',
   glass: '16b2b8f252c96951b5fbd3284e5044e51b945e7d55bcd5803932aef209fb5401',
@@ -114,5 +117,30 @@ test('every bundled preview and showcase is a bounded 1280x720 JPEG', async () =
       assert.equal(metadata.height, 720, asset.path);
       assert.ok((await stat(path)).size <= 500_000, asset.path);
     }
+  }
+});
+
+test('accepted-source normalization rejects prompt drift before rebuilding images', { skip: !existsSync(acceptedSourceRoot) }, async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'superppt-accepted-source-'));
+  try {
+    const provenance = JSON.parse(await readFile(join(builtInStyleAssetsRoot(), 'provenance.json'), 'utf8'));
+    await mkdir(join(directory, 'prompts'));
+    await copyFile(join(acceptedSourceRoot, provenance.acceptedSource.manifest), join(directory, provenance.acceptedSource.manifest));
+    for (const source of provenance.showcases) {
+      await copyFile(join(acceptedSourceRoot, source.sourcePrompt), join(directory, source.sourcePrompt));
+    }
+    const driftedPrompt = provenance.recipes[0].sourcePrompt;
+    await writeFile(join(directory, driftedPrompt), await readFile(join(directory, driftedPrompt), 'utf8') + '\nDRIFT');
+    const result = await new Promise<{ code: number | null; stderr: string }>((resolve, reject) => {
+      const child = spawn(process.execPath, ['scripts/build-style-catalog.mjs', '--normalize-previews', '--accepted-source-dir', directory], { cwd: process.cwd() });
+      let stderr = '';
+      child.stderr.on('data', chunk => { stderr += chunk; });
+      child.once('error', reject);
+      child.once('exit', code => resolve({ code, stderr }));
+    });
+    assert.notEqual(result.code, 0);
+    assert.match(result.stderr, /Accepted prompt changed: prompts\/01-hand-drawn\.txt/);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
   }
 });

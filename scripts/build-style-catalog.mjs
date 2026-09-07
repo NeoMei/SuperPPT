@@ -16,6 +16,7 @@ const paletteIds = ["cool", "mid", "warm"];
 const slots = ["{{PALETTE}}", "{{CONTENT_RELATIONSHIPS}}", "{{SLIDE_COPY}}"];
 const acceptedStyleIds = ["tactile", "glass", "ink", "hand-drawn", "textbook", "collage", "cinematic-tech", "luxury-photo", "blueprint", "fantasy"];
 const acceptedStyleNames = ["立体", "玻璃", "水墨", "经典手绘", "教材图解", "创意拼贴", "电影科技", "奢华摄影", "建筑蓝图", "叙事幻想"];
+const acceptedManifestStyleIds = ["tactile", "glass", "ink", "01-hand-drawn", "02-textbook", "01-collage", "04-cinematic-tech", "05-luxury-photo", "06-blueprint", "07-fantasy"];
 const args = process.argv.slice(2);
 const normalize = args.includes("--normalize-previews");
 let sourceRoot;
@@ -165,9 +166,34 @@ if (normalize) {
   if (acceptedSourceRoot) {
     const manifestBytes = await readFile(join(acceptedSourceRoot, provenance.acceptedSource.manifest));
     assert.equal(createHash("sha256").update(manifestBytes).digest("hex"), provenance.acceptedSource.manifestSha256, "Accepted manifest changed");
+    const manifest = JSON.parse(manifestBytes);
+    assert.deepEqual(manifest.styles.map((style) => style.id), acceptedManifestStyleIds, "Accepted manifest style roster changed");
+    const manifestStyles = new Map(manifest.styles.map((style) => [style.id, style]));
+    for (let index = 0; index < acceptedStyleIds.length; index += 1) {
+      const styleId = acceptedStyleIds[index];
+      const source = showcaseSources.get("showcases/" + styleId + ".jpg");
+      const manifestStyle = manifestStyles.get(acceptedManifestStyleIds[index]);
+      assert.ok(manifestStyle, "Accepted manifest mapping missing: " + styleId);
+      assert.equal(manifestStyle.name, acceptedStyleNames[index], "Accepted manifest name changed: " + styleId);
+      assert.equal(source.sourceImage, manifestStyle.image, "Showcase image mapping changed: " + styleId);
+      assert.equal(source.sourceImageSha256, manifestStyle.sha256, "Showcase image hash mapping changed: " + styleId);
+      assert.equal(source.sourcePrompt, manifestStyle.prompt, "Showcase prompt mapping changed: " + styleId);
+      const promptBytes = await readFile(join(acceptedSourceRoot, source.sourcePrompt));
+      assert.equal(createHash("sha256").update(promptBytes).digest("hex"), source.sourcePromptSha256, "Accepted prompt changed: " + source.sourcePrompt);
+      const recipe = provenance.recipes.find((candidate) => candidate.styleId === styleId);
+      if (recipe) {
+        assert.equal(recipe.sourcePrompt, manifestStyle.prompt, "Recipe prompt mapping changed: " + styleId);
+        assert.equal(recipe.sourcePromptSha256, source.sourcePromptSha256, "Recipe prompt hash mapping changed: " + styleId);
+      }
+    }
     for (const preview of previews) {
       const source = sources.get(preview.path);
-      if (source.acceptedSourceId) await normalizeAsset(preview, source, acceptedSourceRoot);
+      if (source.acceptedSourceId) {
+        const showcaseSource = showcaseSources.get("showcases/" + preview.styleId + ".jpg");
+        assert.equal(source.sourceImage, showcaseSource.sourceImage, "Preview source mapping changed: " + preview.path);
+        assert.equal(source.sourceImageSha256, showcaseSource.sourceImageSha256, "Preview source hash mapping changed: " + preview.path);
+        await normalizeAsset(preview, source, acceptedSourceRoot);
+      }
     }
     for (const showcase of showcases) await normalizeAsset(showcase, showcaseSources.get(showcase.path), acceptedSourceRoot);
   }
