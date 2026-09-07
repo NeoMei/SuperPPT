@@ -4,7 +4,7 @@ import { fixtureTask, fixturePlan } from './helpers/fast-task.js';
 import { publishPlan, samplePrompts, selectionPath } from '../src/workflow/planning.js';
 import { readTask, readTaskJson, updateTask, writeTaskJson } from '../src/project/task-store.js';
 import { taskReply, continueTask } from '../src/workflow/continue.js';
-import { mkdir, readFile, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, stat, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { writeStyleSelectionView } from '../src/styles/selection-view.js';
 import { styleSelection } from '../src/styles/selection.js';
@@ -104,6 +104,29 @@ test('historical plan review without a selector remains read-only and uses text 
   assert.doesNotMatch(reply.view, /打开本地 HTML/);
   assert.equal('selectionPath' in (reply.details as object), false);
   assert.equal((reply.details as any).previewBase.endsWith('skills/superppt/assets/styles'), true);
+  assert.deepEqual(await readTask(root), before);
+});
+test('a valid custom selector larger than 16 MiB remains recoverable after plan-review is committed', async () => {
+  const { root } = await fixtureTask(), plan = await fixturePlan();
+  const palettes = Array.from({ length: 40 }, (_, index) => ({ id: `tone-${index}`, name: `色板 ${index}`, prompt: `色板 ${index}` }));
+  plan.styles = [{
+    id: 'large-custom', name: '大型自定义选择器',
+    tiers: [{ level: 3, promptTemplate: '{{PALETTE}}\n{{CONTENT_RELATIONSHIPS}}\n{{SLIDE_COPY}}' }], palettes,
+    previews: palettes.map(palette => ({ level: 3 as const, paletteId: palette.id, path: 'previews/large-custom.jpg' })),
+  }];
+  const state = await readTask(root), planPath = `planning/${state.contentRevision}/plan.json`, htmlPath = selectionPath(state.contentRevision);
+  const assetsRoot = join(root, 'large-assets');
+  await mkdir(join(assetsRoot, 'previews'), { recursive: true });
+  await writeFile(join(assetsRoot, 'previews/large-custom.jpg'), Buffer.alloc(499_000, 65));
+  await writeTaskJson(root, planPath, plan);
+  await writeStyleSelectionView(root, htmlPath, { title: plan.brief.title, purpose: plan.brief.purpose, audience: plan.brief.audience, selection: styleSelection(plan.styles) }, assetsRoot);
+  assert.ok((await stat(join(root, htmlPath))).size > 16 * 1024 * 1024);
+  await updateTask(root, old => ({ ...old, stage: 'plan-review', planPath, work: null, pendingDecision: { id: '00000000-0000-4000-8000-000000000097', kind: 'plan-review' } }));
+  const before = await readTask(root);
+  const reply = await taskReply(root);
+  assert.equal(reply.kind, 'decision');
+  if (reply.kind !== 'decision') throw new Error('decision expected');
+  assert.equal((reply.details as any).selectionPath, htmlPath);
   assert.deepEqual(await readTask(root), before);
 });
 test('planning publishes slides in declared order even when input array is shuffled', async () => {

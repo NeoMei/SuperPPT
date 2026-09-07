@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
+import { lstat } from 'node:fs/promises';
 import { PlanBundleSchema, type PlanBundle, type WorkflowReply } from './contracts.js';
-import { readArtifact, readTask, readTaskJson, writeTaskJson, updateTask, withTaskLock, hash, json } from '../project/task-store.js';
+import { readTask, readTaskJson, writeTaskJson, updateTask, withTaskLock, hash, json } from '../project/task-store.js';
 import { compileSlidePrompt } from '../styles/prompt-compiler.js';
 import { builtInStyleAssetsRoot, selectStyleVariant } from '../styles/catalog.js';
 import type { ResolvedStyle } from '../styles/schemas.js';
@@ -44,8 +45,9 @@ export async function planReviewReply(root: string, plan: PlanBundle, revision: 
   const path = selectionPath(revision);
   let absolutePath: string | undefined;
   try {
-    await readArtifact(root, path, 16 * 1024 * 1024);
-    absolutePath = await taskPath(root, path);
+    const candidate = await taskPath(root, path);
+    if (!(await lstat(candidate)).isFile()) throw new Error('Style selection must be a regular file');
+    absolutePath = candidate;
   } catch (error: unknown) {
     if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
   }
