@@ -1,5 +1,5 @@
-import { readFile, realpath } from 'node:fs/promises';
-import { extname, isAbsolute, relative, resolve, sep } from 'node:path';
+import { lstat, readFile, realpath } from 'node:fs/promises';
+import { extname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { atomicWrite, taskPath } from '../project/task-store.js';
 import type { StyleSelection } from './selection.js';
 
@@ -20,13 +20,22 @@ async function embedAsset(assetsRoot: string, path: string | null): Promise<stri
   const target = resolve(root, path), fromRoot = relative(root, target);
   if (!fromRoot || fromRoot === '..' || fromRoot.startsWith('..' + sep)) return null;
   try {
-    const bytes = await readFile(target);
-    if (bytes.length > 500_000) return null;
+    let cursor = root;
+    for (const part of fromRoot.split(sep)) {
+      cursor = join(cursor, part);
+      if ((await lstat(cursor)).isSymbolicLink()) return null;
+    }
+    const finalTarget = await realpath(target), finalFromRoot = relative(root, finalTarget);
+    if (!finalFromRoot || finalFromRoot === '..' || finalFromRoot.startsWith('..' + sep)) return null;
+    const info = await lstat(finalTarget);
+    if (!info.isFile() || info.isSymbolicLink() || info.size > 500_000) return null;
     const extension = extname(path).toLowerCase();
     const mime = extension === '.jpg' || extension === '.jpeg' ? 'image/jpeg' : extension === '.png' ? 'image/png' : null;
-    return mime ? `data:${mime};base64,${bytes.toString('base64')}` : null;
+    if (!mime) return null;
+    const bytes = await readFile(finalTarget);
+    return bytes.length <= 500_000 ? `data:${mime};base64,${bytes.toString('base64')}` : null;
   } catch (error: unknown) {
-    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null;
+    if (['ENOENT', 'ENOTDIR', 'ELOOP', 'EISDIR'].includes((error as NodeJS.ErrnoException).code ?? '')) return null;
     throw error;
   }
 }

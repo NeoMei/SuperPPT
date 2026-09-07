@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { PlanBundleSchema, type PlanBundle, type WorkflowReply } from './contracts.js';
-import { readTask, readTaskJson, writeTaskJson, updateTask, withTaskLock, hash, json } from '../project/task-store.js';
+import { readArtifact, readTask, readTaskJson, writeTaskJson, updateTask, withTaskLock, hash, json } from '../project/task-store.js';
 import { compileSlidePrompt } from '../styles/prompt-compiler.js';
 import { builtInStyleAssetsRoot, selectStyleVariant } from '../styles/catalog.js';
 import type { ResolvedStyle } from '../styles/schemas.js';
@@ -16,7 +16,7 @@ export const samplePrompts = (plan: PlanBundle) => Object.fromEntries(plan.style
     return [variantKey(selected), compileSlidePrompt({ spec: plan.slides.find(s => s.slideId === plan.representativeSlideId)!, style: selected }).text];
   }))));
 export const selectionPath = (revision: string) => `planning/${revision}/style-selection.html`;
-export const planDetails = (plan: PlanBundle, revision: string) => ({
+export const planDetails = (plan: PlanBundle, revision: string, publishedSelectionPath?: string) => ({
   planPath: `planning/${revision}/plan.json`,
   samplePromptsPath: `planning/${revision}/sample-prompts.json`,
   submissionNote: submissionNote(plan.brief),
@@ -27,7 +27,7 @@ export const planDetails = (plan: PlanBundle, revision: string) => ({
     palettes: palettes.map(({id,name}) => ({id,name})), previews,
   })),
   selection: styleSelection(plan.styles),
-  selectionPath: selectionPath(revision),
+  ...(publishedSelectionPath ? { selectionPath: publishedSelectionPath } : {}),
   samplePromptKey: 'styleId/level/paletteId',
   representativeSlideId: plan.representativeSlideId, references: plan.references,
   callBudget: 1, executor: 'ai-image-to-ppt', output: 'generation',
@@ -41,8 +41,15 @@ export function renderPlanReview(plan: PlanBundle, selectionAbsolutePath?: strin
   ].join('\n');
 }
 export async function planReviewReply(root: string, plan: PlanBundle, revision: string, decisionId: string): Promise<WorkflowReply> {
-  const path = await writeStyleSelectionView(root, selectionPath(revision), { title: plan.brief.title, purpose: plan.brief.purpose, audience: plan.brief.audience, selection: styleSelection(plan.styles) }, builtInStyleAssetsRoot());
-  return { kind: 'decision', id: decisionId, stage: 'plan-review', view: renderPlanReview(plan, await taskPath(root, path)), details: planDetails(plan, revision) };
+  const path = selectionPath(revision);
+  let absolutePath: string | undefined;
+  try {
+    await readArtifact(root, path, 16 * 1024 * 1024);
+    absolutePath = await taskPath(root, path);
+  } catch (error: unknown) {
+    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+  }
+  return { kind: 'decision', id: decisionId, stage: 'plan-review', view: renderPlanReview(plan, absolutePath), details: planDetails(plan, revision, absolutePath ? path : undefined) };
 }
 export async function publishPlan(root: string, raw: unknown): Promise<WorkflowReply> {
   return withTaskLock(root, async () => {
@@ -53,9 +60,12 @@ export async function publishPlan(root: string, raw: unknown): Promise<WorkflowR
     if (s.planPath) {
       const old = await readTaskJson(root, s.planPath);
       if (hash(json(old)) !== hash(json(plan))) throw new Error('Published plan changed; request a revision');
+      if (!s.pendingDecision || s.pendingDecision.kind !== 'plan-review') throw new Error('Published plan review decision is missing');
+      return planReviewReply(root, plan, s.contentRevision, s.pendingDecision.id);
     }
     await writeTaskJson(root, path, plan);
     await writeTaskJson(root, `planning/${s.contentRevision}/sample-prompts.json`, samplePrompts(plan));
+    await writeStyleSelectionView(root, selectionPath(s.contentRevision), { title: plan.brief.title, purpose: plan.brief.purpose, audience: plan.brief.audience, selection: styleSelection(plan.styles) }, builtInStyleAssetsRoot());
     const next = await updateTask(root, state => ({ ...state, planPath: path, stage: 'plan-review', work: null, pendingDecision: state.pendingDecision ?? { id: randomUUID(), kind: 'plan-review' } }));
     return planReviewReply(root, plan, s.contentRevision, next.pendingDecision!.id);
   });

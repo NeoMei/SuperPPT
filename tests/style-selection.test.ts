@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { loadBuiltInStyleCatalog, builtInStyleAssetsRoot } from '../src/styles/catalog.js';
@@ -65,6 +65,41 @@ test('selection HTML embeds local images, escapes labels, and keeps missing vari
     assert.match(html, /缺少该组合的精确预览/);
     assert.match(html, /data-selectable="true"/);
     assert.match(html, /选择本身不会发送请求/);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test('selection HTML rejects directories, symlinks, escapes, and oversized assets before embedding', async () => {
+  const { styleSelection } = await import('../src/styles/selection.js');
+  const { writeStyleSelectionView } = await import('../src/styles/selection-view.js');
+  const directory = await mkdtemp(join(tmpdir(), 'superppt-selection-boundary-'));
+  const taskRoot = join(directory, 'task'), assetsRoot = join(directory, 'assets'), outside = join(directory, 'outside.jpg');
+  try {
+    await mkdir(join(taskRoot, 'planning'), { recursive: true });
+    await mkdir(join(assetsRoot, 'previews/directory.jpg'), { recursive: true });
+    await writeFile(outside, Buffer.from('outside secret image'));
+    await writeFile(join(assetsRoot, 'previews/inside-target.jpg'), Buffer.from('inside target image'));
+    await symlink(outside, join(assetsRoot, 'previews/escape.jpg'));
+    await symlink(join(assetsRoot, 'previews/inside-target.jpg'), join(assetsRoot, 'previews/inside-link.jpg'));
+    await writeFile(join(assetsRoot, 'previews/oversized.jpg'), Buffer.alloc(500_001, 65));
+    const template = '{{PALETTE}}\n{{CONTENT_RELATIONSHIPS}}\n{{SLIDE_COPY}}';
+    const palettes = [
+      { id: 'directory', name: '目录', prompt: '目录' },
+      { id: 'escape', name: '越界链接', prompt: '越界' },
+      { id: 'inside-link', name: '内部链接', prompt: '链接' },
+      { id: 'oversized', name: '超限', prompt: '超限' },
+    ];
+    const style = { id: 'boundary', name: '文件边界', tiers: [{ level: 3, promptTemplate: template }], palettes,
+      previews: palettes.map(palette => ({ level: 3 as const, paletteId: palette.id, path: `previews/${palette.id}.jpg` })) } as StyleRecipe;
+    const path = await writeStyleSelectionView(taskRoot, 'planning/style-selection.html', {
+      title: '文件边界', purpose: '验证安全读取', audience: '测试者', selection: styleSelection([style]),
+    }, assetsRoot);
+    const rendered = await readFile(join(taskRoot, path), 'utf8');
+    assert.equal((rendered.match(/缺少该组合的精确预览 · 仍可选择/g) ?? []).length, 4);
+    assert.doesNotMatch(rendered, new RegExp(Buffer.from('outside secret image').toString('base64')));
+    assert.doesNotMatch(rendered, new RegExp(Buffer.from('inside target image').toString('base64')));
+    assert.doesNotMatch(rendered, new RegExp(Buffer.alloc(32, 65).toString('base64')));
   } finally {
     await rm(directory, { recursive: true, force: true });
   }
