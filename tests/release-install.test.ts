@@ -15,6 +15,7 @@ test('packed plugin installs independently and runs complete public CLI workflow
   const packed = JSON.parse((await run(process.execPath, [npm!, 'pack', '--json', '--pack-destination', temporary], { cwd: root })).stdout);
   assert.ok(packed[0].files.some((file: { path: string }) => file.path === 'skills/superppt/assets/styles/remote-assets.json'));
   assert.equal(packed[0].files.filter((file: { path: string }) => file.path.startsWith('skills/superppt/assets/styles/') && /\.(png|jpe?g|webp)$/i.test(file.path)).length, 0);
+  assert.equal(packed[0].files.filter((file: { path: string }) => /(?:^|\/)(?:\.env(?:\.|$)|.*(?:token|credential|secret).*)/i.test(file.path)).length, 0);
   await run('tar', ['-xzf', join(temporary, packed[0].filename), '-C', temporary]);
   const installed = join(temporary, 'package');
   const installEnv = { ...process.env };
@@ -28,5 +29,5 @@ test('packed plugin installs independently and runs complete public CLI workflow
   const testEnv = { ...process.env, SUPERPPT_TEST_ROOT: installed };
   delete (testEnv as NodeJS.ProcessEnv).NODE_TEST_CONTEXT;
   const result = await run(process.execPath, ['--import', 'tsx', '--test', '--test-reporter=spec', join(root, 'tests/fast-cli.test.ts')], { cwd: root, env: testEnv, timeout: 90000, maxBuffer: 4 * 1024 * 1024 });
-  assert.match(result.stdout, /pass 2/);
+  assert.match(result.stdout, /pass 3/);
 });

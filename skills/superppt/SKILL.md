@@ -25,13 +25,19 @@ description: Use when users want to make a high-detail presentation from a topic
 
 规划时一次写完整 Brief、Outline、逐页 SlideSpec 和可用真实风格候选。
 默认读取 assets/styles/catalog.json 并原样写入全部十种内置风格，不由 Agent 缩成推荐短名单；用户明确要求的自定义 plan.styles 是权威输入，不用内置目录静默覆盖。按“风格 → 档位 → 配色”展开真实选项：立体、玻璃、水墨保留各自 1／2／3 档和偏冷／基准中线／偏暖；经典手绘、教材图解、创意拼贴、电影科技、奢华摄影、建筑蓝图、叙事幻想仅有 3 档／基准中线。
-新发布 plan-review 的 details.selectionPath 指向任务内 HTML；历史任务没有已发布选择页时会省略该字段并使用文本与原生图片回退。HTML 第一轮完整展示全部风格图，进入某个风格后，第二轮一次展示它的档位与配色组合。HTML 从图床加载公开风格图片，不调用 CLI 或生成服务；点击只形成可复制的自然语言回复。HTML 不可用时，读取 details.previewBase 下的 remote-assets.json，以 showcase.path 或 previews[].path 查 assets[逻辑路径].url，作为原生内联图片地址；索引无此条目时才使用 details.previewBase 加相对路径读取自定义本地图片。按同一顺序展示图片和文本元组。图床加载失败时明确说明网络图片不可用，组合仍可选择。没有精确预览时明确说明缺图并仍允许选择，不生成或冒充预览。这仍是同一次 plan-review，不增加逐步确认关卡。不要声称远程或移动端已经验收。
+新发布 plan-review 的 details.selectionPath 指向任务内 HTML；历史任务没有已发布选择页时会省略该字段并使用纯对话与原生图片回退。HTML 第一轮完整展示全部风格图，进入某个风格后，第二轮一次展示它的档位与配色组合。HTML 从图床加载公开风格图片，不调用 CLI 或生成服务；点击只形成可复制的自然语言回复。HTML 不可用时，先按 details.planPath、可用时的 details.reviewModelPath，以及 details.samplePromptsPath 展示与页面相同的整体方案、完整逐页内容、当前上下文、确切已选 prompt、参考图用途、输出位置和 1 次调用预算；历史任务没有 reviewModelPath 时直接从 planPath、samplePromptsPath 和当前 details 恢复这些内容，不要求不存在的文件。再读取 details.previewBase 下的 remote-assets.json，以 showcase.path 或 previews[].path 查 assets[逻辑路径].url，作为原生内联图片地址，索引无此条目时才使用 details.previewBase 加相对路径读取自定义本地图片。按同一顺序展示图片和文本元组。图床加载失败时明确说明网络图片不可用，组合仍可选择。没有精确预览时明确说明缺图并仍允许选择，不生成或冒充预览。这仍是同一次 plan-review，不增加逐步确认关卡。不要声称远程或移动端已经验收。
 保留源内容结构、来源覆盖和精确 requiredText（包含独立标题及全部可见文字，不删减、不限制行数）。relationships 只描述内容含义与关系；实际背景、承载图形和构图由生图模型根据内容决定。
-只追问影响结果的缺失事实，不分别确认大纲、逐页说明和风格。
+
+规划 work 的 request.planningContextPath 保存当前有效问答。开始或恢复规划时先读源材料、该上下文和 previous（若存在），不要重复询问已保存的事实或偏好。每次收到用户回答，立即校验并原子写回 planningContextPath；用户一次回答多个事项时全部吸收，再判断下一个缺口。answers 的 kind 只用 fact 或 preference，key 不重复；assumptions 单独保存，不能混成已确认事实。
+
+完整材料且目标明确时直接出完整方案，不发起无关问卷。只有缺失信息会显著改变叙事、内容取舍、页数或交付范围时才追问；一次只问当前影响最高的一个问题，不能把受众与目标合并成一个标为“关键一点”的问题或其他单项。只有主题时，先单独询问受众，给 2–3 个选项，将推荐项放在前面并说明理由；下一轮仅在目标仍未知时再问目标。缺少事实来源时也只问该项事实，不夹带偏好题。低影响且可逆的偏好采用合理默认值，并在方案中公开列为假设。缺少必须准确的数字、结论或承诺时必须追问，不能编造；“你决定”只授权采用推荐偏好，不授权补造事实。不强制比较多套方案；只有存在两种以上实质不同的叙事方向时才给两三个组织方案。未获授权时不重构、删减或改写用户已批准的结构和完整文案。
+
+只使用 PlanBundleSchema 已定义的字段。汇报时长等额外约束写入 brief.constraints 和 planning context，不发明 Brief.duration 等字段。不分别确认大纲、逐页说明和风格。用户选择风格、档位或配色只形成选择，不授权生图；必须先披露确切样页 prompt、参考图用途、输出位置和新增 1 次调用预算，再接收明确的生成授权。
 
 ## 生图与检查
 
 在 plan-review 展示完整方案、选中组合的样页内容 prompt、参考图用途、1 次调用预算和输出位置；选择页仅加载公开参考图，不发送生图请求，用户把文本元组交给 Agent 后，仍由现有决定动作确认选款并授权样页。内容 prompt 从 details.samplePromptsPath 按 styleId/level/paletteId 取出，不把所有组合的长 prompt 展开到对话。
+接收带版本的页面或对话回复时，逐项核对回复自带的方案版本和决定编号与当前 details.contentRevision、当前 decision.id 相同；不匹配就展示当前方案并要求重新确认，禁止把旧回复静默改写成新 decisionId。当前回复已经包含确切三元组和“授权新增生图调用：1 次”，且完整 prompt、参考图用途和 generation 输出位置此前均已披露时，这份回复本身就是明确授权，核对通过后直接用同一个 decisionId 和 callBudget:1 提交，不重复索要确认。纯对话里没有写出 UUID 的“确认”，只有在紧接当前方案、确切已选组合／prompt、用途、输出和预算 1 的明确生成询问时，才承接当前已披露的 decision.id 提交；上下文不明确时重新展示当前方案。例如页面回复为“方案版本：<当前 UUID>；决定编号：<当前 UUID>；选择玻璃，3 档，偏冷（glass/3/cool）；授权新增生图调用：1 次”。
 在 sample-review 展示实际样页、整套 prompt、参考图用途、整套页数、复用页数、新生成页数与新增调用预算、输出位置；确认即授权整套。按 details.callBudget 披露和提交新增预算，不把整套页数当调用数。
 用户确认无须修改的样页直接进入正式 PPT 的原对应页，不重画、不换图；只生成未缓存页。三页正常路径共调用三次：样页一次，剩余两页两次。内容、风格、档位、配色或用途改变时重新规划，按新批次缓存状态执行；用户要求重画某页时走 regenerate-page。未通过内容检查的样页不能替用户批准。
 两处同时披露 details.submissionNote：实际出站文本 = 原内容 prompt + 两个换行 + 此用途说明。用途取已有 brief 的 purpose、audience，不新增分析或确认步骤。

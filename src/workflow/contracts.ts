@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { BriefSchema, OutlineSchema, SlideSpecSchema } from '../planning/schemas.js';
+import { PlanningContextSchema } from '../planning/context.js';
 import { StyleRecipeSchema, CreativityLevelSchema } from '../styles/schemas.js';
 import type { DeckRef, WorkRequest } from '../project/task-schema.js';
 
@@ -7,6 +8,7 @@ export const PlanBundleSchema = z.object({
   brief: BriefSchema, outline: OutlineSchema, slides: z.array(SlideSpecSchema),
   styles: z.array(StyleRecipeSchema).min(1).max(10), representativeSlideId: z.string().uuid(),
   references: z.array(z.object({ path: z.string(), sha256: z.string().regex(/^[a-f0-9]{64}$/), role: z.enum(['art-direction', 'content-reference']) })).default([]),
+  context: PlanningContextSchema.optional(),
 }).strict().superRefine((p, ctx) => {
   const ids = p.outline.slides.map(s => s.id), slides = p.slides.map(s => s.slideId);
   if (slides.length !== ids.length || new Set(slides).size !== ids.length || ids.some(id => !slides.includes(id))) ctx.addIssue({ code: 'custom', message: 'Plan must describe every outline slide exactly once' });

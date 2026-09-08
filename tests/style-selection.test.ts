@@ -89,6 +89,7 @@ test('selection HTML references hosted images, escapes labels, and keeps missing
     assert.match(html, /选择创意拼贴，3 档，基准中线/);
     assert.match(html, /缺少该组合的精确预览/);
     assert.match(html, /data-selectable="true"/);
+    assert.equal((html.match(/data-variant-key=/g) ?? []).length, 34);
     assert.match(html, /从图床加载公开的风格图片/);
     assert.match(html, /请手动复制上方回复/);
   } finally {

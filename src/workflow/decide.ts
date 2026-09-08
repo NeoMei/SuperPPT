@@ -7,6 +7,7 @@ import { selectStyleVariant } from '../styles/catalog.js';
 import { reuseCompletedPages } from './reuse.js';
 import { continueTask, taskReply } from './continue.js';
 import { deliverTaskDeck, adoptTaskDeck, readTaskRevision } from '../deck-revisions/task-deck.js';
+import { ensurePlanningContext } from '../planning/context.js';
 
 export async function decideTask(root: string, raw: unknown): Promise<WorkflowReply> {
   return taskTransaction(root, async () => {
@@ -31,6 +32,7 @@ export async function decideTask(root: string, raw: unknown): Promise<WorkflowRe
       if (!input.instruction?.trim() || s.editSessionPath) throw new Error('Provide the requested change and finish pending edits');
       const revision = randomUUID();
       await writeTaskJson(root, `planning/${revision}/previous.json`, { planPath: s.planPath, styleLockPath: s.styleLockPath, jobId: s.activeJobId, instruction: input.instruction });
+      await ensurePlanningContext(root, revision, s.planPath ?? undefined);
       await updateTask(root, old => ({ ...old, contentRevision: revision, stage: 'planning', planPath: null, styleLockPath: null, activeJobId: null, pendingDecision: null, work: null, delivery: null }));
     } else {
       const plan = PlanBundleSchema.parse(await readTaskJson(root, s.planPath!));
