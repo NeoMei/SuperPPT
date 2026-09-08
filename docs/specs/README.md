@@ -8,7 +8,7 @@
 
 | 文档 | 用途与状态 |
 | --- | --- |
-| [按需问答与可视化方案确认](../superpowers/specs/2026-09-08-superppt-guided-plan-review-design.md) | 2026-09-08 方向已确认、设计稿已整理；完善规划问答和方案确认页，保留三次业务确认，尚未实现 |
+| [按需问答与可视化方案确认](../superpowers/specs/2026-09-08-superppt-guided-plan-review-design.md) | 2026-09-08 设计已确认；[实施计划](../superpowers/plans/2026-09-08-superppt-guided-plan-review.md)已整理，保留三次业务确认，尚未实现 |
 | [视觉设计与选款规范](visual-design-and-selection.md) | 当前需求基线：风格、三档创意、配色、两轮选款、提示词与样页复用；逐项区分实现和缺口 |
 | [设计决定记录](decisions.md) | 原始诉求、取舍过程、被替代方向、确认样例的线索 |
 | [选款展示页定稿文案](style-showcase-copy.md) | 十风格代表展示图共用的 SuperPPT 亮点广告文案；文案与十张展示图已接受并接入当前本地候选 |
