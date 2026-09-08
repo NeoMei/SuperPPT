@@ -4,7 +4,7 @@ import { fixtureTask, fixturePlan } from './helpers/fast-task.js';
 import { publishPlan, samplePrompts, selectionPath } from '../src/workflow/planning.js';
 import { readTask, readTaskJson, updateTask, writeTaskJson } from '../src/project/task-store.js';
 import { taskReply, continueTask } from '../src/workflow/continue.js';
-import { mkdir, readFile, stat, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, realpath, stat, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { writeStyleSelectionView } from '../src/styles/selection-view.js';
 import { styleSelection } from '../src/styles/selection.js';
@@ -26,7 +26,8 @@ test('published and resumed plan replies expose one usable selector without muta
   const details = published.details as any;
   assert.equal(details.selection.styles.length, 10);
   assert.equal(details.selectionPath, `planning/${(await readTask(root)).contentRevision}/style-selection.html`);
-  assert.match(published.view, new RegExp(join(root, details.selectionPath).replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
+  const selectorAbsolutePath = await realpath(join(root, details.selectionPath));
+  assert.ok(published.view.includes(`<${selectorAbsolutePath}>`));
   assert.match(await readFile(join(root, details.selectionPath), 'utf8'), /选择创意拼贴，3 档，基准中线/);
   const before = await readTask(root);
   const resumed = await taskReply(root);
@@ -103,7 +104,7 @@ test('historical plan review without a selector remains read-only and uses text 
   assert.match(reply.view, /立体 \/ 玻璃 \/ 水墨 \/ 经典手绘/);
   assert.doesNotMatch(reply.view, /打开本地 HTML/);
   assert.equal('selectionPath' in (reply.details as object), false);
-  assert.equal((reply.details as any).previewBase.endsWith('skills/superppt/assets/styles'), true);
+  assert.equal((reply.details as any).previewBase.endsWith(join('skills', 'superppt', 'assets', 'styles')), true);
   assert.deepEqual(await readTask(root), before);
 });
 test('a valid custom selector larger than 16 MiB remains recoverable after plan-review is committed', async () => {

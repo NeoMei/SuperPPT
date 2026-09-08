@@ -1,0 +1,3 @@
+# Accepted-source fixtures are byte-hashed against recorded provenance.
+# Preserve their original bytes even when core.autocrlf is enabled.
+tests/fixtures/accepted-style-source/** -text

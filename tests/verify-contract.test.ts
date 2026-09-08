@@ -29,6 +29,6 @@ test('repository contract scans unfinished markers in text files without interpr
   await writeFile(join(root, 'src/unfinished.py'), '# TBD\n');
   await assert.rejects(
     run(process.execPath, [verifier], { cwd: root }),
-    (error: any) => error.code === 1 && /unfinished placeholders found in src\/unfinished\.py/.test(error.stderr),
+    (error: any) => error.code === 1 && /unfinished placeholders found in src[\\/]unfinished\.py/.test(error.stderr),
   );
 });
