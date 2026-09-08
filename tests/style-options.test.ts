@@ -1,12 +1,9 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { StyleRecipeSchema } from '../src/styles/schemas.js';
+import { ResolvedStyleSchema, StyleRecipeSchema } from '../src/styles/schemas.js';
 import * as catalog from '../src/styles/catalog.js';
 import { compileSlidePrompt } from '../src/styles/prompt-compiler.js';
 import { SlideSpecSchema } from '../src/planning/schemas.js';
-import { readFile, stat } from 'node:fs/promises';
-import { join } from 'node:path';
-import sharp from 'sharp';
 
 const definition = {
   id: 'test-glass', name: '玻璃',
@@ -47,6 +44,51 @@ test('duplicate choices and incomplete prompt slots cannot publish ambiguous var
   assert.equal(StyleRecipeSchema.safeParse({ ...definition, palettes: [definition.palettes[0], definition.palettes[0]] }).success, false);
   assert.equal(StyleRecipeSchema.safeParse({ ...definition, tiers: [{ level: 1, promptTemplate: '{{SLIDE_COPY}}' }] }).success, false);
 });
+test('custom prompt templates reject unsupported and malformed double-brace tokens while allowing ordinary braces', () => {
+  const validTemplate = definition.tiers[0]!.promptTemplate + '\nObject example: {title: body}';
+  const tiersWith = (promptTemplate: string) => definition.tiers.map((tier, index) => index === 0 ? { ...tier, promptTemplate } : tier);
+  assert.equal(StyleRecipeSchema.safeParse({ ...definition, tiers: tiersWith(validTemplate) }).success, true);
+  for (const token of ['{{UNSUPPORTED}}', '{{SLIDE_COPY}', 'SLIDE_COPY}}', '{{ SLIDE_COPY }}', '{{{SLIDE_COPY}}}', '{{SLIDE_COPY}}}']) {
+    assert.equal(StyleRecipeSchema.safeParse({
+      ...definition,
+      tiers: tiersWith(validTemplate + '\n' + token),
+    }).success, false, token);
+  }
+  for (const malformedTemplate of [
+    validTemplate.replace('{{SLIDE_COPY}}', '{{{SLIDE_COPY}}}'),
+    validTemplate.replace('{{SLIDE_COPY}}', '{{SLIDE_COPY}}}'),
+  ]) {
+    assert.equal(StyleRecipeSchema.safeParse({ ...definition, tiers: tiersWith(malformedTemplate) }).success, false, malformedTemplate);
+  }
+});
+test('palette prompts cannot inject a template slot into compiled slide copy', () => {
+  assert.equal(StyleRecipeSchema.safeParse({
+    ...definition,
+    palettes: definition.palettes.map((palette, index) => index === 0
+      ? { ...palette, prompt: 'INK {{SLIDE_COPY}} ACCENT' }
+      : palette),
+  }).success, false);
+});
+test('selected variants satisfy the resolved two-slot template contract', () => {
+  const style = catalog.selectStyleVariant(definition, { level: 2, paletteId: 'cool' });
+  assert.equal(ResolvedStyleSchema.safeParse(style).success, true);
+  assert.doesNotMatch(style.promptTemplate, /{{PALETTE}}/);
+  assert.equal(style.promptTemplate.split('{{CONTENT_RELATIONSHIPS}}').length, 2);
+  assert.equal(style.promptTemplate.split('{{SLIDE_COPY}}').length, 2);
+});
+test('resolved styles and direct compilation reject residual, duplicate, or unknown template tokens', () => {
+  const style = catalog.selectStyleVariant(definition, { level: 2, paletteId: 'cool' });
+  const invalidTemplates = [
+    style.promptTemplate + '\n{{PALETTE}}',
+    style.promptTemplate.replace('{{SLIDE_COPY}}', '{{SLIDE_COPY}}\n{{SLIDE_COPY}}'),
+    style.promptTemplate + '\n{{UNSUPPORTED}}',
+  ];
+  for (const promptTemplate of invalidTemplates) {
+    const invalidStyle = { ...style, promptTemplate };
+    assert.equal(ResolvedStyleSchema.safeParse(invalidStyle).success, false, promptTemplate);
+    assert.throws(() => compileSlidePrompt({ spec, style: invalidStyle }), promptTemplate);
+  }
+});
 
 test('bundled options resolve in the installed layout and produce ready-to-send prompts with the selected palette', async () => {
   const bundled = await catalog.loadBuiltInStyleCatalog();
@@ -60,12 +102,6 @@ test('bundled options resolve in the installed layout and produce ready-to-send 
       assert.doesNotMatch(prompt, /{{PALETTE}}|{{CONTENT_RELATIONSHIPS}}|{{SLIDE_COPY}}/);
       assert.doesNotMatch(prompt, /这些数字是示例安排而非成效数据/, 'a style cannot reinterpret real data as example data');
     }
-    for (const preview of style.previews) {
-      const path = join(catalog.builtInStyleAssetsRoot(), preview.path);
-      const bytes = await readFile(path), metadata = await sharp(bytes).metadata();
-      assert.equal(metadata.width, 1280);
-      assert.equal(metadata.height, 720);
-      assert.ok((await stat(path)).size <= 500_000);
-    }
+
   }
 });

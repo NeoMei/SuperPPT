@@ -8,14 +8,29 @@ const AssetPath = z.string().min(1).refine(path =>
   path.split('/').every(part => part !== '' && part !== '.' && part !== '..'),
   'Asset path must be a portable contained relative path');
 const StyleAsset = z.object({ level: CreativityLevelSchema, paletteId: Id, path: AssetPath }).strict();
-const Template = z.string().min(1).refine(text =>
-  ['PALETTE', 'CONTENT_RELATIONSHIPS', 'SLIDE_COPY'].every(slot => text.split('{{' + slot + '}}').length === 2),
-  'Template requires exactly one palette, relationships and copy slot');
+const RecipeTemplateSlots = ['PALETTE', 'CONTENT_RELATIONSHIPS', 'SLIDE_COPY'] as const;
+const ResolvedTemplateSlots = ['CONTENT_RELATIONSHIPS', 'SLIDE_COPY'] as const;
+const hasExactTemplateSlots = (text: string, slots: readonly string[]) => {
+  if (text.includes('{{{') || text.includes('}}}')) return false;
+  let remaining = text;
+  for (const slot of slots) {
+    const token = `{{${slot}}}`;
+    if (remaining.split(token).length !== 2) return false;
+    remaining = remaining.replace(token, '');
+  }
+  return !remaining.includes('{{') && !remaining.includes('}}');
+};
+const Template = z.string().min(1).refine(text => hasExactTemplateSlots(text, RecipeTemplateSlots),
+  'Template requires exactly one palette, relationships and copy slot and no other double-brace tokens');
+const ResolvedTemplate = z.string().min(1).refine(text => hasExactTemplateSlots(text, ResolvedTemplateSlots),
+  'Resolved template requires exactly one relationships and copy slot and no other double-brace tokens');
+const PalettePrompt = z.string().min(1).refine(text => !text.includes('{{') && !text.includes('}}'),
+  'Palette prompt cannot contain template slots');
 
 export const StyleRecipeSchema = z.object({
   id: Id, name: z.string().min(1),
   tiers: z.array(z.object({ level: CreativityLevelSchema, promptTemplate: Template }).strict()).min(1).max(3),
-  palettes: z.array(z.object({ id: Id, name: z.string().min(1), prompt: z.string().min(1) }).strict()).min(1),
+  palettes: z.array(z.object({ id: Id, name: z.string().min(1), prompt: PalettePrompt }).strict()).min(1),
   previews: z.array(StyleAsset),
   showcase: StyleAsset.optional(),
 }).strict().superRefine((style, ctx) => {
@@ -40,7 +55,7 @@ export const StyleCatalogSchema = z.object({
 // Snapshot only the selected variant: later catalog changes cannot alter a running deck.
 export const ResolvedStyleSchema = z.object({
   id: Id, name: z.string().min(1), level: CreativityLevelSchema, paletteId: Id,
-  promptTemplate: z.string().min(1),
+  promptTemplate: ResolvedTemplate,
 }).strict();
 export type StyleRecipe = z.infer<typeof StyleRecipeSchema>;
 export type ResolvedStyle = z.infer<typeof ResolvedStyleSchema>;
