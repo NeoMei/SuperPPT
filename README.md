@@ -28,8 +28,10 @@ superppt.json 是单一当前状态；完整候选在确认前不替换当前 PP
 Node.js >=22.6，运行 npm ci，然后 npm run verify:full。
 npm run verify:portable 运行可移植检查；npm run test:release-install 验证实际打包与安装。
 跨系统生成能力受独立依赖和宿主支持限制，本机测试不代表 Windows/WPS 验收。
-v0.2.0 以 macOS 实际使用为优先；跨平台 CI 通过也不等于 Windows 宿主生图与 Office 编辑已验收。
+v0.3.0 以 macOS 实际使用为优先；跨平台 CI 通过也不等于 Windows 宿主生图与 Office 编辑已验收。
 
 需求总入口：[当前规范与实现状态](docs/specs/README.md)，包含[视觉设计与选款规范](docs/specs/visual-design-and-selection.md)、[设计决定记录](docs/specs/decisions.md)及精简工作流链接。
-按需问答上下文、版本绑定的逐页方案确认、两轮选款及明确样页授权已在当前源码实现，并由源码／编译／独立安装的公共 CLI 流程与生成脚本逻辑验证；尚未发布，也没有执行真实付费生图。浏览器实际打开、点击、剪贴板、窄视口和手机呈现仍被既有本地 URL 策略阻断，未完成真实交互验收。
+按需问答上下文、版本绑定的逐页方案确认、两轮选款及明确样页授权已在当前源码实现，并由源码／编译／独立安装的公共 CLI 流程与生成脚本逻辑验证；本版未新增真实付费生图验收。浏览器实际打开、点击、剪贴板、窄视口和手机呈现仍被既有本地 URL 策略阻断，未完成真实交互验收。
 早期 specs 与九种经典预设提案按入口标记保留历史。实现没有 strict/audit 模式、审计链、HMAC、外部权限注册或旧项目迁移。
+
+最新版本说明：[v0.3.0](docs/releases/v0.3.0.md)。正式发布产物与构建状态以 [GitHub Releases](https://github.com/NeoMei/SuperPPT/releases) 为准；安装包不包含设计位图，显示风格图片需要网络。
