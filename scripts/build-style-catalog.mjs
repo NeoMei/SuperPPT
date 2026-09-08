@@ -234,8 +234,32 @@ if (normalize) {
   }
 }
 
+let remoteAssets = {};
+try {
+  const registry = JSON.parse(await readFile(join(assetRoot, "remote-assets.json"), "utf8"));
+  assert.equal(registry.version, 1, "Unsupported remote registry version");
+  assert.ok(registry.assets && typeof registry.assets === "object" && !Array.isArray(registry.assets));
+  remoteAssets = registry.assets;
+  for (const [key, asset] of Object.entries(remoteAssets)) {
+    assert.match(key, /^(previews|showcases)\/[a-z0-9-]+\.(jpg|jpeg|png)$/);
+    const url = new URL(asset.url);
+    assert.ok(url.protocol === "https:" && !url.username && !url.password && !url.hash, key + ": unsafe remote URL");
+    assert.match(asset.sha256, /^[a-f0-9]{64}$/);
+    for (const field of ["bytes", "width", "height"]) assert.ok(Number.isSafeInteger(asset[field]) && asset[field] > 0, key + ": invalid " + field);
+    assert.equal(asset.width * 9, asset.height * 16, key + ": expected 16:9");
+  }
+} catch (error) {
+  if (error.code !== "ENOENT") throw error;
+}
 let totalBytes = 0;
+let remoteCount = 0;
+let localCount = 0;
 for (const asset of [...previews, ...showcases]) {
+  if (Object.hasOwn(remoteAssets, asset.path)) {
+    remoteCount += 1;
+    continue;
+  }
+  localCount += 1;
   const path = join(assetRoot, asset.path);
   const metadata = await sharp(path).metadata();
   assert.equal(metadata.format, "jpeg", asset.path);
@@ -249,4 +273,4 @@ const serialized = JSON.stringify(catalog, null, 2) + "\n";
 if (await readFile(catalogPath, "utf8") !== serialized) await writeFile(catalogPath, serialized);
 const tierCount = catalog.styles.reduce((sum, style) => sum + style.tiers.length, 0);
 const paletteCount = catalog.styles.reduce((sum, style) => sum + style.palettes.length, 0);
-console.log("Validated catalog v2: " + catalog.styles.length + " styles, " + tierCount + " tiers, " + paletteCount + " palettes, " + previews.length + " previews and " + showcases.length + " showcases (1280x720 JPEG, " + totalBytes + " bytes). Missing previews do not disable combinations.");
+console.log("Validated catalog v2: " + catalog.styles.length + " styles, " + tierCount + " tiers, " + paletteCount + " palettes, " + previews.length + " previews and " + showcases.length + " showcases (" + remoteCount + " remote references, " + localCount + " local JPEGs, " + totalBytes + " bundled image bytes). Missing previews do not disable combinations.");

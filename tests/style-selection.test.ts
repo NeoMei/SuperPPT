@@ -63,7 +63,7 @@ test('custom styles without showcases use a labelled variant reference or an hon
   assert.equal(selection.styles[1].groups[0].variants[0].previewStatus, 'missing');
 });
 
-test('selection HTML embeds local images, escapes labels, and keeps missing variants selectable', async () => {
+test('selection HTML references hosted images, escapes labels, and keeps missing variants selectable', async () => {
   const selectionModule = await import('../src/styles/selection.js').catch(() => ({} as Record<string, unknown>));
   const viewModule = await import('../src/styles/selection-view.js').catch(() => ({} as Record<string, unknown>));
   assert.equal(typeof selectionModule.styleSelection, 'function');
@@ -79,8 +79,8 @@ test('selection HTML embeds local images, escapes labels, and keeps missing vari
     }, builtInStyleAssetsRoot());
     assert.equal(relativePath, 'planning/revision/style-selection.html');
     const html = await readFile(join(directory, relativePath), 'utf8');
-    assert.match(html, /data:image\/jpeg;base64,/);
-    assert.doesNotMatch(html, /https?:\/\//);
+    assert.doesNotMatch(html, /data:image/);
+    assert.match(html, /src="https:\/\/g\.imgtg\.com\//);
     assert.doesNotMatch(html, /<img src="(?:previews|showcases)\//);
     assert.doesNotMatch(html, /<\/script><img/);
     assert.doesNotMatch(html, /<svg\/onload/);
@@ -89,7 +89,7 @@ test('selection HTML embeds local images, escapes labels, and keeps missing vari
     assert.match(html, /选择创意拼贴，3 档，基准中线/);
     assert.match(html, /缺少该组合的精确预览/);
     assert.match(html, /data-selectable="true"/);
-    assert.match(html, /选择本身不会发送请求/);
+    assert.match(html, /从图床加载公开的风格图片/);
     assert.match(html, /请手动复制上方回复/);
   } finally {
     await rm(directory, { recursive: true, force: true });

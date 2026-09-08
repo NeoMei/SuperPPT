@@ -1,0 +1,705 @@
+{
+  "version": 1,
+  "assets": {
+    "previews/tactile-1-cool.jpg": {
+      "url": "https://g.imgtg.com/uploads/12881/6aa0108d04a9f.png",
+      "sha256": "3ebff54ba71d3f485ba101eac8ae1bc397b4bfca9f1937209d0aae273bf93d67",
+      "bytes": 1115879,
+      "width": 1664,
+      "height": 936
+    },
+    "previews/tactile-1-mid.jpg": {
+      "url": "https://g.imgtg.com/uploads/12881/6aa0108f72585.png",
+      "sha256": "f1300ce8e4bd6601ce71fb26e194867adfc3791e503c5aeb66341d5b1fa5822d",
+      "bytes": 1108491,
+      "width": 1664,
+      "height": 936
+    },
+    "previews/tactile-1-warm.jpg": {
+      "url": "https://g.imgtg.com/uploads/12881/6aa01091bcf62.png",
+      "sha256": "7a1e46da4d2324d3254dd08e42943dd337e2afebf3200ef53955881fa60d1595",
+      "bytes": 1186793,
+      "width": 1664,
+      "height": 936
+    },
+    "previews/tactile-2-cool.jpg": {
+      "url": "https://g.imgtg.com/uploads/12881/6aa010949501d.png",
+      "sha256": "1dcd50212c3426ebbce15ae341843cfcf0f84d47519e22ef7f50856a1d085049",
+      "bytes": 1570799,
+      "width": 1664,
+      "height": 936
+    },
+    "previews/tactile-2-mid.jpg": {
+      "url": "https://g.imgtg.com/uploads/12881/6aa010975980f.png",
+      "sha256": "db7d696205c35ba79f6577a9040faa26b76269f83b21acf4d1223973361617a5",
+      "bytes": 1759290,
+      "width": 1664,
+      "height": 936
+    },
+    "previews/tactile-2-warm.jpg": {
+      "url": "https://g.imgtg.com/uploads/12881/6aa01099d9f94.png",
+      "sha256": "d620ebf36b762b0463cc3f3ab1bbeab69ae7c92e7aa9a6b328e6e91bca6f6f2b",
+      "bytes": 1585054,
+      "width": 1664,
+      "height": 936
+    },
+    "previews/tactile-3-cool.jpg": {
+      "url": "https://g.imgtg.com/uploads/12881/6aa0109c7c027.png",
+      "sha256": "5948571c9575e2a3eb3f4536d00ef417a41539de3bffe186e4cbbb929fde3380",
+      "bytes": 1566544,
+      "width": 1664,
+      "height": 936
+    },
+    "previews/tactile-3-mid.jpg": {
+      "url": "https://g.imgtg.com/uploads/12881/6aa0109f495fd.png",
+      "sha256": "c7a6625b240b63bd45bef596859e202872c7f486e92a521040bd294249149213",
+      "bytes": 1646146,
+      "width": 1664,
+      "height": 936
+    },
+    "showcases/tactile.jpg": {
+      "url": "https://g.imgtg.com/uploads/12881/6aa0109f495fd.png",
+      "sha256": "c7a6625b240b63bd45bef596859e202872c7f486e92a521040bd294249149213",
+      "bytes": 1646146,
+      "width": 1664,
+      "height": 936
+    },
+    "previews/tactile-3-warm.jpg": {
+      "url": "https://g.imgtg.com/uploads/12881/6aa010a1cfbeb.png",
+      "sha256": "a2c9a38c3ced9207016ddf33c4de48cb5a48fd46846568e0f69476ef04f90061",
+      "bytes": 1573511,
+      "width": 1664,
+      "height": 936
+    },
+    "previews/glass-1-cool.jpg": {
+      "url": "https://g.imgtg.com/uploads/12881/6aa010a4626c9.png",
+      "sha256": "fbf443c3ac8945974db5731dcff23baac37703a631e5a53cf3e9c66f1706ac24",
+      "bytes": 1336972,
+      "width": 1664,
+      "height": 936
+    },
+    "previews/glass-1-mid.jpg": {
+      "url": "https://g.imgtg.com/uploads/12881/6aa010a6cc341.png",
+      "sha256": "fc538477f87e1aed915c31fd1b2beb9dfe5460b26e19f6e93a93871cd0a03052",
+      "bytes": 1399594,
+      "width": 1664,
+      "height": 936
+    },
+    "previews/glass-1-warm.jpg": {
+      "url": "https://g.imgtg.com/uploads/12881/6aa010a93aba5.png",
+      "sha256": "d62c73be0cec7a351d5df2ea79d6c003b16d4ec653d55b621ede0d3b97fd7a54",
+      "bytes": 1342767,
+      "width": 1664,
+      "height": 936
+    },
+    "previews/glass-2-cool.jpg": {
+      "url": "https://g.imgtg.com/uploads/12881/6aa010abaddd5.png",
+      "sha256": "aa4c96b4666716b09411a766c32f375d31fa8f0ba5946efbc7709b5c8bdd5d2f",
+      "bytes": 1378350,
+      "width": 1664,
+      "height": 936
+    },
+    "previews/glass-2-mid.jpg": {
+      "url": "https://g.imgtg.com/uploads/12881/6aa010ae63006.png",
+      "sha256": "6fc0089a687dfc1f1cc05b73439b9798cfe1588423ee4c9abfa3f12c5ec31f5b",
+      "bytes": 1447224,
+      "width": 1664,
+      "height": 936
+    },
+    "previews/glass-2-warm.jpg": {
+      "url": "https://g.imgtg.com/uploads/12881/6aa010b11a74a.png",
+      "sha256": "35809ea9189fb324fff7383791740e321eb555e7579663970bb53817cfb98e9a",
+      "bytes": 1416975,
+      "width": 1664,
+      "height": 936
+    },
+    "previews/glass-3-cool.jpg": {
+      "url": "https://g.imgtg.com/uploads/12881/6aa010b39b250.png",
+      "sha256": "37558e79d3684f16074cb44e6e8a6d6d2c009185867370c0c3f03e1c352e67d2",
+      "bytes": 1665306,
+      "width": 1664,
+      "height": 936
+    },
+    "previews/glass-3-mid.jpg": {
+      "url": "https://g.imgtg.com/uploads/12881/6aa010b620cf4.png",
+      "sha256": "f057edc8a8ff68c1c278cf7049f8ecc46bee5a5a69549484fb68d25664975be2",
+      "bytes": 1662342,
+      "width": 1664,
+      "height": 936
+    },
+    "showcases/glass.jpg": {
+      "url": "https://g.imgtg.com/uploads/12881/6aa010b620cf4.png",
+      "sha256": "f057edc8a8ff68c1c278cf7049f8ecc46bee5a5a69549484fb68d25664975be2",
+      "bytes": 1662342,
+      "width": 1664,
+      "height": 936
+    },
+    "previews/glass-3-warm.jpg": {
+      "url": "https://g.imgtg.com/uploads/12881/6aa010b8c9625.png",
+      "sha256": "487271a6724ff8fd4485caa38f8efa969094a6acdf3758f353b97fcc3ba7008e",
+      "bytes": 1602173,
+      "width": 1664,
+      "height": 936
+    },
+    "previews/ink-1-cool.jpg": {
+      "url": "https://g.imgtg.com/uploads/12881/6aa010bbdf6ec.png",
+      "sha256": "5d0f7677e6d83ae0d0de20ef6ca5ead2d8658bc7547ffc11fd374073885530b2",
+      "bytes": 1936183,
+      "width": 1664,
+      "height": 936
+    },
+    "previews/ink-1-mid.jpg": {
+      "url": "https://g.imgtg.com/uploads/12881/6aa010be8afd2.png",
+      "sha256": "536802938c30fb7b23d8284abd2b1c605be90a7a15fa81aa327a22862cbb9490",
+      "bytes": 2102181,
+      "width": 1664,
+      "height": 936
+    },
+    "previews/ink-1-warm.jpg": {
+      "url": "https://g.imgtg.com/uploads/12881/6aa010c1005c7.png",
+      "sha256": "00b9bfc8b506c016609771f9c2338dfd0f6cf79cdee2318faed3ff470db6dcf5",
+      "bytes": 1862161,
+      "width": 1664,
+      "height": 936
+    },
+    "previews/ink-2-cool.jpg": {
+      "url": "https://g.imgtg.com/uploads/12881/6aa010c36fcde.png",
+      "sha256": "78a744e8f57a183f6f2e9b92b501a522c597e680ed903bc6580c7f1bf56b216e",
+      "bytes": 2035954,
+      "width": 1664,
+      "height": 936
+    },
+    "previews/ink-2-mid.jpg": {
+      "url": "https://g.imgtg.com/uploads/12881/6aa010c5d492c.png",
+      "sha256": "33ac5537f5d0658613280e2c3ab7a6ab2b6dae081f0c0813426a95e9385ffad7",
+      "bytes": 2202548,
+      "width": 1664,
+      "height": 936
+    },
+    "previews/ink-2-warm.jpg": {
+      "url": "https://g.imgtg.com/uploads/12881/6aa010c83b77c.png",
+      "sha256": "7a287dd13fd1e45ffa26da740be28c00bb332a08662cd6f0ed00f3485de6beec",
+      "bytes": 1940584,
+      "width": 1664,
+      "height": 936
+    },
+    "previews/ink-3-cool.jpg": {
+      "url": "https://g.imgtg.com/uploads/12881/6aa010ca8f571.png",
+      "sha256": "f068b059ec4920a59359244b04ea8ad0c0f7865bb022e6d04e64ff3c4f595157",
+      "bytes": 2016046,
+      "width": 1664,
+      "height": 936
+    },
+    "previews/ink-3-mid.jpg": {
+      "url": "https://g.imgtg.com/uploads/12881/6aa010cceb82a.png",
+      "sha256": "9552a4fef9624d3b00920409a3f31bf7dad48666e54278d0381886b58860c3bf",
+      "bytes": 2282874,
+      "width": 1664,
+      "height": 936
+    },
+    "showcases/ink.jpg": {
+      "url": "https://g.imgtg.com/uploads/12881/6aa010cceb82a.png",
+      "sha256": "9552a4fef9624d3b00920409a3f31bf7dad48666e54278d0381886b58860c3bf",
+      "bytes": 2282874,
+      "width": 1664,
+      "height": 936
+    },
+    "previews/ink-3-warm.jpg": {
+      "url": "https://g.imgtg.com/uploads/12881/6aa010cf64c26.png",
+      "sha256": "2457d0035323db1509d8ce13181357174b67a7e4a9c8181c8d8d4097407ac416",
+      "bytes": 1980112,
+      "width": 1664,
+      "height": 936
+    },
+    "previews/hand-drawn-1-cool.jpg": {
+      "url": "https://g.imgtg.com/uploads/12881/6aa010d1ab3f3.png",
+      "sha256": "203ba3bb611b0bf7826022aab86c987a929a6f5ff4736a07cddae15ad8282d6e",
+      "bytes": 1674476,
+      "width": 1664,
+      "height": 936
+    },
+    "previews/hand-drawn-1-mid.jpg": {
+      "url": "https://g.imgtg.com/uploads/12881/6aa010d3e3a67.png",
+      "sha256": "1f7d7cbfc6d342bb08afe55d0c8693ed1f213b8d22c92e567a2b25d73b847ed1",
+      "bytes": 1465951,
+      "width": 1664,
+      "height": 936
+    },
+    "previews/hand-drawn-1-warm.jpg": {
+      "url": "https://g.imgtg.com/uploads/12881/6aa010d62b074.png",
+      "sha256": "be7d9d0115fab0fbd52c4b6a02b53b9d37fdbc18e829fc20ed30cc731d37c724",
+      "bytes": 1659225,
+      "width": 1664,
+      "height": 936
+    },
+    "previews/hand-drawn-2-cool.jpg": {
+      "url": "https://g.imgtg.com/uploads/12881/6aa010d8564c7.png",
+      "sha256": "d15587b8462302befdee4f0c7b00e529e13fd590b31ad858554cfc4d7e2d7d15",
+      "bytes": 1743188,
+      "width": 1664,
+      "height": 936
+    },
+    "previews/hand-drawn-2-mid.jpg": {
+      "url": "https://g.imgtg.com/uploads/12881/6aa010da8d0f6.png",
+      "sha256": "aa3a1d929ccfbed18347cfa59bd9dab6c18e3b4cc876f6cafafba787709b7af8",
+      "bytes": 1894993,
+      "width": 1664,
+      "height": 936
+    },
+    "previews/hand-drawn-2-warm.jpg": {
+      "url": "https://g.imgtg.com/uploads/12881/6aa010dca4ca2.png",
+      "sha256": "6a8b2d3cf95aac70233ad19398770a03f5b6050a5b26ca03ed90aa57073fac27",
+      "bytes": 1724902,
+      "width": 1664,
+      "height": 936
+    },
+    "previews/hand-drawn-3-cool.jpg": {
+      "url": "https://g.imgtg.com/uploads/12881/6aa010deab5ea.png",
+      "sha256": "44263a6bde92ec83aae00edfa977990c311db18d1b05e78d2b2cc8bc6ed19b73",
+      "bytes": 1805421,
+      "width": 1664,
+      "height": 936
+    },
+    "previews/hand-drawn-3-mid.jpg": {
+      "url": "https://g.imgtg.com/uploads/12881/6aa010e0b73ee.png",
+      "sha256": "b96a8ac637bdef1748a7a4b2b5dd0a78f7403fa481451f8bd5b204a9a5960b15",
+      "bytes": 1908278,
+      "width": 1664,
+      "height": 936
+    },
+    "showcases/hand-drawn.jpg": {
+      "url": "https://g.imgtg.com/uploads/12881/6aa010e0b73ee.png",
+      "sha256": "b96a8ac637bdef1748a7a4b2b5dd0a78f7403fa481451f8bd5b204a9a5960b15",
+      "bytes": 1908278,
+      "width": 1664,
+      "height": 936
+    },
+    "previews/hand-drawn-3-warm.jpg": {
+      "url": "https://g.imgtg.com/uploads/12881/6aa010e2c0443.png",
+      "sha256": "0d12a2d68f8c99e2f95ccb83058ee77b959c439f660520beaece0a295bd44b1c",
+      "bytes": 1978004,
+      "width": 1664,
+      "height": 936
+    },
+    "previews/textbook-1-cool.jpg": {
+      "url": "https://g.imgtg.com/uploads/12881/6aa010e4c31f9.png",
+      "sha256": "2d6ea5a4deacef500863140399f4e0bc9e9ab05116792d5825604f77e77aa209",
+      "bytes": 1548254,
+      "width": 1664,
+      "height": 936
+    },
+    "previews/textbook-1-mid.jpg": {
+      "url": "https://g.imgtg.com/uploads/12881/6aa010e7011f8.png",
+      "sha256": "08078604efcef4a21ee6469524c9fbe1985d83c5bd82165acc48afb9106b8077",
+      "bytes": 1862994,
+      "width": 1664,
+      "height": 936
+    },
+    "previews/textbook-1-warm.jpg": {
+      "url": "https://g.imgtg.com/uploads/12881/6aa010e904fa5.png",
+      "sha256": "4efafc82b0a4b8e591feefa3beb4fcbb1431b552bfecfa9382d402863f5049ec",
+      "bytes": 1385249,
+      "width": 1664,
+      "height": 936
+    },
+    "previews/textbook-2-cool.jpg": {
+      "url": "https://g.imgtg.com/uploads/12881/6aa010eb067f0.png",
+      "sha256": "d1692e1d4ab0aa64f9fe7005392ed49d851a4749b679add304fb63e210e04f2c",
+      "bytes": 1378665,
+      "width": 1664,
+      "height": 936
+    },
+    "previews/textbook-2-mid.jpg": {
+      "url": "https://g.imgtg.com/uploads/12881/6aa010ecf3413.png",
+      "sha256": "82b18092baa42cc2bddeae2d91a6673bf405789be07d85f4a352a1582069cc00",
+      "bytes": 1483075,
+      "width": 1664,
+      "height": 936
+    },
+    "previews/textbook-2-warm.jpg": {
+      "url": "https://g.imgtg.com/uploads/12881/6aa010ef08614.png",
+      "sha256": "fd2024064b922317d585cf4cb3fbb669e1dd89efbc8c01e8821c8a2b92200c74",
+      "bytes": 1403779,
+      "width": 1664,
+      "height": 936
+    },
+    "previews/textbook-3-cool.jpg": {
+      "url": "https://g.imgtg.com/uploads/12881/6aa010f111762.png",
+      "sha256": "f7891d45547fe9d8e6567c584190233e8662af82abd4d7e15ec09e9ae7181877",
+      "bytes": 1629545,
+      "width": 1664,
+      "height": 936
+    },
+    "previews/textbook-3-mid.jpg": {
+      "url": "https://g.imgtg.com/uploads/12881/6aa010f37d036.png",
+      "sha256": "5765cfecd6190943238481990bd7ee67014cbf687e84556adca057aa3b7c4620",
+      "bytes": 2024390,
+      "width": 1664,
+      "height": 936
+    },
+    "showcases/textbook.jpg": {
+      "url": "https://g.imgtg.com/uploads/12881/6aa010f37d036.png",
+      "sha256": "5765cfecd6190943238481990bd7ee67014cbf687e84556adca057aa3b7c4620",
+      "bytes": 2024390,
+      "width": 1664,
+      "height": 936
+    },
+    "previews/textbook-3-warm.jpg": {
+      "url": "https://g.imgtg.com/uploads/12881/6aa010f5c963a.png",
+      "sha256": "23809f5574a9a1e1e10037baf78a514c68e65b4f30312e9a857f52da96e966f4",
+      "bytes": 1433063,
+      "width": 1664,
+      "height": 936
+    },
+    "previews/collage-1-cool.jpg": {
+      "url": "https://g.imgtg.com/uploads/12881/6aa010f7de1a4.png",
+      "sha256": "fa73393d3c3541cd1455bc13d5226ca6aa0378951479eb5ffa40d91ffc514917",
+      "bytes": 2171637,
+      "width": 1664,
+      "height": 936
+    },
+    "previews/collage-1-mid.jpg": {
+      "url": "https://g.imgtg.com/uploads/12881/6aa010f9ee659.png",
+      "sha256": "40e53fe87e102bf58f78359529dae4d3e71ccea22252f4598092a1eff1af8692",
+      "bytes": 2153413,
+      "width": 1664,
+      "height": 936
+    },
+    "previews/collage-1-warm.jpg": {
+      "url": "https://g.imgtg.com/uploads/12881/6aa010fc0ec21.png",
+      "sha256": "2a265dcfc95a62f8a41eb084a754ffcfe9592bce1da1e813b7b081fed70b8224",
+      "bytes": 2060356,
+      "width": 1664,
+      "height": 936
+    },
+    "previews/collage-2-cool.jpg": {
+      "url": "https://g.imgtg.com/uploads/12881/6aa010fe1c023.png",
+      "sha256": "3aab62600a4e057d67173e2a9618e7796974e516890f6dc23991c83968428006",
+      "bytes": 1985510,
+      "width": 1664,
+      "height": 936
+    },
+    "previews/collage-2-mid.jpg": {
+      "url": "https://g.imgtg.com/uploads/12881/6aa01100284c2.png",
+      "sha256": "df16dbc30832e4482b1f68cbba92dfa316ed7bc3d3c6838e2a5b84c2b87bd032",
+      "bytes": 2066490,
+      "width": 1664,
+      "height": 936
+    },
+    "previews/collage-2-warm.jpg": {
+      "url": "https://g.imgtg.com/uploads/12881/6aa011023fcf1.png",
+      "sha256": "5b077d2ee6c6be414691d9f13bee7f8c85a9774cac11b67d476dd64bc8ff570c",
+      "bytes": 1901318,
+      "width": 1664,
+      "height": 936
+    },
+    "previews/collage-3-cool.jpg": {
+      "url": "https://g.imgtg.com/uploads/12881/6aa0110461e1a.png",
+      "sha256": "611fe3fcd2f32ec587df86a3c2b198ec582c9efb287f5e9aa7ef4d3a45ff1a4b",
+      "bytes": 2364367,
+      "width": 1664,
+      "height": 936
+    },
+    "previews/collage-3-mid.jpg": {
+      "url": "https://g.imgtg.com/uploads/12881/6aa01106d5c6a.png",
+      "sha256": "1e25dc4d1139133e850719f0c6d50c5a2cc2ed39aea06a0bf3cc4ace3eadeba1",
+      "bytes": 2483689,
+      "width": 1664,
+      "height": 936
+    },
+    "showcases/collage.jpg": {
+      "url": "https://g.imgtg.com/uploads/12881/6aa01106d5c6a.png",
+      "sha256": "1e25dc4d1139133e850719f0c6d50c5a2cc2ed39aea06a0bf3cc4ace3eadeba1",
+      "bytes": 2483689,
+      "width": 1664,
+      "height": 936
+    },
+    "previews/collage-3-warm.jpg": {
+      "url": "https://g.imgtg.com/uploads/12881/6aa0110902fd4.png",
+      "sha256": "96279c977bc98717a9c9c32a1b16c1352d749c5b0542a63bcd5fba60a6201bbd",
+      "bytes": 2113459,
+      "width": 1664,
+      "height": 936
+    },
+    "previews/cinematic-tech-1-cool.jpg": {
+      "url": "https://g.imgtg.com/uploads/12881/6aa0110b1b96e.png",
+      "sha256": "f2c37c01f24e57f4b5fd59b0d0b6499f7d24bd8967ceb1c3da7bc4e9f783d6b9",
+      "bytes": 1397771,
+      "width": 1664,
+      "height": 936
+    },
+    "previews/cinematic-tech-1-mid.jpg": {
+      "url": "https://g.imgtg.com/uploads/12881/6aa0110d234d4.png",
+      "sha256": "a0362653ac8ea5b49cbcd5cc25f7f900b60ba03dbf41f61860e3d148d2c6fd28",
+      "bytes": 1263320,
+      "width": 1664,
+      "height": 936
+    },
+    "previews/cinematic-tech-1-warm.jpg": {
+      "url": "https://g.imgtg.com/uploads/12881/6aa0110f44adf.png",
+      "sha256": "c85e55c0f62d9df382cb21779f1f9fb342bed21c759c20cf2ad2fa749c52bbaf",
+      "bytes": 1419413,
+      "width": 1664,
+      "height": 936
+    },
+    "previews/cinematic-tech-2-cool.jpg": {
+      "url": "https://g.imgtg.com/uploads/12881/6aa011115b695.png",
+      "sha256": "db5bfea0a996f315b18276ef32c334d38dbf3ed59b291030693279be534efc42",
+      "bytes": 1582668,
+      "width": 1664,
+      "height": 936
+    },
+    "previews/cinematic-tech-2-mid.jpg": {
+      "url": "https://g.imgtg.com/uploads/12881/6aa01113b0434.png",
+      "sha256": "34d06759b54544c5a97e0b8d5e3fe79940c0e255a7a5bd29c575dd2b29d3f40c",
+      "bytes": 1540763,
+      "width": 1664,
+      "height": 936
+    },
+    "previews/cinematic-tech-2-warm.jpg": {
+      "url": "https://g.imgtg.com/uploads/12881/6aa01115d3674.png",
+      "sha256": "05762d34656f479cd4ef2dd0fbc398edfde199ec55651ad368b67ed5d1ea6489",
+      "bytes": 1595848,
+      "width": 1664,
+      "height": 936
+    },
+    "previews/cinematic-tech-3-cool.jpg": {
+      "url": "https://g.imgtg.com/uploads/12881/6aa01118036c9.png",
+      "sha256": "ee16ee2a724be710b12e5b5d067c4133a7d58b02e98366b2e025ee67a8f72661",
+      "bytes": 1813279,
+      "width": 1664,
+      "height": 936
+    },
+    "previews/cinematic-tech-3-mid.jpg": {
+      "url": "https://g.imgtg.com/uploads/12881/6aa0111a2e8bb.png",
+      "sha256": "cb11d7096c71f9d55fa96aa420e6098607d43f2803a0a5627c7d9bf819518f6a",
+      "bytes": 1818275,
+      "width": 1664,
+      "height": 936
+    },
+    "showcases/cinematic-tech.jpg": {
+      "url": "https://g.imgtg.com/uploads/12881/6aa0111a2e8bb.png",
+      "sha256": "cb11d7096c71f9d55fa96aa420e6098607d43f2803a0a5627c7d9bf819518f6a",
+      "bytes": 1818275,
+      "width": 1664,
+      "height": 936
+    },
+    "previews/cinematic-tech-3-warm.jpg": {
+      "url": "https://g.imgtg.com/uploads/12881/6aa0111c5d6bc.png",
+      "sha256": "ca5e7674a363f24f0d7a97258399789f00acb6ef44a96bd508521f061e69110e",
+      "bytes": 1864126,
+      "width": 1664,
+      "height": 936
+    },
+    "previews/luxury-photo-1-cool.jpg": {
+      "url": "https://g.imgtg.com/uploads/12881/6aa0111e6ed64.png",
+      "sha256": "b83e6748e8ebb1c61912896ab80abb8542b61458f9099eba3ff185ab8098cd88",
+      "bytes": 1334632,
+      "width": 1664,
+      "height": 936
+    },
+    "previews/luxury-photo-1-mid.jpg": {
+      "url": "https://g.imgtg.com/uploads/12881/6aa011207f942.png",
+      "sha256": "c4444bd815ff9ea29d46ae6f2b75fefb4feaf7408f20af363baa96264a386699",
+      "bytes": 1490190,
+      "width": 1664,
+      "height": 936
+    },
+    "previews/luxury-photo-1-warm.jpg": {
+      "url": "https://g.imgtg.com/uploads/12881/6aa01122802ff.png",
+      "sha256": "295d202973e479c1d06a14359c603fc8d479bf86c68ce36aa5f51a6090ece045",
+      "bytes": 1275395,
+      "width": 1664,
+      "height": 936
+    },
+    "previews/luxury-photo-2-cool.jpg": {
+      "url": "https://g.imgtg.com/uploads/12881/6aa0112496e74.png",
+      "sha256": "9a50d766bd2e9525c1baeb949a4fcd249c14189624790af69ad7d80b66e7c332",
+      "bytes": 1489045,
+      "width": 1664,
+      "height": 936
+    },
+    "previews/luxury-photo-2-mid.jpg": {
+      "url": "https://g.imgtg.com/uploads/12881/6aa01126e4be2.png",
+      "sha256": "dd3ca1af01e2bef77585a1ced6031aa1a566dd88ede706b4b4c8f1a41ecb00f5",
+      "bytes": 1462021,
+      "width": 1664,
+      "height": 936
+    },
+    "previews/luxury-photo-2-warm.jpg": {
+      "url": "https://g.imgtg.com/uploads/12881/6aa01128dcd46.png",
+      "sha256": "389edb73d1127f345c51763c3e5c2d15d1d96c16be7517f232e3aa6333e6199d",
+      "bytes": 1490289,
+      "width": 1664,
+      "height": 936
+    },
+    "previews/luxury-photo-3-cool.jpg": {
+      "url": "https://g.imgtg.com/uploads/12881/6aa0112ae497e.png",
+      "sha256": "0542f902da70314530596b9e39a8141cac93b4ec665250c341a04036703ec44c",
+      "bytes": 1817626,
+      "width": 1664,
+      "height": 936
+    },
+    "previews/luxury-photo-3-mid.jpg": {
+      "url": "https://g.imgtg.com/uploads/12881/6aa0112d0b1a0.png",
+      "sha256": "d7dd163e79bd7671d85740aefaf39cfcbf64eae7e39e1d69810cc67abc9ebcc0",
+      "bytes": 1931187,
+      "width": 1664,
+      "height": 936
+    },
+    "showcases/luxury-photo.jpg": {
+      "url": "https://g.imgtg.com/uploads/12881/6aa0112d0b1a0.png",
+      "sha256": "d7dd163e79bd7671d85740aefaf39cfcbf64eae7e39e1d69810cc67abc9ebcc0",
+      "bytes": 1931187,
+      "width": 1664,
+      "height": 936
+    },
+    "previews/luxury-photo-3-warm.jpg": {
+      "url": "https://g.imgtg.com/uploads/12881/6aa0112f49419.png",
+      "sha256": "cb8040123cd546d28d67ab731e434f96daf5500b9278ae6338b68f8aa2ece210",
+      "bytes": 1829442,
+      "width": 1664,
+      "height": 936
+    },
+    "previews/blueprint-1-cool.jpg": {
+      "url": "https://g.imgtg.com/uploads/12881/6aa01131f41f9.png",
+      "sha256": "a568949961fec029e985d3654f33b05a077994f8ad78cd78faabf88351d7569c",
+      "bytes": 1344097,
+      "width": 1664,
+      "height": 936
+    },
+    "previews/blueprint-1-mid.jpg": {
+      "url": "https://g.imgtg.com/uploads/12881/6aa01134d1513.png",
+      "sha256": "dfd92c11ccdef7641b8b599ac7b2baaf3776939549ea2e8c6c22a100cd45ce29",
+      "bytes": 1358340,
+      "width": 1664,
+      "height": 936
+    },
+    "previews/blueprint-1-warm.jpg": {
+      "url": "https://g.imgtg.com/uploads/12881/6aa011375fae6.png",
+      "sha256": "f21f35726f4f377eb01415feeb80d63c45611d84829d3eddd0e7759d3be8f40e",
+      "bytes": 1365524,
+      "width": 1664,
+      "height": 936
+    },
+    "previews/blueprint-2-cool.jpg": {
+      "url": "https://g.imgtg.com/uploads/12881/6aa01139c1718.png",
+      "sha256": "cf0d6b0151e304496583a98a331e9324b71ec42766286eda54a1b5393c0f8916",
+      "bytes": 1387011,
+      "width": 1664,
+      "height": 936
+    },
+    "previews/blueprint-2-mid.jpg": {
+      "url": "https://g.imgtg.com/uploads/12881/6aa0113c029ad.png",
+      "sha256": "b8e941c10e4525390d129307d222ed689dd19595bdc997dd8f2080686797df9b",
+      "bytes": 1202651,
+      "width": 1664,
+      "height": 936
+    },
+    "previews/blueprint-2-warm.jpg": {
+      "url": "https://g.imgtg.com/uploads/12881/6aa0113e25ba0.png",
+      "sha256": "992d0dcce1cb90cc44f69d5beae55add694fd1948d6a6a9638a020a8aeaca72c",
+      "bytes": 1399239,
+      "width": 1664,
+      "height": 936
+    },
+    "previews/blueprint-3-cool.jpg": {
+      "url": "https://g.imgtg.com/uploads/12881/6aa0114039554.png",
+      "sha256": "0d97b9591929bd5efcffcd1afe4f581d0dab89bea2742fecdc92069b4d16ddd9",
+      "bytes": 1775644,
+      "width": 1664,
+      "height": 936
+    },
+    "previews/blueprint-3-mid.jpg": {
+      "url": "https://g.imgtg.com/uploads/12881/6aa01142648c6.png",
+      "sha256": "8590cd30282b0a584c46a1784236e5e8a8a76197269f2f935341e20f5594254a",
+      "bytes": 1923555,
+      "width": 1664,
+      "height": 936
+    },
+    "showcases/blueprint.jpg": {
+      "url": "https://g.imgtg.com/uploads/12881/6aa01142648c6.png",
+      "sha256": "8590cd30282b0a584c46a1784236e5e8a8a76197269f2f935341e20f5594254a",
+      "bytes": 1923555,
+      "width": 1664,
+      "height": 936
+    },
+    "previews/blueprint-3-warm.jpg": {
+      "url": "https://g.imgtg.com/uploads/12881/6aa0114482c32.png",
+      "sha256": "f34b8aa29a7d369ea7a442515f89c5fd3fa210d07508e564aa49329904819676",
+      "bytes": 1763340,
+      "width": 1664,
+      "height": 936
+    },
+    "previews/fantasy-1-cool.jpg": {
+      "url": "https://g.imgtg.com/uploads/12881/6aa011469c9dc.png",
+      "sha256": "611022ea8c845f72c58b686494187ea9ed4fe694411ce4e48694c1bef7097c52",
+      "bytes": 1540473,
+      "width": 1664,
+      "height": 936
+    },
+    "previews/fantasy-1-mid.jpg": {
+      "url": "https://g.imgtg.com/uploads/12881/6aa01148dca9a.png",
+      "sha256": "a907f0c57a544f8873549e40a22bfccfe6de12fff1a2f08955eb04da5e2710df",
+      "bytes": 1491360,
+      "width": 1664,
+      "height": 936
+    },
+    "previews/fantasy-1-warm.jpg": {
+      "url": "https://g.imgtg.com/uploads/12881/6aa0114b243d7.png",
+      "sha256": "2b881494b64791ab513121984d74bd85b7abd4ead53dfd034eb106d0231f6d2d",
+      "bytes": 1633274,
+      "width": 1664,
+      "height": 936
+    },
+    "previews/fantasy-2-cool.jpg": {
+      "url": "https://g.imgtg.com/uploads/12881/6aa0114d6ae96.png",
+      "sha256": "f776ceabda5c8888d6171d6cbe089c57cdc4d00e01b32d860315e85645af1414",
+      "bytes": 1508238,
+      "width": 1664,
+      "height": 936
+    },
+    "previews/fantasy-2-mid.jpg": {
+      "url": "https://g.imgtg.com/uploads/12881/6aa0114fa7e54.png",
+      "sha256": "7bdcfeef5f4ab6f63999ce17375b334f69b0bae732e5fae7014dd72b6ed60cea",
+      "bytes": 1470492,
+      "width": 1664,
+      "height": 936
+    },
+    "previews/fantasy-2-warm.jpg": {
+      "url": "https://g.imgtg.com/uploads/12881/6aa01152048c7.png",
+      "sha256": "f301db01f155abbc6858f480a14b2cc7f5102cc9868e2f0390a20c42a660b28c",
+      "bytes": 1464971,
+      "width": 1664,
+      "height": 936
+    },
+    "previews/fantasy-3-cool.jpg": {
+      "url": "https://g.imgtg.com/uploads/12881/6aa01154a052a.png",
+      "sha256": "b34b9f2786bf8ce73d7c3a09f28434fc3aaeabf24bc9a778cff7b63e3ebad871",
+      "bytes": 1906891,
+      "width": 1664,
+      "height": 936
+    },
+    "previews/fantasy-3-mid.jpg": {
+      "url": "https://g.imgtg.com/uploads/12881/6aa0115705bd7.png",
+      "sha256": "67da9eaa783e7fd10e2edf0084da39a3b1bc5bba2c0e25351d9f3b838209a87c",
+      "bytes": 1789017,
+      "width": 1664,
+      "height": 936
+    },
+    "showcases/fantasy.jpg": {
+      "url": "https://g.imgtg.com/uploads/12881/6aa0115705bd7.png",
+      "sha256": "67da9eaa783e7fd10e2edf0084da39a3b1bc5bba2c0e25351d9f3b838209a87c",
+      "bytes": 1789017,
+      "width": 1664,
+      "height": 936
+    },
+    "previews/fantasy-3-warm.jpg": {
+      "url": "https://g.imgtg.com/uploads/12881/6aa011595561a.png",
+      "sha256": "4bc6dce0e06d883dc2cad2b2f37f27db0642139e13a9911439682582ea17b698",
+      "bytes": 2004486,
+      "width": 1664,
+      "height": 936
+    }
+  }
+}

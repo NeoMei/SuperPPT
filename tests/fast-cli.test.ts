@@ -5,7 +5,6 @@ import { promisify } from 'node:util';
 import { join, dirname } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { readFile, writeFile } from 'node:fs/promises';
-import sharp from 'sharp';
 import { fixtureTask, fixturePlan, fixtureImage } from './helpers/fast-task.js';
 import { repositorySourcePath } from './repository-source.js';
 
@@ -21,9 +20,10 @@ for (const n of [3, 12]) test(`public CLI ${n} pages: 8 commands, 3 decisions, o
   assert.deepEqual(catalog.styles.map((style: any) => style.id), ['tactile', 'glass', 'ink', 'hand-drawn', 'textbook', 'collage', 'cinematic-tech', 'luxury-photo', 'blueprint', 'fantasy']);
   assert.equal(catalog.styles.filter((style: any) => style.showcase).length, 10);
   assert.doesNotMatch(JSON.stringify(catalog), /(?:\/Users\/|design-system-round|visualizations|design-session)/);
+  const remoteModule = await import(pathToFileURL(join(runtime, compiled ? 'dist/src/styles/remote-assets.js' : 'src/styles/remote-assets.ts')).href);
+  const remote = await remoteModule.loadRemoteStyleAssets(catalogModule.builtInStyleAssetsRoot());
   for (const style of catalog.styles) {
-    const metadata = await sharp(join(catalogModule.builtInStyleAssetsRoot(), style.showcase.path)).metadata();
-    assert.deepEqual({ format: metadata.format, width: metadata.width, height: metadata.height }, { format: 'jpeg', width: 1280, height: 720 }, style.id);
+    assert.match(remote[style.showcase.path].url, /^https:\/\//);
   }
   plan.styles = catalog.styles;
   const source = join(dirname(root), 'source.json'), deps = join(dirname(root), 'roots.json');
@@ -73,8 +73,10 @@ for (const n of [3, 12]) test(`public CLI ${n} pages: 8 commands, 3 decisions, o
   assert.equal(reply.details.selection.styles.length, 10);
   const selector = await readFile(join(root, reply.details.selectionPath), 'utf8');
   assert.equal((selector.match(/data-action="open-style"/g) ?? []).length, 10);
-  assert.equal((selector.match(/class="style-button"[\s\S]*?<span class="media"><img src="data:image\/jpeg;base64,/g) ?? []).length, 10);
-  assert.doesNotMatch(selector, /(?:src|href)="(?:previews|showcases|https?:\/\/)/);
+  assert.equal((selector.match(/class="style-button"[\s\S]*?<span class="media"><img src="https:\/\//g) ?? []).length, 10);
+  assert.doesNotMatch(selector, /(?:src|href)="(?:previews|showcases)\//);
+  assert.doesNotMatch(selector, /data:image/);
+  assert.ok(Buffer.byteLength(selector) < 100_000);
   const selected = n === 3 ? { styleId: 'collage', level: 3, paletteId: 'mid' } : { styleId: 'tactile', level: 2, paletteId: 'mid' };
   reply = await decide(reply, 'select-style-and-generate-sample', { ...selected, callBudget: 1 });
   const sampleJob = await batch.readBatchJob(root, (await state()).activeJobId);

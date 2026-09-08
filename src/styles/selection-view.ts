@@ -2,6 +2,7 @@ import { lstat, readFile, realpath } from 'node:fs/promises';
 import { extname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { atomicWrite, taskPath } from '../project/task-store.js';
 import type { StyleSelection } from './selection.js';
+import { loadRemoteStyleAssets } from './remote-assets.js';
 
 export type StyleSelectionView = {
   title: string;
@@ -63,7 +64,7 @@ async function embedAsset(assetsRoot: string, path: string | null): Promise<stri
 
 function imageMarkup(source: string | null, alt: string, missing: string): string {
   return source
-    ? `<img src="${source}" alt="${html(alt)}" loading="lazy">`
+    ? `<img src="${html(source)}" alt="${html(alt)}" loading="lazy" referrerpolicy="no-referrer" onerror="this.hidden=true;this.nextElementSibling.hidden=false"><span class="missing-image" hidden role="img" aria-label="图片加载失败"><span>图片加载失败</span><small>请检查网络或稍后重试；组合仍可选择</small></span>`
     : `<div class="missing-image" role="img" aria-label="${html(missing)}"><span>暂无图片</span><small>${html(missing)}</small></div>`;
 }
 
@@ -74,7 +75,12 @@ export async function writeStyleSelectionView(root: string, relativePath: string
     for (const group of style.groups) for (const variant of group.variants) if (variant.previewPath) paths.add(variant.previewPath);
   }
   const embedded = new Map<string, string | null>();
-  await Promise.all([...paths].map(async path => embedded.set(path, await embedAsset(assetsRoot, path))));
+  const remoteAssets = await loadRemoteStyleAssets(assetsRoot);
+  await Promise.all([...paths].map(async path => embedded.set(path,
+    Object.hasOwn(remoteAssets, path) ? remoteAssets[path]!.url : await embedAsset(assetsRoot, path))));
+  const imageNotice = [...paths].some(path => Object.hasOwn(remoteAssets, path))
+    ? '打开页面会从图床加载公开的风格图片；选款不会调用生成服务。'
+    : '选择本身不会发送请求。';
 
   const cards = view.selection.styles.map((style, index) => {
     const source = style.card.imagePath ? embedded.get(style.card.imagePath) ?? null : null;
@@ -114,8 +120,9 @@ export async function writeStyleSelectionView(root: string, relativePath: string
 <title>${html(view.title)} · 风格选择</title>
 <style>
 :root{color-scheme:dark;--bg:#081018;--panel:#111b26;--line:#263748;--text:#f5f7fa;--muted:#9cafc1;--accent:#78dce8;--warn:#ffc66d}*{box-sizing:border-box}body{margin:0;background:radial-gradient(circle at 80% 0,#183044 0,transparent 32rem),var(--bg);color:var(--text);font:15px/1.5 ui-sans-serif,system-ui,-apple-system,"PingFang SC",sans-serif}main{width:min(1440px,calc(100% - 32px));margin:auto;padding:42px 0 100px}header.hero{display:grid;grid-template-columns:1fr minmax(260px,420px);gap:28px;align-items:end;margin-bottom:28px}.eyebrow,.panel-heading p{color:var(--accent);letter-spacing:.14em;text-transform:uppercase;font-size:12px;font-weight:700}.hero h1,.panel-heading h2{font-size:clamp(30px,5vw,64px);line-height:1;margin:.25rem 0 1rem}.meta{display:grid;gap:10px;color:var(--muted);border-left:1px solid var(--line);padding-left:22px}.notice{grid-column:1/-1;border:1px solid #345066;background:#102131;padding:14px 16px;border-radius:12px}.style-grid,.variant-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:14px}.style-card{min-width:0}.style-button,.variant-button{width:100%;height:100%;padding:0;overflow:hidden;text-align:left;color:inherit;background:var(--panel);border:1px solid var(--line);border-radius:16px;cursor:pointer;transition:.18s transform,.18s border-color}.style-button:hover,.style-button:focus-visible,.variant-button:hover,.variant-button:focus-visible{transform:translateY(-2px);border-color:var(--accent);outline:none}.media{display:block;aspect-ratio:16/9;background:#071018}.media img{display:block;width:100%;height:100%;object-fit:cover}.missing-image{height:100%;display:grid;place-content:center;text-align:center;padding:20px;background:repeating-linear-gradient(135deg,#111d28,#111d28 12px,#152331 12px,#152331 24px);color:var(--warn)}.missing-image span{font-weight:700}.missing-image small{max-width:24ch;color:#d7b77f}.card-copy,.variant-copy{display:grid;gap:4px;padding:14px}.card-copy strong{font-size:20px}.card-copy small,.card-copy span,.variant-copy small{color:var(--muted)}.style-panel{animation:enter .2s ease}.back{border:0;background:transparent;color:var(--accent);padding:8px 0;cursor:pointer}.panel-heading{margin:22px 0 28px}.panel-heading h2{font-size:42px}.panel-heading span{color:var(--muted)}.level-group{margin:28px 0}.level-group>header{display:flex;align-items:baseline;justify-content:space-between;border-bottom:1px solid var(--line);padding-bottom:9px;margin-bottom:14px}.level-group>header span{font-size:22px;font-weight:700}.level-group>header small{color:var(--muted)}.variant-button.is-missing{border-style:dashed}.variant-copy code{color:var(--accent);font-size:12px}.choice-bar{position:fixed;left:50%;bottom:20px;transform:translateX(-50%);width:min(760px,calc(100% - 32px));display:flex;gap:12px;align-items:center;padding:12px 14px;background:#172635eF;border:1px solid #47617a;border-radius:14px;box-shadow:0 14px 45px #0008;backdrop-filter:blur(16px)}.choice-bar output{flex:1;min-width:0}.choice-bar code{display:block;white-space:normal;color:var(--text)}.choice-bar button{border:0;border-radius:9px;background:var(--accent);color:#05202a;font-weight:700;padding:10px 16px;cursor:pointer}@keyframes enter{from{opacity:.2;transform:translateY(8px)}}@media(max-width:720px){main{width:min(100% - 20px,1440px);padding-top:24px}.hero{grid-template-columns:1fr!important}.meta{border-left:0;padding-left:0}.style-grid,.variant-grid{grid-template-columns:repeat(2,minmax(0,1fr))}.card-copy{padding:10px}.card-copy strong{font-size:16px}.choice-bar{align-items:stretch;flex-direction:column}.choice-bar button{width:100%}}@media(max-width:440px){.style-grid,.variant-grid{grid-template-columns:1fr}}
+.media img[hidden],.missing-image[hidden]{display:none}
 </style></head><body><main>
-<header class="hero"><div><p class="eyebrow">第一轮 · 选择风格</p><h1>${html(view.title)}</h1><p>先浏览全部风格，再进入单个风格查看其真实档位与配色组合。</p></div><div class="meta"><span><strong>用途</strong> ${html(view.purpose)}</span><span><strong>受众</strong> ${html(view.audience)}</span></div><div class="notice">选择本身不会发送请求。把选款回复交给 Agent 后，由现有 plan-review 决策披露并提交确切样页 prompt、1 次调用预算和输出位置。</div></header>
+<header class="hero"><div><p class="eyebrow">第一轮 · 选择风格</p><h1>${html(view.title)}</h1><p>先浏览全部风格，再进入单个风格查看其真实档位与配色组合。</p></div><div class="meta"><span><strong>用途</strong> ${html(view.purpose)}</span><span><strong>受众</strong> ${html(view.audience)}</span></div><div class="notice">${imageNotice}把选款回复交给 Agent 后，由现有 plan-review 决策披露并提交确切样页 prompt、1 次调用预算和输出位置。</div></header>
 <section id="styles-view" aria-label="全部风格"><div class="style-grid">${cards}</div></section>
 ${panels}
 </main><aside class="choice-bar" aria-live="polite"><output id="choice"><code>尚未选择组合</code></output><button type="button" id="copy-choice" disabled>复制回复</button></aside>

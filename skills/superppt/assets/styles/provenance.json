@@ -508,5 +508,13 @@
       "sourcePrompt": "prompts/07-fantasy.txt",
       "sourcePromptSha256": "dd01e9b0b52aab88a37e6360af972bcbb73990ef493d00a26b7d39d039a4b7fe"
     }
-  ]
+  ],
+  "remoteAssetSource": {
+    "id": "ten-styles-ninety-variants-r1",
+    "acceptedOn": "2026-09-08",
+    "registry": "remote-assets.json",
+    "imageCount": 90,
+    "verification": "All 90 public URLs returned identical SHA-256 to accepted originals without authentication.",
+    "legacyProvenance": "Existing previews/showcases records below describe the previous bundled JPEGs; active hosted assets use the remote registry."
+  }
 }

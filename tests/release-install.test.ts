@@ -13,6 +13,8 @@ test('packed plugin installs independently and runs complete public CLI workflow
   const run = promisify(execFile), npm = process.env.npm_execpath;
   assert.ok(npm, 'run via npm run test:release-install');
   const packed = JSON.parse((await run(process.execPath, [npm!, 'pack', '--json', '--pack-destination', temporary], { cwd: root })).stdout);
+  assert.ok(packed[0].files.some((file: { path: string }) => file.path === 'skills/superppt/assets/styles/remote-assets.json'));
+  assert.equal(packed[0].files.filter((file: { path: string }) => file.path.startsWith('skills/superppt/assets/styles/') && /\.(png|jpe?g|webp)$/i.test(file.path)).length, 0);
   await run('tar', ['-xzf', join(temporary, packed[0].filename), '-C', temporary]);
   const installed = join(temporary, 'package');
   const installEnv = { ...process.env };

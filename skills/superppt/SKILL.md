@@ -25,13 +25,13 @@ description: Use when users want to make a high-detail presentation from a topic
 
 规划时一次写完整 Brief、Outline、逐页 SlideSpec 和可用真实风格候选。
 默认读取 assets/styles/catalog.json 并原样写入全部十种内置风格，不由 Agent 缩成推荐短名单；用户明确要求的自定义 plan.styles 是权威输入，不用内置目录静默覆盖。按“风格 → 档位 → 配色”展开真实选项：立体、玻璃、水墨保留各自 1／2／3 档和偏冷／基准中线／偏暖；经典手绘、教材图解、创意拼贴、电影科技、奢华摄影、建筑蓝图、叙事幻想仅有 3 档／基准中线。
-新发布 plan-review 的 details.selectionPath 指向任务内自包含 HTML；历史任务没有已发布选择页时会省略该字段并使用文本与原生图片回退。HTML 第一轮完整展示全部风格图，进入某个风格后，第二轮一次展示它的档位与配色组合。HTML 不联网、不调用 CLI、不创建生成任务；点击只形成可复制的自然语言回复。用 details.previewBase 加 previews[].path 作为原生内联图片回退；HTML 不可用时按同一顺序展示图片和文本元组。没有精确预览时明确说明缺图并仍允许选择，不生成或冒充预览。这仍是同一次 plan-review，不增加逐步确认关卡。不要声称远程或移动端已经验收。
+新发布 plan-review 的 details.selectionPath 指向任务内 HTML；历史任务没有已发布选择页时会省略该字段并使用文本与原生图片回退。HTML 第一轮完整展示全部风格图，进入某个风格后，第二轮一次展示它的档位与配色组合。HTML 从图床加载公开风格图片，不调用 CLI 或生成服务；点击只形成可复制的自然语言回复。HTML 不可用时，读取 details.previewBase 下的 remote-assets.json，以 showcase.path 或 previews[].path 查 assets[逻辑路径].url，作为原生内联图片地址；索引无此条目时才使用 details.previewBase 加相对路径读取自定义本地图片。按同一顺序展示图片和文本元组。图床加载失败时明确说明网络图片不可用，组合仍可选择。没有精确预览时明确说明缺图并仍允许选择，不生成或冒充预览。这仍是同一次 plan-review，不增加逐步确认关卡。不要声称远程或移动端已经验收。
 保留源内容结构、来源覆盖和精确 requiredText（包含独立标题及全部可见文字，不删减、不限制行数）。relationships 只描述内容含义与关系；实际背景、承载图形和构图由生图模型根据内容决定。
 只追问影响结果的缺失事实，不分别确认大纲、逐页说明和风格。
 
 ## 生图与检查
 
-在 plan-review 展示完整方案、选中组合的样页内容 prompt、参考图用途、1 次调用预算和输出位置；选择页本身不发送请求，用户把文本元组交给 Agent 后，仍由现有决定动作确认选款并授权样页。内容 prompt 从 details.samplePromptsPath 按 styleId/level/paletteId 取出，不把所有组合的长 prompt 展开到对话。
+在 plan-review 展示完整方案、选中组合的样页内容 prompt、参考图用途、1 次调用预算和输出位置；选择页仅加载公开参考图，不发送生图请求，用户把文本元组交给 Agent 后，仍由现有决定动作确认选款并授权样页。内容 prompt 从 details.samplePromptsPath 按 styleId/level/paletteId 取出，不把所有组合的长 prompt 展开到对话。
 在 sample-review 展示实际样页、整套 prompt、参考图用途、整套页数、复用页数、新生成页数与新增调用预算、输出位置；确认即授权整套。按 details.callBudget 披露和提交新增预算，不把整套页数当调用数。
 用户确认无须修改的样页直接进入正式 PPT 的原对应页，不重画、不换图；只生成未缓存页。三页正常路径共调用三次：样页一次，剩余两页两次。内容、风格、档位、配色或用途改变时重新规划，按新批次缓存状态执行；用户要求重画某页时走 regenerate-page。未通过内容检查的样页不能替用户批准。
 两处同时披露 details.submissionNote：实际出站文本 = 原内容 prompt + 两个换行 + 此用途说明。用途取已有 brief 的 purpose、audience，不新增分析或确认步骤。

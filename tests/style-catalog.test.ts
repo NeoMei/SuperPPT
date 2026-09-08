@@ -5,9 +5,9 @@ import { spawn } from 'node:child_process';
 import { cp, mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import sharp from 'sharp';
 import { StyleRecipeSchema } from '../src/styles/schemas.js';
 import { builtInStyleAssetsRoot, loadBuiltInStyleCatalog, loadStyleCatalog, selectStyleVariant } from '../src/styles/catalog.js';
+import { loadRemoteStyleAssets } from '../src/styles/remote-assets.js';
 import { compileSlidePrompt } from '../src/styles/prompt-compiler.js';
 
 const expectedIds = ['tactile', 'glass', 'ink', 'hand-drawn', 'textbook', 'collage', 'cinematic-tech', 'luxury-photo', 'blueprint', 'fantasy'];
@@ -113,17 +113,16 @@ test('catalog loading checks the showcase file as well as preview files', async 
   }
 });
 
-test('every bundled preview and showcase is a bounded 1280x720 JPEG', async () => {
+test('every catalog preview resolves through the shipped remote registry without a bundled bitmap', async () => {
   const catalog = await loadBuiltInStyleCatalog();
   const root = builtInStyleAssetsRoot();
+  const remote = await loadRemoteStyleAssets(root);
   for (const style of catalog.styles) {
     for (const asset of [...style.previews, ...(style.showcase ? [style.showcase] : [])]) {
-      const path = join(root, asset.path);
-      const metadata = await sharp(await readFile(path)).metadata();
-      assert.equal(metadata.format, 'jpeg', asset.path);
-      assert.equal(metadata.width, 1280, asset.path);
-      assert.equal(metadata.height, 720, asset.path);
-      assert.ok((await stat(path)).size <= 500_000, asset.path);
+      assert.ok(remote[asset.path], asset.path);
+      assert.match(remote[asset.path]!.url, /^https:\/\//);
+      assert.equal(remote[asset.path]!.width * 9, remote[asset.path]!.height * 16);
+      await assert.rejects(() => stat(join(root, asset.path)), /ENOENT/);
     }
   }
 });

@@ -3,6 +3,7 @@ import { existsSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { StyleCatalogSchema, StyleRecipeSchema, VariantSelectionSchema, type ResolvedStyle } from "./schemas.js";
+import { loadRemoteStyleAssets } from './remote-assets.js';
 
 const BUILT_IN_STYLE_CATALOG_RELATIVE_PATH = "skills/superppt/assets/styles/catalog.json";
 
@@ -15,9 +16,11 @@ function builtInCatalogCandidates(): string[] {
 
 export async function loadStyleCatalog(path: string) {
   const value = StyleCatalogSchema.parse(JSON.parse(await readFile(path, "utf8")));
+  const remoteAssets = await loadRemoteStyleAssets(dirname(path));
   for (const style of value.styles) {
-    for (const preview of style.previews) await access(join(dirname(path), preview.path));
-    if (style.showcase) await access(join(dirname(path), style.showcase.path));
+    for (const asset of [...style.previews, ...(style.showcase ? [style.showcase] : [])]) {
+      if (!Object.hasOwn(remoteAssets, asset.path)) await access(join(dirname(path), asset.path));
+    }
   }
   return value;
 }
