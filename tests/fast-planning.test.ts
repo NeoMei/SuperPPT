@@ -24,7 +24,7 @@ test('published and resumed plan replies expose one usable selector without muta
   assert.equal(published.kind, 'decision');
   if (published.kind !== 'decision') throw new Error('decision expected');
   const details = published.details as any;
-  assert.equal(details.selection.styles.length, 13);
+  assert.equal(details.selection.styles.length, 11);
   assert.equal(details.selectionPath, `planning/${(await readTask(root)).contentRevision}/style-selection.html`);
   const selectorAbsolutePath = await realpath(join(root, details.selectionPath));
   assert.ok(published.view.includes(`<${selectorAbsolutePath}>`));

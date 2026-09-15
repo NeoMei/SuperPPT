@@ -10,7 +10,7 @@ import sharp from 'sharp';
 
 const run = promisify(execFile);
 const digest = (value: string | Buffer) => createHash('sha256').update(value).digest('hex');
-const businessIds = ['deep-sea', 'celadon', 'dashboard'];
+const businessIds = ['business'];
 
 // Run the real builder in an isolated repository: never normalize the working catalog or assets.
 async function fixture() {
@@ -28,7 +28,7 @@ async function fixture() {
   provenance.previews = provenance.previews.filter((asset: any) => !businessIds.includes(asset.styleId));
   provenance.showcases = provenance.showcases.filter((asset: any) => !businessIds.includes(asset.styleId));
   const styles = businessIds.map((id, index) => ({
-    id, name: ['深海智汇', '商务青瓷', '数据看板'][index],
+    id, name: ['商务风格'][index],
     tiers: [1, 2, 3].map(level => ({ level, promptTemplate: `文字为主；不编造数据；只有输入提供数据时才画图表；正文无流光。${level}\n{{PALETTE}}\n{{CONTENT_RELATIONSHIPS}}\n{{SLIDE_COPY}}` })),
     palettes: ['cool', 'mid', 'warm'].map((id, index) => ({ id, name: ['偏冷', '基准中线', '偏暖'][index], prompt: `palette ${id}` })),
     previews: [1, 2, 3].flatMap(level => ['cool', 'mid', 'warm'].map(paletteId => ({ level, paletteId, path: `previews/${id}-${level}-${paletteId}.jpg` }))),
@@ -119,9 +119,9 @@ test('business source validation checks independent manifests, prompt/image byte
     const clean = await f.build(['--business-source-dir', f.business]);
     assert.equal(clean.code, 0, clean.stderr);
     assert.equal(await readFile(catalogPath, 'utf8'), compactCatalog, 'Standalone source validation must preserve catalog bytes');
-    assert.match(clean.stdout, /13 styles/);
-    await assert.rejects(readFile(join(f.assets, 'previews/deep-sea-1-cool.jpg')), /ENOENT/);
-    for (const [path, message] of [['manifest.json', /Business manifest changed/], ['prompts/deep-sea-1-cool.txt', /Business prompt changed/], ['images/deep-sea-1-cool.png', /Business image changed/]] as const) {
+    assert.match(clean.stdout, /11 styles/);
+    await assert.rejects(readFile(join(f.assets, 'previews/business-1-cool.jpg')), /ENOENT/);
+    for (const [path, message] of [['manifest.json', /Business manifest changed/], ['prompts/business-1-cool.txt', /Business prompt changed/], ['images/business-1-cool.png', /Business image changed/]] as const) {
       await t.test(`rejects drift in ${path}`, async () => {
         const file = join(f.business, path), before = await readFile(file);
         await writeFile(file, Buffer.concat([before, Buffer.from('DRIFT')]));
@@ -136,10 +136,10 @@ test('business source validation checks independent manifests, prompt/image byte
       ['duplicate business palette recipe', () => { f.provenance.businessRecipes.palettes[8] = f.provenance.businessRecipes.palettes[0]; }, /Business palette recipe coverage/],
       ['template drift', () => { f.catalog.styles[0].tiers[0].promptTemplate += '\nDRIFT'; }, /Business prompt template changed/],
       ['palette drift', () => { f.catalog.styles[0].palettes[0].prompt += ' DRIFT'; }, /Business palette prompt changed/],
-      ['wrong business source', () => { f.provenance.previews.find((s: any) => s.styleId === 'deep-sea').acceptedSourceId = 'ten-style-showcase-v1'; }, /Business source id/],
+      ['wrong business source', () => { f.provenance.previews.find((s: any) => s.styleId === 'business').acceptedSourceId = 'ten-style-showcase-v1'; }, /Business source id/],
       ['unknown business revision', () => { f.provenance.businessSource.id = 'business-layout-unverified'; }, /Unknown business source id/],
-      ['wrong source variant', () => { f.provenance.previews.find((s: any) => s.styleId === 'deep-sea').sourceImage = 'images/deep-sea-2-cool.png'; }, /Business source image/],
-      ['missing source prompt hash', () => { delete f.provenance.previews.find((s: any) => s.styleId === 'deep-sea').sourcePromptSha256; }, /Business source prompt hash/],
+      ['wrong source variant', () => { f.provenance.previews.find((s: any) => s.styleId === 'business').sourceImage = 'images/business-2-cool.png'; }, /Business source image/],
+      ['missing source prompt hash', () => { delete f.provenance.previews.find((s: any) => s.styleId === 'business').sourcePromptSha256; }, /Business source prompt hash/],
       ['altered seven-recipe contract', () => { f.provenance.recipes.pop(); }, /AssertionError/],
     ] as const) {
       await t.test(name, async () => {
@@ -169,7 +169,7 @@ test('business tier revision v2 retains manifest and source identity checks', as
     await f.save();
     const valid = await f.build(['--business-source-dir', f.business]);
     assert.equal(valid.code, 0, valid.stderr);
-    f.provenance.showcases.find((source: any) => source.styleId === 'celadon').acceptedSourceId = 'business-layout-v1';
+    f.provenance.showcases.find((source: any) => source.styleId === 'business').acceptedSourceId = 'business-layout-v1';
     await f.save();
     const stale = await f.build(['--business-source-dir', f.business]);
     assert.notEqual(stale.code, 0);
@@ -182,10 +182,10 @@ test('accepted-source normalization processes only the original ten and retains 
   try {
     const result = await f.build(['--normalize-previews', '--accepted-source-dir', f.accepted]);
     assert.equal(result.code, 0, result.stderr);
-    for (const style of f.catalog.styles.slice(3)) {
+    for (const style of f.catalog.styles.slice(1)) {
       assert.equal((await sharp(join(f.assets, style.showcase.path)).metadata()).format, 'jpeg');
     }
-    for (const style of f.catalog.styles.slice(0, 3)) {
+    for (const style of f.catalog.styles.slice(0, 1)) {
       for (const asset of [...style.previews, style.showcase]) await assert.rejects(readFile(join(f.assets, asset.path)), /ENOENT/);
     }
     const recipe = f.provenance.recipes[0];

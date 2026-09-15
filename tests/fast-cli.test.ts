@@ -21,8 +21,8 @@ for (const n of [3, 12]) test(`public CLI ${n} pages: 8 commands, 3 decisions, o
   const catalogModule = await import(pathToFileURL(join(runtime, compiled ? 'dist/src/styles/catalog.js' : 'src/styles/catalog.ts')).href);
   const fixture = await fixtureTask(), root = join(dirname(fixture.root), 'public-task'), plan = await fixturePlan(n);
   const catalog = await catalogModule.loadBuiltInStyleCatalog();
-  assert.deepEqual(catalog.styles.map((style: any) => style.id), ['deep-sea', 'celadon', 'dashboard', 'tactile', 'glass', 'ink', 'hand-drawn', 'textbook', 'collage', 'cinematic-tech', 'luxury-photo', 'blueprint', 'fantasy']);
-  assert.equal(catalog.styles.filter((style: any) => style.showcase).length, 13);
+  assert.deepEqual(catalog.styles.map((style: any) => style.id), ['business', 'tactile', 'glass', 'ink', 'hand-drawn', 'textbook', 'collage', 'cinematic-tech', 'luxury-photo', 'blueprint', 'fantasy']);
+  assert.equal(catalog.styles.filter((style: any) => style.showcase).length, 11);
   assert.doesNotMatch(JSON.stringify(catalog), /(?:\/Users\/|design-system-round|visualizations|design-session)/);
   const remoteModule = await import(pathToFileURL(join(runtime, compiled ? 'dist/src/styles/remote-assets.js' : 'src/styles/remote-assets.ts')).href);
   const remote = await remoteModule.loadRemoteStyleAssets(catalogModule.builtInStyleAssetsRoot());
@@ -93,7 +93,7 @@ for (const n of [3, 12]) test(`public CLI ${n} pages: 8 commands, 3 decisions, o
   assert.deepEqual(reply.details.planningContext.answers, persistedContext.answers);
   assert.equal(reply.details.reviewModelPath, `planning/${reply.details.contentRevision}/review-model.json`);
   assert.equal(Object.hasOwn(reply.details, 'variants'), false, 'long prompts stay in the local review model/HTML, not CLI details');
-  assert.equal(reply.details.selection.styles.length, 13);
+  assert.equal(reply.details.selection.styles.length, 11);
   const reviewModel = JSON.parse(await readFile(join(root, reply.details.reviewModelPath), 'utf8'));
   assert.equal(reviewModel.revision, reply.details.contentRevision);
   assert.equal(reviewModel.decisionId, reply.id);
@@ -105,7 +105,7 @@ for (const n of [3, 12]) test(`public CLI ${n} pages: 8 commands, 3 decisions, o
   assert.equal((selector.match(/<article class="review-slide/g) ?? []).length, n);
   assert.match(selector, new RegExp(`方案版本：${reply.details.contentRevision}`));
   assert.match(selector, new RegExp(`决定编号：${reply.id}`));
-  assert.equal((selector.match(/data-action="open-style"/g) ?? []).length, 13);
+  assert.equal((selector.match(/data-action="open-style"/g) ?? []).length, 11);
   await assertSelectionAssets(selector, catalog.styles, catalogModule.builtInStyleAssetsRoot());
   assert.doesNotMatch(selector, /(?:src|href)="(?:previews|showcases)\//);
   const textOnlySelector = selector.replace(/data:image\/jpeg;base64,[A-Za-z0-9+/=]+/g, 'local-catalog-image');

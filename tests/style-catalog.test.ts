@@ -10,8 +10,8 @@ import { builtInStyleAssetsRoot, loadBuiltInStyleCatalog, loadStyleCatalog, sele
 import { loadRemoteStyleAssets } from '../src/styles/remote-assets.js';
 import { compileSlidePrompt } from '../src/styles/prompt-compiler.js';
 
-const businessIds = ['deep-sea', 'celadon', 'dashboard'];
-const expectedIds = [...businessIds, 'tactile', 'glass', 'ink', 'hand-drawn', 'textbook', 'collage', 'cinematic-tech', 'luxury-photo', 'blueprint', 'fantasy'];
+const businessIds = ['business'];
+const expectedIds = ['business', 'tactile', 'glass', 'ink', 'hand-drawn', 'textbook', 'collage', 'cinematic-tech', 'luxury-photo', 'blueprint', 'fantasy'];
 const acceptedSourceFixture = join(process.cwd(), 'tests/fixtures/accepted-style-source');
 const legacyStyleHashes = {
   tactile: '2a1cf9e593e1c3c834177666fc125f463787113848bf82730bd5635772222512',
@@ -34,10 +34,10 @@ function hash(value: unknown) {
   return createHash('sha256').update(JSON.stringify(value)).digest('hex');
 }
 
-test('bundled catalog exposes the accepted thirteen styles in order while preserving the original three definitions', async () => {
+test('bundled catalog exposes the accepted eleven styles in order while preserving the original definitions', async () => {
   const catalog = await loadBuiltInStyleCatalog();
   assert.deepEqual(catalog.styles.map(style => style.id), expectedIds);
-  for (const style of catalog.styles.slice(3, 6)) {
+  for (const style of catalog.styles.slice(1, 4)) {
     const { showcase: _showcase, ...legacyDefinition } = style;
     assert.equal(hash(legacyDefinition), legacyStyleHashes[style.id as keyof typeof legacyStyleHashes]);
   }
@@ -45,7 +45,7 @@ test('bundled catalog exposes the accepted thirteen styles in order while preser
 
 test('the original seven added styles expose only the accepted level-three midpoint variant and reject unsupported choices', async () => {
   const catalog = await loadBuiltInStyleCatalog();
-  const newStyles = catalog.styles.slice(6);
+  const newStyles = catalog.styles.slice(4);
   assert.equal(newStyles.length, 7);
   for (const style of newStyles) {
     assert.deepEqual(style.tiers.map(tier => tier.level), [3], style.id);
@@ -59,7 +59,7 @@ test('the original seven added styles expose only the accepted level-three midpo
 
 test('accepted recipes compile unrelated copy without leaking showcase advertising fixtures', async () => {
   const catalog = await loadBuiltInStyleCatalog();
-  const newStyles = catalog.styles.slice(6);
+  const newStyles = catalog.styles.slice(4);
   assert.equal(newStyles.length, 7);
   for (const recipe of newStyles) {
     const style = selectStyleVariant(recipe, { level: 3, paletteId: 'mid' });
@@ -157,14 +157,12 @@ test('accepted-source normalization rejects prompt drift from a portable accepte
 });
 
 
-test('first three business styles expose nine variants each and use the level-three midpoint showcase', async () => {
+test('business style exposes nine variants and uses the level-three midpoint showcase', async () => {
   const catalog = await loadBuiltInStyleCatalog();
-  assert.deepEqual(catalog.styles.slice(0, 3).map(style => [style.id, style.name]), [
-    ['deep-sea', '深海智汇'], ['celadon', '商务青瓷'], ['dashboard', '数据看板'],
-  ]);
-  assert.equal(catalog.styles.flatMap(style => style.previews).length, 58);
+  assert.deepEqual(catalog.styles.slice(0, 1).map(style => [style.id, style.name]), [['business', '商务风格']]);
+  assert.equal(catalog.styles.flatMap(style => style.previews).length, 40);
   assert.equal(catalog.styles.filter(style => style.showcase).length, 11);
-  for (const style of catalog.styles.slice(0, 3)) {
+  for (const style of catalog.styles.slice(0, 1)) {
     assert.deepEqual(style.tiers.map(tier => tier.level), [1, 2, 3]);
     assert.deepEqual(style.palettes.map(palette => palette.id), ['cool', 'mid', 'warm']);
     assert.equal(style.previews.length, 9);
@@ -179,7 +177,7 @@ test('first three business styles expose nine variants each and use the level-th
 test('business prompts preserve text-led body layouts, factual data boundaries and literal input without advertising fixtures', async () => {
   const catalog = await loadBuiltInStyleCatalog();
   const styles = catalog.styles.filter(style => businessIds.includes(style.id));
-  assert.equal(styles.length, 3);
+  assert.equal(styles.length, 1);
   for (const recipe of styles) for (const tier of recipe.tiers) {
     const label = `${recipe.id}/${tier.level}`;
     for (const slot of ['{{PALETTE}}', '{{CONTENT_RELATIONSHIPS}}', '{{SLIDE_COPY}}']) {
