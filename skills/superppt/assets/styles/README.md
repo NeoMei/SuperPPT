@@ -1,12 +1,14 @@
-# 十风格运行资产
+# 十三风格运行资产
 
-当前目录启用立体、玻璃、水墨、经典手绘、教材图解、创意拼贴、电影科技、奢华摄影、建筑蓝图、叙事幻想。用户按「风格 → 创意档位 → 配色」选择；配色是每种风格自身基准的相对变化，基准中线不等于黑白灰。共有 34 个可选组合、31 张精确变体预览和 10 张代表性展示图。没有现场生图选款流程。
+三种商务风格已接入当前源码：27 张参考图已上传 imgtg，并逐张核对远端文件 SHA-256 与 1664×936 尺寸；三个代表图复用各自 3 档中线。正式版本发布状态以 GitHub Releases 为准。
 
-`catalog.json` 是唯一的运行时定义源。原有立体、玻璃、水墨继续各有三个完整档位模板和三段共享色板；新增七种只公开已接受的 3 档、基准中线组合，不补造未经选样的档位或配色。模板仅有 `{{PALETTE}}`、`{{CONTENT_RELATIONSHIPS}}`、`{{SLIDE_COPY}}`，每个出现一次。调用方替换三个字段后得到完整提示词，不需要读取外部实验目录。
+当前源码目录依次启用商务风格、立体、玻璃、水墨、经典手绘、教材图解、创意拼贴、电影科技、奢华摄影、建筑蓝图、叙事幻想。用户按「风格 → 创意档位 → 配色」选择；配色是每种风格自身基准的相对变化，基准中线不等于黑白灰。共有 43 个可选组合、40 张精确变体预览和 11 张代表性展示图。没有现场生图选款流程。
 
-每种风格的 `showcase` 指向 `showcases/<styleId>.jpg`，用于第一轮选风格；`previews/<styleId>-<level>-<palette>.jpg` 是第二轮精确变体预览。这些是逻辑资源键，由 remote-assets.json 的 assets[逻辑资源键].url 解析为公开 HTTPS 地址。当前远端是 1664×936 PNG 原图，不再把图片二进制打包。查看图片需要联网，不触发生图调用。
+`catalog.json` 是唯一的运行时定义源。合并后的商务风格与原有立体、玻璃、水墨各有三个完整档位模板和三段共享色板；其余七种只公开已接受的 3 档、基准中线组合，不补造未经选样的档位或配色。模板仅有 `{{PALETTE}}`、`{{CONTENT_RELATIONSHIPS}}`、`{{SLIDE_COPY}}`，每个出现一次。调用方替换三个字段后得到完整提示词，不需要读取外部实验目录。
 
-90 张已确认设计原图已上传 imgtg，100 个逻辑资源键引用 90 个唯一文件。remote-assets.json 保存公开直链、SHA-256、字节数和尺寸；安装包不含设计图片或上传凭据。当前 34 个运行组合的配方定义保持不变。规划只读取本地索引；打开选款页时联网加载图片，加载失败会显示提示，仍可选择组合。
+每种风格的 `showcase` 指向 `showcases/<styleId>.jpg`，用于第一轮选风格；`previews/<styleId>-<level>-<palette>.jpg` 是第二轮精确变体预览。这些是逻辑资源键，由 remote-assets.json 的 assets[逻辑资源键].url 解析为公开 HTTPS 地址；所有运行资源均已登记，远端为 1664×936 PNG，不打包图片二进制。远端图片需要联网，查看图片不触发生图调用。
+
+远端索引共 130 个逻辑资源键，引用 117 个唯一文件，其中商务风格使用 9 个预览文件和 1 个代表文件。remote-assets.json 保存公开直链、SHA-256、字节数和尺寸；安装包不含设计图片或上传凭据。商务风格与其他风格统一由目录驱动。规划只读取本地索引；打开选款页时联网加载图片，加载失败会显示提示，仍可选择组合。
 
 原图与旧包内 51 张 JPEG 保留在维护工作区的忽略目录中。以下压缩来源描述迁移前的 JPEG，当前图片以 remote-assets.json 为准。
 
@@ -55,7 +57,7 @@
 
 视觉接受不代表逐字准确得到认证。第41轮立体含额外场景导视文字；部分玻璃样例有 T / i 式符号及细小书封纹理。保留这些已知边界，不声称压缩或模板整合修复了原图，也不把历史视觉通过扩展为任意内容的稳定性证明。
 
-## 新七风格与展示来源
+## 原七种扩展风格与展示来源
 
 十张代表性展示与新增七种精确变体预览来自已接受的 `ten-style-showcase-v1`，其来源图片、提示词及 SHA-256 记录在 `provenance.json`。新增七种的模板直接从各自已接受提示词抽取：基准配色段替换为 `{{PALETTE}}`，内容关系段替换为 `{{CONTENT_RELATIONSHIPS}}`，完整可见文案块替换为 `{{SLIDE_COPY}}`；删除末尾仅适用于内部选款样例的用途说明，将首句的「中文 PPT 广告展示页」泛化为「中文 PPT 页面」，并将展示文案专用的「SuperPPT 标题和副标题区」泛化为「标题和副标题区」。其余画风与三档说明保持原文，创意拼贴固定采用用户接受的最初 A 版。
 
@@ -63,9 +65,56 @@
 
 旧十风格 JPEG 已随其余包内图片移入本地备份，不参与当前选择与打包；旧十风格的生成定义已从构建脚本中移除。
 
+## 商务三风格来源与合同
+
+2026-09-14 档位修正：一档使用文字简报，二档保留图文分区，三档使用由内容关系驱动的信息图。共享材质段不再强制所有档位采用同一种左右分栏。重做一、三档的 18 张图，保留二档 9 张图；同档的配色变化保留阅读结构。旧 business-layout-v1 来源留档，构建验证同时支持 v1、v2 并严格检查来源一致性。
+
+商务风格置于其他风格之前，提供 1／2／3 档 × cool／mid／warm 共九张精确预览，代表图使用 3 档中线同一来源。文字是视觉主角，重视标题层级、分组、留白和小型语义图标；仅在输入提供数据时使用图表或 KPI，不编造数字，正文无流光。生产模板只保留三个槽各一次，不带 SuperPPT 广告样例、固定五组亮点或固定句数。内部展示 fixture 的「10 大精选模板」文案保持不变。
+
+`provenance.json` 新增独立接口：
+
+```json
+{
+  "businessSource": {
+    "id": "business-layout-v2",
+    "manifest": "manifest.json",
+    "manifestSha256": "<manifest 文件字节 SHA-256>"
+  },
+  "businessRecipes": {
+    "tiers": [{ "styleId": "deep-sea", "level": 1, "promptTemplateSha256": "<模板 UTF-8 SHA-256>" }],
+    "palettes": [{ "styleId": "deep-sea", "paletteId": "cool", "palettePromptSha256": "<色板 UTF-8 SHA-256>" }]
+  }
+}
+```
+
+`tiers` 与 `palettes` 各必须覆盖九项，不能重复或遗漏；哈希计算保留原始字符串的换行和末尾字符。原有 `acceptedSource`、七项 `recipes` 与 `recipeTransformations` 均保留。
+
+商务 `previews` / `showcases` 溯源项沿用 `path`、`styleId`、`level`、`paletteId`，增加或设置：`acceptedSourceId: "business-layout-v2"`、`sourceImage: "images/<id>-<tier>-<tone>.png"`、`sourcePrompt: "prompts/<id>-<tier>-<tone>.txt"`、`sourceImageSha256`、`sourcePromptSha256`。展示图的两个来源哈希须与该风格 3-mid 预览一致。
+
+商务来源目录的 `manifest.json` 格式为：
+
+```json
+{
+  "id": "business-layout-v2",
+  "variants": [{
+    "styleId": "deep-sea", "level": 1, "paletteId": "cool",
+    "image": "images/deep-sea-1-cool.png", "sha256": "<原图文件 SHA-256>",
+    "prompt": "prompts/deep-sea-1-cool.txt", "promptSha256": "<提示词文件 SHA-256>"
+  }]
+}
+```
+
+`variants` 必须完整覆盖 9 个商务组合，顺序不限。独立验证不生成或归一化商务图片：
+
+```sh
+node scripts/build-style-catalog.mjs --business-source-dir /path/to/business-layout-v2
+```
+
+验证会核对 manifest 哈希、27 项映射、原图与 prompt 文件哈希、PNG 与 16:9 尺寸，并检查运行目录的 JPEG 或远端索引。商务 PNG 从完整原图缩放至 1664×936，不裁切；源图比例的微小像素取整差异在缩放时归一。临时 JPEG 留在维护目录，运行索引使用已核验的 PNG 直链。该参数可独立使用，也可与旧来源复建参数组合；旧 `--accepted-source-dir` 只处理原十种，不会选择商务来源。
+
 ## 验证与复建
 
-从仓库运行 `node scripts/build-style-catalog.mjs`，验证十种风格的固定顺序、名称、档位、配色、三个槽、相对路径、溯源对应关系、远端索引的 HTTPS、哈希与尺寸元数据（无索引覆盖时检查本地 JPEG），并规范化唯一目录源的 JSON 格式。再次运行内容不变；脚本不会恢复历史候选风格。
+从仓库运行 `node scripts/build-style-catalog.mjs`，验证十三种风格的固定顺序、名称、档位、配色、三个槽、相对路径、溯源对应关系、远端索引的 HTTPS、哈希与尺寸元数据（无索引覆盖时检查本地 JPEG），并规范化唯一目录源的 JSON 格式。再次运行内容不变；脚本不会恢复历史候选风格。
 
 以下命令仅供重建历史 JPEG，会重新写入图片；执行后须将产物移出安装目录再打包。
 

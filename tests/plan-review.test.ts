@@ -185,8 +185,8 @@ test('published review HTML keeps complete ordered content and safely labels eve
   assert.match(rendered, /复制后发送给 Agent 才会执行/);
   assert.ok(rendered.indexOf('首页 &lt;img') < rendered.indexOf('第二页 &lt;/textarea'));
   assert.equal((rendered.match(/<textarea[^>]+data-review-note/g) ?? []).length, 4);
-  assert.equal((rendered.match(/<button[^>]+data-action="choose"/g) ?? []).length, 34);
-  assert.equal((rendered.match(/data-variant-key=/g) ?? []).length, 34);
+  assert.equal((rendered.match(/<button[^>]+data-action="choose"/g) ?? []).length, 61);
+  assert.equal((rendered.match(/data-variant-key=/g) ?? []).length, 61);
   assert.equal((rendered.match(/缺少该组合的精确预览 · 仍可选择/g) ?? []).length, 3);
   assert.doesNotMatch(rendered, /<img id="forged-title">/);
   assert.doesNotMatch(rendered, /<script id="forged-(?:note|copy)">/);

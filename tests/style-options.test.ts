@@ -1,8 +1,10 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { ResolvedStyleSchema, StyleRecipeSchema } from '../src/styles/schemas.js';
+import { ResolvedStyleSchema, StyleRecipeSchema, StyleCatalogSchema } from '../src/styles/schemas.js';
 import * as catalog from '../src/styles/catalog.js';
 import { compileSlidePrompt } from '../src/styles/prompt-compiler.js';
+import { PlanBundleSchema } from '../src/workflow/contracts.js';
+import { fixturePlan } from './helpers/fast-task.js';
 import { SlideSpecSchema } from '../src/planning/schemas.js';
 
 const definition = {
@@ -103,5 +105,17 @@ test('bundled options resolve in the installed layout and produce ready-to-send 
       assert.doesNotMatch(prompt, /这些数字是示例安排而非成效数据/, 'a style cannot reinterpret real data as example data');
     }
 
+  }
+});
+
+
+test('catalog and plan accept thirteen distinct styles and reject a fourteenth or duplicate choice', async () => {
+  const styles = Array.from({ length: 13 }, (_, index) => ({ ...definition, id: `style-${index}` }));
+  const bundle = { ...await fixturePlan(), styles };
+  assert.equal(StyleCatalogSchema.safeParse({ catalogVersion: 2, selectionMode: 'single', styles }).success, true);
+  assert.equal(PlanBundleSchema.safeParse(bundle).success, true);
+  for (const invalid of [[...styles, { ...definition, id: 'style-13' }], [...styles.slice(0, 12), styles[0]]]) {
+    assert.equal(StyleCatalogSchema.safeParse({ catalogVersion: 2, selectionMode: 'single', styles: invalid }).success, false);
+    assert.equal(PlanBundleSchema.safeParse({ ...bundle, styles: invalid }).success, false);
   }
 });

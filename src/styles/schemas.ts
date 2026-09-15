@@ -47,7 +47,7 @@ export const StyleRecipeSchema = z.object({
 });
 export const StyleCatalogSchema = z.object({
   catalogVersion: z.literal(2), selectionMode: z.literal('single'),
-  styles: z.array(StyleRecipeSchema).min(1).max(10),
+  styles: z.array(StyleRecipeSchema).min(1).max(13),
 }).strict().superRefine((catalog, ctx) => {
   if (new Set(catalog.styles.map(s => s.id)).size !== catalog.styles.length)
     ctx.addIssue({ code: 'custom', message: 'Style IDs must be unique' });

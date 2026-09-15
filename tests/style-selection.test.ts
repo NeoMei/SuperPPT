@@ -4,6 +4,7 @@ import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promis
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { loadBuiltInStyleCatalog, builtInStyleAssetsRoot } from '../src/styles/catalog.js';
+import { assertSelectionAssets } from './helpers/style-selection-assets.js';
 import type { StyleRecipe } from '../src/styles/schemas.js';
 
 test('clipboard helper reports success only when a clipboard mechanism succeeds', async () => {
@@ -31,18 +32,18 @@ test('clipboard helper reports success only when a clipboard mechanism succeeds'
   }), false);
 });
 
-test('selection groups all ten styles into 34 available variants and discloses the three missing previews', async () => {
+test('selection groups all thirteen styles into 61 available variants and discloses the three missing previews', async () => {
   const module = await import('../src/styles/selection.js').catch(() => ({} as Record<string, unknown>));
   assert.equal(typeof module.styleSelection, 'function');
   const selection = (module.styleSelection as (styles: StyleRecipe[]) => any)((await loadBuiltInStyleCatalog()).styles);
-  assert.equal(selection.styles.length, 10);
+  assert.equal(selection.styles.length, 13);
   const variants = selection.styles.flatMap((style: any) => style.groups.flatMap((group: any) => group.variants));
-  assert.equal(variants.length, 34);
+  assert.equal(variants.length, 61);
   assert.deepEqual(
     variants.filter((variant: any) => variant.previewStatus === 'missing').map((variant: any) => `${variant.styleId}/${variant.level}/${variant.paletteId}`),
     ['tactile/1/mid', 'glass/1/cool', 'glass/2/cool'],
   );
-  for (const style of selection.styles.slice(3)) {
+  for (const style of selection.styles.slice(6)) {
     assert.deepEqual(style.groups.map((group: any) => group.level), [3]);
     assert.deepEqual(style.groups[0].variants.map((variant: any) => variant.paletteId), ['mid']);
   }
@@ -63,7 +64,7 @@ test('custom styles without showcases use a labelled variant reference or an hon
   assert.equal(selection.styles[1].groups[0].variants[0].previewStatus, 'missing');
 });
 
-test('selection HTML references hosted images, escapes labels, and keeps missing variants selectable', async () => {
+test('selection HTML references remote legacy and local business images, escapes labels, and keeps missing variants selectable', async () => {
   const selectionModule = await import('../src/styles/selection.js').catch(() => ({} as Record<string, unknown>));
   const viewModule = await import('../src/styles/selection-view.js').catch(() => ({} as Record<string, unknown>));
   assert.equal(typeof selectionModule.styleSelection, 'function');
@@ -79,7 +80,7 @@ test('selection HTML references hosted images, escapes labels, and keeps missing
     }, builtInStyleAssetsRoot());
     assert.equal(relativePath, 'planning/revision/style-selection.html');
     const html = await readFile(join(directory, relativePath), 'utf8');
-    assert.doesNotMatch(html, /data:image/);
+    await assertSelectionAssets(html, catalog.styles, builtInStyleAssetsRoot());
     assert.match(html, /src="https:\/\/g\.imgtg\.com\//);
     assert.doesNotMatch(html, /<img src="(?:previews|showcases)\//);
     assert.doesNotMatch(html, /<\/script><img/);
@@ -89,7 +90,7 @@ test('selection HTML references hosted images, escapes labels, and keeps missing
     assert.match(html, /选择创意拼贴，3 档，基准中线/);
     assert.match(html, /缺少该组合的精确预览/);
     assert.match(html, /data-selectable="true"/);
-    assert.equal((html.match(/data-variant-key=/g) ?? []).length, 34);
+    assert.equal((html.match(/data-variant-key=/g) ?? []).length, 61);
     assert.match(html, /从图床加载公开的风格图片/);
     assert.match(html, /请手动复制上方回复/);
   } finally {

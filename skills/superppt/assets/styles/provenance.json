@@ -2,6 +2,105 @@
   "sourceSession": "2026-09-05/01a06fd7-f7ef-7c92-b749-f75828bc27e2",
   "previews": [
     {
+      "level": 1,
+      "paletteId": "cool",
+      "path": "previews/business-1-cool.jpg",
+      "styleId": "business",
+      "acceptedSourceId": "business-layout-v2",
+      "sourceImage": "images/business-1-cool.png",
+      "sourcePrompt": "prompts/business-1-cool.txt",
+      "sourceImageSha256": "fa7247d2c7261ca57a34217571773a4ec013c1deba624f1eff0cc253d76b0804",
+      "sourcePromptSha256": "9634eb67e7cb1b0ca9c5d2d054fd695aeb20f862b04b758d448edb8a614b648f"
+    },
+    {
+      "level": 1,
+      "paletteId": "mid",
+      "path": "previews/business-1-mid.jpg",
+      "styleId": "business",
+      "acceptedSourceId": "business-layout-v2",
+      "sourceImage": "images/business-1-mid.png",
+      "sourcePrompt": "prompts/business-1-mid.txt",
+      "sourceImageSha256": "e05c646dd2b4fd5b14144a6ecf1931b8c75ae3ddf7d3314ad23a1825bbaf5f4f",
+      "sourcePromptSha256": "11a257405fb1d3ce2bad4e4f986f3d649a1ce3ba6c2eda2ab1181d876a8d2435"
+    },
+    {
+      "level": 1,
+      "paletteId": "warm",
+      "path": "previews/business-1-warm.jpg",
+      "styleId": "business",
+      "acceptedSourceId": "business-layout-v2",
+      "sourceImage": "images/business-1-warm.png",
+      "sourcePrompt": "prompts/business-1-warm.txt",
+      "sourceImageSha256": "d7b266d7129c336e80915ef8913081b6b95219d4269c251b3ee52407d1cdce5c",
+      "sourcePromptSha256": "67428114af7a3a27e48e018ef94bbd4159729c1dee495e73fb3755f944d5f76a"
+    },
+    {
+      "level": 2,
+      "paletteId": "cool",
+      "path": "previews/business-2-cool.jpg",
+      "styleId": "business",
+      "acceptedSourceId": "business-layout-v2",
+      "sourceImage": "images/business-2-cool.png",
+      "sourcePrompt": "prompts/business-2-cool.txt",
+      "sourceImageSha256": "3d3117b629bf84ea43f6172f52caa7492c77432d9de68b385c7f0e9b6b5ab8d5",
+      "sourcePromptSha256": "e02465cdcb08ffbada912a9ee26929183660c3fbaea2adb2809a2aba80fb7c9c"
+    },
+    {
+      "level": 2,
+      "paletteId": "mid",
+      "path": "previews/business-2-mid.jpg",
+      "styleId": "business",
+      "acceptedSourceId": "business-layout-v2",
+      "sourceImage": "images/business-2-mid.png",
+      "sourcePrompt": "prompts/business-2-mid.txt",
+      "sourceImageSha256": "141336a6394adbb8f3a398f8972a3f97290e93f540dfd4f89331a790f14ff274",
+      "sourcePromptSha256": "2f7208928d4e7d371782aa32b5c03af0df8524529ddf5fabe85ebdf86a511104"
+    },
+    {
+      "level": 2,
+      "paletteId": "warm",
+      "path": "previews/business-2-warm.jpg",
+      "styleId": "business",
+      "acceptedSourceId": "business-layout-v2",
+      "sourceImage": "images/business-2-warm.png",
+      "sourcePrompt": "prompts/business-2-warm.txt",
+      "sourceImageSha256": "a030eea834d3ec4a061c1e359ba20d59f816737e7488fd9451b83204b6022cff",
+      "sourcePromptSha256": "db7ddd2573612a25b19cb2a7a9723503f8def6598aee81b46b40bdd9a79beab2"
+    },
+    {
+      "level": 3,
+      "paletteId": "cool",
+      "path": "previews/business-3-cool.jpg",
+      "styleId": "business",
+      "acceptedSourceId": "business-layout-v2",
+      "sourceImage": "images/business-3-cool.png",
+      "sourcePrompt": "prompts/business-3-cool.txt",
+      "sourceImageSha256": "c905c9bfe5b80bba7ac02c0c698ef2005e75fb99cac8dbe35d05fedddd4ae105",
+      "sourcePromptSha256": "ed92cf0024ca7e65e449c5976e189008faf38dcaeaef12a1ede5bf63c4869906"
+    },
+    {
+      "level": 3,
+      "paletteId": "mid",
+      "path": "previews/business-3-mid.jpg",
+      "styleId": "business",
+      "acceptedSourceId": "business-layout-v2",
+      "sourceImage": "images/business-3-mid.png",
+      "sourcePrompt": "prompts/business-3-mid.txt",
+      "sourceImageSha256": "e91d7bd02677362a3d43dff70a69adfcc30bff6ceb2046899a2b9ff910e0e760",
+      "sourcePromptSha256": "5f02f85626c224f98c1d71541970ef9d7fbc74682b28dd33db8620f06ba580c2"
+    },
+    {
+      "level": 3,
+      "paletteId": "warm",
+      "path": "previews/business-3-warm.jpg",
+      "styleId": "business",
+      "acceptedSourceId": "business-layout-v2",
+      "sourceImage": "images/business-3-warm.png",
+      "sourcePrompt": "prompts/business-3-warm.txt",
+      "sourceImageSha256": "88169b0996115efeaf3d1d2496dbc5d0bee23e8fbb8b458bc1c73380c1fd0f3a",
+      "sourcePromptSha256": "dd9701f60a3cba50358e35d35dfe45a84998d8d5efd5cb0005a271e57dbd6f51"
+    },
+    {
       "styleId": "tactile",
       "level": 1,
       "paletteId": "cool",
@@ -399,6 +498,17 @@
   ],
   "showcases": [
     {
+      "level": 3,
+      "paletteId": "mid",
+      "path": "showcases/business.jpg",
+      "styleId": "business",
+      "acceptedSourceId": "business-layout-v2",
+      "sourceImage": "images/business-3-mid.png",
+      "sourcePrompt": "prompts/business-3-mid.txt",
+      "sourceImageSha256": "e91d7bd02677362a3d43dff70a69adfcc30bff6ceb2046899a2b9ff910e0e760",
+      "sourcePromptSha256": "5f02f85626c224f98c1d71541970ef9d7fbc74682b28dd33db8620f06ba580c2"
+    },
+    {
       "styleId": "tactile",
       "level": 3,
       "paletteId": "mid",
@@ -516,5 +626,46 @@
     "imageCount": 90,
     "verification": "All 90 public URLs returned identical SHA-256 to accepted originals without authentication.",
     "legacyProvenance": "Existing previews/showcases records below describe the previous bundled JPEGs; active hosted assets use the remote registry."
+  },
+  "businessSource": {
+    "id": "business-layout-v2",
+    "manifest": "manifest.json",
+    "manifestSha256": "0f754f603e826303eed7a65c89e9879bfa679c242715adfacfe965e6d82c65e3"
+  },
+  "businessRecipes": {
+    "tiers": [
+      {
+        "styleId": "business",
+        "level": 1,
+        "promptTemplateSha256": "ca282c5d1dd295ccfd91793e55a4a1b8726fd9198c1c6d5379199f756ad90cc1"
+      },
+      {
+        "styleId": "business",
+        "level": 2,
+        "promptTemplateSha256": "b9c2862577bbd710e50bb6da32ba8e144926276661e7c6f022d0356dd228c62e"
+      },
+      {
+        "styleId": "business",
+        "level": 3,
+        "promptTemplateSha256": "cdd6a4d6fb428e473b9742e51418cf1577fa07543b0bae0fa5b0afaa6a5bdbb3"
+      }
+    ],
+    "palettes": [
+      {
+        "styleId": "business",
+        "paletteId": "cool",
+        "palettePromptSha256": "5a273527e1c993e4918b391d5b9104bd231640eb2f53e2017a6b996f5d779c6a"
+      },
+      {
+        "styleId": "business",
+        "paletteId": "mid",
+        "palettePromptSha256": "f4b2ef745c8df8aafff9bc0a3dbb6fbd8f0963b606903a235987aedf80e5c3f5"
+      },
+      {
+        "styleId": "business",
+        "paletteId": "warm",
+        "palettePromptSha256": "5a3e12b7ea23e30d49666f0d6a85395eed3a3d861245ddf4cd4583c96f40f10d"
+      }
+    ]
   }
 }

@@ -24,7 +24,7 @@ description: Use when users want to make a high-detail presentation from a topic
 - kind: done：直接展示返回的语义文件名 PPTX 链接。
 
 规划时一次写完整 Brief、Outline、逐页 SlideSpec 和可用真实风格候选。
-默认读取 assets/styles/catalog.json 并原样写入全部十种内置风格，不由 Agent 缩成推荐短名单；用户明确要求的自定义 plan.styles 是权威输入，不用内置目录静默覆盖。按“风格 → 档位 → 配色”展开真实选项：立体、玻璃、水墨保留各自 1／2／3 档和偏冷／基准中线／偏暖；经典手绘、教材图解、创意拼贴、电影科技、奢华摄影、建筑蓝图、叙事幻想仅有 3 档／基准中线。
+默认读取 assets/styles/catalog.json 并原样写入全部十三种内置风格（顺序为深海智汇、商务青瓷、数据看板、立体、玻璃、水墨、经典手绘、教材图解、创意拼贴、电影科技、奢华摄影、建筑蓝图、叙事幻想），不由 Agent 缩成推荐短名单；用户明确要求的自定义 plan.styles 是权威输入，不用内置目录静默覆盖。按“风格 → 档位 → 配色”展开真实选项：深海智汇、商务青瓷、数据看板以及立体、玻璃、水墨提供各自 1／2／3 档和偏冷／基准中线／偏暖；经典手绘、教材图解、创意拼贴、电影科技、奢华摄影、建筑蓝图、叙事幻想仅有 3 档／基准中线。本分支接入候选尚未发布；三种商务风格目前使用本地 JPEG，未上传图床，旧十种保持远端。共有 61 个组合、58 张精确预览和 13 张代表图；商务三种各有 9 张预览，代表图采用 3 档／基准中线。商务正文强调文字层级、留白和小型语义图标，仅有输入数据时才使用图表或 KPI，不编造数字，正文不用流光；模板不带内部 SuperPPT 广告样例文案。
 新发布 plan-review 的 details.selectionPath 指向任务内 HTML；历史任务没有已发布选择页时会省略该字段并使用纯对话与原生图片回退。HTML 第一轮完整展示全部风格图，进入某个风格后，第二轮一次展示它的档位与配色组合。HTML 从图床加载公开风格图片，不调用 CLI 或生成服务；点击只形成可复制的自然语言回复。HTML 不可用时，先按 details.planPath、可用时的 details.reviewModelPath，以及 details.samplePromptsPath 展示与页面相同的整体方案、完整逐页内容、当前上下文、确切已选 prompt、参考图用途、输出位置和 1 次调用预算；历史任务没有 reviewModelPath 时直接从 planPath、samplePromptsPath 和当前 details 恢复这些内容，不要求不存在的文件。再读取 details.previewBase 下的 remote-assets.json，以 showcase.path 或 previews[].path 查 assets[逻辑路径].url，作为原生内联图片地址，索引无此条目时才使用 details.previewBase 加相对路径读取自定义本地图片。按同一顺序展示图片和文本元组。图床加载失败时明确说明网络图片不可用，组合仍可选择。没有精确预览时明确说明缺图并仍允许选择，不生成或冒充预览。这仍是同一次 plan-review，不增加逐步确认关卡。不要声称远程或移动端已经验收。
 保留源内容结构、来源覆盖和精确 requiredText（包含独立标题及全部可见文字，不删减、不限制行数）。relationships 只描述内容含义与关系；实际背景、承载图形和构图由生图模型根据内容决定。
 

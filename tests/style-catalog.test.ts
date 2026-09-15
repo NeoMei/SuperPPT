@@ -10,7 +10,8 @@ import { builtInStyleAssetsRoot, loadBuiltInStyleCatalog, loadStyleCatalog, sele
 import { loadRemoteStyleAssets } from '../src/styles/remote-assets.js';
 import { compileSlidePrompt } from '../src/styles/prompt-compiler.js';
 
-const expectedIds = ['tactile', 'glass', 'ink', 'hand-drawn', 'textbook', 'collage', 'cinematic-tech', 'luxury-photo', 'blueprint', 'fantasy'];
+const businessIds = ['deep-sea', 'celadon', 'dashboard'];
+const expectedIds = [...businessIds, 'tactile', 'glass', 'ink', 'hand-drawn', 'textbook', 'collage', 'cinematic-tech', 'luxury-photo', 'blueprint', 'fantasy'];
 const acceptedSourceFixture = join(process.cwd(), 'tests/fixtures/accepted-style-source');
 const legacyStyleHashes = {
   tactile: '2a1cf9e593e1c3c834177666fc125f463787113848bf82730bd5635772222512',
@@ -33,18 +34,18 @@ function hash(value: unknown) {
   return createHash('sha256').update(JSON.stringify(value)).digest('hex');
 }
 
-test('bundled catalog exposes the accepted ten styles in order while preserving the original three definitions', async () => {
+test('bundled catalog exposes the accepted thirteen styles in order while preserving the original three definitions', async () => {
   const catalog = await loadBuiltInStyleCatalog();
   assert.deepEqual(catalog.styles.map(style => style.id), expectedIds);
-  for (const style of catalog.styles.slice(0, 3)) {
+  for (const style of catalog.styles.slice(3, 6)) {
     const { showcase: _showcase, ...legacyDefinition } = style;
     assert.equal(hash(legacyDefinition), legacyStyleHashes[style.id as keyof typeof legacyStyleHashes]);
   }
 });
 
-test('new styles expose only the accepted level-three midpoint variant and reject unsupported choices', async () => {
+test('the original seven added styles expose only the accepted level-three midpoint variant and reject unsupported choices', async () => {
   const catalog = await loadBuiltInStyleCatalog();
-  const newStyles = catalog.styles.slice(3);
+  const newStyles = catalog.styles.slice(6);
   assert.equal(newStyles.length, 7);
   for (const style of newStyles) {
     assert.deepEqual(style.tiers.map(tier => tier.level), [3], style.id);
@@ -58,7 +59,7 @@ test('new styles expose only the accepted level-three midpoint variant and rejec
 
 test('accepted recipes compile unrelated copy without leaking showcase advertising fixtures', async () => {
   const catalog = await loadBuiltInStyleCatalog();
-  const newStyles = catalog.styles.slice(3);
+  const newStyles = catalog.styles.slice(6);
   assert.equal(newStyles.length, 7);
   for (const recipe of newStyles) {
     const style = selectStyleVariant(recipe, { level: 3, paletteId: 'mid' });
@@ -113,12 +114,20 @@ test('catalog loading checks the showcase file as well as preview files', async 
   }
 });
 
-test('every catalog preview resolves through the shipped remote registry without a bundled bitmap', async () => {
+test('legacy assets remain remote and business assets resolve through a registry entry or local JPEG', async () => {
   const catalog = await loadBuiltInStyleCatalog();
   const root = builtInStyleAssetsRoot();
   const remote = await loadRemoteStyleAssets(root);
   for (const style of catalog.styles) {
     for (const asset of [...style.previews, ...(style.showcase ? [style.showcase] : [])]) {
+      if (businessIds.includes(style.id) && !remote[asset.path]) {
+        const sharp = (await import('sharp')).default;
+        const metadata = await sharp(join(root, asset.path)).metadata();
+        assert.equal(metadata.format, 'jpeg');
+        assert.equal(metadata.width, 1280);
+        assert.equal(metadata.height, 720);
+        continue;
+      }
       assert.ok(remote[asset.path], asset.path);
       assert.match(remote[asset.path]!.url, /^https:\/\//);
       assert.equal(remote[asset.path]!.width * 9, remote[asset.path]!.height * 16);
@@ -144,5 +153,53 @@ test('accepted-source normalization rejects prompt drift from a portable accepte
     assert.match(result.stderr, /Accepted prompt changed: prompts\/tactile\.txt/);
   } finally {
     await rm(directory, { recursive: true, force: true });
+  }
+});
+
+
+test('first three business styles expose nine variants each and use the level-three midpoint showcase', async () => {
+  const catalog = await loadBuiltInStyleCatalog();
+  assert.deepEqual(catalog.styles.slice(0, 3).map(style => [style.id, style.name]), [
+    ['deep-sea', '深海智汇'], ['celadon', '商务青瓷'], ['dashboard', '数据看板'],
+  ]);
+  assert.equal(catalog.styles.flatMap(style => style.previews).length, 58);
+  assert.equal(catalog.styles.filter(style => style.showcase).length, 11);
+  for (const style of catalog.styles.slice(0, 3)) {
+    assert.deepEqual(style.tiers.map(tier => tier.level), [1, 2, 3]);
+    assert.deepEqual(style.palettes.map(palette => palette.id), ['cool', 'mid', 'warm']);
+    assert.equal(style.previews.length, 9);
+    for (const level of [1, 2, 3]) for (const paletteId of ['cool', 'mid', 'warm']) {
+      assert.ok(style.previews.some(preview => preview.level === level && preview.paletteId === paletteId && preview.path === `previews/${style.id}-${level}-${paletteId}.jpg`));
+      assert.doesNotThrow(() => selectStyleVariant(style, { level, paletteId }));
+    }
+    assert.deepEqual(style.showcase, { level: 3, paletteId: 'mid', path: `showcases/${style.id}.jpg` });
+  }
+});
+
+test('business prompts preserve text-led body layouts, factual data boundaries and literal input without advertising fixtures', async () => {
+  const catalog = await loadBuiltInStyleCatalog();
+  const styles = catalog.styles.filter(style => businessIds.includes(style.id));
+  assert.equal(styles.length, 3);
+  for (const recipe of styles) for (const tier of recipe.tiers) {
+    const label = `${recipe.id}/${tier.level}`;
+    for (const slot of ['{{PALETTE}}', '{{CONTENT_RELATIONSHIPS}}', '{{SLIDE_COPY}}']) {
+      assert.equal(tier.promptTemplate.split(slot).length, 2, label + ': ' + slot);
+    }
+    assert.equal((tier.promptTemplate.match(/{{/g) ?? []).length, 3, label);
+    for (const palette of recipe.palettes) {
+      const style = selectStyleVariant(recipe, { level: tier.level, paletteId: palette.id });
+      const text = compileSlidePrompt({ spec: unrelatedSpec, style }).text;
+      assert.match(text, /文字(?:为主|是[^。；\n]*主角|[^。；\n]*核心)|以文字为主/, label);
+      assert.match(text, /(?:不|禁止|不得|不要)[^。；\n]*(?:编造|虚构|制造|捏造)[^。；\n]*(?:数据|数字)|(?:不|禁止|不得)[^。；\n]*(?:假数据|假数字)/, label);
+      assert.match(text, /(?:没有|无|未提供)[^。；\n]*数据[^。；\n]*(?:不|禁止)|(?:仅|只有)[^。；\n]*(?:提供|输入)[^。；\n]*数据[^。；\n]*(?:图表|KPI|统计图)/, label);
+      assert.match(text, /正文[^。；\n]*(?:禁止|不得|不使用|不用|无)[^。；\n]*流光/, label);
+      assert.doesNotMatch(text, /SuperPPT|10 大精选模板|让内容，自带设计感|五组亮点|恰好五组|总共12句|用途说明|广告展示页|{{|}}/, label);
+      assert.ok(text.includes(unrelatedSpec.requiredText.join('\n')), label);
+      assert.ok(text.includes(unrelatedSpec.relationships.join('\n')), label);
+      assert.ok(text.includes(palette.prompt), label);
+      const branded = compileSlidePrompt({ spec: { ...unrelatedSpec, requiredText: ['SuperPPT 产品路线', '本季度收入增长 18%'] }, style }).text;
+      assert.equal((branded.match(/SuperPPT/g) ?? []).length, 1, label);
+      assert.ok(branded.includes('本季度收入增长 18%'), label);
+    }
   }
 });
