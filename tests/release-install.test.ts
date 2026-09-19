@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
-import { mkdtemp, rm, readFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, rm, readFile, unlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { repositorySourcePath } from './repository-source.js';
@@ -10,6 +10,17 @@ import { repositorySourcePath } from './repository-source.js';
 test('packed plugin installs independently and runs complete public CLI workflows', { skip: process.env.SUPERPPT_RELEASE_SMOKE !== '1', timeout: 180000 }, async t => {
   const root = await repositorySourcePath('.'), temporary = await mkdtemp(join(tmpdir(), 'superppt-package-'));
   t.after(() => rm(temporary, { recursive: true, force: true }));
+  const probeFiles = [
+    join(root, 'skills/superppt/assets/styles/previews/package-probe.jpg'),
+    join(root, 'skills/superppt/assets/styles/showcases/package-probe.jpg'),
+  ];
+  await Promise.all(probeFiles.map(async file => {
+    await mkdir(join(file, '..'), { recursive: true });
+    await writeFile(file, 'package probe');
+  }));
+  t.after(async () => {
+    await Promise.all(probeFiles.map(file => unlink(file).catch(() => undefined)));
+  });
   const run = promisify(execFile), npm = process.env.npm_execpath;
   assert.ok(npm, 'run via npm run test:release-install');
   const packed = JSON.parse((await run(process.execPath, [npm!, 'pack', '--json', '--pack-destination', temporary], { cwd: root })).stdout);

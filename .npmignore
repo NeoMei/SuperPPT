@@ -1,0 +1,4 @@
+# Style images are served from the public remote asset registry.
+# Keep the catalog and integrity index in the package, but never bundle image bytes.
+skills/superppt/assets/styles/previews/
+skills/superppt/assets/styles/showcases/

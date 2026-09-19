@@ -23,6 +23,8 @@
   "files": [
     ".codex-plugin/",
     "skills/",
+    "!skills/superppt/assets/styles/previews/**",
+    "!skills/superppt/assets/styles/showcases/**",
     "src/",
     "scripts/",
     "references/",
