@@ -1,6 +1,7 @@
 {
   "schemaVersion": "superppt-task-vnext",
   "resolution": "explicit installed skill roots",
+  "selectionPolicy": "prefer latest stable upstream releases; never automatically install, upgrade or downgrade; offline resolution uses explicit installed roots without claiming they are latest",
   "dependencies": [
     {
       "skill": "ai-image-to-ppt",
@@ -10,9 +11,10 @@
     {
       "skill": "image-to-editable-pptx",
       "input": "editableSkillRoot",
-      "version": "0.2.x",
-      "role": "selected-page editable donor"
+      "version": "stable semver; no minor-version ceiling",
+      "role": "selected-page editable donor",
+      "outputContract": "manifestVersion 2; ledgerVersion 2; 1280x720 canvas; slide-editable.pptx; input/output hashes and editable OOXML object validation"
     }
   ],
-  "preflight": "entry fingerprints once per job; never scan source trees"
+  "preflight": "entry fingerprints before generation jobs and before conversion preparation/import; never scan source trees; installation admission does not prove output compatibility"
 }

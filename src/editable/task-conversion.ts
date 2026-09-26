@@ -3,8 +3,8 @@ import { copyFile } from 'node:fs/promises';
 import { dirname, join, posix } from 'node:path';
 import sharp from 'sharp';
 import { z } from 'zod';
-import { readTask, readTaskJson, writeTaskJson, taskPath, atomicWrite, updateTask } from '../project/task-store.js';
-import { TaskDependenciesSchema } from '../dependencies/task-dependencies.js';
+import { readTask, writeTaskJson, taskPath, atomicWrite, updateTask } from '../project/task-store.js';
+import { checkTaskDependencies } from '../dependencies/task-dependencies.js';
 import { readTaskSession, readTaskRevision, presentTaskEdit } from '../deck-revisions/task-deck.js';
 import { readBoundedPptxArchiveFile } from '../deck-revisions/archive.js';
 import { scanOoxmlRanges } from '../deck-revisions/ooxml.js';
@@ -12,7 +12,8 @@ import { spliceTaskSlide } from '../deck-revisions/task-splice.js';
 import { validateEditableConversionOutput } from './converter.js';
 
 export async function prepareTaskConversion(root: string): Promise<void> {
-  const s = await readTask(root), session = await readTaskSession(root), parent = await readTaskRevision(root, session.parent.revisionId);
+  const deps = await checkTaskDependencies(root);
+  const session = await readTaskSession(root), parent = await readTaskRevision(root, session.parent.revisionId);
   const target = parent.topology.entries.find(e => e.stableSlideId === session.targetSlideId)!;
   const zip = await readBoundedPptxArchiveFile(await taskPath(root, session.candidatePath));
   const xml = await zip.file(target.slidePart)!.async('string');
@@ -28,7 +29,6 @@ export async function prepareTaskConversion(root: string): Promise<void> {
   if (!image) throw new Error('Page image missing');
   const sourcePng = `editing/${session.id}/input.png`, outDir = `editing/${session.id}/converter-output`;
   await atomicWrite(await taskPath(root, sourcePng), await sharp(image).resize(1280, 720).png().toBuffer());
-  const deps = TaskDependenciesSchema.parse(await readTaskJson(root, s.dependenciesPath!));
   const inputPath = `editing/${session.id}/conversion-request.json`;
   await writeTaskJson(root, inputPath, { sourcePng, outDir, converterRoot: deps.editable.root, converterSkill: deps.editable.skill, instructions: 'Invoke image-to-editable-pptx for this one page; return outDir. Preserve master and current PPTX.' });
   await updateTask(root, old => ({ ...old, work: { id: session.id, kind: 'convert-page', inputPath, resultPath: `editing/${session.id}/conversion-result.json` } }));
@@ -38,7 +38,7 @@ export async function finishTaskConversion(root: string, raw: unknown): Promise<
   const s = await readTask(root), session = await readTaskSession(root);
   const expected = `editing/${session.id}/converter-output`;
   if (payload.outDir !== expected) throw new Error('Unexpected converter output');
-  const deps = TaskDependenciesSchema.parse(await readTaskJson(root, s.dependenciesPath!));
+  const deps = await checkTaskDependencies(root);
   const converted = await validateEditableConversionOutput({ sourcePng: await taskPath(root, `editing/${session.id}/input.png`), outDir: await taskPath(root, expected), converterVersion: deps.editable.version! });
   const parent = await readTaskRevision(root, session.parent.revisionId), entry = parent.topology.entries.find(e => e.stableSlideId === session.targetSlideId)!;
   // Retrying an interrupted import always starts from its unchanged parent.

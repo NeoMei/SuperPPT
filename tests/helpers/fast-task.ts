@@ -26,7 +26,7 @@ export async function fixtureTask() {
     for (const file of files) { await mkdir(join(base, file, '..'), { recursive: true }); await writeFile(join(base, file), '{}'); }
   }
   await writeFile(join(ai, 'references/capabilities.json'), JSON.stringify({ schemaVersion: 1, skill: 'ai-image-to-ppt', scripts: { generationResult: 'scripts/generation_result.py', hostRoutingPolicy: 'scripts/host_routing_policy.py', importHostImage: 'scripts/import_host_image.py', prepareEditableInput: 'scripts/prepare_editable_input.py', apiGenerator: 'scripts/gen_slide.py', normalizedExport: 'scripts/export_images.py' } }));
-  await writeFile(join(editable, 'package.json'), JSON.stringify({ name: 'image-to-editable-pptx', version: '0.2.2' }));
+  await writeFile(join(editable, 'package.json'), JSON.stringify({ name: 'image-to-editable-pptx', version: '0.3.0' }));
   await writeTaskJson(root, 'dependencies.json', await resolveTaskDependencies({ aiSkillRoot: ai, editableSkillRoot: editable }));
   await updateTask(root, s => ({ ...s, dependenciesPath: 'dependencies.json' }));
   return { root, ai, editable };

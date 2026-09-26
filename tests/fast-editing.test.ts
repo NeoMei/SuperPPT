@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { readFile, mkdir } from 'node:fs/promises';
+import { readFile, mkdir, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import JSZip from 'jszip';
 import { readyDeck, submitWork, generateFixture } from './helpers/fast-flow.js';
@@ -9,6 +9,45 @@ import { readBatchJob, readBatchCheckpoint } from '../src/generation/task-batch.
 import { editTask, readTaskSession, readTaskRevision, presentTaskEdit } from '../src/deck-revisions/task-deck.js';
 import { decideTask } from '../src/workflow/decide.js';
 import { createPresentation } from '../src/deck/pptx.js';
+import { prepareTaskConversion } from '../src/editable/task-conversion.js';
+import { resolveTaskDependencies, TaskDependenciesSchema } from '../src/dependencies/task-dependencies.js';
+
+test('installation drift before the first editable request rolls back the complete task state', async () => {
+  const { root } = await readyDeck(), state = await readTask(root);
+  const deps = TaskDependenciesSchema.parse(await readTaskJson(root, state.dependenciesPath!));
+  await writeFile(join(deps.editable.root, 'src/cli.ts'), 'changed installation');
+  await assert.rejects(() => editTask(root, { pageNumber: 2, mode: 'manual', route: 'activate-editable', instruction: '' }), /installation changed/);
+  assert.deepEqual(await readTask(root), state);
+});
+
+test('a future stable converter cannot import an incompatible manifest or change the candidate', async () => {
+  const { root } = await readyDeck();
+  const deps = TaskDependenciesSchema.parse(await readTaskJson(root, 'dependencies.json'));
+  await writeFile(join(deps.editable.root, 'package.json'), JSON.stringify({ name: 'image-to-editable-pptx', version: '1.0.0' }));
+  await writeTaskJson(root, 'dependencies.json', await resolveTaskDependencies({ aiSkillRoot: deps.ai.root, editableSkillRoot: deps.editable.root }));
+  const reply = await editTask(root, { pageNumber: 2, mode: 'manual', route: 'activate-editable', instruction: '' });
+  const state = await readTask(root), session = await readTaskSession(root);
+  const candidate = await readFile(join(root, session.candidatePath));
+  const outDir = `editing/${session.id}/converter-output`;
+  await writeTaskJson(root, outDir + '/manifest.json', { manifestVersion: 3, canvas: { width: 1280, height: 720 }, elements: [], warnings: [] });
+  await assert.rejects(() => submitWork(root, reply, { outDir }), /manifestVersion/);
+  assert.deepEqual(await readTask(root), state);
+  assert.deepEqual(await readFile(join(root, session.candidatePath)), candidate);
+});
+
+for (const boundary of ['prepare', 'import']) test(`converter installation drift blocks ${boundary} without changing the current deck or candidate`, async () => {
+  const { root } = await readyDeck();
+  const reply = await editTask(root, { pageNumber: 2, mode: 'manual', route: 'activate-editable', instruction: '' });
+  const state = await readTask(root), session = await readTaskSession(root);
+  const deps = TaskDependenciesSchema.parse(await readTaskJson(root, state.dependenciesPath!));
+  const candidate = await readFile(join(root, session.candidatePath));
+  await writeFile(join(deps.editable.root, 'src/cli.ts'), 'changed installation');
+  await assert.rejects(() => boundary === 'prepare'
+    ? prepareTaskConversion(root)
+    : submitWork(root, reply, { outDir: `editing/${session.id}/converter-output` }), /installation changed/);
+  assert.deepEqual((await readTask(root)).currentDeck, state.currentDeck);
+  assert.deepEqual(await readFile(join(root, session.candidatePath)), candidate);
+});
 
 test('manual reorder/insert/delete adoption preserves saved bytes and the next edit starts from that exact deck', async () => {
   const { root } = await readyDeck(), old = (await readTask(root)).currentDeck!;

@@ -13,6 +13,7 @@ description: Use when users want to make a high-detail presentation from a topic
 
 先解析本 Skill 的物理安装位置，插件根目录是其所在目录的上两层。
 通过当前宿主技能目录明确解析 ai-image-to-ppt 和 image-to-editable-pptx，不扫描用户主目录。
+依赖选用最新稳定版，不固定旧的次版本，也不以降级或并装旧插件绕过兼容错误。联网可用时通过官方发布信息核实版本；离线时可使用明确安装的稳定版，但必须说明未核实是否最新。发现安装落后时说明更新需求，未经授权不安装或升级；任务进行中不自动换版。读取依赖当前 Skill，按实际入口与产物契约判断兼容；版本准入不代表能力已验证。新版契约不兼容时停止并报告 SuperPPT 适配缺口，不绕过校验，优先更新或修复 SuperPPT。
 新建空任务目录，执行 start；中断的本版任务执行 continue。
 旧任务不迁移、不读取继续，也不删除。需要时另建新目录。
 

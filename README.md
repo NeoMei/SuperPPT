@@ -9,6 +9,7 @@
 
 通过 Codex/兼容宿主安装本仓库 Skill，告诉 Agent 你的内容与期望。
 依赖 ai-image-to-ppt 和 image-to-editable-pptx 独立安装，宿主 Agent 负责调用；CLI 不代替宿主图像工具。
+依赖优先使用官方最新稳定版，不固定旧次版本、不自动降级。CLI 只解析明确安装的路径并记录版本和入口指纹，不自动联网更新；离线解析不代表已确认最新。安装准入与实际兼容分开：指定页转换仍校验 manifest v2、ledger v2、1280×720 和单页 PPTX 的哈希／对象契约。新版不兼容时应更新 SuperPPT 适配，不绕过校验。详见[依赖策略决定](docs/specs/decisions.md#d-22-优先最新稳定依赖按产物契约判断兼容)。
 内部接口只有 start、continue、decide、edit、status，详见 [操作说明](skills/superppt/references/依赖说明.md)。
 
 三种商务风格已接入当前源码：27 张参考图已上传 imgtg，并逐张核对远端文件 SHA-256 与 1664×936 尺寸；三个代表图复用各自 3 档中线。正式版本发布状态以 GitHub Releases 为准。
