@@ -30,7 +30,7 @@ for (const intent of [
   assert.match(note, /非画面文字/);
   assert.match(note, /风格、创意档位、配色及全部可见文案不变/);
   assert.doesNotMatch(note, /教育|科普|医学|写实|血腥|审核豁免/);
-  assert.equal((review.details as any).submissionNote, note);
+  assert.equal((review.details as any).submissionNote + '\n\n' + (review.details as any).referenceDirection, note);
   assert.deepEqual(await readBatchJob(root, job.jobId), saved);
   assert.equal((await readBatchCheckpoint(root, job.jobId)).requestCount, 1);
   await finishRequest(root, job.jobId, { slideId: job.pages[0].slideId, status: 'failed', artifact: null, provider: 'fixture', channel: 'host' });
@@ -75,7 +75,7 @@ test('changing only the purpose or audience invalidates image reuse, not content
     assert.deepEqual(deck.pages.map(p => !!p.cached), [true, false, false]);
     assert.equal(deck.pages[0].cached!.path, sample.pages[0].target);
     const outgoing = await beginRequest(root, deck.jobId, deck.pages[1].slideId);
-    assert.equal(outgoing, deck.pages[1].prompt + '\n\n' + (review.details as any).submissionNote);
+    assert.equal(outgoing, deck.pages[1].prompt + '\n\n' + (review.details as any).submissionNote + '\n\n' + (review.details as any).referenceDirection);
     assert.ok(outgoing.includes(revised.brief.purpose));
     assert.ok(outgoing.includes(revised.brief.audience));
   }

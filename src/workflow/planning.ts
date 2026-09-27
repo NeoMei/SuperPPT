@@ -1,3 +1,4 @@
+import { selectedCatalogReference, referenceDirection } from '../generation/style-reference.js';
 import { randomUUID } from 'node:crypto';
 import { lstat } from 'node:fs/promises';
 import { PlanBundleSchema, type PlanBundle, type WorkflowReply } from './contracts.js';
@@ -30,7 +31,7 @@ export const planDetails = (plan: PlanBundle, revision: string, publishedSelecti
     answers: plan.context?.answers ?? [],
     assumptions: plan.context?.assumptions ?? [],
   },
-  submissionNote: submissionNote(plan.brief),
+  submissionNote: submissionNote(plan.brief), referenceDirection,
   selectionOrder: ['styleId', 'level', 'paletteId'],
   previewBase: builtInStyleAssetsRoot(),
   styles: plan.styles.map(({id,name,tiers,palettes,previews}) => ({
@@ -88,7 +89,12 @@ export async function publishPlan(root: string, raw: unknown): Promise<WorkflowR
     }
     if (plan.context === undefined) plan = { ...plan, context: await readPlanningContext(root, s.contentRevision) };
     const decisionId = s.pendingDecision?.kind === 'plan-review' ? s.pendingDecision.id : randomUUID();
-    const review = buildReviewModel(plan, s.contentRevision, decisionId);
+    const catalogReferences: NonNullable<Parameters<typeof buildReviewModel>[3]> = {};
+    for (const style of plan.styles) for (const tier of style.tiers) for (const palette of style.palettes) {
+      const reference = await selectedCatalogReference(style, { level: tier.level, paletteId: palette.id });
+      if (reference) catalogReferences[`${style.id}/${tier.level}/${palette.id}`] = reference;
+    }
+    const review = buildReviewModel(plan, s.contentRevision, decisionId, catalogReferences);
     await writeTaskJson(root, path, plan);
     await writeTaskJson(root, `planning/${s.contentRevision}/sample-prompts.json`, samplePrompts(plan));
     await writeTaskJson(root, reviewModelPath(s.contentRevision), review);

@@ -1,3 +1,4 @@
+import { CatalogReferenceSchema } from '../generation/style-reference.js';
 import { randomUUID } from 'node:crypto';
 import { readTask, readTaskJson, writeTaskJson, updateTask, taskTransaction, hash, json, missing } from '../project/task-store.js';
 import { PlanBundleSchema, DecisionInputSchema, type WorkflowReply } from './contracts.js';
@@ -49,8 +50,11 @@ export async function decideTask(root: string, raw: unknown): Promise<WorkflowRe
         const definition = plan.styles.find(p => p.id === input.styleId);
         if (!definition) throw new Error('Select one of the disclosed styles');
         const style = selectStyleVariant(definition, { level: input.level, paletteId: input.paletteId });
+        const review = await readTaskJson(root, `planning/${s.contentRevision}/review-model.json`).catch(e => { if (!missing(e)) throw e; return null; }) as { variants?: Record<string, { catalogReference?: unknown }> } | null;
+        const rawReference = review?.variants?.[`${style.id}/${style.level}/${style.paletteId}`]?.catalogReference;
+        const catalogReference = rawReference ? CatalogReferenceSchema.parse(rawReference) : undefined;
         const prompt = compileSlidePrompt({ spec: plan.slides.find(p => p.slideId === plan.representativeSlideId)!, style }).text;
-        job = { jobId: id, contentRevision: s.contentRevision, kind: 'style-sample', createdAt, generationIntent: { purpose: plan.brief.purpose, audience: plan.brief.audience }, callBudget: 1, styleLock: { recipe: style, representativeSlideId: plan.representativeSlideId, approvalState: 'provisional', approvedSample: null, references: plan.references, applyDependencyDefaultStyle: false }, pages: [{ slideId: plan.representativeSlideId, prompt, target: `${jobPath(id)}/images/${plan.representativeSlideId}.png`, cached: null }] };
+        job = { jobId: id, contentRevision: s.contentRevision, kind: 'style-sample', createdAt, generationIntent: { purpose: plan.brief.purpose, audience: plan.brief.audience }, callBudget: 1, styleLock: { recipe: style, catalogReference, referencePolicy: 'required', representativeSlideId: plan.representativeSlideId, approvalState: 'provisional', approvedSample: null, references: plan.references, applyDependencyDefaultStyle: false }, pages: [{ slideId: plan.representativeSlideId, prompt, target: `${jobPath(id)}/images/${plan.representativeSlideId}.png`, cached: null }] };
       } else {
         if (input.action !== 'approve-sample-and-generate-deck' && input.action !== 'regenerate-page') throw new Error('Action unavailable');
         if (input.action === 'approve-sample-and-generate-deck' && s.stage !== 'sample-review') throw new Error('Review the sample first');

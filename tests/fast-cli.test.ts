@@ -68,7 +68,7 @@ for (const n of [3, 12]) test(`public CLI ${n} pages: 8 commands, 3 decisions, o
       assert.ok(outgoing.startsWith(page.prompt + '\n\n'));
       assert.ok(outgoing.includes('实际用途：解释任务'));
       assert.ok(outgoing.includes('面向受众：用户'));
-      const result = { slideId: page.slideId, status: 'success', artifact: await fixtureImage(root, page.target), raw: null, provider: 'fixture', channel: 'api', referencesUsed: [] };
+      const result = { slideId: page.slideId, status: 'success', artifact: await fixtureImage(root, page.target), raw: null, provider: 'fixture', channel: 'api', referencesUsed: batch.generationReferences(job).map((r: any) => r.sha256) };
       await batch.finishRequest(root, job.jobId, result); pages.push(result);
     }
     return submit(reply, { jobId: job.jobId, outcome: 'success', requestCount: (await batch.readBatchCheckpoint(root, job.jobId)).requestCount, pages, routeSummary: ['fixture: no model calls'] });
@@ -123,7 +123,7 @@ for (const n of [3, 12]) test(`public CLI ${n} pages: 8 commands, 3 decisions, o
   requests++;
   assert.equal(outgoingSample, persistedVariantPrompt);
   const samplePage = sampleJobBeforeRequest.pages[0];
-  const sampleResultForSubmit = { slideId: samplePage.slideId, status: 'success', artifact: await fixtureImage(root, samplePage.target), raw: null, provider: 'fixture', channel: 'api', referencesUsed: [] };
+  const sampleResultForSubmit = { slideId: samplePage.slideId, status: 'success', artifact: await fixtureImage(root, samplePage.target), raw: null, provider: 'fixture', channel: 'api', referencesUsed: batch.generationReferences(sampleJobBeforeRequest).map((r: any) => r.sha256) };
   await batch.finishRequest(root, sampleJobBeforeRequest.jobId, sampleResultForSubmit);
   reply = await submit(firstSampleRequest, { jobId: sampleJobBeforeRequest.jobId, outcome: 'success', requestCount: (await batch.readBatchCheckpoint(root, sampleJobBeforeRequest.jobId)).requestCount, pages: [sampleResultForSubmit], routeSummary: ['fixture: no model calls'] });
   assert.equal(reply.details.callBudget, n - 1);

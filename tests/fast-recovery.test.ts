@@ -1,3 +1,4 @@
+import { generationReferences } from '../src/generation/style-reference.js';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
@@ -49,7 +50,7 @@ test('two completed pages survive interrupted third request and a separately aut
       continue;
     }
     await beginRequest(root, job.jobId, p.slideId);
-    const result = { slideId: p.slideId, status: 'success' as const, artifact: await fixtureImage(root, p.target), raw: null, provider: 'fixture', channel: 'api' as const, referencesUsed: [] };
+    const result = { slideId: p.slideId, status: 'success' as const, artifact: await fixtureImage(root, p.target), raw: null, provider: 'fixture', channel: 'api' as const, referencesUsed: generationReferences(job).map(r => r.sha256) };
     await finishRequest(root, job.jobId, result); pages.push(result);
   }
   const completed = (await readBatchCheckpoint(root, job.jobId)).completed;
@@ -57,7 +58,7 @@ test('two completed pages survive interrupted third request and a separately aut
   assert.equal((await continueTask(root)).kind, 'attention');
   await assert.rejects(() => beginRequest(root, job.jobId, job.pages[2].slideId), /unknown/);
   await assert.rejects(() => beginRequest(root, job.jobId, job.pages[0].slideId), /unknown/);
-  const failed = { slideId: job.pages[2].slideId, status: 'failed' as const, artifact: null, raw: null, provider: 'fixture', channel: 'api' as const, referencesUsed: [] };
+  const failed = { slideId: job.pages[2].slideId, status: 'failed' as const, artifact: null, raw: null, provider: 'fixture', channel: 'api' as const, referencesUsed: generationReferences(job).map(r => r.sha256) };
   await finishRequest(root, job.jobId, failed);
   reply = await submitWork(root, reply, { jobId: job.jobId, outcome: 'partial', requestCount: 2, pages: [...pages, failed], routeSummary: [] });
   assert.equal(reply.kind, 'decision');

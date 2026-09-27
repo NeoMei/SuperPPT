@@ -1,3 +1,4 @@
+import { generationReferences } from '../src/generation/style-reference.js';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFile, mkdir, writeFile } from 'node:fs/promises';
@@ -24,7 +25,7 @@ for (const n of [3, 12]) test(`${n} pages: approved sample stays at its original
   const bytes = await sharp({ create: { width: 160, height: 90, channels: 3, background: '#275f9c' } }).png().toBuffer();
   await mkdir(join(root, sample.pages[0].target, '..'), { recursive: true });
   await writeFile(join(root, sample.pages[0].target), bytes);
-  const pageResult = { slideId: plan.representativeSlideId, status: 'success' as const, artifact: { path: sample.pages[0].target, sha256: hash(bytes) }, raw: null, provider: 'fixture', channel: 'api' as const, referencesUsed: [] };
+  const pageResult = { slideId: plan.representativeSlideId, status: 'success' as const, artifact: { path: sample.pages[0].target, sha256: hash(bytes) }, raw: null, provider: 'fixture', channel: 'api' as const, referencesUsed: generationReferences(sample).map(r => r.sha256) };
   await finishRequest(root, sample.jobId, pageResult);
   reply = await submitWork(root, reply, { jobId: sample.jobId, requestCount: 1, outcome: 'success', pages: [pageResult], routeSummary: ['fixture only'] });
   const ref = (await readBatchCheckpoint(root, sample.jobId)).completed[plan.representativeSlideId];

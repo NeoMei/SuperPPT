@@ -1,3 +1,4 @@
+import { referenceDirection } from '../generation/style-reference.js';
 import { randomUUID } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import { z } from 'zod';
@@ -34,7 +35,7 @@ export async function taskReply(root: string): Promise<WorkflowReply> {
     const preview = await reuseCompletedPages(root, plan, { ...job, kind: 'deck', styleLock: { ...job.styleLock, approvalState: 'approved', approvedSample: result.pages[0].artifact }, pages: plan.outline.slides.map(p => ({ slideId: p.id, prompt: prompts[p.id], target: '', cached: null })) });
     const reusedSlideIds = preview.pages.filter(p => p.cached).map(p => p.slideId);
     const generationPageCount = preview.pages.length - reusedSlideIds.length;
-    return { kind: 'decision', id: s.pendingDecision.id, stage: s.stage, view: `样页：${await taskPath(root, result.pages[0].artifact!.path)}\n确认无修改后复用样页及其他未变页面（整套 ${plan.slides.length} 页，复用 ${reusedSlideIds.length} 页，新生成 ${generationPageCount} 页，默认最多新增 ${generationPageCount} 次外部调用）。`, details: { sample: result.pages[0].artifact, promptsPath, submissionNote: submissionNote(job.generationIntent), references: plan.references, pageCount: plan.slides.length, generationPageCount, reusedSlideIds, callBudget: generationPageCount, output: `${root}/generation`, executor: 'ai-image-to-ppt' } };
+    return { kind: 'decision', id: s.pendingDecision.id, stage: s.stage, view: `样页：${await taskPath(root, result.pages[0].artifact!.path)}\n确认无修改后复用样页及其他未变页面（整套 ${plan.slides.length} 页，复用 ${reusedSlideIds.length} 页，新生成 ${generationPageCount} 页，默认最多新增 ${generationPageCount} 次外部调用）。`, details: { sample: result.pages[0].artifact, promptsPath, submissionNote: submissionNote(job.generationIntent), ...(job.styleLock.referencePolicy === 'required' ? { referenceDirection } : {}), references: [...(job.styleLock.referencePolicy === 'required' ? [{ ...result.pages[0].artifact!, role: 'art-direction' }] : []), ...plan.references], pageCount: plan.slides.length, generationPageCount, reusedSlideIds, callBudget: generationPageCount, output: `${root}/generation`, executor: 'ai-image-to-ppt' } };
   }
   if (!s.currentDeck) throw new Error('Current complete PPTX missing');
   return { kind: 'decision', id: s.pendingDecision.id, stage: 'deck-review', view: `${deckLink(root, s.currentDeck)}\n修改某页 / 返回修改内容或风格 / 确认交付`, details: s.currentDeck };

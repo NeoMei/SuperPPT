@@ -41,15 +41,16 @@ description: Use when users want to make a high-detail presentation from a topic
 接收带版本的页面或对话回复时，逐项核对回复自带的方案版本和决定编号与当前 details.contentRevision、当前 decision.id 相同；不匹配就展示当前方案并要求重新确认，禁止把旧回复静默改写成新 decisionId。当前回复已经包含确切三元组和“授权新增生图调用：1 次”，且完整 prompt、参考图用途和 generation 输出位置此前均已披露时，这份回复本身就是明确授权，核对通过后直接用同一个 decisionId 和 callBudget:1 提交，不重复索要确认。纯对话里没有写出 UUID 的“确认”，只有在紧接当前方案、确切已选组合／prompt、用途、输出和预算 1 的明确生成询问时，才承接当前已披露的 decision.id 提交；上下文不明确时重新展示当前方案。例如页面回复为“方案版本：<当前 UUID>；决定编号：<当前 UUID>；选择玻璃，3 档，偏冷（glass/3/cool）；授权新增生图调用：1 次”。
 在 sample-review 展示实际样页、整套 prompt、参考图用途、整套页数、复用页数、新生成页数与新增调用预算、输出位置；确认即授权整套。按 details.callBudget 披露和提交新增预算，不把整套页数当调用数。
 用户确认无须修改的样页直接进入正式 PPT 的原对应页，不重画、不换图；只生成未缓存页。三页正常路径共调用三次：样页一次，剩余两页两次。内容、风格、档位、配色或用途改变时重新规划，按新批次缓存状态执行；用户要求重画某页时走 regenerate-page。未通过内容检查的样页不能替用户批准。
-两处同时披露 details.submissionNote：实际出站文本 = 原内容 prompt + 两个换行 + 此用途说明。用途取已有 brief 的 purpose、audience，不新增分析或确认步骤。
+两处同时披露 details.submissionNote 与参考图用途说明 details.referenceDirection（如有）；实际出站文本以 review model 和 beginRequest 返回值为准。用途取已有 brief 的 purpose、audience，不新增分析或确认步骤。
 
 每个 generate-batch work 整体交给 ai-image-to-ppt 一次，沿用其 SerialStickyRouter 和当前可调用宿主能力。
 按 [批次工作说明](references/依赖说明.md#批次执行) 执行：串行、成功页复用、每次请求前累计预算、正常路径只回传一个聚合结果。
 使用 job.styleLock.recipe 中锁定的 id、level、paletteId、promptTemplate、逐页确切 prompt 和批准样页；样页到整套沿用同一快照，不重新挑配色或重写档位。只替换每页内容关系与完整文案，不再叠加前中后景、微装饰或预设构图，不追加依赖默认风格。宿主原图 raw 与严格 16:9 master 都保留。
-实际提交宿主或 API 时，原样发送 beginRequest 返回的完整 prompt：它在原内容后附加真实用途说明，让模型自行决定适当表达。该说明不是画面文案；不改内容规划、正文、风格、档位或配色，不增加预筛查或模型调用，也不承诺通过安全过滤。拒绝仍按既有失败流程处理。
+实际提交宿主或 API 时，先调用 prepareGenerationReferences 校验并准备图片；样页使用已披露的精确子风格图，整套使用批准样页，保持同一批次内的参考图不变。原样发送 beginRequest 返回的完整 prompt：它在原内容后附加真实用途和参考图用途说明，让模型自行决定适当表达。该说明不是画面文案；不改内容规划、正文、风格、档位或配色，不增加预筛查或模型调用，也不承诺通过安全过滤。拒绝仍按既有失败流程处理。
+将准备好的图片真实传入宿主参考图参数；豆包 API 使用 gen_slide.py 的重复 --reference-image 参数。不可只在 prompt 中写路径或 URL。先按依赖 capabilities.json 检查候选支持性，不支持参考图的候选标记 unavailable 后沿既定路由继续；没有能保留参考图的通道则停止。成功结果 referencesUsed 必须记录实际已传图片的 SHA-256，不能只凭作业计划填入。
 原图不能直接当成可编辑 PPTX。两个依赖保持独立，不复制其实现。
 
-review-images 时实际查看全部图片，逐项核对文字、风格、层级与禁用内容。
+review-images 时实际查看全部图片，逐项核对文字、标点、重复／遗漏、标题与正文对应关系、风格、层级与禁用内容。豆包 API 使用依赖声明的 Pro 默认模型；不可在 Pro 不可用时私自降到 Lite。API success 仅代表图片文件有效，不能视为文字 QA 通过。若需修改已批准的 prompt，应在原有方案／样页边界展示修订，不在降级适配器里静默压缩。精简设计指令时完整保留 requiredText 与内容关系，优先清晰文字与充分阅读空间，不把长说明挤在大型插图下方。
 检查通过后 CLI 自动组装整套 PPTX。最后展示一个完整 PPTX 链接以及“修改某页 / 返回修改内容或风格 / 确认交付”。
 
 ## 改稿与完成

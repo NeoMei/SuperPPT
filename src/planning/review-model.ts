@@ -1,3 +1,5 @@
+import { referenceDirection, type CatalogReferenceSchema } from '../generation/style-reference.js';
+import type { z } from 'zod';
 import type { PlanningContext } from './context.js';
 import { submissionNote } from '../generation/image-intent.js';
 import { selectStyleVariant } from '../styles/catalog.js';
@@ -20,7 +22,7 @@ export type ReviewModel = {
     sourceRefs: string[];
     isSample: boolean;
   }>;
-  variants: Record<string, { choice: string; prompt: string }>;
+  variants: Record<string, { choice: string; prompt: string; catalogReference?: z.infer<typeof CatalogReferenceSchema> }>;
   references: Array<{ path: string; role: string }>;
   callBudget: 1;
   output: string;
@@ -28,7 +30,7 @@ export type ReviewModel = {
 
 export type ReviewNote = { label: string; text: string };
 
-export function buildReviewModel(plan: PlanBundle, revision: string, decisionId: string): ReviewModel {
+export function buildReviewModel(plan: PlanBundle, revision: string, decisionId: string, catalogReferences: Record<string, z.infer<typeof CatalogReferenceSchema>> = {}): ReviewModel {
   const representative = plan.slides.find(slide => slide.slideId === plan.representativeSlideId)!;
   const note = submissionNote(plan.brief);
   const variants = Object.fromEntries(plan.styles.flatMap(style => style.tiers.flatMap(({ level }) =>
@@ -39,7 +41,8 @@ export function buildReviewModel(plan: PlanBundle, revision: string, decisionId:
         key,
         {
           choice: `选择${style.name}，${level} 档，${palette.name}（${key}）`,
-          prompt: `${compileSlidePrompt({ spec: representative, style: selected }).text}\n\n${note}`,
+          prompt: `${compileSlidePrompt({ spec: representative, style: selected }).text}\n\n${note}` + (catalogReferences[key] || plan.references.some(r => r.role === 'art-direction') ? '\n\n' + referenceDirection : ''),
+          ...(catalogReferences[key] ? { catalogReference: catalogReferences[key] } : {}),
         },
       ];
     }))));

@@ -4,10 +4,11 @@ import { z } from 'zod';
 import { readTask, readTaskJson, writeTaskJson, readArtifact, withTaskLock, hash, json, missing } from '../project/task-store.js';
 import { preflightJob } from '../dependencies/task-dependencies.js';
 import { ResolvedStyleSchema } from '../styles/schemas.js';
+import { CatalogReferenceSchema, generationReferences, referenceDirection, assertReferencesUsed } from './style-reference.js';
 import { GenerationIntentSchema, submissionNote } from './image-intent.js';
 
 export const FileRef = z.object({ path: z.string(), sha256: z.string().regex(/^[a-f0-9]{64}$/) });
-export const TaskStyleSchema = z.object({ recipe: ResolvedStyleSchema, representativeSlideId: z.string().uuid(), approvalState: z.enum(['provisional', 'approved']), approvedSample: FileRef.nullable(), references: z.array(FileRef.extend({ role: z.enum(['art-direction', 'content-reference']) })).default([]), applyDependencyDefaultStyle: z.literal(false) });
+export const TaskStyleSchema = z.object({ recipe: ResolvedStyleSchema, catalogReference: CatalogReferenceSchema.optional(), referencePolicy: z.literal('required').optional(), representativeSlideId: z.string().uuid(), approvalState: z.enum(['provisional', 'approved']), approvedSample: FileRef.nullable(), references: z.array(FileRef.extend({ role: z.enum(['art-direction', 'content-reference']) })).default([]), applyDependencyDefaultStyle: z.literal(false) });
 export const BatchJobSchema = z.object({
   jobId: z.string().uuid(), contentRevision: z.string().uuid(), kind: z.enum(['style-sample', 'deck', 'page-regeneration']),
   styleLock: TaskStyleSchema, generationIntent: GenerationIntentSchema, callBudget: z.number().int().nonnegative(),
@@ -54,6 +55,7 @@ export async function validateImage(root: string, ref: z.infer<typeof FileRef>):
   if (!meta.width || !meta.height || meta.width * 9 !== meta.height * 16) throw new Error('Image must be strict 16:9');
   await image.raw().toBuffer();
 }
+export { generationReferences, prepareGenerationReferences } from './style-reference.js';
 // Ordinary progress bookkeeping. Called inside the Agent's batch, not as public CLI routes.
 export async function beginRequest(root: string, jobId: string, slideId: string): Promise<string> {
   return withTaskLock(root, async () => {
@@ -66,7 +68,7 @@ export async function beginRequest(root: string, jobId: string, slideId: string)
     cp.requestCount++; cp.inFlightSlideId = slideId;
     await writeTaskJson(root, `${jobPath(jobId)}/checkpoint.json`, cp);
     // Keep the compiled page verbatim; only the outbound request includes its actual purpose.
-    return job.pages.find(p => p.slideId === slideId)!.prompt + '\n\n' + submissionNote(job.generationIntent);
+    return job.pages.find(p => p.slideId === slideId)!.prompt + '\n\n' + submissionNote(job.generationIntent) + (generationReferences(job).some(r => r.role === 'art-direction') ? '\n\n' + referenceDirection : '');
   });
 }
 export async function finishRequest(root: string, jobId: string, raw: z.input<typeof PageResultSchema>): Promise<void> {
@@ -76,6 +78,7 @@ export async function finishRequest(root: string, jobId: string, raw: z.input<ty
     if (!target || cp.inFlightSlideId !== page.slideId) throw new Error('No matching in-flight request');
     if (page.status === 'success') {
       if (!page.artifact || page.artifact.path !== target.target) throw new Error('Wrong output for page');
+      assertReferencesUsed(job, page.referencesUsed);
       await validateImage(root, page.artifact); cp.completed[page.slideId] = page.artifact;
     } else if (page.status === 'cached') throw new Error('A paid request cannot be cached');
     cp.pages[page.slideId] = page; cp.inFlightSlideId = null;
@@ -97,10 +100,10 @@ export async function acceptBatchResult(root: string, raw: unknown): Promise<Bat
         const file = cp.completed[page.slideId];
         if (!page.artifact || !file || json(file) !== json(page.artifact)) throw new Error('Result changed a completed page');
         if (page.status === 'cached' && !expected.cached && !cp.pages[page.slideId]) throw new Error('No saved result for cached page');
-        if (cp.pages[page.slideId] && (page.channel !== cp.pages[page.slideId].channel || page.provider !== cp.pages[page.slideId].provider || json(page.raw) !== json(cp.pages[page.slideId].raw))) throw new Error('Result routing differs from its checkpoint');
+        if (cp.pages[page.slideId] && (page.channel !== cp.pages[page.slideId].channel || page.provider !== cp.pages[page.slideId].provider || json(page.raw) !== json(cp.pages[page.slideId].raw) || json(page.referencesUsed) !== json(cp.pages[page.slideId].referencesUsed))) throw new Error('Result routing differs from its checkpoint');
         await validateImage(root, file);
         if (page.channel === 'host') { if (!page.raw) throw new Error('Host raw image missing'); const bytes = await readArtifact(root, page.raw.path); if (hash(bytes) !== page.raw.sha256) throw new Error('Raw image digest mismatch'); }
-        if (!expected.cached) for (const reference of job.styleLock.references.filter(r => r.role === 'art-direction')) if (!page.referencesUsed.includes(reference.sha256)) throw new Error('Required art-direction reference was not used');
+        if (!expected.cached) assertReferencesUsed(job, page.referencesUsed);
       } else if (cp.completed[page.slideId]) throw new Error('Completed page cannot become failed');
     }
     if (result.outcome === 'success' && result.pages.some(p => p.status !== 'success' && p.status !== 'cached')) throw new Error('Incomplete successful batch');

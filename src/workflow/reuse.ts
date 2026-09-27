@@ -25,6 +25,7 @@ export async function reuseCompletedPages(root: string, plan: PlanBundle, job: B
   if (json(prior.styleLock.recipe) !== json(job.styleLock.recipe)) return job;
   if (json(prior.generationIntent) !== json(job.generationIntent)) return job;
   if (json(prior.styleLock.references) !== json(job.styleLock.references)) return job;
+  if (prior.styleLock.referencePolicy !== job.styleLock.referencePolicy || json(prior.styleLock.catalogReference ?? null) !== json(job.styleLock.catalogReference ?? null)) return job;
   const qa = await readTaskJson(root, `${jobPath(prior.jobId)}/qa.json`).catch(e => { if (!missing(e)) throw e; return null; }) as { pages: Array<{ slideId: string; styleConsistent: boolean; hierarchyClear: boolean; forbiddenContentAbsent: boolean; requiredText: Array<{ present: boolean }> }> } | null;
   const rejected = new Set(qa?.pages.filter(p => !p.styleConsistent || !p.hierarchyClear || !p.forbiddenContentAbsent || p.requiredText.some(t => !t.present)).map(p => p.slideId));
   if (job.kind === 'style-sample') {

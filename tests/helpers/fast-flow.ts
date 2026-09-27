@@ -1,3 +1,4 @@
+import { generationReferences } from '../../src/generation/style-reference.js';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { join } from 'node:path';
@@ -28,7 +29,7 @@ export async function generateFixture(root: string, reply: WorkflowReply) {
     }
     await beginRequest(root, job.jobId, page.slideId);
     const artifact = await fixtureImage(root, page.target);
-    const result: BatchResult['pages'][number] = { slideId: page.slideId, status: 'success', artifact, raw: null, provider: 'fixture', channel: 'api', referencesUsed: [] };
+    const result: BatchResult['pages'][number] = { slideId: page.slideId, status: 'success', artifact, raw: null, provider: 'fixture', channel: 'api', referencesUsed: generationReferences(job).map(r => r.sha256) };
     await finishRequest(root, job.jobId, result); pages.push(result);
   }
   return submitWork(root, reply, { jobId: job.jobId, requestCount: (await readBatchCheckpoint(root, job.jobId)).requestCount, outcome: 'success', pages, routeSummary: ['fixture only'] });

@@ -145,7 +145,7 @@ export function installReviewInteractions(model: ReviewModel): void {
     choice.textContent = model.variants[key]!.choice;
     promptText.textContent = model.variants[key]!.prompt;
     promptSection.hidden = false;
-    status.textContent = '已选择组合；请核对完整 prompt。选择本身不会生成图片。';
+    status.textContent = '已选择组合；请核对完整 prompt。' + (model.variants[key]!.catalogReference ? '所选子风格图将作为画风参考，只参考材质、光影与配色，不复制文字或布局。' : '') + '选择本身不会生成图片。';
     refresh();
   });
   confirmButton.addEventListener('click', async () => {
