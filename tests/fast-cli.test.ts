@@ -12,7 +12,8 @@ import { repositorySourcePath } from './repository-source.js';
 const run = promisify(execFile);
 // Bound the text separately from the exact catalog JPEGs checked below.
 // The 12-page, 61-variant candidate is about 262 KB of text; allow roughly 22% headroom.
-const MAX_TEXT_ONLY_REVIEW_HTML_BYTES = 320_000;
+// The complete 99-variant catalog includes each exact prompt in the review model.
+const MAX_TEXT_ONLY_REVIEW_HTML_BYTES = 500_000;
 for (const n of [3, 12]) test(`public CLI ${n} pages: 8 commands, 3 decisions, one complete batch and byte-identical delivery`, async () => {
   const runtime = process.env.SUPERPPT_TEST_ROOT ?? await repositorySourcePath('.');
   const compiled = !process.env.SUPERPPT_TEST_ROOT && import.meta.url.includes('/dist/');

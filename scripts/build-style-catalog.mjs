@@ -121,6 +121,9 @@ for (const style of catalog.styles) {
     assert.equal(preview.path, "previews/" + key + ".jpg", "Preview paths must be portable and combination-specific");
     previews.push({ ...preview, styleId: style.id });
   }
+  assert.deepEqual(style.tiers.map(tier => tier.level), [1, 2, 3], style.id + ": complete tiers");
+  assert.deepEqual(style.palettes.map(palette => palette.id), paletteIds, style.id + ": complete palettes");
+  assert.equal(style.previews.length, 9, style.id + ": nine exact previews required");
   assert.ok(style.showcase, style.id + ": missing showcase");
   assert.ok(style.tiers.some((tier) => tier.level === style.showcase.level), style.id + ": showcase tier unavailable");
   assert.ok(style.palettes.some((palette) => palette.id === style.showcase.paletteId), style.id + ": showcase palette unavailable");
@@ -135,8 +138,8 @@ for (const style of catalog.styles) {
     assert.equal(style.showcase.paletteId, "mid", style.id + ": business showcase palette");
   }
 }
-assert.equal(catalog.styles.reduce((sum, style) => sum + style.tiers.length * style.palettes.length, 0), 43, "Expected 43 selectable combinations");
-assert.equal(previews.length, 40, "Expected 40 previews");
+assert.equal(catalog.styles.reduce((sum, style) => sum + style.tiers.length * style.palettes.length, 0), 99, "Expected 99 selectable combinations");
+assert.equal(previews.length, 99, "Expected 99 previews");
 assert.equal(showcases.length, 11, "Expected 11 showcases");
 assert.ok(["business-layout-v1", "business-layout-v2"].includes(provenance.businessSource.id), "Unknown business source id");
 assert.equal(provenance.businessSource.manifest, "manifest.json");
@@ -161,6 +164,10 @@ for (const preview of previews) {
   assertSafeRelativePath(source.sourceImage, "Preview source " + preview.path);
   if (businessStyleIds.includes(preview.styleId)) {
     validateBusinessAssetSource(preview, source);
+  } else if (source.acceptedSourceId === provenance.variantSource.id) {
+    assert.match(source.sourceImage, /^images\/[a-z0-9-]+\.png$/);
+    assertSafeRelativePath(source.sourcePrompt, "Variant prompt");
+    assert.match(source.sourcePromptSha256, /^[0-9a-f]{64}$/);
   } else if (source.acceptedSourceId) {
     assert.equal(source.acceptedSourceId, provenance.acceptedSource.id);
     assert.match(source.sourceImage, /^images\/[a-z0-9-]+\.png$/);
@@ -206,12 +213,25 @@ for (const recipe of provenance.recipes) {
   assert.match(recipe.palettePromptSha256, /^[0-9a-f]{64}$/);
   const style = catalog.styles.find((candidate) => candidate.id === recipe.styleId);
   assert.ok(style, "Recipe style missing: " + recipe.styleId);
-  assert.equal(style.tiers.length, 1, recipe.styleId + ": accepted recipe must expose one tier");
-  assert.equal(style.palettes.length, 1, recipe.styleId + ": accepted recipe must expose one palette");
-  assert.equal(createHash("sha256").update(style.tiers[0].promptTemplate).digest("hex"), recipe.promptTemplateSha256, recipe.styleId + ": prompt template changed");
-  assert.equal(createHash("sha256").update(style.palettes[0].prompt).digest("hex"), recipe.palettePromptSha256, recipe.styleId + ": palette prompt changed");
+  assert.equal(createHash("sha256").update(style.tiers.find(tier => tier.level === 3).promptTemplate).digest("hex"), recipe.promptTemplateSha256, recipe.styleId + ": prompt template changed");
+  assert.equal(createHash("sha256").update(style.palettes.find(palette => palette.id === "mid").prompt).digest("hex"), recipe.palettePromptSha256, recipe.styleId + ": palette prompt changed");
 }
 assert.deepEqual(provenance.recipeTransformations, expectedRecipeTransformations, "Recipe transformation contract changed");
+assert.equal(provenance.variantSource.id, "ten-styles-ninety-variants-r1");
+assert.match(provenance.variantSource.manifestSha256, /^[0-9a-f]{64}$/);
+assert.deepEqual(provenance.variantRecipes.tiers.map(r => r.styleId + "/" + r.level).sort(), newStyleIds.flatMap(id => [id + "/1", id + "/2"]).sort());
+assert.deepEqual(provenance.variantRecipes.palettes.map(r => r.styleId + "/" + r.paletteId).sort(), newStyleIds.flatMap(id => [id + "/cool", id + "/warm"]).sort());
+for (const recipe of provenance.variantRecipes.tiers) {
+  const tier = catalog.styles.find(s => s.id === recipe.styleId).tiers.find(t => t.level === recipe.level);
+  assertSafeRelativePath(recipe.sourcePrompt, "Variant recipe prompt");
+  assert.match(recipe.sourcePromptSha256, /^[0-9a-f]{64}$/);
+  assert.equal(createHash("sha256").update(tier.promptTemplate).digest("hex"), recipe.promptTemplateSha256, "Variant tier changed");
+}
+for (const recipe of provenance.variantRecipes.palettes) {
+  const palette = catalog.styles.find(s => s.id === recipe.styleId).palettes.find(p => p.id === recipe.paletteId);
+  assert.equal(createHash("sha256").update(palette.prompt).digest("hex"), recipe.promptSha256, "Variant palette changed");
+}
+
 
 // Business recipes are independent of the seven extracted legacy recipes.
 const businessStyles = catalog.styles.filter((style) => businessStyleIds.includes(style.id));
@@ -297,8 +317,8 @@ if (normalize) {
         assert.equal(recipe.sourcePromptSha256, source.sourcePromptSha256, "Recipe prompt hash mapping changed: " + styleId);
         const extracted = extractAcceptedRecipe(promptBytes.toString("utf8"), styleId);
         const catalogStyle = catalog.styles.find((candidate) => candidate.id === styleId);
-        assert.equal(extracted.promptTemplate, catalogStyle.tiers[0].promptTemplate, "Recipe extraction changed: " + styleId);
-        assert.equal(extracted.palettePrompt, catalogStyle.palettes[0].prompt, "Palette extraction changed: " + styleId);
+        assert.equal(extracted.promptTemplate, catalogStyle.tiers.find(tier => tier.level === 3).promptTemplate, "Recipe extraction changed: " + styleId);
+        assert.equal(extracted.palettePrompt, catalogStyle.palettes.find(palette => palette.id === "mid").prompt, "Palette extraction changed: " + styleId);
       }
     }
     for (const preview of previews) {
@@ -339,6 +359,10 @@ let remoteCount = 0;
 let localCount = 0;
 for (const asset of [...previews, ...showcases]) {
   if (Object.hasOwn(remoteAssets, asset.path)) {
+    const source = sources.get(asset.path);
+    if (source?.acceptedSourceId === provenance.variantSource.id) {
+      assert.equal(remoteAssets[asset.path].sha256, source.sourceImageSha256, "Hosted variant differs from accepted image: " + asset.path);
+    }
     remoteCount += 1;
     continue;
   }

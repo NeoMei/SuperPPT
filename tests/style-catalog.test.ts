@@ -13,10 +13,10 @@ import { compileSlidePrompt } from '../src/styles/prompt-compiler.js';
 const businessIds = ['business'];
 const expectedIds = ['business', 'tactile', 'glass', 'ink', 'hand-drawn', 'textbook', 'collage', 'cinematic-tech', 'luxury-photo', 'blueprint', 'fantasy'];
 const acceptedSourceFixture = join(process.cwd(), 'tests/fixtures/accepted-style-source');
-const legacyStyleHashes = {
-  tactile: '2a1cf9e593e1c3c834177666fc125f463787113848bf82730bd5635772222512',
-  glass: '16b2b8f252c96951b5fbd3284e5044e51b945e7d55bcd5803932aef209fb5401',
-  ink: 'ce5c14dc31f3f689fa05ce4200c657959d7717405c802609749c0b42c68eff64',
+const legacyRecipeHashes = {
+  "tactile": "f35ef03c47a590b52087797d52e33c4d0fa63a204a9904ad849e941830d4efd7",
+  "glass": "042470b0f17e2231054757ebc3243cd69509334cd4a311d6c3d91badc7fa70bd",
+  "ink": "c79a48614070a1659c514772e06cad0679d6386656c3bbec88e01b3dd9cf60cd"
 } as const;
 const unrelatedSpec = {
   schemaVersion: 1 as const,
@@ -38,22 +38,25 @@ test('bundled catalog exposes the accepted eleven styles in order while preservi
   const catalog = await loadBuiltInStyleCatalog();
   assert.deepEqual(catalog.styles.map(style => style.id), expectedIds);
   for (const style of catalog.styles.slice(1, 4)) {
-    const { showcase: _showcase, ...legacyDefinition } = style;
-    assert.equal(hash(legacyDefinition), legacyStyleHashes[style.id as keyof typeof legacyStyleHashes]);
+    assert.equal(hash({ tiers: style.tiers, palettes: style.palettes }), legacyRecipeHashes[style.id as keyof typeof legacyRecipeHashes]);
   }
 });
 
-test('the original seven added styles expose only the accepted level-three midpoint variant and reject unsupported choices', async () => {
+test('all built-in styles compile every accepted tier and palette without fixture copy', async () => {
   const catalog = await loadBuiltInStyleCatalog();
-  const newStyles = catalog.styles.slice(4);
-  assert.equal(newStyles.length, 7);
-  for (const style of newStyles) {
-    assert.deepEqual(style.tiers.map(tier => tier.level), [3], style.id);
-    assert.deepEqual(style.palettes.map(palette => palette.id), ['mid'], style.id);
-    assert.deepEqual(style.previews, [{ level: 3, paletteId: 'mid', path: `previews/${style.id}-3-mid.jpg` }]);
-    assert.deepEqual(style.showcase, { level: 3, paletteId: 'mid', path: `showcases/${style.id}.jpg` });
-    assert.throws(() => selectStyleVariant(style, { level: 1, paletteId: 'mid' }), /tier/);
-    assert.throws(() => selectStyleVariant(style, { level: 3, paletteId: 'cool' }), /palette/);
+  for (const style of catalog.styles) {
+    assert.deepEqual(style.tiers.map(t => t.level), [1, 2, 3]);
+    assert.deepEqual(style.palettes.map(p => p.id), ['cool', 'mid', 'warm']);
+    assert.equal(style.previews.length, 9);
+    for (const level of [1, 2, 3]) for (const paletteId of ['cool', 'mid', 'warm']) {
+      const selected = selectStyleVariant(style, { level, paletteId });
+      const text = compileSlidePrompt({ spec: unrelatedSpec, style: selected }).text;
+      assert.ok(text.includes(unrelatedSpec.requiredText.join('\n')));
+      assert.ok(text.includes(unrelatedSpec.relationships.join('\n')));
+      assert.doesNotMatch(text, /SuperPPT|10 大精选模板|让内容，自带设计感|用途说明|广告展示页|五组亮点|{{|}}/);
+      assert.ok(style.previews.some(p => p.level === level && p.paletteId === paletteId));
+    }
+    assert.throws(() => selectStyleVariant(style, { level: 1, paletteId: 'unknown' }), /palette/);
   }
 });
 
@@ -160,7 +163,7 @@ test('accepted-source normalization rejects prompt drift from a portable accepte
 test('business style exposes nine variants and uses the level-three midpoint showcase', async () => {
   const catalog = await loadBuiltInStyleCatalog();
   assert.deepEqual(catalog.styles.slice(0, 1).map(style => [style.id, style.name]), [['business', '商务风格']]);
-  assert.equal(catalog.styles.flatMap(style => style.previews).length, 40);
+  assert.equal(catalog.styles.flatMap(style => style.previews).length, 99);
   assert.equal(catalog.styles.filter(style => style.showcase).length, 11);
   for (const style of catalog.styles.slice(0, 1)) {
     assert.deepEqual(style.tiers.map(tier => tier.level), [1, 2, 3]);

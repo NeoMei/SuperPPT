@@ -72,10 +72,10 @@ async function fixture() {
     const style = legacy[index];
     const recipe = provenance.recipes.find((candidate: any) => candidate.styleId === style.id);
     const prompt = recipe
-      ? style.tiers[0].promptTemplate.trimEnd()
+      ? style.tiers.find((tier: any) => tier.level === 3).promptTemplate.trimEnd()
         .replace('中文 PPT 页面', '中文 PPT 广告展示页')
         .replace('的标题和副标题区', '的 SuperPPT 标题和副标题区')
-        .replace('{{PALETTE}}', style.palettes[0].prompt)
+        .replace('{{PALETTE}}', style.palettes.find((palette: any) => palette.id === 'mid').prompt)
         .replace('{{CONTENT_RELATIONSHIPS}}', 'fixture relationships')
         .replace('{{SLIDE_COPY}}', 'SuperPPT\n10 大精选模板') + '\n\n用途说明：fixture\n'
       : `Accepted source fixture: ${style.id}\n`;
@@ -89,7 +89,7 @@ async function fixture() {
   await writeFile(join(accepted, 'manifest.json'), acceptedManifestText);
   provenance.acceptedSource.manifestSha256 = digest(acceptedManifestText);
   for (const source of [...provenance.previews, ...provenance.showcases]) {
-    if (source.acceptedSourceId === provenance.acceptedSource.id) source.sourceImageSha256 = digest(png);
+    if ([provenance.acceptedSource.id, provenance.variantSource.id].includes(source.acceptedSourceId)) source.sourceImageSha256 = digest(png);
   }
   const remote = { version: 1, assets: Object.fromEntries(catalog.styles.flatMap((style: any) => [...style.previews, style.showcase]).map((asset: any) => [asset.path, { url: 'https://example.com/fixture.png', sha256: digest(png), width: 160, height: 90, bytes: png.length }])) };
   async function save() {

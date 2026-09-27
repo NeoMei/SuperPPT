@@ -32,20 +32,20 @@ test('clipboard helper reports success only when a clipboard mechanism succeeds'
   }), false);
 });
 
-test('selection groups all eleven styles into 43 available variants and discloses the missing previews', async () => {
+test('selection exposes nine complete variants per built-in style', async () => {
   const module = await import('../src/styles/selection.js').catch(() => ({} as Record<string, unknown>));
   assert.equal(typeof module.styleSelection, 'function');
   const selection = (module.styleSelection as (styles: StyleRecipe[]) => any)((await loadBuiltInStyleCatalog()).styles);
   assert.equal(selection.styles.length, 11);
   const variants = selection.styles.flatMap((style: any) => style.groups.flatMap((group: any) => group.variants));
-  assert.equal(variants.length, 43);
+  assert.equal(variants.length, 99);
   assert.deepEqual(
     variants.filter((variant: any) => variant.previewStatus === 'missing').map((variant: any) => `${variant.styleId}/${variant.level}/${variant.paletteId}`),
-    ['tactile/1/mid', 'glass/1/cool', 'glass/2/cool'],
+    [],
   );
-  for (const style of selection.styles.slice(6)) {
-    assert.deepEqual(style.groups.map((group: any) => group.level), [3]);
-    assert.deepEqual(style.groups[0].variants.map((variant: any) => variant.paletteId), ['mid']);
+  for (const style of selection.styles) {
+    assert.deepEqual(style.groups.map((group: any) => group.level), [1, 2, 3]);
+    assert.deepEqual(style.groups[0].variants.map((variant: any) => variant.paletteId), ['cool', 'mid', 'warm']);
   }
 });
 
@@ -88,9 +88,9 @@ test('selection HTML references remote legacy and local business images, escapes
     assert.match(html, /返回风格列表/);
     assert.match(html, /id="style-tactile-level-1"/);
     assert.match(html, /选择创意拼贴，3 档，基准中线/);
-    assert.match(html, /缺少该组合的精确预览/);
+    assert.doesNotMatch(html, /缺少该组合的精确预览/);
     assert.match(html, /data-selectable="true"/);
-    assert.equal((html.match(/data-variant-key=/g) ?? []).length, 43);
+    assert.equal((html.match(/data-variant-key=/g) ?? []).length, 99);
     assert.match(html, /从图床加载公开的风格图片/);
     assert.match(html, /请手动复制上方回复/);
   } finally {

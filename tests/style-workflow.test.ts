@@ -54,7 +54,7 @@ test('missing and invalid choices leave the current decision and generation stat
     assert.deepEqual(await readTask(root), before);
   }
 });
-test('collage 3/mid creates one immutable sample job while collage 1/cool leaves plan review untouched', async () => {
+test('restored collage 1/cool creates an immutable sample job and unknown palettes leave review untouched', async () => {
   const { root } = await fixtureTask();
   const candidate = await fixturePlan();
   candidate.styles = (await loadBuiltInStyleCatalog()).styles;
@@ -63,13 +63,13 @@ test('collage 3/mid creates one immutable sample job while collage 1/cool leaves
   const review = await publishPlan(root, candidate);
   if (review.kind !== 'decision') throw new Error('decision expected');
   const before = await readTask(root);
-  await assert.rejects(decideTask(root, { decisionId: review.id, action: 'select-style-and-generate-sample', styleId: 'collage', level: 1, paletteId: 'cool', callBudget: 1 }), /Unavailable creativity tier/);
+  await assert.rejects(decideTask(root, { decisionId: review.id, action: 'select-style-and-generate-sample', styleId: 'collage', level: 1, paletteId: 'unknown', callBudget: 1 }), /Unavailable style palette/);
   assert.deepEqual(await readTask(root), before);
-  const work = await decideTask(root, { decisionId: review.id, action: 'select-style-and-generate-sample', styleId: 'collage', level: 3, paletteId: 'mid', callBudget: 1 });
+  const work = await decideTask(root, { decisionId: review.id, action: 'select-style-and-generate-sample', styleId: 'collage', level: 1, paletteId: 'cool', callBudget: 1 });
   assert.equal(work.kind, 'work');
   const job = await readBatchJob(root, (await readTask(root)).activeJobId!);
   assert.deepEqual({ id: job.styleLock.recipe.id, name: job.styleLock.recipe.name, level: job.styleLock.recipe.level, paletteId: job.styleLock.recipe.paletteId },
-    { id: 'collage', name: '创意拼贴', level: 3, paletteId: 'mid' });
+    { id: 'collage', name: '创意拼贴', level: 1, paletteId: 'cool' });
   assert.equal(job.callBudget, 1);
   assert.equal(job.pages.length, 1);
   assert.match(job.pages[0]!.prompt, /月球仓储与咖啡口味彼此独立/);

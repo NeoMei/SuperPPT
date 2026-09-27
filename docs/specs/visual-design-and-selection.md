@@ -99,7 +99,7 @@ HTML 静态与生成脚本逻辑检查证明十张第一轮图片引用公开 HT
 | VS-01、02、04 | [catalog](../../skills/superppt/assets/styles/catalog.json)、[目录测试](../../tests/style-catalog.test.ts) | 十风格、34 组合已接入本地候选；新增七种只开放 3 档／中线，不外推其他组合验收 |
 | VS-03、06 | [编译器](../../src/styles/prompt-compiler.ts)、[选项测试](../../tests/style-options.test.ts)、[工作流测试](../../tests/style-workflow.test.ts) | 文案与选择契约有测试，不能证明模型每次忠实绘制 |
 | VS-05 | [方案展示](../../src/workflow/planning.ts)、[选择页](../../src/styles/selection-view.ts)、[运行 Skill](../../skills/superppt/SKILL.md) | HTML 已实现整体／逐页方案、意见、全部风格到所选组合、确切 prompt 与版本绑定授权；生成逻辑自动化已验，浏览器、复制、窄视口和手机真实交互未验收 |
-| VS-05 预览 | [资产说明](../../skills/superppt/assets/styles/README.md) | 31 张精确组合预览和 10 张代表展示图使用图床直链；3 个旧组合缺精确预览且仍可选 |
+| VS-05 预览 | [资产说明](../../skills/superppt/assets/styles/README.md) | 99 张精确组合预览和 11 张代表展示图使用图床直链；11 种风格各 9 个完整组合 |
 | VS-07 | [用途实现](../../src/generation/image-intent.ts)、[用途测试](../../tests/image-intent.test.ts) | 已实现提交边界说明；没有误拒率或必过过滤保证 |
 | VS-08 | [复用测试](../../tests/sample-reuse.test.ts)、[CLI 测试](../../tests/fast-cli.test.ts) | 已验证复用位置、调用预算、失效与整套组装；不等于新增真实生图或 Office GUI 验收 |
 

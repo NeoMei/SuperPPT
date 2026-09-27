@@ -105,255 +105,1012 @@
       "level": 1,
       "paletteId": "cool",
       "path": "previews/tactile-1-cool.jpg",
-      "sourceImage": "design-system-round37/tactile-1-cool.png",
-      "sourceImageSha256": "75b90a5b085baa9896c4112a058a8e5b3ea8bfc022e8a0812c735eeeffe7b7d6"
+      "acceptedSourceId": "ten-styles-ninety-variants-r1",
+      "sourceImage": "images/01-tactile-1-cool.png",
+      "sourceImageSha256": "3ebff54ba71d3f485ba101eac8ae1bc397b4bfca9f1937209d0aae273bf93d67",
+      "sourcePrompt": "prompts/01-tactile-1-cool.txt",
+      "sourcePromptSha256": "0dc58e3af18cbd9c9950c0b78372d66e8b128b312d20ccc8bb26ad2b3c7b7686"
+    },
+    {
+      "styleId": "tactile",
+      "level": 1,
+      "paletteId": "mid",
+      "path": "previews/tactile-1-mid.jpg",
+      "acceptedSourceId": "ten-styles-ninety-variants-r1",
+      "sourceImage": "images/01-tactile-1.png",
+      "sourceImageSha256": "f1300ce8e4bd6601ce71fb26e194867adfc3791e503c5aeb66341d5b1fa5822d",
+      "sourcePrompt": "prompts/01-tactile-1.txt",
+      "sourcePromptSha256": "3c112b243eacfdf291524de26e348c700300a44a9ccb1f19331c78477a11e577"
     },
     {
       "styleId": "tactile",
       "level": 1,
       "paletteId": "warm",
       "path": "previews/tactile-1-warm.jpg",
-      "sourceImage": "design-system-round38/tactile-1-warm.png",
-      "sourceImageSha256": "9fdcc25a485d068e6148d7d322ea1906f51cd406cda66d7822e33fe898978f07"
+      "acceptedSourceId": "ten-styles-ninety-variants-r1",
+      "sourceImage": "images/01-tactile-1-warm.png",
+      "sourceImageSha256": "7a1e46da4d2324d3254dd08e42943dd337e2afebf3200ef53955881fa60d1595",
+      "sourcePrompt": "prompts/01-tactile-1-warm.txt",
+      "sourcePromptSha256": "5cdd11adc6bb8217d80c81d0144abc3823bae17e8cf55c323fa957e1e6305da2"
     },
     {
       "styleId": "tactile",
       "level": 2,
       "paletteId": "cool",
       "path": "previews/tactile-2-cool.jpg",
-      "sourceImage": "design-system-round35/tactile-cool.png",
-      "sourceImageSha256": "d346725ff69aedb7c660237819c1490a8837904627eb5b894f218727291ce45b"
+      "acceptedSourceId": "ten-styles-ninety-variants-r1",
+      "sourceImage": "images/01-tactile-2-cool.png",
+      "sourceImageSha256": "1dcd50212c3426ebbce15ae341843cfcf0f84d47519e22ef7f50856a1d085049",
+      "sourcePrompt": "prompts/01-tactile-2-cool.txt",
+      "sourcePromptSha256": "0dc58e3af18cbd9c9950c0b78372d66e8b128b312d20ccc8bb26ad2b3c7b7686"
     },
     {
       "styleId": "tactile",
       "level": 2,
       "paletteId": "mid",
       "path": "previews/tactile-2-mid.jpg",
-      "sourceImage": "design-system-round36/tactile-mid.png",
-      "sourceImageSha256": "ef5fffee7362268558d9104258d26b06d50a1e40acc65614401706556df8bc8c"
+      "acceptedSourceId": "ten-styles-ninety-variants-r1",
+      "sourceImage": "images/01-tactile-2.png",
+      "sourceImageSha256": "db7d696205c35ba79f6577a9040faa26b76269f83b21acf4d1223973361617a5",
+      "sourcePrompt": "prompts/01-tactile-2.txt",
+      "sourcePromptSha256": "8e12133d3b7e27e8046dd7af6007e5ffcdd930bdac3c5c06e077eed2825b7be7"
     },
     {
       "styleId": "tactile",
       "level": 2,
       "paletteId": "warm",
       "path": "previews/tactile-2-warm.jpg",
-      "sourceImage": "design-system-round35/tactile-warm.png",
-      "sourceImageSha256": "57d55b4f61a17a6216430b8df1069092cd7a7dde11d19b4ef8f49e8f4c574aab"
+      "acceptedSourceId": "ten-styles-ninety-variants-r1",
+      "sourceImage": "images/01-tactile-2-warm.png",
+      "sourceImageSha256": "d620ebf36b762b0463cc3f3ab1bbeab69ae7c92e7aa9a6b328e6e91bca6f6f2b",
+      "sourcePrompt": "prompts/01-tactile-2-warm.txt",
+      "sourcePromptSha256": "5cdd11adc6bb8217d80c81d0144abc3823bae17e8cf55c323fa957e1e6305da2"
     },
     {
       "styleId": "tactile",
       "level": 3,
       "paletteId": "cool",
       "path": "previews/tactile-3-cool.jpg",
-      "sourceImage": "design-system-round39/tactile-3-cool.png",
-      "sourceImageSha256": "6b8e9e52905037f7e51324be6be6edcf00fede0bb62a8d0c302cce2cccb9be89"
+      "acceptedSourceId": "ten-styles-ninety-variants-r1",
+      "sourceImage": "images/01-tactile-3-cool.png",
+      "sourceImageSha256": "5948571c9575e2a3eb3f4536d00ef417a41539de3bffe186e4cbbb929fde3380",
+      "sourcePrompt": "prompts/01-tactile-3-cool.txt",
+      "sourcePromptSha256": "0dc58e3af18cbd9c9950c0b78372d66e8b128b312d20ccc8bb26ad2b3c7b7686"
     },
     {
       "styleId": "tactile",
       "level": 3,
       "paletteId": "mid",
       "path": "previews/tactile-3-mid.jpg",
-      "sourceImage": "design-system-round41/tactile-3-mid.png",
-      "sourceImageSha256": "5c130cae3ff25eb434605f1b7a6b5a99cf4c294ef7fb83da8b6cb2e70b8021b1"
+      "acceptedSourceId": "ten-styles-ninety-variants-r1",
+      "sourceImage": "images/01-tactile-3.png",
+      "sourceImageSha256": "c7a6625b240b63bd45bef596859e202872c7f486e92a521040bd294249149213",
+      "sourcePrompt": "prompts/01-tactile-3.txt",
+      "sourcePromptSha256": "791f77bb85eda2eaf92a3afe577bc504ef0519d159e74eae6e1f857bead93991"
     },
     {
       "styleId": "tactile",
       "level": 3,
       "paletteId": "warm",
       "path": "previews/tactile-3-warm.jpg",
-      "sourceImage": "design-system-round40/tactile-3-warm.png",
-      "sourceImageSha256": "aa4a306b702e68abe6a130149e1c81f5b3224bb6bbf17904f4a5cf016588e16d"
+      "acceptedSourceId": "ten-styles-ninety-variants-r1",
+      "sourceImage": "images/01-tactile-3-warm.png",
+      "sourceImageSha256": "a2c9a38c3ced9207016ddf33c4de48cb5a48fd46846568e0f69476ef04f90061",
+      "sourcePrompt": "prompts/01-tactile-3-warm.txt",
+      "sourcePromptSha256": "5cdd11adc6bb8217d80c81d0144abc3823bae17e8cf55c323fa957e1e6305da2"
+    },
+    {
+      "styleId": "glass",
+      "level": 1,
+      "paletteId": "cool",
+      "path": "previews/glass-1-cool.jpg",
+      "acceptedSourceId": "ten-styles-ninety-variants-r1",
+      "sourceImage": "images/02-glass-1-cool.png",
+      "sourceImageSha256": "fbf443c3ac8945974db5731dcff23baac37703a631e5a53cf3e9c66f1706ac24",
+      "sourcePrompt": "prompts/02-glass-1-cool.txt",
+      "sourcePromptSha256": "fef1f60109d73f865b64634cf34129c05a29e33f7835a155d46a7b9a06fcf317"
     },
     {
       "styleId": "glass",
       "level": 1,
       "paletteId": "mid",
       "path": "previews/glass-1-mid.jpg",
-      "sourceImage": "design-system-round32/glass-1.png",
-      "sourceImageSha256": "3eac8942554d31050f4154673d0b01026a22d1c5131667f17fc2a38bc6652109"
+      "acceptedSourceId": "ten-styles-ninety-variants-r1",
+      "sourceImage": "images/02-glass-1.png",
+      "sourceImageSha256": "fc538477f87e1aed915c31fd1b2beb9dfe5460b26e19f6e93a93871cd0a03052",
+      "sourcePrompt": "prompts/02-glass-1.txt",
+      "sourcePromptSha256": "14164b598c3afcb0e65a95d8c41c25060cb0dda9bd43f8eb34cf7d05b370da3f"
     },
     {
       "styleId": "glass",
       "level": 1,
       "paletteId": "warm",
       "path": "previews/glass-1-warm.jpg",
-      "sourceImage": "design-system-round38/glass-1-warm.png",
-      "sourceImageSha256": "c380cfc7b8688b33361c6398fbc91b46ddad0b7a731128ca31b05b1066db5588"
+      "acceptedSourceId": "ten-styles-ninety-variants-r1",
+      "sourceImage": "images/02-glass-1-warm.png",
+      "sourceImageSha256": "d62c73be0cec7a351d5df2ea79d6c003b16d4ec653d55b621ede0d3b97fd7a54",
+      "sourcePrompt": "prompts/02-glass-1-warm.txt",
+      "sourcePromptSha256": "07c841db8599558d32ae00ecc5795a3d95f83306ebd8d38476da2e387ab7c58e"
+    },
+    {
+      "styleId": "glass",
+      "level": 2,
+      "paletteId": "cool",
+      "path": "previews/glass-2-cool.jpg",
+      "acceptedSourceId": "ten-styles-ninety-variants-r1",
+      "sourceImage": "images/02-glass-2-cool.png",
+      "sourceImageSha256": "aa4c96b4666716b09411a766c32f375d31fa8f0ba5946efbc7709b5c8bdd5d2f",
+      "sourcePrompt": "prompts/02-glass-2-cool.txt",
+      "sourcePromptSha256": "fef1f60109d73f865b64634cf34129c05a29e33f7835a155d46a7b9a06fcf317"
     },
     {
       "styleId": "glass",
       "level": 2,
       "paletteId": "mid",
       "path": "previews/glass-2-mid.jpg",
-      "sourceImage": "design-system-round31/glass-2.png",
-      "sourceImageSha256": "c25cfee5258341e5549f5477bc0e4cded667f2c02a84b63d1283a942a81560e3"
+      "acceptedSourceId": "ten-styles-ninety-variants-r1",
+      "sourceImage": "images/02-glass-2.png",
+      "sourceImageSha256": "6fc0089a687dfc1f1cc05b73439b9798cfe1588423ee4c9abfa3f12c5ec31f5b",
+      "sourcePrompt": "prompts/02-glass-2.txt",
+      "sourcePromptSha256": "be676ba3e7738a9c6450d692f9e088ded7a70aa277140741ba48bb5a5803ae2b"
     },
     {
       "styleId": "glass",
       "level": 2,
       "paletteId": "warm",
       "path": "previews/glass-2-warm.jpg",
-      "sourceImage": "design-system-round35/glass-warm.png",
-      "sourceImageSha256": "2f4085b8e7760219bcea8211c01bd33ac3e5519dc4fb8848f1bddc39eeb3ec29"
+      "acceptedSourceId": "ten-styles-ninety-variants-r1",
+      "sourceImage": "images/02-glass-2-warm.png",
+      "sourceImageSha256": "35809ea9189fb324fff7383791740e321eb555e7579663970bb53817cfb98e9a",
+      "sourcePrompt": "prompts/02-glass-2-warm.txt",
+      "sourcePromptSha256": "07c841db8599558d32ae00ecc5795a3d95f83306ebd8d38476da2e387ab7c58e"
     },
     {
       "styleId": "glass",
       "level": 3,
       "paletteId": "cool",
       "path": "previews/glass-3-cool.jpg",
-      "sourceImage": "design-system-round43/glass-3-cool.png",
-      "sourceImageSha256": "2aa2a6f5f0baa91268193262fcdd32b922f620b56521890197338db75fa7462d"
+      "acceptedSourceId": "ten-styles-ninety-variants-r1",
+      "sourceImage": "images/02-glass-3-cool.png",
+      "sourceImageSha256": "37558e79d3684f16074cb44e6e8a6d6d2c009185867370c0c3f03e1c352e67d2",
+      "sourcePrompt": "prompts/02-glass-3-cool.txt",
+      "sourcePromptSha256": "fef1f60109d73f865b64634cf34129c05a29e33f7835a155d46a7b9a06fcf317"
     },
     {
       "styleId": "glass",
       "level": 3,
       "paletteId": "mid",
       "path": "previews/glass-3-mid.jpg",
-      "sourceImage": "design-system-round41/glass-3-mid.png",
-      "sourceImageSha256": "a095c2bb76e71a05c93ec830ad9a8594e4f3bdeb6a01b52c6d6dab77bef01ee0"
+      "acceptedSourceId": "ten-styles-ninety-variants-r1",
+      "sourceImage": "images/02-glass-3.png",
+      "sourceImageSha256": "f057edc8a8ff68c1c278cf7049f8ecc46bee5a5a69549484fb68d25664975be2",
+      "sourcePrompt": "prompts/02-glass-3.txt",
+      "sourcePromptSha256": "125b74f837fab1ff583a400d7c933c039f10f8e76a2cf0b67fcf920bb096293b"
     },
     {
       "styleId": "glass",
       "level": 3,
       "paletteId": "warm",
       "path": "previews/glass-3-warm.jpg",
-      "sourceImage": "design-system-round40/glass-3-warm.png",
-      "sourceImageSha256": "6a62851c10d22c227baaf047f0191a925f89cd1fef73d5b9c93088f539bc12a7"
+      "acceptedSourceId": "ten-styles-ninety-variants-r1",
+      "sourceImage": "images/02-glass-3-warm.png",
+      "sourceImageSha256": "487271a6724ff8fd4485caa38f8efa969094a6acdf3758f353b97fcc3ba7008e",
+      "sourcePrompt": "prompts/02-glass-3-warm.txt",
+      "sourcePromptSha256": "07c841db8599558d32ae00ecc5795a3d95f83306ebd8d38476da2e387ab7c58e"
     },
     {
       "styleId": "ink",
       "level": 1,
       "paletteId": "cool",
       "path": "previews/ink-1-cool.jpg",
-      "sourceImage": "design-system-round37/ink-1-cool.png",
-      "sourceImageSha256": "c143cce67b8fc6f29dc7e6f7394bf3daf9bc7fa9abb85469f39cf7ddb2bd5168"
+      "acceptedSourceId": "ten-styles-ninety-variants-r1",
+      "sourceImage": "images/03-ink-1-cool.png",
+      "sourceImageSha256": "5d0f7677e6d83ae0d0de20ef6ca5ead2d8658bc7547ffc11fd374073885530b2",
+      "sourcePrompt": "prompts/03-ink-1-cool.txt",
+      "sourcePromptSha256": "a9fa17df1b0b217e9210045728603a21f098fab65a5bba0e6533c926dfa2c64d"
     },
     {
       "styleId": "ink",
       "level": 1,
       "paletteId": "mid",
       "path": "previews/ink-1-mid.jpg",
-      "sourceImage": "design-system-round31/ink-1.png",
-      "sourceImageSha256": "f8683d1dc2dedf4a7dcfd081ad4a062a4a13d89241192974c5e8369345eb656b"
+      "acceptedSourceId": "ten-styles-ninety-variants-r1",
+      "sourceImage": "images/03-ink-1.png",
+      "sourceImageSha256": "536802938c30fb7b23d8284abd2b1c605be90a7a15fa81aa327a22862cbb9490",
+      "sourcePrompt": "prompts/03-ink-1.txt",
+      "sourcePromptSha256": "2c2b843c4f172c0a2b24fb675d5c49cc1db3723eb35b38b5577c62ec38ef30f7"
     },
     {
       "styleId": "ink",
       "level": 1,
       "paletteId": "warm",
       "path": "previews/ink-1-warm.jpg",
-      "sourceImage": "design-system-round38/ink-1-warm.png",
-      "sourceImageSha256": "b64df92a1afa08ce91ac708db0210f066f9540528711326a5eb17d8ed3514003"
+      "acceptedSourceId": "ten-styles-ninety-variants-r1",
+      "sourceImage": "images/03-ink-1-warm.png",
+      "sourceImageSha256": "00b9bfc8b506c016609771f9c2338dfd0f6cf79cdee2318faed3ff470db6dcf5",
+      "sourcePrompt": "prompts/03-ink-1-warm.txt",
+      "sourcePromptSha256": "bf5ff0e9ba2b24dc747362279a25984fc0b8023f69f2c59f42b8be163c4d699c"
     },
     {
       "styleId": "ink",
       "level": 2,
       "paletteId": "cool",
       "path": "previews/ink-2-cool.jpg",
-      "sourceImage": "design-system-round35/ink-cool.png",
-      "sourceImageSha256": "822c44fff73c8b61f397b2fb647e30bcf7b123c60fe045e5e4758652090a88c8"
+      "acceptedSourceId": "ten-styles-ninety-variants-r1",
+      "sourceImage": "images/03-ink-2-cool.png",
+      "sourceImageSha256": "78a744e8f57a183f6f2e9b92b501a522c597e680ed903bc6580c7f1bf56b216e",
+      "sourcePrompt": "prompts/03-ink-2-cool.txt",
+      "sourcePromptSha256": "a9fa17df1b0b217e9210045728603a21f098fab65a5bba0e6533c926dfa2c64d"
     },
     {
       "styleId": "ink",
       "level": 2,
       "paletteId": "mid",
       "path": "previews/ink-2-mid.jpg",
-      "sourceImage": "design-system-round31/ink-2.png",
-      "sourceImageSha256": "589231451b864621063243ccfd0b28c637db91030d6990a9dee106fd7ba86786"
+      "acceptedSourceId": "ten-styles-ninety-variants-r1",
+      "sourceImage": "images/03-ink-2.png",
+      "sourceImageSha256": "33ac5537f5d0658613280e2c3ab7a6ab2b6dae081f0c0813426a95e9385ffad7",
+      "sourcePrompt": "prompts/03-ink-2.txt",
+      "sourcePromptSha256": "3e8c534c32dab5811145f5e302a139da2c3260b55b65ec989d5857d761a82714"
     },
     {
       "styleId": "ink",
       "level": 2,
       "paletteId": "warm",
       "path": "previews/ink-2-warm.jpg",
-      "sourceImage": "design-system-round36/ink-warm.png",
-      "sourceImageSha256": "5288a23955e44dfcbcbe0716a5bc4ae1aaa0ab6c1da149e6c1023f31043d9191"
+      "acceptedSourceId": "ten-styles-ninety-variants-r1",
+      "sourceImage": "images/03-ink-2-warm.png",
+      "sourceImageSha256": "7a287dd13fd1e45ffa26da740be28c00bb332a08662cd6f0ed00f3485de6beec",
+      "sourcePrompt": "prompts/03-ink-2-warm.txt",
+      "sourcePromptSha256": "bf5ff0e9ba2b24dc747362279a25984fc0b8023f69f2c59f42b8be163c4d699c"
     },
     {
       "styleId": "ink",
       "level": 3,
       "paletteId": "cool",
       "path": "previews/ink-3-cool.jpg",
-      "sourceImage": "design-system-round38/ink-3-cool.png",
-      "sourceImageSha256": "b0abf64de933352d55870fa5583986c8c779cd2b833f48d3941b2b76ce5127d4"
+      "acceptedSourceId": "ten-styles-ninety-variants-r1",
+      "sourceImage": "images/03-ink-3-cool.png",
+      "sourceImageSha256": "f068b059ec4920a59359244b04ea8ad0c0f7865bb022e6d04e64ff3c4f595157",
+      "sourcePrompt": "prompts/03-ink-3-cool.txt",
+      "sourcePromptSha256": "a9fa17df1b0b217e9210045728603a21f098fab65a5bba0e6533c926dfa2c64d"
     },
     {
       "styleId": "ink",
       "level": 3,
       "paletteId": "mid",
       "path": "previews/ink-3-mid.jpg",
-      "sourceImage": "design-system-round31/ink-3.png",
-      "sourceImageSha256": "210a25c39e02eb48e7fcb3155137d27cc15850536d6f4090d5fd6e3a63d20493"
+      "acceptedSourceId": "ten-styles-ninety-variants-r1",
+      "sourceImage": "images/03-ink-3.png",
+      "sourceImageSha256": "9552a4fef9624d3b00920409a3f31bf7dad48666e54278d0381886b58860c3bf",
+      "sourcePrompt": "prompts/03-ink-3.txt",
+      "sourcePromptSha256": "07c6360abd089a26315cc212085913947049ff19a577cf534453a8ca9c959600"
     },
     {
       "styleId": "ink",
       "level": 3,
       "paletteId": "warm",
       "path": "previews/ink-3-warm.jpg",
-      "sourceImage": "design-system-round37/ink-3-warm.png",
-      "sourceImageSha256": "2de342a01e5abd12f039dd84e4efd4d13d199d4e1c6f6d869fbfc1c17d6494f0"
+      "acceptedSourceId": "ten-styles-ninety-variants-r1",
+      "sourceImage": "images/03-ink-3-warm.png",
+      "sourceImageSha256": "2457d0035323db1509d8ce13181357174b67a7e4a9c8181c8d8d4097407ac416",
+      "sourcePrompt": "prompts/03-ink-3-warm.txt",
+      "sourcePromptSha256": "bf5ff0e9ba2b24dc747362279a25984fc0b8023f69f2c59f42b8be163c4d699c"
+    },
+    {
+      "styleId": "hand-drawn",
+      "level": 1,
+      "paletteId": "cool",
+      "path": "previews/hand-drawn-1-cool.jpg",
+      "acceptedSourceId": "ten-styles-ninety-variants-r1",
+      "sourceImage": "images/04-hand-drawn-1-cool.png",
+      "sourceImageSha256": "203ba3bb611b0bf7826022aab86c987a929a6f5ff4736a07cddae15ad8282d6e",
+      "sourcePrompt": "prompts/04-hand-drawn-1-cool.txt",
+      "sourcePromptSha256": "eac0504667f20a6705188b9677ea6e9a2f32dcad565c20a8cd8dcac0188a42eb"
+    },
+    {
+      "styleId": "hand-drawn",
+      "level": 1,
+      "paletteId": "mid",
+      "path": "previews/hand-drawn-1-mid.jpg",
+      "acceptedSourceId": "ten-styles-ninety-variants-r1",
+      "sourceImage": "images/04-hand-drawn-1.png",
+      "sourceImageSha256": "1f7d7cbfc6d342bb08afe55d0c8693ed1f213b8d22c92e567a2b25d73b847ed1",
+      "sourcePrompt": "prompts/04-hand-drawn-1.txt",
+      "sourcePromptSha256": "69583f5e6f9db9ad73cb7735044da1d924b556dd84c6f245253b1e9519dfe6a9"
+    },
+    {
+      "styleId": "hand-drawn",
+      "level": 1,
+      "paletteId": "warm",
+      "path": "previews/hand-drawn-1-warm.jpg",
+      "acceptedSourceId": "ten-styles-ninety-variants-r1",
+      "sourceImage": "images/04-hand-drawn-1-warm.png",
+      "sourceImageSha256": "be7d9d0115fab0fbd52c4b6a02b53b9d37fdbc18e829fc20ed30cc731d37c724",
+      "sourcePrompt": "prompts/04-hand-drawn-1-warm.txt",
+      "sourcePromptSha256": "fd7f761eed4347b65868128a664c412ffe5dcf41ed296d9b223c633704b3adbb"
+    },
+    {
+      "styleId": "hand-drawn",
+      "level": 2,
+      "paletteId": "cool",
+      "path": "previews/hand-drawn-2-cool.jpg",
+      "acceptedSourceId": "ten-styles-ninety-variants-r1",
+      "sourceImage": "images/04-hand-drawn-2-cool.png",
+      "sourceImageSha256": "d15587b8462302befdee4f0c7b00e529e13fd590b31ad858554cfc4d7e2d7d15",
+      "sourcePrompt": "prompts/04-hand-drawn-2-cool.txt",
+      "sourcePromptSha256": "eac0504667f20a6705188b9677ea6e9a2f32dcad565c20a8cd8dcac0188a42eb"
+    },
+    {
+      "styleId": "hand-drawn",
+      "level": 2,
+      "paletteId": "mid",
+      "path": "previews/hand-drawn-2-mid.jpg",
+      "acceptedSourceId": "ten-styles-ninety-variants-r1",
+      "sourceImage": "images/04-hand-drawn-2.png",
+      "sourceImageSha256": "aa3a1d929ccfbed18347cfa59bd9dab6c18e3b4cc876f6cafafba787709b7af8",
+      "sourcePrompt": "prompts/04-hand-drawn-2.txt",
+      "sourcePromptSha256": "f849c41ed569521aec999992faab21883671bea98462e5fd821e6e9a49efba24"
+    },
+    {
+      "styleId": "hand-drawn",
+      "level": 2,
+      "paletteId": "warm",
+      "path": "previews/hand-drawn-2-warm.jpg",
+      "acceptedSourceId": "ten-styles-ninety-variants-r1",
+      "sourceImage": "images/04-hand-drawn-2-warm.png",
+      "sourceImageSha256": "6a8b2d3cf95aac70233ad19398770a03f5b6050a5b26ca03ed90aa57073fac27",
+      "sourcePrompt": "prompts/04-hand-drawn-2-warm.txt",
+      "sourcePromptSha256": "fd7f761eed4347b65868128a664c412ffe5dcf41ed296d9b223c633704b3adbb"
+    },
+    {
+      "styleId": "hand-drawn",
+      "level": 3,
+      "paletteId": "cool",
+      "path": "previews/hand-drawn-3-cool.jpg",
+      "acceptedSourceId": "ten-styles-ninety-variants-r1",
+      "sourceImage": "images/04-hand-drawn-3-cool.png",
+      "sourceImageSha256": "44263a6bde92ec83aae00edfa977990c311db18d1b05e78d2b2cc8bc6ed19b73",
+      "sourcePrompt": "prompts/04-hand-drawn-3-cool.txt",
+      "sourcePromptSha256": "eac0504667f20a6705188b9677ea6e9a2f32dcad565c20a8cd8dcac0188a42eb"
     },
     {
       "styleId": "hand-drawn",
       "level": 3,
       "paletteId": "mid",
       "path": "previews/hand-drawn-3-mid.jpg",
-      "acceptedSourceId": "ten-style-showcase-v1",
-      "sourceImage": "images/01-hand-drawn.png",
-      "sourceImageSha256": "b96a8ac637bdef1748a7a4b2b5dd0a78f7403fa481451f8bd5b204a9a5960b15"
+      "acceptedSourceId": "ten-styles-ninety-variants-r1",
+      "sourceImage": "images/04-hand-drawn-3.png",
+      "sourceImageSha256": "b96a8ac637bdef1748a7a4b2b5dd0a78f7403fa481451f8bd5b204a9a5960b15",
+      "sourcePrompt": "prompts/04-hand-drawn-3.txt",
+      "sourcePromptSha256": "128adffa7132a99af189aa1e6ecfe18ac5ac5b1f681dbdac9d305ac8a8fb6849"
+    },
+    {
+      "styleId": "hand-drawn",
+      "level": 3,
+      "paletteId": "warm",
+      "path": "previews/hand-drawn-3-warm.jpg",
+      "acceptedSourceId": "ten-styles-ninety-variants-r1",
+      "sourceImage": "images/04-hand-drawn-3-warm.png",
+      "sourceImageSha256": "0d12a2d68f8c99e2f95ccb83058ee77b959c439f660520beaece0a295bd44b1c",
+      "sourcePrompt": "prompts/04-hand-drawn-3-warm.txt",
+      "sourcePromptSha256": "fd7f761eed4347b65868128a664c412ffe5dcf41ed296d9b223c633704b3adbb"
+    },
+    {
+      "styleId": "textbook",
+      "level": 1,
+      "paletteId": "cool",
+      "path": "previews/textbook-1-cool.jpg",
+      "acceptedSourceId": "ten-styles-ninety-variants-r1",
+      "sourceImage": "images/05-textbook-1-cool.png",
+      "sourceImageSha256": "2d6ea5a4deacef500863140399f4e0bc9e9ab05116792d5825604f77e77aa209",
+      "sourcePrompt": "prompts/05-textbook-1-cool.txt",
+      "sourcePromptSha256": "1bb2ad133257ead448a95b1bed9847b5aadab662299ec42ac5405e091722f6bf"
+    },
+    {
+      "styleId": "textbook",
+      "level": 1,
+      "paletteId": "mid",
+      "path": "previews/textbook-1-mid.jpg",
+      "acceptedSourceId": "ten-styles-ninety-variants-r1",
+      "sourceImage": "images/05-textbook-1.png",
+      "sourceImageSha256": "08078604efcef4a21ee6469524c9fbe1985d83c5bd82165acc48afb9106b8077",
+      "sourcePrompt": "prompts/05-textbook-1.txt",
+      "sourcePromptSha256": "0089a408e9b26c611c6af7fe6ac1b93bd0fb92da08a2e4841694faa4b66e9222"
+    },
+    {
+      "styleId": "textbook",
+      "level": 1,
+      "paletteId": "warm",
+      "path": "previews/textbook-1-warm.jpg",
+      "acceptedSourceId": "ten-styles-ninety-variants-r1",
+      "sourceImage": "images/05-textbook-1-warm.png",
+      "sourceImageSha256": "4efafc82b0a4b8e591feefa3beb4fcbb1431b552bfecfa9382d402863f5049ec",
+      "sourcePrompt": "prompts/05-textbook-1-warm.txt",
+      "sourcePromptSha256": "5de1382bae3e1a5d53e9683cbad96fb11ced9da2a5f684a8783a6ded4fca2fb0"
+    },
+    {
+      "styleId": "textbook",
+      "level": 2,
+      "paletteId": "cool",
+      "path": "previews/textbook-2-cool.jpg",
+      "acceptedSourceId": "ten-styles-ninety-variants-r1",
+      "sourceImage": "images/05-textbook-2-cool.png",
+      "sourceImageSha256": "d1692e1d4ab0aa64f9fe7005392ed49d851a4749b679add304fb63e210e04f2c",
+      "sourcePrompt": "prompts/05-textbook-2-cool.txt",
+      "sourcePromptSha256": "1bb2ad133257ead448a95b1bed9847b5aadab662299ec42ac5405e091722f6bf"
+    },
+    {
+      "styleId": "textbook",
+      "level": 2,
+      "paletteId": "mid",
+      "path": "previews/textbook-2-mid.jpg",
+      "acceptedSourceId": "ten-styles-ninety-variants-r1",
+      "sourceImage": "images/05-textbook-2-reviewed.png",
+      "sourceImageSha256": "82b18092baa42cc2bddeae2d91a6673bf405789be07d85f4a352a1582069cc00",
+      "sourcePrompt": "prompts/05-textbook-2.txt",
+      "sourcePromptSha256": "ece2f4188bfc63fcf37d29ad0bee3a7de7052acb577a35bcccfcda13e61e5154",
+      "repairPrompt": "prompts/05-textbook-2-mid-repair.txt",
+      "repairPromptSha256": "b1d41185af56d12dd251913a30a69ca1c5037d495609d4045b8313e6ad43aa21"
+    },
+    {
+      "styleId": "textbook",
+      "level": 2,
+      "paletteId": "warm",
+      "path": "previews/textbook-2-warm.jpg",
+      "acceptedSourceId": "ten-styles-ninety-variants-r1",
+      "sourceImage": "images/05-textbook-2-warm.png",
+      "sourceImageSha256": "fd2024064b922317d585cf4cb3fbb669e1dd89efbc8c01e8821c8a2b92200c74",
+      "sourcePrompt": "prompts/05-textbook-2-warm.txt",
+      "sourcePromptSha256": "5de1382bae3e1a5d53e9683cbad96fb11ced9da2a5f684a8783a6ded4fca2fb0"
+    },
+    {
+      "styleId": "textbook",
+      "level": 3,
+      "paletteId": "cool",
+      "path": "previews/textbook-3-cool.jpg",
+      "acceptedSourceId": "ten-styles-ninety-variants-r1",
+      "sourceImage": "images/05-textbook-3-cool.png",
+      "sourceImageSha256": "f7891d45547fe9d8e6567c584190233e8662af82abd4d7e15ec09e9ae7181877",
+      "sourcePrompt": "prompts/05-textbook-3-cool.txt",
+      "sourcePromptSha256": "1bb2ad133257ead448a95b1bed9847b5aadab662299ec42ac5405e091722f6bf"
     },
     {
       "styleId": "textbook",
       "level": 3,
       "paletteId": "mid",
       "path": "previews/textbook-3-mid.jpg",
-      "acceptedSourceId": "ten-style-showcase-v1",
-      "sourceImage": "images/02-textbook.png",
-      "sourceImageSha256": "5765cfecd6190943238481990bd7ee67014cbf687e84556adca057aa3b7c4620"
+      "acceptedSourceId": "ten-styles-ninety-variants-r1",
+      "sourceImage": "images/05-textbook-3.png",
+      "sourceImageSha256": "5765cfecd6190943238481990bd7ee67014cbf687e84556adca057aa3b7c4620",
+      "sourcePrompt": "prompts/05-textbook-3.txt",
+      "sourcePromptSha256": "edf37437f26793325255508d53eae1683348b6d8e096d43c5d59a066e994f919"
+    },
+    {
+      "styleId": "textbook",
+      "level": 3,
+      "paletteId": "warm",
+      "path": "previews/textbook-3-warm.jpg",
+      "acceptedSourceId": "ten-styles-ninety-variants-r1",
+      "sourceImage": "images/05-textbook-3-warm.png",
+      "sourceImageSha256": "23809f5574a9a1e1e10037baf78a514c68e65b4f30312e9a857f52da96e966f4",
+      "sourcePrompt": "prompts/05-textbook-3-warm.txt",
+      "sourcePromptSha256": "5de1382bae3e1a5d53e9683cbad96fb11ced9da2a5f684a8783a6ded4fca2fb0"
+    },
+    {
+      "styleId": "collage",
+      "level": 1,
+      "paletteId": "cool",
+      "path": "previews/collage-1-cool.jpg",
+      "acceptedSourceId": "ten-styles-ninety-variants-r1",
+      "sourceImage": "images/06-collage-1-cool.png",
+      "sourceImageSha256": "fa73393d3c3541cd1455bc13d5226ca6aa0378951479eb5ffa40d91ffc514917",
+      "sourcePrompt": "prompts/06-collage-1-cool.txt",
+      "sourcePromptSha256": "6980e57804944e585f8a6a139a5cc7a4bd408c7918ab10601f375ddc69e79549"
+    },
+    {
+      "styleId": "collage",
+      "level": 1,
+      "paletteId": "mid",
+      "path": "previews/collage-1-mid.jpg",
+      "acceptedSourceId": "ten-styles-ninety-variants-r1",
+      "sourceImage": "images/06-collage-1-reviewed.png",
+      "sourceImageSha256": "40e53fe87e102bf58f78359529dae4d3e71ccea22252f4598092a1eff1af8692",
+      "sourcePrompt": "prompts/06-collage-1.txt",
+      "sourcePromptSha256": "89f1e373b209cde6e04c090d6c268076eac6c6d2458a8259341d8972c48674bd",
+      "repairPrompt": "prompts/06-collage-1-mid-repair.txt",
+      "repairPromptSha256": "e2427120078dd30529c5f65137b08732a8f51860726159a25fa77a267c161182"
+    },
+    {
+      "styleId": "collage",
+      "level": 1,
+      "paletteId": "warm",
+      "path": "previews/collage-1-warm.jpg",
+      "acceptedSourceId": "ten-styles-ninety-variants-r1",
+      "sourceImage": "images/06-collage-1-warm.png",
+      "sourceImageSha256": "2a265dcfc95a62f8a41eb084a754ffcfe9592bce1da1e813b7b081fed70b8224",
+      "sourcePrompt": "prompts/06-collage-1-warm.txt",
+      "sourcePromptSha256": "a9908ee5dff333a0e10646a396f148a842df02b1ca3e8ca018530b178556daff"
+    },
+    {
+      "styleId": "collage",
+      "level": 2,
+      "paletteId": "cool",
+      "path": "previews/collage-2-cool.jpg",
+      "acceptedSourceId": "ten-styles-ninety-variants-r1",
+      "sourceImage": "images/06-collage-2-cool.png",
+      "sourceImageSha256": "3aab62600a4e057d67173e2a9618e7796974e516890f6dc23991c83968428006",
+      "sourcePrompt": "prompts/06-collage-2-cool.txt",
+      "sourcePromptSha256": "6980e57804944e585f8a6a139a5cc7a4bd408c7918ab10601f375ddc69e79549"
+    },
+    {
+      "styleId": "collage",
+      "level": 2,
+      "paletteId": "mid",
+      "path": "previews/collage-2-mid.jpg",
+      "acceptedSourceId": "ten-styles-ninety-variants-r1",
+      "sourceImage": "images/06-collage-2-reviewed.png",
+      "sourceImageSha256": "df16dbc30832e4482b1f68cbba92dfa316ed7bc3d3c6838e2a5b84c2b87bd032",
+      "sourcePrompt": "prompts/06-collage-2.txt",
+      "sourcePromptSha256": "e6ad5e0802d395fccc3b83d7ac222f0c95e5c3623f962d50ccfd6a9e709be34b",
+      "repairPrompt": "prompts/06-collage-2-mid-repair.txt",
+      "repairPromptSha256": "0a1665b415e4759e8e54c730921a58d009ce84379a0cc263f18506509eff6bbf"
+    },
+    {
+      "styleId": "collage",
+      "level": 2,
+      "paletteId": "warm",
+      "path": "previews/collage-2-warm.jpg",
+      "acceptedSourceId": "ten-styles-ninety-variants-r1",
+      "sourceImage": "images/06-collage-2-warm.png",
+      "sourceImageSha256": "5b077d2ee6c6be414691d9f13bee7f8c85a9774cac11b67d476dd64bc8ff570c",
+      "sourcePrompt": "prompts/06-collage-2-warm.txt",
+      "sourcePromptSha256": "a9908ee5dff333a0e10646a396f148a842df02b1ca3e8ca018530b178556daff"
+    },
+    {
+      "styleId": "collage",
+      "level": 3,
+      "paletteId": "cool",
+      "path": "previews/collage-3-cool.jpg",
+      "acceptedSourceId": "ten-styles-ninety-variants-r1",
+      "sourceImage": "images/06-collage-3-cool.png",
+      "sourceImageSha256": "611fe3fcd2f32ec587df86a3c2b198ec582c9efb287f5e9aa7ef4d3a45ff1a4b",
+      "sourcePrompt": "prompts/06-collage-3-cool.txt",
+      "sourcePromptSha256": "6980e57804944e585f8a6a139a5cc7a4bd408c7918ab10601f375ddc69e79549"
     },
     {
       "styleId": "collage",
       "level": 3,
       "paletteId": "mid",
       "path": "previews/collage-3-mid.jpg",
-      "acceptedSourceId": "ten-style-showcase-v1",
-      "sourceImage": "images/01-collage.png",
-      "sourceImageSha256": "1e25dc4d1139133e850719f0c6d50c5a2cc2ed39aea06a0bf3cc4ace3eadeba1"
+      "acceptedSourceId": "ten-styles-ninety-variants-r1",
+      "sourceImage": "images/06-collage-3.png",
+      "sourceImageSha256": "1e25dc4d1139133e850719f0c6d50c5a2cc2ed39aea06a0bf3cc4ace3eadeba1",
+      "sourcePrompt": "prompts/06-collage-3.txt",
+      "sourcePromptSha256": "1d908e8dbef01d9cb11dcdca01641f980302374814c15b80878a28d09671b0f0"
+    },
+    {
+      "styleId": "collage",
+      "level": 3,
+      "paletteId": "warm",
+      "path": "previews/collage-3-warm.jpg",
+      "acceptedSourceId": "ten-styles-ninety-variants-r1",
+      "sourceImage": "images/06-collage-3-warm.png",
+      "sourceImageSha256": "96279c977bc98717a9c9c32a1b16c1352d749c5b0542a63bcd5fba60a6201bbd",
+      "sourcePrompt": "prompts/06-collage-3-warm.txt",
+      "sourcePromptSha256": "a9908ee5dff333a0e10646a396f148a842df02b1ca3e8ca018530b178556daff"
+    },
+    {
+      "styleId": "cinematic-tech",
+      "level": 1,
+      "paletteId": "cool",
+      "path": "previews/cinematic-tech-1-cool.jpg",
+      "acceptedSourceId": "ten-styles-ninety-variants-r1",
+      "sourceImage": "images/07-cinematic-tech-1-cool.png",
+      "sourceImageSha256": "f2c37c01f24e57f4b5fd59b0d0b6499f7d24bd8967ceb1c3da7bc4e9f783d6b9",
+      "sourcePrompt": "prompts/07-cinematic-tech-1-cool.txt",
+      "sourcePromptSha256": "56c084e888a59e226c9b1b581e137c8ce54bd0c18491a354c284aff6818729c2"
+    },
+    {
+      "styleId": "cinematic-tech",
+      "level": 1,
+      "paletteId": "mid",
+      "path": "previews/cinematic-tech-1-mid.jpg",
+      "acceptedSourceId": "ten-styles-ninety-variants-r1",
+      "sourceImage": "images/07-cinematic-tech-1-reviewed.png",
+      "sourceImageSha256": "a0362653ac8ea5b49cbcd5cc25f7f900b60ba03dbf41f61860e3d148d2c6fd28",
+      "sourcePrompt": "prompts/07-cinematic-tech-1.txt",
+      "sourcePromptSha256": "9119d70d9ddb11947ae11045cd40eb8081428a60f9cfefc55aacd8303d246e28",
+      "repairPrompt": "prompts/07-cinematic-tech-1-mid-repair.txt",
+      "repairPromptSha256": "8b1e5c815940ad35adbba306836a15a93369930d97ed061015f5c5d85cb73f9c"
+    },
+    {
+      "styleId": "cinematic-tech",
+      "level": 1,
+      "paletteId": "warm",
+      "path": "previews/cinematic-tech-1-warm.jpg",
+      "acceptedSourceId": "ten-styles-ninety-variants-r1",
+      "sourceImage": "images/07-cinematic-tech-1-warm.png",
+      "sourceImageSha256": "c85e55c0f62d9df382cb21779f1f9fb342bed21c759c20cf2ad2fa749c52bbaf",
+      "sourcePrompt": "prompts/07-cinematic-tech-1-warm.txt",
+      "sourcePromptSha256": "8de641ac6fed75a967ba2d0ac3c7ea4a657d04e366e0381712c4e5087a4a619a"
+    },
+    {
+      "styleId": "cinematic-tech",
+      "level": 2,
+      "paletteId": "cool",
+      "path": "previews/cinematic-tech-2-cool.jpg",
+      "acceptedSourceId": "ten-styles-ninety-variants-r1",
+      "sourceImage": "images/07-cinematic-tech-2-cool.png",
+      "sourceImageSha256": "db5bfea0a996f315b18276ef32c334d38dbf3ed59b291030693279be534efc42",
+      "sourcePrompt": "prompts/07-cinematic-tech-2-cool.txt",
+      "sourcePromptSha256": "56c084e888a59e226c9b1b581e137c8ce54bd0c18491a354c284aff6818729c2"
+    },
+    {
+      "styleId": "cinematic-tech",
+      "level": 2,
+      "paletteId": "mid",
+      "path": "previews/cinematic-tech-2-mid.jpg",
+      "acceptedSourceId": "ten-styles-ninety-variants-r1",
+      "sourceImage": "images/07-cinematic-tech-2-reviewed.png",
+      "sourceImageSha256": "34d06759b54544c5a97e0b8d5e3fe79940c0e255a7a5bd29c575dd2b29d3f40c",
+      "sourcePrompt": "prompts/07-cinematic-tech-2.txt",
+      "sourcePromptSha256": "e250566594e1e7c947f50778a7de182d4a0f1d01f44594609e13dc54a1315553",
+      "repairPrompt": "prompts/07-cinematic-tech-2-mid-repair.txt",
+      "repairPromptSha256": "4ced31b843473d3be780222782c541c094a600eba018d4ba9d2748016b294499"
+    },
+    {
+      "styleId": "cinematic-tech",
+      "level": 2,
+      "paletteId": "warm",
+      "path": "previews/cinematic-tech-2-warm.jpg",
+      "acceptedSourceId": "ten-styles-ninety-variants-r1",
+      "sourceImage": "images/07-cinematic-tech-2-warm.png",
+      "sourceImageSha256": "05762d34656f479cd4ef2dd0fbc398edfde199ec55651ad368b67ed5d1ea6489",
+      "sourcePrompt": "prompts/07-cinematic-tech-2-warm.txt",
+      "sourcePromptSha256": "8de641ac6fed75a967ba2d0ac3c7ea4a657d04e366e0381712c4e5087a4a619a"
+    },
+    {
+      "styleId": "cinematic-tech",
+      "level": 3,
+      "paletteId": "cool",
+      "path": "previews/cinematic-tech-3-cool.jpg",
+      "acceptedSourceId": "ten-styles-ninety-variants-r1",
+      "sourceImage": "images/07-cinematic-tech-3-cool.png",
+      "sourceImageSha256": "ee16ee2a724be710b12e5b5d067c4133a7d58b02e98366b2e025ee67a8f72661",
+      "sourcePrompt": "prompts/07-cinematic-tech-3-cool.txt",
+      "sourcePromptSha256": "56c084e888a59e226c9b1b581e137c8ce54bd0c18491a354c284aff6818729c2"
     },
     {
       "styleId": "cinematic-tech",
       "level": 3,
       "paletteId": "mid",
       "path": "previews/cinematic-tech-3-mid.jpg",
-      "acceptedSourceId": "ten-style-showcase-v1",
-      "sourceImage": "images/04-cinematic-tech.png",
-      "sourceImageSha256": "cb11d7096c71f9d55fa96aa420e6098607d43f2803a0a5627c7d9bf819518f6a"
+      "acceptedSourceId": "ten-styles-ninety-variants-r1",
+      "sourceImage": "images/07-cinematic-tech-3.png",
+      "sourceImageSha256": "cb11d7096c71f9d55fa96aa420e6098607d43f2803a0a5627c7d9bf819518f6a",
+      "sourcePrompt": "prompts/07-cinematic-tech-3.txt",
+      "sourcePromptSha256": "5402dfb26e74348f0dafd2b1ac2183137ea084ba3fa792ee1acbc8abaae8adae"
+    },
+    {
+      "styleId": "cinematic-tech",
+      "level": 3,
+      "paletteId": "warm",
+      "path": "previews/cinematic-tech-3-warm.jpg",
+      "acceptedSourceId": "ten-styles-ninety-variants-r1",
+      "sourceImage": "images/07-cinematic-tech-3-warm.png",
+      "sourceImageSha256": "ca5e7674a363f24f0d7a97258399789f00acb6ef44a96bd508521f061e69110e",
+      "sourcePrompt": "prompts/07-cinematic-tech-3-warm.txt",
+      "sourcePromptSha256": "8de641ac6fed75a967ba2d0ac3c7ea4a657d04e366e0381712c4e5087a4a619a"
+    },
+    {
+      "styleId": "luxury-photo",
+      "level": 1,
+      "paletteId": "cool",
+      "path": "previews/luxury-photo-1-cool.jpg",
+      "acceptedSourceId": "ten-styles-ninety-variants-r1",
+      "sourceImage": "images/08-luxury-photo-1-cool.png",
+      "sourceImageSha256": "b83e6748e8ebb1c61912896ab80abb8542b61458f9099eba3ff185ab8098cd88",
+      "sourcePrompt": "prompts/08-luxury-photo-1-cool.txt",
+      "sourcePromptSha256": "af4c0c21509742caae6d1dc9bb779e266a8032aa9f190a8468cad82f251831ce"
+    },
+    {
+      "styleId": "luxury-photo",
+      "level": 1,
+      "paletteId": "mid",
+      "path": "previews/luxury-photo-1-mid.jpg",
+      "acceptedSourceId": "ten-styles-ninety-variants-r1",
+      "sourceImage": "images/08-luxury-photo-1-reviewed.png",
+      "sourceImageSha256": "c4444bd815ff9ea29d46ae6f2b75fefb4feaf7408f20af363baa96264a386699",
+      "sourcePrompt": "prompts/08-luxury-photo-1.txt",
+      "sourcePromptSha256": "3110c56798a0db6894ce3f161643cfb24182ec74c9be316ec6e40b4ff9daa9c7",
+      "repairPrompt": "prompts/08-luxury-photo-1-mid-repair.txt",
+      "repairPromptSha256": "3b841571ef1648f6915c84eb407941edfa5d524839d025dfb95f2fcef29107ac"
+    },
+    {
+      "styleId": "luxury-photo",
+      "level": 1,
+      "paletteId": "warm",
+      "path": "previews/luxury-photo-1-warm.jpg",
+      "acceptedSourceId": "ten-styles-ninety-variants-r1",
+      "sourceImage": "images/08-luxury-photo-1-warm.png",
+      "sourceImageSha256": "295d202973e479c1d06a14359c603fc8d479bf86c68ce36aa5f51a6090ece045",
+      "sourcePrompt": "prompts/08-luxury-photo-1-warm.txt",
+      "sourcePromptSha256": "8311721792934bcc3e86d6892564cfcb1ff089b1f6d17d85983bf71f37085ea2"
+    },
+    {
+      "styleId": "luxury-photo",
+      "level": 2,
+      "paletteId": "cool",
+      "path": "previews/luxury-photo-2-cool.jpg",
+      "acceptedSourceId": "ten-styles-ninety-variants-r1",
+      "sourceImage": "images/08-luxury-photo-2-cool.png",
+      "sourceImageSha256": "9a50d766bd2e9525c1baeb949a4fcd249c14189624790af69ad7d80b66e7c332",
+      "sourcePrompt": "prompts/08-luxury-photo-2-cool.txt",
+      "sourcePromptSha256": "af4c0c21509742caae6d1dc9bb779e266a8032aa9f190a8468cad82f251831ce"
+    },
+    {
+      "styleId": "luxury-photo",
+      "level": 2,
+      "paletteId": "mid",
+      "path": "previews/luxury-photo-2-mid.jpg",
+      "acceptedSourceId": "ten-styles-ninety-variants-r1",
+      "sourceImage": "images/08-luxury-photo-2-reviewed.png",
+      "sourceImageSha256": "dd3ca1af01e2bef77585a1ced6031aa1a566dd88ede706b4b4c8f1a41ecb00f5",
+      "sourcePrompt": "prompts/08-luxury-photo-2.txt",
+      "sourcePromptSha256": "c65f172fa7ff1269e2922fd4d87e0a158d3834047599c3e2a7581fa1ea27495c",
+      "repairPrompt": "prompts/08-luxury-photo-2-mid-repair.txt",
+      "repairPromptSha256": "bfb6e6439299bb58a82ff05fa63bce7c48ad27b36d726dfaa0bed2e8c393ae34"
+    },
+    {
+      "styleId": "luxury-photo",
+      "level": 2,
+      "paletteId": "warm",
+      "path": "previews/luxury-photo-2-warm.jpg",
+      "acceptedSourceId": "ten-styles-ninety-variants-r1",
+      "sourceImage": "images/08-luxury-photo-2-warm.png",
+      "sourceImageSha256": "389edb73d1127f345c51763c3e5c2d15d1d96c16be7517f232e3aa6333e6199d",
+      "sourcePrompt": "prompts/08-luxury-photo-2-warm.txt",
+      "sourcePromptSha256": "8311721792934bcc3e86d6892564cfcb1ff089b1f6d17d85983bf71f37085ea2"
+    },
+    {
+      "styleId": "luxury-photo",
+      "level": 3,
+      "paletteId": "cool",
+      "path": "previews/luxury-photo-3-cool.jpg",
+      "acceptedSourceId": "ten-styles-ninety-variants-r1",
+      "sourceImage": "images/08-luxury-photo-3-cool.png",
+      "sourceImageSha256": "0542f902da70314530596b9e39a8141cac93b4ec665250c341a04036703ec44c",
+      "sourcePrompt": "prompts/08-luxury-photo-3-cool.txt",
+      "sourcePromptSha256": "af4c0c21509742caae6d1dc9bb779e266a8032aa9f190a8468cad82f251831ce"
     },
     {
       "styleId": "luxury-photo",
       "level": 3,
       "paletteId": "mid",
       "path": "previews/luxury-photo-3-mid.jpg",
-      "acceptedSourceId": "ten-style-showcase-v1",
-      "sourceImage": "images/05-luxury-photo.png",
-      "sourceImageSha256": "d7dd163e79bd7671d85740aefaf39cfcbf64eae7e39e1d69810cc67abc9ebcc0"
+      "acceptedSourceId": "ten-styles-ninety-variants-r1",
+      "sourceImage": "images/08-luxury-photo-3.png",
+      "sourceImageSha256": "d7dd163e79bd7671d85740aefaf39cfcbf64eae7e39e1d69810cc67abc9ebcc0",
+      "sourcePrompt": "prompts/08-luxury-photo-3.txt",
+      "sourcePromptSha256": "b5debf5a65afbc2d56a6ee24fbff990c2ec8de2ffef2baa93aedac6e165df2ed"
+    },
+    {
+      "styleId": "luxury-photo",
+      "level": 3,
+      "paletteId": "warm",
+      "path": "previews/luxury-photo-3-warm.jpg",
+      "acceptedSourceId": "ten-styles-ninety-variants-r1",
+      "sourceImage": "images/08-luxury-photo-3-warm.png",
+      "sourceImageSha256": "cb8040123cd546d28d67ab731e434f96daf5500b9278ae6338b68f8aa2ece210",
+      "sourcePrompt": "prompts/08-luxury-photo-3-warm.txt",
+      "sourcePromptSha256": "8311721792934bcc3e86d6892564cfcb1ff089b1f6d17d85983bf71f37085ea2"
+    },
+    {
+      "styleId": "blueprint",
+      "level": 1,
+      "paletteId": "cool",
+      "path": "previews/blueprint-1-cool.jpg",
+      "acceptedSourceId": "ten-styles-ninety-variants-r1",
+      "sourceImage": "images/09-blueprint-1-cool.png",
+      "sourceImageSha256": "a568949961fec029e985d3654f33b05a077994f8ad78cd78faabf88351d7569c",
+      "sourcePrompt": "prompts/09-blueprint-1-cool.txt",
+      "sourcePromptSha256": "4a2143cc8582ed30c3ca18ef62d699912fe1c627dcf33ae3baaccc9768974f38"
+    },
+    {
+      "styleId": "blueprint",
+      "level": 1,
+      "paletteId": "mid",
+      "path": "previews/blueprint-1-mid.jpg",
+      "acceptedSourceId": "ten-styles-ninety-variants-r1",
+      "sourceImage": "images/09-blueprint-1-reviewed.png",
+      "sourceImageSha256": "dfd92c11ccdef7641b8b599ac7b2baaf3776939549ea2e8c6c22a100cd45ce29",
+      "sourcePrompt": "prompts/09-blueprint-1.txt",
+      "sourcePromptSha256": "5d4e0a80669559dcac46caa0c07b3b3a2fe067ba958f021951f3963a4a88fbd1",
+      "repairPrompt": "prompts/09-blueprint-1-mid-repair.txt",
+      "repairPromptSha256": "3ecb57698599f579e4549f742434b27ac0051f26f41200c285cb6d6ca0fec264"
+    },
+    {
+      "styleId": "blueprint",
+      "level": 1,
+      "paletteId": "warm",
+      "path": "previews/blueprint-1-warm.jpg",
+      "acceptedSourceId": "ten-styles-ninety-variants-r1",
+      "sourceImage": "images/09-blueprint-1-warm.png",
+      "sourceImageSha256": "f21f35726f4f377eb01415feeb80d63c45611d84829d3eddd0e7759d3be8f40e",
+      "sourcePrompt": "prompts/09-blueprint-1-warm.txt",
+      "sourcePromptSha256": "b23f24bbd0e2607feb0225ce961e7b312e6ad794b5ebd312f70d034ca62415c9"
+    },
+    {
+      "styleId": "blueprint",
+      "level": 2,
+      "paletteId": "cool",
+      "path": "previews/blueprint-2-cool.jpg",
+      "acceptedSourceId": "ten-styles-ninety-variants-r1",
+      "sourceImage": "images/09-blueprint-2-cool.png",
+      "sourceImageSha256": "cf0d6b0151e304496583a98a331e9324b71ec42766286eda54a1b5393c0f8916",
+      "sourcePrompt": "prompts/09-blueprint-2-cool.txt",
+      "sourcePromptSha256": "4a2143cc8582ed30c3ca18ef62d699912fe1c627dcf33ae3baaccc9768974f38"
+    },
+    {
+      "styleId": "blueprint",
+      "level": 2,
+      "paletteId": "mid",
+      "path": "previews/blueprint-2-mid.jpg",
+      "acceptedSourceId": "ten-styles-ninety-variants-r1",
+      "sourceImage": "images/09-blueprint-2-reviewed.png",
+      "sourceImageSha256": "b8e941c10e4525390d129307d222ed689dd19595bdc997dd8f2080686797df9b",
+      "sourcePrompt": "prompts/09-blueprint-2.txt",
+      "sourcePromptSha256": "5b98fbad606ded6d66b6fb5d16e53dabfb433f17349df7998dc45fa8df35262d",
+      "repairPrompt": "prompts/09-blueprint-2-mid-repair.txt",
+      "repairPromptSha256": "628b987fe3127440d6168f77dd9b2c1261d13c5ec379af9f8082de2f9c6261ea"
+    },
+    {
+      "styleId": "blueprint",
+      "level": 2,
+      "paletteId": "warm",
+      "path": "previews/blueprint-2-warm.jpg",
+      "acceptedSourceId": "ten-styles-ninety-variants-r1",
+      "sourceImage": "images/09-blueprint-2-warm.png",
+      "sourceImageSha256": "992d0dcce1cb90cc44f69d5beae55add694fd1948d6a6a9638a020a8aeaca72c",
+      "sourcePrompt": "prompts/09-blueprint-2-warm.txt",
+      "sourcePromptSha256": "b23f24bbd0e2607feb0225ce961e7b312e6ad794b5ebd312f70d034ca62415c9"
+    },
+    {
+      "styleId": "blueprint",
+      "level": 3,
+      "paletteId": "cool",
+      "path": "previews/blueprint-3-cool.jpg",
+      "acceptedSourceId": "ten-styles-ninety-variants-r1",
+      "sourceImage": "images/09-blueprint-3-cool.png",
+      "sourceImageSha256": "0d97b9591929bd5efcffcd1afe4f581d0dab89bea2742fecdc92069b4d16ddd9",
+      "sourcePrompt": "prompts/09-blueprint-3-cool.txt",
+      "sourcePromptSha256": "4a2143cc8582ed30c3ca18ef62d699912fe1c627dcf33ae3baaccc9768974f38"
     },
     {
       "styleId": "blueprint",
       "level": 3,
       "paletteId": "mid",
       "path": "previews/blueprint-3-mid.jpg",
-      "acceptedSourceId": "ten-style-showcase-v1",
-      "sourceImage": "images/06-blueprint.png",
-      "sourceImageSha256": "8590cd30282b0a584c46a1784236e5e8a8a76197269f2f935341e20f5594254a"
+      "acceptedSourceId": "ten-styles-ninety-variants-r1",
+      "sourceImage": "images/09-blueprint-3.png",
+      "sourceImageSha256": "8590cd30282b0a584c46a1784236e5e8a8a76197269f2f935341e20f5594254a",
+      "sourcePrompt": "prompts/09-blueprint-3.txt",
+      "sourcePromptSha256": "659bd38dc4101cc4ae4b5a4a688ee642188aa5ca5022702335ddcd5f9243dcd6"
+    },
+    {
+      "styleId": "blueprint",
+      "level": 3,
+      "paletteId": "warm",
+      "path": "previews/blueprint-3-warm.jpg",
+      "acceptedSourceId": "ten-styles-ninety-variants-r1",
+      "sourceImage": "images/09-blueprint-3-warm.png",
+      "sourceImageSha256": "f34b8aa29a7d369ea7a442515f89c5fd3fa210d07508e564aa49329904819676",
+      "sourcePrompt": "prompts/09-blueprint-3-warm.txt",
+      "sourcePromptSha256": "b23f24bbd0e2607feb0225ce961e7b312e6ad794b5ebd312f70d034ca62415c9"
+    },
+    {
+      "styleId": "fantasy",
+      "level": 1,
+      "paletteId": "cool",
+      "path": "previews/fantasy-1-cool.jpg",
+      "acceptedSourceId": "ten-styles-ninety-variants-r1",
+      "sourceImage": "images/10-fantasy-1-cool.png",
+      "sourceImageSha256": "611022ea8c845f72c58b686494187ea9ed4fe694411ce4e48694c1bef7097c52",
+      "sourcePrompt": "prompts/10-fantasy-1-cool.txt",
+      "sourcePromptSha256": "7883b776b8b08503baad4fd0e1b8eb6ce99b4bc014c86c2c21fe0ad644810bb2"
+    },
+    {
+      "styleId": "fantasy",
+      "level": 1,
+      "paletteId": "mid",
+      "path": "previews/fantasy-1-mid.jpg",
+      "acceptedSourceId": "ten-styles-ninety-variants-r1",
+      "sourceImage": "images/10-fantasy-1-reviewed.png",
+      "sourceImageSha256": "a907f0c57a544f8873549e40a22bfccfe6de12fff1a2f08955eb04da5e2710df",
+      "sourcePrompt": "prompts/10-fantasy-1.txt",
+      "sourcePromptSha256": "59850ceca33df4b40828401ca2e8b92f1f5cabea318a10b7c1b9448ba533be2d",
+      "repairPrompt": "prompts/10-fantasy-1-mid-repair.txt",
+      "repairPromptSha256": "60cc03c97925064c6bb1daa034b35bc65fb9a7770278fa7accb045934ca62f12"
+    },
+    {
+      "styleId": "fantasy",
+      "level": 1,
+      "paletteId": "warm",
+      "path": "previews/fantasy-1-warm.jpg",
+      "acceptedSourceId": "ten-styles-ninety-variants-r1",
+      "sourceImage": "images/10-fantasy-1-warm.png",
+      "sourceImageSha256": "2b881494b64791ab513121984d74bd85b7abd4ead53dfd034eb106d0231f6d2d",
+      "sourcePrompt": "prompts/10-fantasy-1-warm.txt",
+      "sourcePromptSha256": "9827937604d5044190cfe722b4f5eb431536bf30b172b741e93d9dc7e7e34cae"
+    },
+    {
+      "styleId": "fantasy",
+      "level": 2,
+      "paletteId": "cool",
+      "path": "previews/fantasy-2-cool.jpg",
+      "acceptedSourceId": "ten-styles-ninety-variants-r1",
+      "sourceImage": "images/10-fantasy-2-cool.png",
+      "sourceImageSha256": "f776ceabda5c8888d6171d6cbe089c57cdc4d00e01b32d860315e85645af1414",
+      "sourcePrompt": "prompts/10-fantasy-2-cool.txt",
+      "sourcePromptSha256": "7883b776b8b08503baad4fd0e1b8eb6ce99b4bc014c86c2c21fe0ad644810bb2"
+    },
+    {
+      "styleId": "fantasy",
+      "level": 2,
+      "paletteId": "mid",
+      "path": "previews/fantasy-2-mid.jpg",
+      "acceptedSourceId": "ten-styles-ninety-variants-r1",
+      "sourceImage": "images/10-fantasy-2-reviewed.png",
+      "sourceImageSha256": "7bdcfeef5f4ab6f63999ce17375b334f69b0bae732e5fae7014dd72b6ed60cea",
+      "sourcePrompt": "prompts/10-fantasy-2.txt",
+      "sourcePromptSha256": "d45d980562cae3176c6a661c0dce389776e9ec18dea973170dae9a4716160196",
+      "repairPrompt": "prompts/10-fantasy-2-mid-repair.txt",
+      "repairPromptSha256": "3b998c5cce08b34490faf62d946e8824dfdbe7825e473eca5808a579174b948d"
+    },
+    {
+      "styleId": "fantasy",
+      "level": 2,
+      "paletteId": "warm",
+      "path": "previews/fantasy-2-warm.jpg",
+      "acceptedSourceId": "ten-styles-ninety-variants-r1",
+      "sourceImage": "images/10-fantasy-2-warm.png",
+      "sourceImageSha256": "f301db01f155abbc6858f480a14b2cc7f5102cc9868e2f0390a20c42a660b28c",
+      "sourcePrompt": "prompts/10-fantasy-2-warm.txt",
+      "sourcePromptSha256": "9827937604d5044190cfe722b4f5eb431536bf30b172b741e93d9dc7e7e34cae"
+    },
+    {
+      "styleId": "fantasy",
+      "level": 3,
+      "paletteId": "cool",
+      "path": "previews/fantasy-3-cool.jpg",
+      "acceptedSourceId": "ten-styles-ninety-variants-r1",
+      "sourceImage": "images/10-fantasy-3-cool.png",
+      "sourceImageSha256": "b34b9f2786bf8ce73d7c3a09f28434fc3aaeabf24bc9a778cff7b63e3ebad871",
+      "sourcePrompt": "prompts/10-fantasy-3-cool.txt",
+      "sourcePromptSha256": "7883b776b8b08503baad4fd0e1b8eb6ce99b4bc014c86c2c21fe0ad644810bb2"
     },
     {
       "styleId": "fantasy",
       "level": 3,
       "paletteId": "mid",
       "path": "previews/fantasy-3-mid.jpg",
-      "acceptedSourceId": "ten-style-showcase-v1",
-      "sourceImage": "images/07-fantasy.png",
-      "sourceImageSha256": "67da9eaa783e7fd10e2edf0084da39a3b1bc5bba2c0e25351d9f3b838209a87c"
+      "acceptedSourceId": "ten-styles-ninety-variants-r1",
+      "sourceImage": "images/10-fantasy-3.png",
+      "sourceImageSha256": "67da9eaa783e7fd10e2edf0084da39a3b1bc5bba2c0e25351d9f3b838209a87c",
+      "sourcePrompt": "prompts/10-fantasy-3.txt",
+      "sourcePromptSha256": "dd01e9b0b52aab88a37e6360af972bcbb73990ef493d00a26b7d39d039a4b7fe"
+    },
+    {
+      "styleId": "fantasy",
+      "level": 3,
+      "paletteId": "warm",
+      "path": "previews/fantasy-3-warm.jpg",
+      "acceptedSourceId": "ten-styles-ninety-variants-r1",
+      "sourceImage": "images/10-fantasy-3-warm.png",
+      "sourceImageSha256": "4bc6dce0e06d883dc2cad2b2f37f27db0642139e13a9911439682582ea17b698",
+      "sourcePrompt": "prompts/10-fantasy-3-warm.txt",
+      "sourcePromptSha256": "9827937604d5044190cfe722b4f5eb431536bf30b172b741e93d9dc7e7e34cae"
     }
   ],
   "templateRestorationChecks": [
@@ -625,7 +1382,7 @@
     "registry": "remote-assets.json",
     "imageCount": 90,
     "verification": "All 90 public URLs returned identical SHA-256 to accepted originals without authentication.",
-    "legacyProvenance": "Existing previews/showcases records below describe the previous bundled JPEGs; active hosted assets use the remote registry."
+    "legacyProvenance": "Active non-business previews reference the accepted 90-image batch through variantSource; showcases retain their original accepted source records."
   },
   "businessSource": {
     "id": "business-layout-v2",
@@ -665,6 +1422,186 @@
         "styleId": "business",
         "paletteId": "warm",
         "palettePromptSha256": "5a3e12b7ea23e30d49666f0d6a85395eed3a3d861245ddf4cd4583c96f40f10d"
+      }
+    ]
+  },
+  "variantSource": {
+    "id": "ten-styles-ninety-variants-r1",
+    "manifest": "manifest.json",
+    "manifestSha256": "ee76818eb5337fd136f996c3cd890bbe17b4c077b5a87bb8c21d7905f4276fc5",
+    "acceptedAt": "2026-09-08T13:15:20.683946+00:00"
+  },
+  "variantRecipes": {
+    "tiers": [
+      {
+        "styleId": "hand-drawn",
+        "level": 1,
+        "sourcePrompt": "prompts/04-hand-drawn-1.txt",
+        "sourcePromptSha256": "69583f5e6f9db9ad73cb7735044da1d924b556dd84c6f245253b1e9519dfe6a9",
+        "promptTemplateSha256": "eaecd8ae02433eb0edd1344dd24284935cbe5d489888b0434cc4ca99019e0cf3"
+      },
+      {
+        "styleId": "hand-drawn",
+        "level": 2,
+        "sourcePrompt": "prompts/04-hand-drawn-2.txt",
+        "sourcePromptSha256": "f849c41ed569521aec999992faab21883671bea98462e5fd821e6e9a49efba24",
+        "promptTemplateSha256": "e271a8b54f50ad7afbcf142105fbf0674c950cd0a5dad52212aca7b7e8216583"
+      },
+      {
+        "styleId": "textbook",
+        "level": 1,
+        "sourcePrompt": "prompts/05-textbook-1.txt",
+        "sourcePromptSha256": "0089a408e9b26c611c6af7fe6ac1b93bd0fb92da08a2e4841694faa4b66e9222",
+        "promptTemplateSha256": "524b32a3f76c82b2708fdcadb169adcf5e5660af1129b2e86e218718112cd91c"
+      },
+      {
+        "styleId": "textbook",
+        "level": 2,
+        "sourcePrompt": "prompts/05-textbook-2.txt",
+        "sourcePromptSha256": "ece2f4188bfc63fcf37d29ad0bee3a7de7052acb577a35bcccfcda13e61e5154",
+        "promptTemplateSha256": "0ebd36fe9923daf79c486c96a48e6d80c2ae4aea57319ed422672f405c2ce795"
+      },
+      {
+        "styleId": "collage",
+        "level": 1,
+        "sourcePrompt": "prompts/06-collage-1.txt",
+        "sourcePromptSha256": "89f1e373b209cde6e04c090d6c268076eac6c6d2458a8259341d8972c48674bd",
+        "promptTemplateSha256": "9f390994f61dd1c9cf55200a5cc7d55fe28eda9be73dda3ebd31d9a537cdbcfa"
+      },
+      {
+        "styleId": "collage",
+        "level": 2,
+        "sourcePrompt": "prompts/06-collage-2.txt",
+        "sourcePromptSha256": "e6ad5e0802d395fccc3b83d7ac222f0c95e5c3623f962d50ccfd6a9e709be34b",
+        "promptTemplateSha256": "8be491d38e0d2ffa1033936ded5314a43a6033ff30841c0090c37aca3ec74009"
+      },
+      {
+        "styleId": "cinematic-tech",
+        "level": 1,
+        "sourcePrompt": "prompts/07-cinematic-tech-1.txt",
+        "sourcePromptSha256": "9119d70d9ddb11947ae11045cd40eb8081428a60f9cfefc55aacd8303d246e28",
+        "promptTemplateSha256": "24c44a0bb063f08b0067a305bb724a6c064c1018b80e14147797e4b46c3c92c9"
+      },
+      {
+        "styleId": "cinematic-tech",
+        "level": 2,
+        "sourcePrompt": "prompts/07-cinematic-tech-2.txt",
+        "sourcePromptSha256": "e250566594e1e7c947f50778a7de182d4a0f1d01f44594609e13dc54a1315553",
+        "promptTemplateSha256": "87aa2d8873ef951816401f86b322d4eeebf8b0483a60b59e9f5a04a813801b1c"
+      },
+      {
+        "styleId": "luxury-photo",
+        "level": 1,
+        "sourcePrompt": "prompts/08-luxury-photo-1.txt",
+        "sourcePromptSha256": "3110c56798a0db6894ce3f161643cfb24182ec74c9be316ec6e40b4ff9daa9c7",
+        "promptTemplateSha256": "e07ffc3dcdef377d7a802dc8bc6000ae5355b24771396736c34318d963f45647"
+      },
+      {
+        "styleId": "luxury-photo",
+        "level": 2,
+        "sourcePrompt": "prompts/08-luxury-photo-2.txt",
+        "sourcePromptSha256": "c65f172fa7ff1269e2922fd4d87e0a158d3834047599c3e2a7581fa1ea27495c",
+        "promptTemplateSha256": "6bb3c692e70e39576d83bd0b52a0e4ab2b19a9be1ed8d8f32d15b4e9a47320a4"
+      },
+      {
+        "styleId": "blueprint",
+        "level": 1,
+        "sourcePrompt": "prompts/09-blueprint-1.txt",
+        "sourcePromptSha256": "5d4e0a80669559dcac46caa0c07b3b3a2fe067ba958f021951f3963a4a88fbd1",
+        "promptTemplateSha256": "b60802965b9751987b479bc0edaf5122968c4ba1c1ef503c4a17238970f569c1"
+      },
+      {
+        "styleId": "blueprint",
+        "level": 2,
+        "sourcePrompt": "prompts/09-blueprint-2.txt",
+        "sourcePromptSha256": "5b98fbad606ded6d66b6fb5d16e53dabfb433f17349df7998dc45fa8df35262d",
+        "promptTemplateSha256": "e73c7f7018b5b8bf527201644174c61ac67376c3bbf1212fe0ef31bd7393f999"
+      },
+      {
+        "styleId": "fantasy",
+        "level": 1,
+        "sourcePrompt": "prompts/10-fantasy-1.txt",
+        "sourcePromptSha256": "59850ceca33df4b40828401ca2e8b92f1f5cabea318a10b7c1b9448ba533be2d",
+        "promptTemplateSha256": "f06c7d2575644b55870c224c7835a1e1e9bd3699f0f3ddb12364e59a2b0c0664"
+      },
+      {
+        "styleId": "fantasy",
+        "level": 2,
+        "sourcePrompt": "prompts/10-fantasy-2.txt",
+        "sourcePromptSha256": "d45d980562cae3176c6a661c0dce389776e9ec18dea973170dae9a4716160196",
+        "promptTemplateSha256": "ffd6ce3c6964fc99f21de739a7117f660b19329818e283a5801acff7709079d5"
+      }
+    ],
+    "palettes": [
+      {
+        "styleId": "hand-drawn",
+        "paletteId": "cool",
+        "promptSha256": "d191b7866b9ad51079b75be9897aa2f25c4993646a7c09920fafea520d84d396"
+      },
+      {
+        "styleId": "hand-drawn",
+        "paletteId": "warm",
+        "promptSha256": "a00493d8e0a47901a909803ac425f6889ef709d51f04785ac488c0f1527aac3f"
+      },
+      {
+        "styleId": "textbook",
+        "paletteId": "cool",
+        "promptSha256": "e68e38c239cc98c2d55f7a3aac93d24d7b03fe74747cb8a39f5bb52f876501f5"
+      },
+      {
+        "styleId": "textbook",
+        "paletteId": "warm",
+        "promptSha256": "52d0ae9b30f2c643bb078fb08d62ae80c138edbb597ef0932e40988b4637e6c8"
+      },
+      {
+        "styleId": "collage",
+        "paletteId": "cool",
+        "promptSha256": "1272bf6fa550f0f8ca4f667c4be62924d07f8df3326b877cfe24bb1f0c31fb3b"
+      },
+      {
+        "styleId": "collage",
+        "paletteId": "warm",
+        "promptSha256": "461b27e52c0cedb3dd982e2791964fee3cefac4d3a141ffcf1a42dd4a87385c7"
+      },
+      {
+        "styleId": "cinematic-tech",
+        "paletteId": "cool",
+        "promptSha256": "9792cf1c968d15429b880c194a827913bcc620d8a53f7ac0e4eef58b227d5092"
+      },
+      {
+        "styleId": "cinematic-tech",
+        "paletteId": "warm",
+        "promptSha256": "0d649eff7e2602f95821899049cca8cf513d8943844ec0dcab5239760ce14814"
+      },
+      {
+        "styleId": "luxury-photo",
+        "paletteId": "cool",
+        "promptSha256": "eca5d9aa33aa68cb1fa7726f2b7a91c233c017691800c69e5f4afc71a38d17c8"
+      },
+      {
+        "styleId": "luxury-photo",
+        "paletteId": "warm",
+        "promptSha256": "54a35601ba213de2e9a5cf3e2f8c0cdda0c8e484b69584250749c30e9ba22b99"
+      },
+      {
+        "styleId": "blueprint",
+        "paletteId": "cool",
+        "promptSha256": "53b3304bdfeb04079dbe2e46d91639f8b04cca740c8e29b1e8269a952e3a8848"
+      },
+      {
+        "styleId": "blueprint",
+        "paletteId": "warm",
+        "promptSha256": "f04b0ed8933b19382fdfa2df00b92187990e5316df756de761c31aa5290e096b"
+      },
+      {
+        "styleId": "fantasy",
+        "paletteId": "cool",
+        "promptSha256": "bf930944dd8bddc81c2472ee2930ae016d5a661d9c9a49ae8f7cb328c17c3cb0"
+      },
+      {
+        "styleId": "fantasy",
+        "paletteId": "warm",
+        "promptSha256": "24cbf7f276d7ad3902048b827fde65e17ba49b511510c4a3f726d03c29bd4ad1"
       }
     ]
   }
