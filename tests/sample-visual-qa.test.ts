@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { join } from 'node:path';
-import { writeFile } from 'node:fs/promises';
+import { realpath, writeFile } from 'node:fs/promises';
 import { fixtureTask, fixturePlan, fixtureImage } from './helpers/fast-task.js';
 import { submitWork } from './helpers/fast-flow.js';
 import { continueTask } from '../src/workflow/continue.js';
@@ -52,7 +52,8 @@ test('failed sample quality blocks approval and returns a revision decision with
   const result = await submitWork(root, reply, qa);
   assert.equal(result.kind, 'decision'); if (result.kind !== 'decision') throw Error('quality review expected');
   assert.equal(result.stage, 'quality-review');
-  assert.ok(result.view.includes(join(root, job.pages[0].target)));
+  const expectedPath = await realpath(join(root, job.pages[0].target));
+  assert.ok(result.view.includes(`[查看样页](<${expectedPath}>)`));
   assert.equal((result.details as any).pages[0].notes, qa.pages[0].notes);
   await assert.rejects(decideTask(root, { decisionId: result.id, action: 'approve-sample-and-generate-deck', callBudget: 2 }), /sample/i);
   assert.equal((await readBatchCheckpoint(root, job.jobId)).requestCount, 1);
