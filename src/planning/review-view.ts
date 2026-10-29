@@ -137,15 +137,28 @@ export function installReviewInteractions(model: ReviewModel): void {
   }));
   document.addEventListener('click', event => {
     const button = (event.target as HTMLElement).closest('button');
-    if (copyPending || !button || button.dataset.action !== 'choose') return;
+    if (copyPending || !button) return;
+    if (button.dataset.action === 'open-style' && selectedKey && !selectedKey.startsWith((button.dataset.styleId ?? '') + '/')) {
+      selectedKey = null;
+      variantButtons.forEach(variant => variant.setAttribute('aria-pressed', 'false'));
+      choice.textContent = '尚未选择组合';
+      promptSection.hidden = true;
+      promptText.textContent = '';
+      invalidateCopy();
+      status.textContent = '已切换风格，请选择该风格的档位与配色。';
+      refresh();
+      return;
+    }
+    if (button.dataset.action !== 'choose') return;
     const key = button.dataset.variantKey ?? '';
     if (!Object.hasOwn(model.variants, key)) return;
     selectedKey = key;
+    variantButtons.forEach(variant => variant.setAttribute('aria-pressed', String(variant === button)));
     invalidateCopy();
     choice.textContent = model.variants[key]!.choice;
     promptText.textContent = model.variants[key]!.prompt;
     promptSection.hidden = false;
-    status.textContent = '已选择组合；请核对完整 prompt。' + (model.variants[key]!.catalogReference ? '所选子风格图将作为画风参考，只参考材质、光影与配色，不复制文字或布局。' : '') + '选择本身不会生成图片。';
+    status.textContent = '已选中，卡片已高亮；请核对完整提示并点击复制确认回复。' + (model.variants[key]!.catalogReference ? '所选子风格图将作为画风参考，只参考材质、光影与配色，不复制文字或布局。' : '') + '选择本身不会生成图片。';
     refresh();
   });
   confirmButton.addEventListener('click', async () => {

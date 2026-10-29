@@ -1,14 +1,15 @@
 import { referenceDirection } from '../generation/style-reference.js';
 import { randomUUID } from 'node:crypto';
-import { readFile } from 'node:fs/promises';
+import { realpath } from 'node:fs/promises';
+import { isAbsolute, relative, sep } from 'node:path';
 import { z } from 'zod';
 import { readTask, updateTask, readTaskJson, writeTaskJson, taskTransaction, hash, readArtifact, taskPath } from '../project/task-store.js';
 import { PlanBundleSchema, type WorkflowReply } from './contracts.js';
 import { publishPlan, planReviewReply } from './planning.js';
-import { acceptBatchResult, BatchResultSchema, readBatchJob, readBatchCheckpoint, jobPath } from '../generation/task-batch.js';
+import { acceptBatchResult, BatchResultSchema, readBatchJob, readBatchCheckpoint, jobPath, validateImage } from '../generation/task-batch.js';
 import { assembleTaskDeck, readTaskSession, readTaskRevision, deckLink, presentTaskEdit } from '../deck-revisions/task-deck.js';
 import { submissionNote } from '../generation/image-intent.js';
-import { reuseCompletedPages } from './reuse.js';
+import { reuseCompletedPages, SampleReferenceEvidenceError } from './reuse.js';
 import { ensurePlanningContext } from '../planning/context.js';
 
 export async function taskReply(root: string): Promise<WorkflowReply> {
@@ -17,7 +18,18 @@ export async function taskReply(root: string): Promise<WorkflowReply> {
   if (s.stage === 'delivered' && s.delivery) return { kind: 'done', deck: s.delivery, link: deckLink(root, s.delivery) };
   if (!s.pendingDecision) return { kind: 'attention', reason: 'No action ready; run continue to recover' };
   if (s.pendingDecision.kind === 'generation-recovery') return { kind: 'decision', id: s.pendingDecision.id, stage: 'generation-recovery', view: '本批次未完成且预算已用完。成功页已保存；可授权 retry-generation 仅继续剩余页，或 revise-plan 修改内容。', details: await readBatchCheckpoint(root, s.activeJobId!) };
-  if (s.pendingDecision.kind === 'quality-review') return { kind: 'decision', id: s.pendingDecision.id, stage: 'quality-review', view: '图片检查发现问题，请确认需要调整的页面或内容；使用 revise-plan 提交修改要求。未通过页面不会进入交付。', details: await readTaskJson(root, `${jobPath(s.activeJobId!)}/qa.json`) };
+  if (s.pendingDecision.kind === 'quality-review') {
+    const qa = await readTaskJson(root, `${jobPath(s.activeJobId!)}/qa.json`);
+    let sample = '';
+    if (s.stage === 'sample-qa') {
+      const result = BatchResultSchema.parse(await readTaskJson(root, `${jobPath(s.activeJobId!)}/result.json`));
+      const artifact = result.pages[0]?.artifact;
+      if (!artifact) throw new Error('Sample image is missing');
+      await validateImage(root, artifact);
+      sample = `未通过检查的样页：[查看样页](<${await taskPath(root, artifact.path)}>)\n`;
+    }
+    return { kind: 'decision', id: s.pendingDecision.id, stage: 'quality-review', view: `${sample}图片检查发现问题，请确认需要调整的页面或内容；使用 revise-plan 提交修改要求。未通过页面不会进入交付。`, details: qa };
+  }
   if (s.editSessionPath) {
     const session = await readTaskSession(root);
     return { kind: 'decision', id: s.pendingDecision.id, stage: 'edit-review', view: `${deckLink(root, { revisionId: session.revisionId, relativePath: session.candidatePath, sha256: session.presentedSha256! })}\n${session.mode === 'manual' ? '保存并关闭后回复“已保存并关闭”。' : '请回看后确认修改，或拒绝此候选。'}`, details: session };
@@ -32,7 +44,13 @@ export async function taskReply(root: string): Promise<WorkflowReply> {
     const promptsPath = `planning/${s.contentRevision}/deck-prompts.json`;
     const job = await readBatchJob(root, s.activeJobId!);
     const prompts = await readTaskJson(root, promptsPath) as Record<string, string>;
-    const preview = await reuseCompletedPages(root, plan, { ...job, kind: 'deck', styleLock: { ...job.styleLock, approvalState: 'approved', approvedSample: result.pages[0].artifact }, pages: plan.outline.slides.map(p => ({ slideId: p.id, prompt: prompts[p.id], target: '', cached: null })) });
+    let preview;
+    try {
+      preview = await reuseCompletedPages(root, plan, { ...job, kind: 'deck', styleLock: { ...job.styleLock, approvalState: 'approved', approvedSample: result.pages[0].artifact }, pages: plan.outline.slides.map(p => ({ slideId: p.id, prompt: prompts[p.id], target: '', cached: null })) });
+    } catch (error) {
+      if (error instanceof SampleReferenceEvidenceError) return { kind: 'attention', reason: error.message };
+      throw error;
+    }
     const reusedSlideIds = preview.pages.filter(p => p.cached).map(p => p.slideId);
     const generationPageCount = preview.pages.length - reusedSlideIds.length;
     return { kind: 'decision', id: s.pendingDecision.id, stage: s.stage, view: `样页：${await taskPath(root, result.pages[0].artifact!.path)}\n确认无修改后复用样页及其他未变页面（整套 ${plan.slides.length} 页，复用 ${reusedSlideIds.length} 页，新生成 ${generationPageCount} 页，默认最多新增 ${generationPageCount} 次外部调用）。`, details: { sample: result.pages[0].artifact, promptsPath, submissionNote: submissionNote(job.generationIntent), ...(job.styleLock.referencePolicy === 'required' ? { referenceDirection } : {}), references: [...(job.styleLock.referencePolicy === 'required' ? [{ ...result.pages[0].artifact!, role: 'art-direction' }] : []), ...plan.references], pageCount: plan.slides.length, generationPageCount, reusedSlideIds, callBudget: generationPageCount, output: `${root}/generation`, executor: 'ai-image-to-ppt' } };
@@ -45,14 +63,22 @@ export async function continueTask(root: string, resultPath?: string): Promise<W
   return taskTransaction(root, async () => {
     let s = await readTask(root);
     if (resultPath) {
-      const bytes = await readFile(resultPath), resultHash = hash(bytes);
-      if (bytes.length > 16 * 1024 * 1024) throw new Error('Work result exceeds 16 MB');
+      if (!isAbsolute(resultPath)) throw new Error('Work result must use the current declared result path');
+      const actualPath = await realpath(resultPath);
+      const base = await realpath(root), relativePath = relative(base, actualPath);
+      if (!relativePath || relativePath.startsWith('..' + sep) || isAbsolute(relativePath)) throw new Error('Work result must use the current declared result path');
+      const resultRelativePath = relativePath.split(sep).join('/');
+      const currentPath = s.work?.resultPath;
+      const previousPath = s.lastResult?.path;
+      const legacyReplay = !!s.lastResult && !previousPath;
+      if (resultRelativePath !== currentPath && resultRelativePath !== previousPath && !legacyReplay) throw new Error('Work result must use the current declared result path');
+      const bytes = await readArtifact(root, resultRelativePath, 16 * 1024 * 1024), resultHash = hash(bytes);
       const envelope = z.object({ workId: z.string().uuid(), contentRevision: z.string().uuid(), payload: z.unknown() }).strict().parse(JSON.parse(bytes.toString('utf8')));
       if (s.lastResult?.id === envelope.workId) {
         if (s.lastResult.sha256 !== resultHash) throw new Error('Completed work result changed');
         return taskReply(root);
       }
-      if (!s.work || s.work.id !== envelope.workId || envelope.contentRevision !== s.contentRevision) throw new Error('Stale or unexpected work result');
+      if (!s.work || resultRelativePath !== currentPath || s.work.id !== envelope.workId || envelope.contentRevision !== s.contentRevision) throw new Error('Stale or unexpected work result');
       const work = s.work;
       if (work.kind === 'plan') await publishPlan(root, envelope.payload);
       else if (work.kind === 'generate-batch') {
@@ -60,7 +86,7 @@ export async function continueTask(root: string, resultPath?: string): Promise<W
         if (result.outcome !== 'success') {
           const job = await readBatchJob(root, s.activeJobId!);
           if (result.requestCount >= job.callBudget) {
-            await updateTask(root, state => ({ ...state, work: null, pendingDecision: { id: randomUUID(), kind: 'generation-recovery' }, lastResult: { id: envelope.workId, sha256: resultHash } }));
+            await updateTask(root, state => ({ ...state, work: null, pendingDecision: { id: randomUUID(), kind: 'generation-recovery' }, lastResult: { id: envelope.workId, sha256: resultHash, path: work.resultPath } }));
             return taskReply(root);
           }
           return { kind: 'attention', reason: 'Batch incomplete. Resume the same job and checkpoint; do not regenerate completed pages.' };
@@ -71,8 +97,11 @@ export async function continueTask(root: string, resultPath?: string): Promise<W
           // Deck prompts are disclosed before sample approval authorizes their job.
           const plan = PlanBundleSchema.parse(await readTaskJson(root, s.planPath!));
           const { compileSlidePrompt } = await import('../styles/prompt-compiler.js');
-          await writeTaskJson(root, `planning/${s.contentRevision}/deck-prompts.json`, Object.fromEntries(plan.slides.map(page => [page.slideId, compileSlidePrompt({ spec: page, style: style.recipe }).text])));
-          await updateTask(root, state => ({ ...state, stage: 'sample-review', work: null, pendingDecision: { id: randomUUID(), kind: 'sample-review' } }));
+          await writeTaskJson(root, `planning/${s.contentRevision}/deck-prompts.json`, Object.fromEntries(plan.slides.map(page => [
+            page.slideId,
+            page.slideId === job.pages[0]!.slideId ? job.pages[0]!.prompt : compileSlidePrompt({ spec: page, style: style.recipe }).text,
+          ])));
+          await updateTask(root, state => ({ ...state, stage: 'sample-qa', work: null }));
         } else await updateTask(root, state => ({ ...state, stage: 'deck-qa', work: null }));
       } else if (work.kind === 'review-images') {
         const result = BatchResultSchema.parse(await readTaskJson(root, `${jobPath(s.activeJobId!)}/result.json`));
@@ -82,14 +111,17 @@ export async function continueTask(root: string, resultPath?: string): Promise<W
         for (const page of qa.pages) {
           const image = result.pages.find(p => p.slideId === page.slideId)?.artifact, spec = plan.slides.find(p => p.slideId === page.slideId);
           if (!image || page.sha256 !== image.sha256 || !spec || page.requiredText.length !== spec.requiredText.length || spec.requiredText.some((text, i) => page.requiredText[i]?.text !== text)) throw new Error('QA does not match current images and text');
-          if (!page.styleConsistent || !page.hierarchyClear || !page.forbiddenContentAbsent || page.requiredText.some(t => !t.present)) {
-            await writeTaskJson(root, `${jobPath(s.activeJobId!)}/qa.json`, qa);
-            await updateTask(root, state => ({ ...state, work: null, pendingDecision: { id: randomUUID(), kind: 'quality-review' }, lastResult: { id: envelope.workId, sha256: resultHash } }));
-            return taskReply(root);
-          }
+          await validateImage(root, image);
         }
+        if (s.stage === 'sample-qa' && qa.pages.some(page => !page.notes.trim())) throw new Error('Sample QA requires actual observations');
         await writeTaskJson(root, `${jobPath(s.activeJobId!)}/qa.json`, qa);
-        await assembleTaskDeck(root);
+        if (qa.pages.some(page => !page.styleConsistent || !page.hierarchyClear || !page.forbiddenContentAbsent || page.requiredText.some(t => !t.present))) {
+          await updateTask(root, state => ({ ...state, work: null, pendingDecision: { id: randomUUID(), kind: 'quality-review' }, lastResult: { id: envelope.workId, sha256: resultHash, path: work.resultPath } }));
+          return taskReply(root);
+        }
+        if (s.stage === 'sample-qa') {
+          await updateTask(root, state => ({ ...state, stage: 'sample-review', work: null, pendingDecision: { id: randomUUID(), kind: 'sample-review' } }));
+        } else await assembleTaskDeck(root);
       } else if (work.kind === 'convert-page') {
         const { finishTaskConversion } = await import('../editable/task-conversion.js');
         await finishTaskConversion(root, envelope.payload);
@@ -104,7 +136,7 @@ export async function continueTask(root: string, resultPath?: string): Promise<W
         }
         await presentTaskEdit(root);
       }
-      await updateTask(root, state => ({ ...state, lastResult: { id: envelope.workId, sha256: resultHash } }));
+      await updateTask(root, state => ({ ...state, lastResult: { id: envelope.workId, sha256: resultHash, path: work.resultPath } }));
       s = await readTask(root);
     }
     if (s.work?.kind === 'generate-batch') {
@@ -123,9 +155,9 @@ export async function continueTask(root: string, resultPath?: string): Promise<W
       const cp = await readBatchCheckpoint(root, s.activeJobId!);
       if (cp.inFlightSlideId) return { kind: 'attention', reason: `第 ${cp.inFlightSlideId} 页请求结果不明；先确认已有产物，不自动重复付费。` };
       await updateTask(root, state => ({ ...state, work: { id, kind: 'generate-batch', inputPath: `${jobPath(s.activeJobId!)}/job.json`, resultPath: `${jobPath(s.activeJobId!)}/work-result.json` } }));
-    } else if (s.stage === 'deck-qa') {
+    } else if (s.stage === 'sample-qa' || s.stage === 'deck-qa') {
       const inputPath = `${jobPath(s.activeJobId!)}/qa-request.json`;
-      await writeTaskJson(root, inputPath, { planPath: s.planPath, jobPath: `${jobPath(s.activeJobId!)}/job.json`, resultPath: `${jobPath(s.activeJobId!)}/result.json`, instructions: 'Inspect all images against requiredText, approved style, hierarchy, forbidden content. Return actual per-page observations bound to the image SHA; do not infer visual success from metadata.' });
+      await writeTaskJson(root, inputPath, { planPath: s.planPath, jobPath: `${jobPath(s.activeJobId!)}/job.json`, resultPath: `${jobPath(s.activeJobId!)}/result.json`, instructions: 'Inspect every image against its requiredText, coreMessage, relationships, approved style, hierarchy and forbidden content. Check that the core message and necessary text are easy to read, occupy sufficient space, and have a clear contrasting backing where needed, and that graphics accurately convey the meaning and actual relationships without competing for attention. Set hierarchyClear to false when the visual hierarchy or semantic correspondence fails, and describe the observed issue in notes. Return actual per-page observations bound to the image SHA; do not infer visual success from metadata.' });
       await updateTask(root, state => ({ ...state, work: { id, kind: 'review-images', inputPath, resultPath: `${jobPath(s.activeJobId!)}/qa-result.json` } }));
     }
     return taskReply(root);

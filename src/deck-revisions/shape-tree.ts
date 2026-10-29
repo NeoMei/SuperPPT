@@ -1,6 +1,7 @@
 import { extractElementRange, scanOoxmlRanges, type OoxmlElementRange } from "./ooxml.js";
 const P="http://schemas.openxmlformats.org/presentationml/2006/main";
 const R="http://schemas.openxmlformats.org/officeDocument/2006/relationships";
+const A="http://schemas.openxmlformats.org/drawingml/2006/main";
 const REL="http://schemas.openxmlformats.org/package/2006/relationships";
 const XML_NAMESPACE="http://www.w3.org/XML/1998/namespace";
 function xmlAttribute(element: OoxmlElementRange, namespaceUri: string, localName: string): string | null {
@@ -43,7 +44,12 @@ export function transplantedShapeTree(
   const descendants = donorElements.filter((element) =>
     element.start >= range.start && element.end <= range.end);
   const replacements = descendants.flatMap((element) => element.attributes.flatMap((attribute) => {
-    if (attribute.namespaceUri !== R || attribute.localName !== "embed") return [];
+    if (attribute.namespaceUri !== R) return [];
+    // Only embedded images are copied to the destination. Other relationships
+    // would retain donor IDs and silently point to missing or unrelated parts.
+    if (attribute.localName !== "embed" || element.namespaceUri !== A || element.localName !== "blip") {
+      throw new Error(`unsupported donor shape relationship ${attribute.qualifiedName}`);
+    }
     const next = relationshipIds.get(attribute.value);
     if (!next) throw new Error(`donor shape tree has unauthenticated image relationship ${attribute.value}`);
     return [{ start: attribute.valueStart - range.start, end: attribute.valueEnd - range.start, value: next }];

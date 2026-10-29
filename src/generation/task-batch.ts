@@ -1,11 +1,12 @@
 import { randomUUID } from 'node:crypto';
 import sharp from 'sharp';
 import { z } from 'zod';
-import { readTask, readTaskJson, writeTaskJson, readArtifact, withTaskLock, hash, json, missing } from '../project/task-store.js';
+import { readTask, readTaskJson, writeTaskJson, readArtifact, withTaskLock, hash, json, missing, taskPath } from '../project/task-store.js';
 import { preflightJob } from '../dependencies/task-dependencies.js';
 import { ResolvedStyleSchema } from '../styles/schemas.js';
 import { CatalogReferenceSchema, generationReferences, referenceDirection, assertReferencesUsed } from './style-reference.js';
 import { GenerationIntentSchema, submissionNote } from './image-intent.js';
+import { PlanBundleSchema } from '../workflow/contracts.js';
 
 export const FileRef = z.object({ path: z.string(), sha256: z.string().regex(/^[a-f0-9]{64}$/) });
 export const TaskStyleSchema = z.object({ recipe: ResolvedStyleSchema, catalogReference: CatalogReferenceSchema.optional(), referencePolicy: z.literal('required').optional(), representativeSlideId: z.string().uuid(), approvalState: z.enum(['provisional', 'approved']), approvedSample: FileRef.nullable(), references: z.array(FileRef.extend({ role: z.enum(['art-direction', 'content-reference']) })).default([]), applyDependencyDefaultStyle: z.literal(false) });
@@ -85,6 +86,29 @@ export async function finishRequest(root: string, jobId: string, raw: z.input<ty
     await writeTaskJson(root, `${jobPath(jobId)}/checkpoint.json`, cp);
   });
 }
+// A read-only snapshot for an individual image preview. This never finalizes a
+// batch, advances a request, or substitutes for visual QA.
+export async function readPageProgress(root: string, jobId: string, slideId: string) {
+  return withTaskLock(root, async () => {
+    const state = await readTask(root), job = await readBatchJob(root, jobId);
+    if (state.activeJobId !== jobId || state.contentRevision !== job.contentRevision || state.stage !== 'deck-generation' || job.kind !== 'deck') throw new Error('Progress is only available for the active deck job');
+    const requested = job.pages.find(page => page.slideId === slideId);
+    if (!requested) throw new Error('Unknown progress page');
+    const checkpoint = await readBatchCheckpoint(root, jobId), artifact = checkpoint.completed[slideId];
+    if (!artifact) return null;
+    const completed = checkpoint.pages[slideId];
+    if (requested.cached ? json(requested.cached) !== json(artifact) : completed?.status !== 'success' || json(completed.artifact) !== json(artifact)) throw new Error('Page progress does not match the checkpoint');
+    if (!state.planPath) throw new Error('Progress plan is missing');
+    const plan = PlanBundleSchema.parse(await readTaskJson(root, state.planPath));
+    const slide = plan.outline.slides.find(page => page.id === slideId);
+    if (!slide) throw new Error('Progress page is absent from the plan');
+    await validateImage(root, artifact);
+    return { jobId, slideId, pageNumber: slide.order + 1, totalPages: plan.outline.slides.length,
+      completedPages: job.pages.filter(page => !!checkpoint.completed[page.slideId]).length,
+      absolutePath: await taskPath(root, artifact.path), sha256: artifact.sha256,
+      source: requested.cached ? 'cached' as const : 'generated' as const, qa: 'pending' as const };
+  });
+}
 export async function acceptBatchResult(root: string, raw: unknown): Promise<BatchResult> {
   return withTaskLock(root, async () => {
     const result = BatchResultSchema.parse(raw), s = await readTask(root), job = await readBatchJob(root, result.jobId);
@@ -106,7 +130,8 @@ export async function acceptBatchResult(root: string, raw: unknown): Promise<Bat
         if (!expected.cached) assertReferencesUsed(job, page.referencesUsed);
       } else if (cp.completed[page.slideId]) throw new Error('Completed page cannot become failed');
     }
-    if (result.outcome === 'success' && result.pages.some(p => p.status !== 'success' && p.status !== 'cached')) throw new Error('Incomplete successful batch');
+    const allPagesComplete = result.pages.every(p => p.status === 'success' || p.status === 'cached');
+    if (allPagesComplete !== (result.outcome === 'success')) throw new Error('Batch outcome does not match page completion');
     await writeTaskJson(root, `${jobPath(job.jobId)}/result.json`, result);
     return result;
   });

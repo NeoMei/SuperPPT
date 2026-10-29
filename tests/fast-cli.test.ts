@@ -4,7 +4,7 @@ import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { join, dirname } from 'node:path';
 import { pathToFileURL } from 'node:url';
-import { readFile, readdir, writeFile } from 'node:fs/promises';
+import { readFile, readdir, writeFile, realpath } from 'node:fs/promises';
 import { fixtureTask, fixturePlan, fixtureImage } from './helpers/fast-task.js';
 import { assertSelectionAssets } from './helpers/style-selection-assets.js';
 import { repositorySourcePath } from './repository-source.js';
@@ -14,7 +14,7 @@ const run = promisify(execFile);
 // The 12-page, 61-variant candidate is about 262 KB of text; allow roughly 22% headroom.
 // The complete 99-variant catalog includes each exact prompt in the review model.
 const MAX_TEXT_ONLY_REVIEW_HTML_BYTES = 500_000;
-for (const n of [3, 12]) test(`public CLI ${n} pages: 8 commands, 3 decisions, one complete batch and byte-identical delivery`, async () => {
+for (const n of [3, 12]) test(`public CLI ${n} pages: 9 commands, 3 decisions, one complete batch and byte-identical delivery`, async () => {
   const runtime = process.env.SUPERPPT_TEST_ROOT ?? await repositorySourcePath('.');
   const compiled = !process.env.SUPERPPT_TEST_ROOT && import.meta.url.includes('/dist/');
   const cli = join(runtime, compiled ? 'dist/src/cli.js' : 'src/cli.ts');
@@ -70,6 +70,13 @@ for (const n of [3, 12]) test(`public CLI ${n} pages: 8 commands, 3 decisions, o
       assert.ok(outgoing.includes('面向受众：用户'));
       const result = { slideId: page.slideId, status: 'success', artifact: await fixtureImage(root, page.target), raw: null, provider: 'fixture', channel: 'api', referencesUsed: batch.generationReferences(job).map((r: any) => r.sha256) };
       await batch.finishRequest(root, job.jobId, result); pages.push(result);
+      if (job.kind === 'deck') {
+        const preview = await batch.readPageProgress(root, job.jobId, page.slideId);
+        assert.equal(preview?.sha256, result.artifact.sha256);
+        assert.equal(preview?.absolutePath, await realpath(join(root, result.artifact.path)));
+        assert.equal(preview?.qa, 'pending');
+        assert.equal(preview?.totalPages, n);
+      }
     }
     return submit(reply, { jobId: job.jobId, outcome: 'success', requestCount: (await batch.readBatchCheckpoint(root, job.jobId)).requestCount, pages, routeSummary: ['fixture: no model calls'] });
   }
@@ -126,6 +133,9 @@ for (const n of [3, 12]) test(`public CLI ${n} pages: 8 commands, 3 decisions, o
   const sampleResultForSubmit = { slideId: samplePage.slideId, status: 'success', artifact: await fixtureImage(root, samplePage.target), raw: null, provider: 'fixture', channel: 'api', referencesUsed: batch.generationReferences(sampleJobBeforeRequest).map((r: any) => r.sha256) };
   await batch.finishRequest(root, sampleJobBeforeRequest.jobId, sampleResultForSubmit);
   reply = await submit(firstSampleRequest, { jobId: sampleJobBeforeRequest.jobId, outcome: 'success', requestCount: (await batch.readBatchCheckpoint(root, sampleJobBeforeRequest.jobId)).requestCount, pages: [sampleResultForSubmit], routeSummary: ['fixture: no model calls'] });
+  assert.equal(reply.work.kind, 'review-images');
+  const sampleSpec = plan.slides.find(page => page.slideId === samplePage.slideId)!;
+  reply = await submit(reply, { pages: [{ slideId: samplePage.slideId, sha256: sampleResultForSubmit.artifact.sha256, requiredText: sampleSpec.requiredText.map(text => ({ text, present: true })), styleConsistent: true, hierarchyClear: true, forbiddenContentAbsent: true, notes: 'fixture only' }] });
   assert.equal(reply.details.callBudget, n - 1);
   const sampleResult = await batch.readBatchCheckpoint(root, sampleJob.jobId);
   reply = await decide(reply, 'approve-sample-and-generate-deck', { callBudget: reply.details.callBudget });
@@ -138,7 +148,7 @@ for (const n of [3, 12]) test(`public CLI ${n} pages: 8 commands, 3 decisions, o
   reply = await submit(reply, { pages: plan.slides.map(p => ({ slideId: p.slideId, sha256: cp.completed[p.slideId].sha256, requiredText: [{ text: '标题', present: true }], styleConsistent: true, hierarchyClear: true, forbiddenContentAbsent: true, notes: 'fixture only' })) });
   const current = (await state()).currentDeck;
   reply = await decide(reply, 'confirm-delivery');
-  assert.equal(reply.kind, 'done'); assert.equal(commands, 8); assert.equal(decisions, 3); assert.equal(batches, 1);
+  assert.equal(reply.kind, 'done'); assert.equal(commands, 9); assert.equal(decisions, 3); assert.equal(batches, 1);
   assert.deepEqual(await readFile(join(root, reply.deck.relativePath)), await readFile(join(root, current.relativePath)));
   const checkpoints = await batch.readBatchCheckpoint(root, s.activeJobId);
   assert.equal(checkpoints.requestCount, n - 1);

@@ -36,6 +36,20 @@ test('successful result cannot silently omit the selected style reference', asyn
   await assert.rejects(finishRequest(root, job.jobId, { slideId: page.slideId, status: 'success', artifact, provider: 'doubao', channel: 'api', referencesUsed: [] }), /reference/i);
 });
 
+test('a successful request cannot omit a supplied content reference', async () => {
+  const { root } = await fixtureTask(), plan = await fixturePlan();
+  const content = await fixtureImage(root, 'content-reference.png');
+  plan.references = [{ ...content, role: 'content-reference' }];
+  await submitWork(root, await continueTask(root), plan);
+  await decideTask(root, { decisionId: (await readTask(root)).pendingDecision!.id, action: 'select-style-and-generate-sample', styleId: 'tactile', level: 3, paletteId: 'mid', callBudget: 1 });
+  const job = await readBatchJob(root, (await readTask(root)).activeJobId!), page = job.pages[0];
+  await beginRequest(root, job.jobId, page.slideId);
+  const artifact = await fixtureImage(root, page.target);
+  const result = { slideId: page.slideId, status: 'success' as const, artifact, provider: 'fixture', channel: 'api' as const, referencesUsed: [job.styleLock.catalogReference!.sha256] };
+  await assert.rejects(finishRequest(root, job.jobId, result), /content-reference/i);
+  await finishRequest(root, job.jobId, { ...result, referencesUsed: [...result.referencesUsed, content.sha256] });
+});
+
 test('reference download verifies registered bytes, caches locally, and rejects corruption before a request', async () => {
   const { root } = await fixtureTask(), plan = await fixturePlan();
   await submitWork(root, await continueTask(root), plan);

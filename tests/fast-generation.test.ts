@@ -29,3 +29,16 @@ test('batch budget is consumed before requests, completed pages are never regene
   assert.deepEqual(await acceptBatchResult(root, result), await acceptBatchResult(root, result));
   await assert.rejects(acceptBatchResult(root, { ...result, requestCount: 2 }), /call count/);
 });
+
+test('batch results cannot report a non-success outcome after every page completed', async () => {
+  const { root } = await fixtureTask(), plan = await fixturePlan(), s = await readTask(root), id = randomUUID();
+  const job: BatchJob = { jobId: id, contentRevision: s.contentRevision, kind: 'style-sample', createdAt: new Date().toISOString(), generationIntent: { purpose: plan.brief.purpose, audience: plan.brief.audience }, callBudget: 1,
+    styleLock: { recipe: selectStyleVariant(plan.styles[0], { level: 2, paletteId: 'mid' }), representativeSlideId: plan.representativeSlideId, approvalState: 'provisional', approvedSample: null, references: [], applyDependencyDefaultStyle: false },
+    pages: [{ slideId: plan.representativeSlideId, prompt: '内容', target: `generation/jobs/${id}/images/${plan.representativeSlideId}.png`, cached: null }] };
+  await publishBatchJob(root, job); await updateTask(root, state => ({ ...state, activeJobId: id }));
+  await beginRequest(root, id, plan.representativeSlideId);
+  const artifact = await fixtureImage(root, job.pages[0].target);
+  const page: BatchResult['pages'][number] = { slideId: plan.representativeSlideId, status: 'success', artifact, raw: null, provider: 'fixture', channel: 'api', referencesUsed: [] };
+  await finishRequest(root, id, page);
+  await assert.rejects(acceptBatchResult(root, { jobId: id, requestCount: 1, outcome: 'partial', pages: [page], routeSummary: [] }), /outcome|unfinished|complete/);
+});

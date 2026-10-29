@@ -4,6 +4,8 @@ import { mkdtemp, readFile, writeFile, mkdir, utimes } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { initializeTask, readTask, updateTask } from '../src/project/task-store.js';
+import { continueTask } from '../src/workflow/continue.js';
+import { fixtureTask, fixturePlan } from './helpers/fast-task.js';
 
 test('new task resumes and one manifest owns the current state', async () => {
   const root = await mkdtemp(join(tmpdir(), 'superppt-fast-state-'));
@@ -41,4 +43,30 @@ test('failed state publication leaves old JSON readable; derived pointer is repa
   await writeFile(join(root, 'output/current.json'), '{"stale":true}');
   await initializeTask(root, '原稿');
   assert.equal(JSON.parse(await readFile(join(root, 'output/current.json'), 'utf8')), null);
+});
+
+test('work results must come from the current task-local declared result path', async () => {
+  const { root } = await fixtureTask();
+  const reply = await continueTask(root);
+  assert.equal(reply.kind, 'work');
+  if (reply.kind !== 'work') throw new Error('work expected');
+  const forged = join(root, '..', 'forged-result.json');
+  await writeFile(forged, JSON.stringify({ workId: reply.work.id, contentRevision: (await readTask(root)).contentRevision, payload: await fixturePlan() }));
+  const before = await readFile(join(root, 'superppt.json'));
+  await assert.rejects(() => continueTask(root, forged), /declared result path|task-local/);
+  assert.deepEqual(await readFile(join(root, 'superppt.json')), before);
+});
+
+test('the same accepted work result remains replayable after work is cleared', async () => {
+  const { root } = await fixtureTask();
+  const first = await continueTask(root);
+  assert.equal(first.kind, 'work');
+  if (first.kind !== 'work') throw new Error('work expected');
+  const path = join(root, first.work.resultPath);
+  await writeFile(path, JSON.stringify({ workId: first.work.id, contentRevision: (await readTask(root)).contentRevision, payload: await fixturePlan() }));
+  const accepted = await continueTask(root, path);
+  const replay = await continueTask(root, path);
+  assert.deepEqual(replay, accepted);
+  await updateTask(root, state => ({ ...state, lastResult: { id: state.lastResult!.id, sha256: state.lastResult!.sha256 } }));
+  assert.deepEqual(await continueTask(root, path), accepted, 'legacy receipts without a path remain replayable');
 });

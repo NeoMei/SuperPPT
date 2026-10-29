@@ -1,6 +1,6 @@
 {
   "name": "superppt",
-  "version": "0.3.4",
+  "version": "0.3.5",
   "description": "Create image-first PPTX decks with three decisions, batch generation and selected-page edits.",
   "author": {
     "name": "NeoMei",
@@ -52,9 +52,9 @@
     "jszip": "3.10.1",
     "pptxgenjs": "4.0.1",
     "saxes": "^6.0.0",
-    "sharp": "^0.35.3",
+    "sharp": "^0.35.5",
     "tsx": "^4.20.0",
-    "zod": "^4.0.0"
+    "zod": "^4.6.7"
   },
   "devDependencies": {
     "@types/node": "^24.0.0",

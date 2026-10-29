@@ -1,7 +1,7 @@
 import { selectedCatalogReference, referenceDirection } from '../generation/style-reference.js';
 import { randomUUID } from 'node:crypto';
 import { lstat } from 'node:fs/promises';
-import { PlanBundleSchema, type PlanBundle, type WorkflowReply } from './contracts.js';
+import { PlanBundleSchema, PlanPublicationSchema, type PlanBundle, type WorkflowReply } from './contracts.js';
 import { readTask, readTaskJson, writeTaskJson, updateTask, withTaskLock, hash, json } from '../project/task-store.js';
 import { compileSlidePrompt } from '../styles/prompt-compiler.js';
 import { builtInStyleAssetsRoot, selectStyleVariant } from '../styles/catalog.js';
@@ -75,8 +75,8 @@ export async function planReviewReply(root: string, plan: PlanBundle, revision: 
 }
 export async function publishPlan(root: string, raw: unknown): Promise<WorkflowReply> {
   return withTaskLock(root, async () => {
-    let plan = PlanBundleSchema.parse(raw);
     const s = await readTask(root);
+    let plan = (s.planPath ? PlanBundleSchema : PlanPublicationSchema).parse(raw);
     plan.outline.slides.sort((a, b) => a.order - b.order);
     if (s.stage !== 'planning' && s.stage !== 'plan-review') throw new Error('Plan cannot be changed at this stage; request a revision first');
     const path = `planning/${s.contentRevision}/plan.json`;

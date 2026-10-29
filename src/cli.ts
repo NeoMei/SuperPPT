@@ -34,12 +34,15 @@ async function main(args: string[]) {
   const root = resolve(required('--project'));
   let result;
   if (command === 'start') {
-    const source = z.object({ title: z.string().min(1), text: z.string().optional(), markdownPath: z.string().optional() }).strict().parse(await jsonInput(required('--input')));
-    if ((source.text === undefined) === (source.markdownPath === undefined)) throw new Error('Provide text or markdownPath, exactly one');
+    const source = z.object({ title: z.string(), text: z.string().optional(), markdownPath: z.string().optional() }).strict().parse(await jsonInput(required('--input')));
+    if (!source.title.trim()) throw new Error('请提供 PPT 主题或资料，并填写非空标题');
+    if ((source.text === undefined) === (source.markdownPath === undefined)) throw new Error('请提供 PPT 主题或资料，并使用 text 或 markdownPath 其中一项');
+    if (source.markdownPath !== undefined && !source.markdownPath.trim()) throw new Error('请提供 PPT 主题或资料，不能使用空白资料路径');
+    const bytes = source.markdownPath !== undefined ? await readFile(source.markdownPath) : Buffer.from(source.text!);
+    if (bytes.length > 16 * 1024 * 1024) throw new Error('Source too large');
+    if (!bytes.toString('utf8').trim()) throw new Error('请提供 PPT 主题或资料，当前输入为空');
     const rawDeps = z.object({ aiSkillRoot: z.string(), editableSkillRoot: z.string() }).strict().parse(await jsonInput(required('--dependencies')));
     const deps = await resolveTaskDependencies(rawDeps);
-    const bytes = source.markdownPath ? await readFile(source.markdownPath) : Buffer.from(source.text!);
-    if (bytes.length > 16 * 1024 * 1024) throw new Error('Source too large');
     const s = await initializeTask(root, source.title);
     try { if (hash(await readArtifact(root, s.sourcePath)) !== hash(bytes)) throw new Error('Task source already exists with different content'); }
     catch (e) { if (!missing(e)) throw e; await atomicWrite(await taskPath(root, s.sourcePath), bytes); }

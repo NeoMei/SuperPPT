@@ -42,6 +42,14 @@ test('bundled catalog exposes the accepted eleven styles in order while preservi
   }
 });
 
+test('skill documentation states the shipped catalog counts', async () => {
+  const skill = await readFile('skills/superppt/SKILL.md', 'utf8');
+  const dependencies = await readFile('skills/superppt/references/依赖说明.md', 'utf8');
+  assert.match(skill, /全部 11 种内置风格/);
+  assert.match(skill, /99 个组合、99 张精确预览和 11 张代表图/);
+  assert.match(dependencies, /全部 11 个条目/);
+});
+
 test('all built-in styles compile every accepted tier and palette without fixture copy', async () => {
   const catalog = await loadBuiltInStyleCatalog();
   for (const style of catalog.styles) {
@@ -53,6 +61,8 @@ test('all built-in styles compile every accepted tier and palette without fixtur
       const text = compileSlidePrompt({ spec: unrelatedSpec, style: selected }).text;
       assert.ok(text.includes(unrelatedSpec.requiredText.join('\n')));
       assert.ok(text.includes(unrelatedSpec.relationships.join('\n')));
+      assert.ok(text.includes('本页核心信息（仅作为语义指导，不新增画面文字）：' + unrelatedSpec.coreMessage));
+      assert.match(text, /内容优先与视觉层级（必须遵守）/);
       assert.doesNotMatch(text, /SuperPPT|10 大精选模板|让内容，自带设计感|用途说明|广告展示页|五组亮点|{{|}}/);
       assert.ok(style.previews.some(p => p.level === level && p.paletteId === paletteId));
     }
@@ -69,6 +79,8 @@ test('accepted recipes compile unrelated copy without leaking showcase advertisi
     const text = compileSlidePrompt({ spec: unrelatedSpec, style }).text;
     assert.ok(text.includes(unrelatedSpec.requiredText.join('\n')), recipe.id);
     assert.ok(text.includes(unrelatedSpec.relationships.join('\n')), recipe.id);
+    assert.ok(text.includes('本页核心信息（仅作为语义指导，不新增画面文字）：' + unrelatedSpec.coreMessage), recipe.id);
+    assert.match(text, /内容优先与视觉层级（必须遵守）/, recipe.id);
     assert.doesNotMatch(text, /SuperPPT|10 大精选模板|让内容，自带设计感|用途说明|广告展示页/, recipe.id);
 
     const brandedSpec = {

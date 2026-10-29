@@ -27,6 +27,7 @@ test('audit exceptions use stable advisory identities while retaining every safe
   };
   const cases = [
     { name: 'renumbered same advisories', status: 0 },
+    { name: 'nested locked dependency', status: 0, nested: true },
     { name: 'unknown advisory', status: 1, mutate: (r: typeof baseline) => { r.vulnerabilities['image-size'].via[0].url = 'https://github.com/advisories/GHSA-unknown'; } },
     { name: 'duplicate allowed advisory', status: 1, mutate: (r: typeof baseline) => { r.vulnerabilities['image-size'].via[0] = r.vulnerabilities['image-size'].via[1]; } },
     { name: 'changed severity', status: 1, mutate: (r: typeof baseline) => { r.vulnerabilities['image-size'].via[0].severity = 'critical'; } },
@@ -34,14 +35,14 @@ test('audit exceptions use stable advisory identities while retaining every safe
     { name: 'changed transitive dependency', status: 1, mutate: (r: typeof baseline) => { r.vulnerabilities.pptxgenjs.via = ['other']; } },
     { name: 'changed locked version', status: 1, version: '1.2.2' },
     { name: 'reachable parser', status: 1, code: "require('image-size')" },
-    { name: 'expired exception', status: 1, date: '2026-10-03T00:00:00Z' },
+    { name: 'expired exception', status: 1, date: '2027-02-01T00:00:00Z' },
   ];
   for (const scenario of cases) await t.test(scenario.name, async () => {
     const report = structuredClone(baseline);
     scenario.mutate?.(report);
     await writeFile(join(root, 'package-lock.json'), JSON.stringify({ packages: {
       'node_modules/pptxgenjs': { version: '4.0.1' },
-      'node_modules/image-size': { version: scenario.version ?? '1.2.1' },
+      [scenario.nested ? 'node_modules/pptxgenjs/node_modules/image-size' : 'node_modules/image-size']: { version: scenario.version ?? '1.2.1' },
     } }));
     await writeFile(join(distribution, 'pptxgen.js'), scenario.code ?? '// parser is unused');
     const child = spawnSync(process.execPath, ['--import', pathToFileURL(clock).href, script], {
@@ -54,4 +55,18 @@ test('audit exceptions use stable advisory identities while retaining every safe
     else if (scenario.version || scenario.code) assert.match(child.stderr, /exception is no longer proven unreachable/);
     else assert.deepEqual(JSON.parse(child.stderr), report);
   });
+});
+
+test('a clean dependency audit is not blocked by an expired exception deadline', async (t) => {
+  const root = await mkdtemp(join(tmpdir(), 'superppt-audit-clean-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const script = resolve('scripts/audit-dependencies.mjs');
+  const npm = join(root, 'npm.cjs'), clock = join(root, 'clock.mjs');
+  await writeFile(npm, 'process.stdout.write(JSON.stringify({ vulnerabilities: {}, metadata: { vulnerabilities: { total: 0 } } })); process.exit(0);');
+  await writeFile(clock, "const RealDate = Date; globalThis.Date = class extends RealDate { constructor(value) { super(value ?? '2027-02-01T00:00:00Z'); } };");
+  const child = spawnSync(process.execPath, ['--import', pathToFileURL(clock).href, script], {
+    cwd: root, encoding: 'utf8', env: { ...process.env, npm_execpath: npm },
+  });
+  assert.equal(child.status, 0, child.stdout + child.stderr);
+  assert.match(child.stdout, /no known vulnerabilities/);
 });

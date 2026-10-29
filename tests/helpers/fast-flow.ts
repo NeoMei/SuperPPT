@@ -4,7 +4,7 @@ import assert from 'node:assert/strict';
 import { join } from 'node:path';
 import { readFile } from 'node:fs/promises';
 import { fixtureTask, fixturePlan, fixtureImage } from './fast-task.js';
-import { readTask, writeTaskJson, hash } from '../../src/project/task-store.js';
+import { readTask, readTaskJson, writeTaskJson, hash } from '../../src/project/task-store.js';
 import { continueTask } from '../../src/workflow/continue.js';
 import { decideTask } from '../../src/workflow/decide.js';
 import { readBatchJob, beginRequest, finishRequest, readBatchCheckpoint, type BatchResult } from '../../src/generation/task-batch.js';
@@ -32,7 +32,10 @@ export async function generateFixture(root: string, reply: WorkflowReply) {
     const result: BatchResult['pages'][number] = { slideId: page.slideId, status: 'success', artifact, raw: null, provider: 'fixture', channel: 'api', referencesUsed: generationReferences(job).map(r => r.sha256) };
     await finishRequest(root, job.jobId, result); pages.push(result);
   }
-  return submitWork(root, reply, { jobId: job.jobId, requestCount: (await readBatchCheckpoint(root, job.jobId)).requestCount, outcome: 'success', pages, routeSummary: ['fixture only'] });
+  const next = await submitWork(root, reply, { jobId: job.jobId, requestCount: (await readBatchCheckpoint(root, job.jobId)).requestCount, outcome: 'success', pages, routeSummary: ['fixture only'] });
+  if (job.kind !== 'style-sample' || next.kind !== 'work' || next.work.kind !== 'review-images') return next;
+  const plan = (await readTaskJson(root, (await readTask(root)).planPath!)) as { slides: Array<{ slideId: string; requiredText: string[] }> };
+  return submitWork(root, next, { pages: pages.map(page => ({ slideId: page.slideId, sha256: page.artifact!.sha256, requiredText: plan.slides.find(slide => slide.slideId === page.slideId)!.requiredText.map(text => ({ text, present: true })), styleConsistent: true, hierarchyClear: true, forbiddenContentAbsent: true, notes: 'fixture only' })) });
 }
 
 export async function readyDeck(n = 3) {

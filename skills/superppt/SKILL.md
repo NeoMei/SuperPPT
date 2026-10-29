@@ -11,6 +11,8 @@ description: Use when users want to make a high-detail presentation from a topic
 
 ## 操作节奏
 
+在新建任务前先判断用户是否已提供具体 PPT 主题、正文、资料或明确指定的文件。只有“做一个 PPT / 使用 SuperPPT”等泛化请求、空白输入或没有指明内容时，先用一句话引导用户提供主题、粘贴内容或指定资料；等待用户回复。此时不要假设存在需求.md 或其他文件，不搜索、扫描或读取工作区，不检查依赖或联网版本，不创建任务目录、源文件或执行 start，也不发起生成。用户提供明确主题即可进入规划；完整资料无需额外问卷。用户明确要求恢复或修改既有任务时，按其指定的任务继续，不受新任务输入引导阻断。
+
 先解析本 Skill 的物理安装位置，插件根目录是其所在目录的上两层。
 通过当前宿主技能目录明确解析 ai-image-to-ppt 和 image-to-editable-pptx，不扫描用户主目录。
 依赖选用最新稳定版，不固定旧的次版本，也不以降级或并装旧插件绕过兼容错误。联网可用时通过官方发布信息核实版本；离线时可使用明确安装的稳定版，但必须说明未核实是否最新。发现安装落后时说明更新需求，未经授权不安装或升级；任务进行中不自动换版。读取依赖当前 Skill，按实际入口与产物契约判断兼容；版本准入不代表能力已验证。新版契约不兼容时停止并报告 SuperPPT 适配缺口，不绕过校验，优先更新或修复 SuperPPT。
@@ -25,7 +27,7 @@ description: Use when users want to make a high-detail presentation from a topic
 - kind: done：直接展示返回的语义文件名 PPTX 链接。
 
 规划时一次写完整 Brief、Outline、逐页 SlideSpec 和可用真实风格候选。
-默认读取 assets/styles/catalog.json 并原样写入全部十三种内置风格（顺序为深海智汇、商务青瓷、数据看板、立体、玻璃、水墨、经典手绘、教材图解、创意拼贴、电影科技、奢华摄影、建筑蓝图、叙事幻想），不由 Agent 缩成推荐短名单；用户明确要求的自定义 plan.styles 是权威输入，不用内置目录静默覆盖。按“风格 → 档位 → 配色”展开真实选项：深海智汇、商务青瓷、数据看板以及立体、玻璃、水墨提供各自 1／2／3 档和偏冷／基准中线／偏暖；经典手绘、教材图解、创意拼贴、电影科技、奢华摄影、建筑蓝图、叙事幻想仅有 3 档／基准中线。本分支接入候选尚未发布；三种商务风格目前使用本地 JPEG，未上传图床，旧十种保持远端。共有 61 个组合、58 张精确预览和 13 张代表图；商务三种各有 9 张预览，代表图采用 3 档／基准中线。商务正文强调文字层级、留白和小型语义图标，仅有输入数据时才使用图表或 KPI，不编造数字，正文不用流光；模板不带内部 SuperPPT 广告样例文案。
+默认读取 `assets/styles/catalog.json` 并原样写入当前目录的全部 11 种内置风格（商务风格、立体、玻璃、水墨、经典手绘、教材图解、创意拼贴、电影科技、奢华摄影、建筑蓝图、叙事幻想），不由 Agent 缩成推荐短名单；用户明确要求的自定义 `plan.styles` 是权威输入，不用内置目录静默覆盖。当前目录每种风格均提供 1／2／3 档和偏冷／基准中线／偏暖，共 99 个组合、99 张精确预览和 11 张代表图；具体可用项以 `catalog.json` 为准。商务正文强调文字层级、留白和小型语义图标，仅有输入数据时才使用图表或 KPI，不编造数字，正文不用流光；模板不带内部 SuperPPT 广告样例文案。
 新发布 plan-review 的 details.selectionPath 指向任务内 HTML；历史任务没有已发布选择页时会省略该字段并使用纯对话与原生图片回退。HTML 第一轮完整展示全部风格图，进入某个风格后，第二轮一次展示它的档位与配色组合。HTML 从图床加载公开风格图片，不调用 CLI 或生成服务；点击只形成可复制的自然语言回复。HTML 不可用时，先按 details.planPath、可用时的 details.reviewModelPath，以及 details.samplePromptsPath 展示与页面相同的整体方案、完整逐页内容、当前上下文、确切已选 prompt、参考图用途、输出位置和 1 次调用预算；历史任务没有 reviewModelPath 时直接从 planPath、samplePromptsPath 和当前 details 恢复这些内容，不要求不存在的文件。再读取 details.previewBase 下的 remote-assets.json，以 showcase.path 或 previews[].path 查 assets[逻辑路径].url，作为原生内联图片地址，索引无此条目时才使用 details.previewBase 加相对路径读取自定义本地图片。按同一顺序展示图片和文本元组。图床加载失败时明确说明网络图片不可用，组合仍可选择。没有精确预览时明确说明缺图并仍允许选择，不生成或冒充预览。这仍是同一次 plan-review，不增加逐步确认关卡。不要声称远程或移动端已经验收。
 保留源内容结构、来源覆盖和精确 requiredText（包含独立标题及全部可见文字，不删减、不限制行数）。relationships 只描述内容含义与关系；实际背景、承载图形和构图由生图模型根据内容决定。
 
@@ -43,14 +45,14 @@ description: Use when users want to make a high-detail presentation from a topic
 用户确认无须修改的样页直接进入正式 PPT 的原对应页，不重画、不换图；只生成未缓存页。三页正常路径共调用三次：样页一次，剩余两页两次。内容、风格、档位、配色或用途改变时重新规划，按新批次缓存状态执行；用户要求重画某页时走 regenerate-page。未通过内容检查的样页不能替用户批准。
 两处同时披露 details.submissionNote 与参考图用途说明 details.referenceDirection（如有）；实际出站文本以 review model 和 beginRequest 返回值为准。用途取已有 brief 的 purpose、audience，不新增分析或确认步骤。
 
-每个 generate-batch work 整体交给 ai-image-to-ppt 一次，沿用其 SerialStickyRouter 和当前可调用宿主能力。
+每个 generate-batch work 整体交给 ai-image-to-ppt 一次，沿用其 SerialStickyRouter 和当前可调用宿主能力。 整套 deck job 每页成功并通过文件校验后，立即在对话展示该页图片与页码，再继续生成下一页；展示明确标为生成预览、尚未通过整套 QA，不另加确认，不等待整批结束。
 按 [批次工作说明](references/依赖说明.md#批次执行) 执行：串行、成功页复用、每次请求前累计预算、正常路径只回传一个聚合结果。
 使用 job.styleLock.recipe 中锁定的 id、level、paletteId、promptTemplate、逐页确切 prompt 和批准样页；样页到整套沿用同一快照，不重新挑配色或重写档位。只替换每页内容关系与完整文案，不再叠加前中后景、微装饰或预设构图，不追加依赖默认风格。宿主原图 raw 与严格 16:9 master 都保留。
 实际提交宿主或 API 时，先调用 prepareGenerationReferences 校验并准备图片；样页使用已披露的精确子风格图，整套使用批准样页，保持同一批次内的参考图不变。原样发送 beginRequest 返回的完整 prompt：它在原内容后附加真实用途和参考图用途说明，让模型自行决定适当表达。该说明不是画面文案；不改内容规划、正文、风格、档位或配色，不增加预筛查或模型调用，也不承诺通过安全过滤。拒绝仍按既有失败流程处理。
 将准备好的图片真实传入宿主参考图参数；豆包 API 使用 gen_slide.py 的重复 --reference-image 参数。不可只在 prompt 中写路径或 URL。先按依赖 capabilities.json 检查候选支持性，不支持参考图的候选标记 unavailable 后沿既定路由继续；没有能保留参考图的通道则停止。成功结果 referencesUsed 必须记录实际已传图片的 SHA-256，不能只凭作业计划填入。
 原图不能直接当成可编辑 PPTX。两个依赖保持独立，不复制其实现。
 
-review-images 时实际查看全部图片，逐项核对文字、标点、重复／遗漏、标题与正文对应关系、风格、层级与禁用内容。豆包 API 使用依赖声明的 Pro 默认模型；不可在 Pro 不可用时私自降到 Lite。API success 仅代表图片文件有效，不能视为文字 QA 通过。若需修改已批准的 prompt，应在原有方案／样页边界展示修订，不在降级适配器里静默压缩。精简设计指令时完整保留 requiredText 与内容关系，优先清晰文字与充分阅读空间，不把长说明挤在大型插图下方。
+样页生成后先执行 review-images，实际检查样页；通过后才进入 sample-review，失败时进入 quality-review 并由用户提出修订，不自行重画或追加生图调用。review-images 时实际查看全部图片，逐项核对文字、标点、重复／遗漏、标题与正文对应关系、风格、层级与禁用内容。对照每页 coreMessage 和 relationships，检查核心文字是否容易读懂、文字区域与托底是否提供足够空间和对比，图形是否准确表达核心含义和真实关系且不抢占阅读焦点；视觉层级或语义对应有问题时将 hierarchyClear 设为 false，并在 notes 记录实际观察。豆包 API 使用依赖声明的 Pro 默认模型；不可在 Pro 不可用时私自降到 Lite。API success 仅代表图片文件有效，不能视为文字 QA 通过。若需修改已批准的 prompt，应在原有方案／样页边界展示修订，不在降级适配器里静默压缩。精简设计指令时完整保留 requiredText 与内容关系，优先清晰文字与充分阅读空间，不把长说明挤在大型插图下方。
 检查通过后 CLI 自动组装整套 PPTX。最后展示一个完整 PPTX 链接以及“修改某页 / 返回修改内容或风格 / 确认交付”。
 
 ## 改稿与完成

@@ -34,8 +34,8 @@ export function generationReferences(job: BatchJob): GenerationReference[] {
   return refs.filter((r, i) => refs.findIndex(other => other.sha256 === r.sha256 && other.role === r.role) === i);
 }
 export function assertReferencesUsed(job: BatchJob, used: string[]) {
-  for (const ref of generationReferences(job).filter(r => r.role === 'art-direction'))
-    if (!used.includes(ref.sha256)) throw new Error('Required art-direction reference was not used');
+  for (const ref of generationReferences(job))
+    if (!used.includes(ref.sha256)) throw new Error(`Required ${ref.role} reference was not used`);
 }
 
 // Run before beginRequest: failed downloads/validation must not spend generation budget.

@@ -1,10 +1,10 @@
-import { CatalogReferenceSchema } from '../generation/style-reference.js';
+import { CatalogReferenceSchema, referenceDirection } from '../generation/style-reference.js';
 import { randomUUID } from 'node:crypto';
 import { readTask, readTaskJson, writeTaskJson, updateTask, taskTransaction, hash, json, missing } from '../project/task-store.js';
 import { PlanBundleSchema, DecisionInputSchema, type WorkflowReply } from './contracts.js';
 import { publishBatchJob, BatchResultSchema, TaskStyleSchema, readBatchJob, readBatchCheckpoint, jobPath, type BatchJob } from '../generation/task-batch.js';
-import { compileSlidePrompt } from '../styles/prompt-compiler.js';
 import { selectStyleVariant } from '../styles/catalog.js';
+import { submissionNote } from '../generation/image-intent.js';
 import { reuseCompletedPages } from './reuse.js';
 import { continueTask, taskReply } from './continue.js';
 import { deliverTaskDeck, adoptTaskDeck, readTaskRevision } from '../deck-revisions/task-deck.js';
@@ -50,10 +50,16 @@ export async function decideTask(root: string, raw: unknown): Promise<WorkflowRe
         const definition = plan.styles.find(p => p.id === input.styleId);
         if (!definition) throw new Error('Select one of the disclosed styles');
         const style = selectStyleVariant(definition, { level: input.level, paletteId: input.paletteId });
-        const review = await readTaskJson(root, `planning/${s.contentRevision}/review-model.json`).catch(e => { if (!missing(e)) throw e; return null; }) as { variants?: Record<string, { catalogReference?: unknown }> } | null;
-        const rawReference = review?.variants?.[`${style.id}/${style.level}/${style.paletteId}`]?.catalogReference;
+        const key = `${style.id}/${style.level}/${style.paletteId}`;
+        const review = await readTaskJson(root, `planning/${s.contentRevision}/review-model.json`).catch(e => { if (!missing(e)) throw e; return null; }) as { revision?: unknown; decisionId?: unknown; variants?: Record<string, { prompt?: unknown; catalogReference?: unknown }> } | null;
+        const variant = review?.variants && Object.hasOwn(review.variants, key) ? review.variants[key] : undefined;
+        const rawReference = variant?.catalogReference;
         const catalogReference = rawReference ? CatalogReferenceSchema.parse(rawReference) : undefined;
-        const prompt = compileSlidePrompt({ spec: plan.slides.find(p => p.slideId === plan.representativeSlideId)!, style }).text;
+        const snapshots = await readTaskJson(root, `planning/${s.contentRevision}/sample-prompts.json`) as Record<string, unknown>;
+        const prompt = snapshots && Object.hasOwn(snapshots, key) ? snapshots[key] : undefined;
+        if (typeof prompt !== 'string' || !prompt) throw new Error('Disclosed sample prompt snapshot is missing or invalid');
+        const actual = prompt + '\n\n' + submissionNote(plan.brief) + (catalogReference || plan.references.some(r => r.role === 'art-direction') ? '\n\n' + referenceDirection : '');
+        if (review && (review.revision !== s.contentRevision || review.decisionId !== s.pendingDecision.id || variant?.prompt !== actual)) throw new Error('Disclosed sample prompt does not match the outgoing request; revise and review the plan again');
         job = { jobId: id, contentRevision: s.contentRevision, kind: 'style-sample', createdAt, generationIntent: { purpose: plan.brief.purpose, audience: plan.brief.audience }, callBudget: 1, styleLock: { recipe: style, catalogReference, referencePolicy: 'required', representativeSlideId: plan.representativeSlideId, approvalState: 'provisional', approvedSample: null, references: plan.references, applyDependencyDefaultStyle: false }, pages: [{ slideId: plan.representativeSlideId, prompt, target: `${jobPath(id)}/images/${plan.representativeSlideId}.png`, cached: null }] };
       } else {
         if (input.action !== 'approve-sample-and-generate-deck' && input.action !== 'regenerate-page') throw new Error('Action unavailable');

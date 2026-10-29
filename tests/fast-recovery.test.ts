@@ -86,3 +86,29 @@ test('QA failure exposes a correction decision and cannot deliver an unchecked d
   const next = await decideTask(root, { decisionId: (await readTask(root)).pendingDecision!.id, action: 'revise-plan', instruction: 'Repair missing text' });
   assert.equal(next.kind, 'work');
 });
+
+test('QA validates every page before accepting a failed review', async () => {
+  const { root } = await fixtureTask(), plan = await fixturePlan();
+  let reply = await submitWork(root, await continueTask(root), plan);
+  reply = await decideTask(root, { decisionId: (await readTask(root)).pendingDecision!.id, action: 'select-style-and-generate-sample', styleId: plan.styles[0].id, level: 2, paletteId: 'mid', callBudget: 1 });
+  reply = await generateFixture(root, reply);
+  reply = await decideTask(root, { decisionId: (await readTask(root)).pendingDecision!.id, action: 'approve-sample-and-generate-deck', callBudget: 2 });
+  reply = await generateFixture(root, reply);
+  assert.equal(reply.kind, 'work');
+  if (reply.kind !== 'work') throw new Error('Review work expected');
+  const request = await readTaskJson(root, reply.work.inputPath) as { instructions: string };
+  assert.match(request.instructions, /coreMessage/);
+  assert.match(request.instructions, /relationships/);
+  assert.match(request.instructions, /hierarchyClear/);
+  assert.match(request.instructions, /meaning|semantic/i);
+  const cp = await readBatchCheckpoint(root, (await readTask(root)).activeJobId!);
+  const pages = plan.slides.map((p, i) => ({ slideId: p.slideId, sha256: cp.completed[p.slideId].sha256, requiredText: [{ text: '标题', present: i !== 0 }], styleConsistent: true, hierarchyClear: true, forbiddenContentAbsent: true, notes: 'fixture' }));
+  const invalid = structuredClone(pages);
+  invalid[1].sha256 = '0'.repeat(64);
+  await assert.rejects(submitWork(root, reply, { pages: invalid }), /QA does not match/);
+  assert.equal((await readTask(root)).work?.kind, 'review-images');
+  await assert.rejects(readTaskJson(root, `generation/jobs/${cp.jobId}/qa.json`), { code: 'ENOENT' });
+  const reviewed = await submitWork(root, reply, { pages });
+  assert.equal(reviewed.kind, 'decision');
+  assert.equal((await readTask(root)).pendingDecision?.kind, 'quality-review');
+});

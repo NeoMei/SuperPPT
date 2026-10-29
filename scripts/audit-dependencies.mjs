@@ -2,7 +2,7 @@ import { spawnSync } from "node:child_process";
 import { readdir, readFile } from "node:fs/promises";
 import { join } from "node:path";
 
-const REVIEW_DEADLINE = "2026-10-03";
+const REVIEW_DEADLINE = "2027-01-31";
 // npm may renumber its source IDs; the reviewed GHSA identities stay stable.
 const ALLOWED_ADVISORIES = new Set([
   "https://github.com/advisories/GHSA-w3rx-r6r6-pgpr",
@@ -25,10 +25,6 @@ async function pptxGenUsesImageSize() {
 }
 
 async function main() {
-  if (new Date(`${REVIEW_DEADLINE}T00:00:00Z`) <= new Date()) {
-    fail(`image-size audit exception expired on ${REVIEW_DEADLINE}; reassess upstream releases`);
-    return;
-  }
   const npmExecPath = process.env.npm_execpath;
   if (!npmExecPath) {
     fail("dependency audit must run through npm so npm_execpath is authenticated");
@@ -42,6 +38,10 @@ async function main() {
   if (audit.error) throw audit.error;
   if (audit.status === 0) {
     process.stdout.write("Dependency audit passed with no known vulnerabilities.\n");
+    return;
+  }
+  if (new Date(`${REVIEW_DEADLINE}T00:00:00Z`) <= new Date()) {
+    fail(`image-size audit exception expired on ${REVIEW_DEADLINE}; reassess upstream releases`);
     return;
   }
 
@@ -74,16 +74,18 @@ async function main() {
   }
 
   const lock = JSON.parse(await readFile(join(process.cwd(), "package-lock.json"), "utf8"));
+  const imageSizeLock = lock.packages?.["node_modules/pptxgenjs/node_modules/image-size"]
+    ?? lock.packages?.["node_modules/image-size"];
   if (
     lock.packages?.["node_modules/pptxgenjs"]?.version !== "4.0.1"
-    || lock.packages?.["node_modules/image-size"]?.version !== "1.2.1"
+    || imageSizeLock?.version !== "1.2.1"
     || await pptxGenUsesImageSize()
   ) {
     fail("image-size audit exception is no longer proven unreachable");
     return;
   }
   process.stdout.write(
-    `Dependency audit accepted two unreachable image-size advisories; no patched release exists. Review by ${REVIEW_DEADLINE}.\n`,
+    `Dependency audit accepted two unreachable image-size advisories; pptxgenjs has no compatible patched dependency release. Review by ${REVIEW_DEADLINE}.\n`,
   );
 }
 

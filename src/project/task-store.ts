@@ -50,29 +50,56 @@ export async function readArtifact(root: string, path: string, maxBytes = 100 * 
   return bytes;
 }
 
+async function withLockGuard<T>(root: string, action: () => Promise<T>, waitForRelease = false): Promise<T> {
+  const path = join(root, '.task.lock.recovery');
+  // Releasing an already-held task lock may wait for an in-progress inspector.
+  // Acquisitions fail quickly. A crashed guard is never removed automatically:
+  // doing so would recreate the same unsafe compare-and-delete problem.
+  const deadline = Date.now() + (waitForRelease ? 5000 : 0);
+  let guard;
+  while (!guard) {
+    try { guard = await open(path, 'wx', 0o600); }
+    catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
+      if (Date.now() >= deadline) throw new Error('Task lock recovery is busy or interrupted; retry. If abandoned, remove .task.lock.recovery only after all task processes have stopped.');
+      await new Promise(resolve => setTimeout(resolve, 20));
+    }
+  }
+  try { await guard.writeFile(String(process.pid)); return await action(); }
+  finally { await guard.close(); await unlink(path); }
+}
+
 export async function withTaskLock<T>(root: string, action: () => Promise<T>): Promise<T> {
   root = await realpath(root);
   if (locks.getStore() === root) return action();
   const path = join(root, '.task.lock');
-  let handle;
-  for (let attempt = 0; attempt < 2; attempt++) {
-    try { handle = await open(path, 'wx', 0o600); break; }
-    catch (e) {
-      if ((e as NodeJS.ErrnoException).code !== 'EEXIST') throw e;
+  // All creation, stale inspection/removal, and release use the same guard.
+  // An inspector can therefore never unlink a replacement belonging to a
+  // different process after checking the previous owner's PID.
+  const handle = await withLockGuard(root, async () => {
+    let handle;
+    try { handle = await open(path, 'wx', 0o600); }
+    catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
       const pid = Number(await readFile(path, 'utf8'));
       if (!Number.isSafeInteger(pid) || pid < 1) {
         if (Date.now() - (await lstat(path)).mtimeMs < 30000) throw new Error('Task lock is being initialized; retry');
-        await unlink(path); // An initialization interrupted before its PID was written.
-        continue;
+      } else {
+        try { process.kill(pid, 0); throw new Error('Task is busy; retry after the current local operation'); }
+        catch (cause) { if ((cause as NodeJS.ErrnoException).code !== 'ESRCH') throw cause; }
       }
-      try { process.kill(pid, 0); throw new Error('Task is busy; retry after the current local operation'); }
-      catch (e) { if ((e as NodeJS.ErrnoException).code !== 'ESRCH') throw e; }
       await unlink(path);
+      handle = await open(path, 'wx', 0o600);
     }
+    try { await handle.writeFile(String(process.pid)); }
+    catch (error) { await handle.close(); await unlink(path); throw error; }
+    return handle;
+  });
+  try { return await locks.run(root, action); }
+  finally {
+    await handle.close();
+    await withLockGuard(root, () => unlink(path), true);
   }
-  if (!handle) throw new Error('Task is busy');
-  try { await handle.writeFile(String(process.pid)); return await locks.run(root, action); }
-  finally { await handle.close(); await unlink(path); }
 }
 
 export async function readTask(root: string): Promise<TaskState> {
@@ -114,7 +141,7 @@ export async function taskTransaction<T>(root: string, action: () => Promise<T>)
 export async function initializeTask(root: string, title: string): Promise<TaskState> {
   await mkdir(root, { recursive: true });
   return withTaskLock(root, async () => {
-    const entries = (await readdir(root)).filter(name => name !== '.task.lock');
+    const entries = (await readdir(root)).filter(name => name !== '.task.lock' && name !== '.task.lock.recovery');
     if (entries.length) {
       const s = await readTask(root);
       await writeTaskJson(root, 'output/current.json', s.currentDeck);

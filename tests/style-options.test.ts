@@ -27,14 +27,34 @@ test('selected tier and palette compile once, preserving literal copy and relati
   assert.equal(typeof catalog.selectStyleVariant, 'function');
   const style = catalog.selectStyleVariant(definition, { level: 2, paletteId: 'cool' });
   const text = compileSlidePrompt({ spec, style }).text;
-  assert.equal(text, 'LEVEL 2\nBLACK BLUE #0B1E2B\n关系：收集 → 验证 → 回访 → 收集\n全文：' + spec.requiredText.join('\n'));
+  assert.match(text, /LEVEL 2\nBLACK BLUE #0B1E2B\n关系：收集 → 验证 → 回访 → 收集\n全文：/);
+  assert.ok(text.includes(spec.requiredText.join('\n')));
   assert.doesNotMatch(text, /APRICOT|canonical JSON|foreground|midground/);
+});
+test('creative slide prompts prioritize readable text, backing surfaces and balanced semantic graphics', () => {
+  const style = catalog.selectStyleVariant(definition, { level: 3, paletteId: 'cool' });
+  const text = compileSlidePrompt({ spec, style }).text;
+  assert.match(text, /文字区域约占正文区域的 65%—75%/);
+  assert.match(text, /图形及连接约占 25%—35%/);
+  assert.match(text, /托底/);
+  assert.ok(text.indexOf('内容优先与视觉层级') < text.indexOf('LEVEL 3'));
+  assert.ok(text.includes(spec.requiredText.join('\n')));
+  assert.ok(text.includes(spec.relationships[0]));
+});
+test('compiled prompts make the core message the reading target and graphics semantic support', () => {
+  const style = catalog.selectStyleVariant(definition, { level: 3, paletteId: 'cool' });
+  const text = compileSlidePrompt({ spec, style }).text;
+  assert.match(text, /本页核心信息（仅作为语义指导，不新增画面文字）：从反馈推动改进/);
+  assert.match(text, /先让观众一眼读懂本页核心信息/);
+  assert.match(text, /图形必须直接解释核心信息或真实内容关系/);
+  assert.match(text, /不得成为脱离文案的独立主视觉/);
 });
 test('slot-like and dollar text remains literal instead of being interpreted by replacements', () => {
   assert.equal(typeof catalog.selectStyleVariant, 'function');
   const style = catalog.selectStyleVariant(definition, { level: 3, paletteId: 'warm' });
   const text = compileSlidePrompt({ spec: { ...spec, requiredText: ["$& {{PALETTE}} $'"], relationships: ['{{SLIDE_COPY}}'] }, style }).text;
-  assert.equal(text, "LEVEL 3\nAPRICOT\n关系：{{SLIDE_COPY}}\n全文：$& {{PALETTE}} $'");
+  assert.match(text, /LEVEL 3\nAPRICOT\n关系：{{SLIDE_COPY}}\n全文：\$& \{\{PALETTE\}\} \$'/);
+  assert.match(text, /内容优先与视觉层级/);
 });
 test('unsupported palette or tier cannot silently fall back to another selection', () => {
   assert.equal(typeof catalog.selectStyleVariant, 'function');

@@ -16,6 +16,18 @@ export const PlanBundleSchema = z.object({
   if (p.brief.targetSlides !== ids.length) ctx.addIssue({ code: 'custom', message: 'Page count differs from brief' });
   if (new Set(p.styles.map(s => s.id)).size !== p.styles.length) ctx.addIssue({ code: 'custom', message: 'Duplicate style choices' });
 });
+
+export const PlanPublicationSchema = PlanBundleSchema.superRefine((p, ctx) => {
+  const specs = new Map(p.slides.map(slide => [slide.slideId, slide]));
+  for (const [index, outline] of p.outline.slides.entries()) {
+    const spec = specs.get(outline.id);
+    if (!spec) continue;
+    const specIndex = p.slides.findIndex(slide => slide.slideId === outline.id);
+    if (spec.title !== outline.title) ctx.addIssue({ code: 'custom', message: 'Outline and slide title must match', path: ['slides', specIndex, 'title'] });
+    if (spec.role !== outline.role) ctx.addIssue({ code: 'custom', message: 'Outline and slide role must match', path: ['slides', specIndex, 'role'] });
+    if (JSON.stringify(spec.sourceRefs) !== JSON.stringify(outline.sourceRefs)) ctx.addIssue({ code: 'custom', message: 'Outline and slide sources must match', path: ['slides', specIndex, 'sourceRefs'] });
+  }
+});
 export type PlanBundle = z.infer<typeof PlanBundleSchema>;
 export type WorkflowReply =
   | { kind: 'work'; work: WorkRequest }

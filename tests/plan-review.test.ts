@@ -10,10 +10,18 @@ import { selectStyleVariant } from '../src/styles/catalog.js';
 import { compileSlidePrompt } from '../src/styles/prompt-compiler.js';
 import { decideTask } from '../src/workflow/decide.js';
 import { publishPlan } from '../src/workflow/planning.js';
+import { PlanBundleSchema, PlanPublicationSchema } from '../src/workflow/contracts.js';
 import { fixturePlan, fixtureTask } from './helpers/fast-task.js';
 
 const revision = '00000000-0000-4000-8000-000000000041';
 const decisionId = '00000000-0000-4000-8000-000000000042';
+
+test('plan publication rejects outline and slide spec identity drift', async () => {
+  const plan = await fixturePlan();
+  plan.outline.slides[0]!.title = '错误标题';
+  assert.equal(PlanBundleSchema.safeParse(plan).success, true, 'persisted v1 plans remain readable');
+  assert.equal(PlanPublicationSchema.safeParse(plan).success, false);
+});
 
 test('review model projects the published slide order and custom style prompts without catalog substitution', async () => {
   const plan = await fixturePlan();
@@ -146,6 +154,8 @@ test('published review HTML keeps complete ordered content and safely labels eve
   const longCopy = `不得截断的完整长文案 ${'内容'.repeat(180)}`;
   ordered[0]!.title = '首页 <img id="forged-title">';
   ordered[1]!.title = '第二页 </textarea><script id="forged-note">';
+  plan.slides.find(slide => slide.slideId === ordered[0]!.id)!.title = ordered[0]!.title;
+  plan.slides.find(slide => slide.slideId === ordered[1]!.id)!.title = ordered[1]!.title;
   plan.slides.find(slide => slide.slideId === ordered[0]!.id)!.requiredText = [longCopy];
   plan.slides.find(slide => slide.slideId === ordered[1]!.id)!.requiredText = ['</script><script id="forged-copy">'];
   plan.context = {
@@ -206,6 +216,10 @@ class FakeElement {
   focused = false;
   readOnly = false;
   childButton: FakeElement | null = null;
+  attributes = new Map<string, string>();
+  setAttribute(name: string, value: string) { this.attributes.set(name, value); }
+  getAttribute(name: string) { return this.attributes.get(name) ?? null; }
+  scrollIntoView() {}
 
   constructor(readonly tagName = 'DIV') {}
   addEventListener(type: string, listener: FakeListener) {
@@ -265,6 +279,11 @@ function reviewDom(variantKeys: string[]) {
   panel.childButton = firstPanelButton;
   document.panels = [panel];
   document.ids.set('style-tactile', panel);
+  const glassPanel = new FakeElement();
+  glassPanel.dataset.stylePanel = 'glass';
+  glassPanel.childButton = new FakeElement('BUTTON');
+  document.panels.push(glassPanel);
+  document.ids.set('style-glass', glassPanel);
   const variants = variantKeys.map(key => {
     const variant = new FakeElement('BUTTON');
     variant.dataset.action = 'choose';
@@ -287,7 +306,7 @@ test('generated review script gates mutually exclusive replies and exposes the c
   assert.ok(source, 'generated HTML must contain an executable interaction script');
   const model = await readTaskJson(root, details.reviewModelPath) as ReturnType<typeof buildReviewModel>;
   const keys = Object.keys(model.variants);
-  const { document, note, variants } = reviewDom(keys.slice(0, 2));
+  const { document, note, variants } = reviewDom(keys);
   const copied: string[] = [];
   const clipboardWrites: string[] = [];
   let clipboardMode: 'success' | 'fail' | 'defer' | 'defer-fail' = 'success';
@@ -318,6 +337,8 @@ test('generated review script gates mutually exclusive replies and exposes the c
   await document.click(firstVariant);
   assert.equal(confirm.disabled, false);
   assert.equal(revise.disabled, true);
+  assert.equal(firstVariant.getAttribute('aria-pressed'), 'true');
+  assert.equal(variants[1]!.getAttribute('aria-pressed'), 'false');
   await document.click(revise);
   assert.deepEqual(copied, []);
   assert.equal(document.getElementById('choice')!.textContent, model.variants[keys[0]!]!.choice);
@@ -325,7 +346,22 @@ test('generated review script gates mutually exclusive replies and exposes the c
 
   const secondVariant = variants[1]!;
   await document.click(secondVariant);
+  assert.equal(firstVariant.getAttribute('aria-pressed'), 'false');
+  assert.equal(secondVariant.getAttribute('aria-pressed'), 'true');
   assert.equal(document.getElementById('selected-prompt-text')!.textContent, model.variants[keys[1]!]!.prompt);
+  const otherStyle = new FakeElement('BUTTON');
+  otherStyle.dataset.action = 'open-style';
+  otherStyle.dataset.styleId = 'glass';
+  await document.click(otherStyle);
+  assert.equal(confirm.disabled, true, 'opening a different style cannot approve the previous selection');
+  assert.equal(secondVariant.getAttribute('aria-pressed'), 'false');
+  assert.equal(document.getElementById('selected-prompt')!.hidden, true);
+
+  for (let index = 0; index < keys.length; index++) {
+    await document.click(variants[index]!);
+    assert.equal(document.getElementById('selected-prompt-text')!.textContent, model.variants[keys[index]!]!.prompt, keys[index]);
+  }
+  await document.click(secondVariant);
 
   note.value = '  收紧 <结论> & 保留数字  ';
   await note.dispatch('input');
