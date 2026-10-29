@@ -4,9 +4,8 @@ import { ResolvedStyleSchema, type ResolvedStyle } from './schemas.js';
 
 export type CompiledPrompt = { text: string; sha256: string };
 export const contentHierarchyDirection = `内容优先与视觉层级（必须遵守）：
-先让观众一眼读懂本页核心信息，再阅读辅助说明；文字、标题、关键数字和必要说明是首要阅读主线。图形必须直接解释核心信息或真实内容关系，只能服务阅读路径，不得成为脱离文案的独立主视觉、装饰背景或抢占焦点。
-先为完整文字和托底预留主体阅读空间：文字区域约占正文区域的 65%—75%，图形及连接约占 25%—35%，比例是设计参考，可根据内容和页型灵活调整。每组标题与完整说明放在足够宽、对比清楚的实体或半透明托底面上，字号大而易读；托底材质遵循所选风格，不固定颜色、模块数量或版式。让相关图形紧邻文字并解释含义，先安排完整文字与托底，再围绕文字安排简洁图形，不得压缩、遮挡、拆散或弱化完整文案，不添加无来源的评分、数字、箭头或关系。
-当风格参考图或其他风格指令与文字占比、托底或内容主次冲突时，以本段为准；材质、配色和创意气质仍遵循所选风格。`;
+根据所选风格与创意档位，让观众一眼读懂本页核心信息。图文共同构思：在该档位使用图形时，围绕对应文意主动创作有表现力的图形，让形态、结构和连接表达各组文字的含义及真实关系；不把图形降为背景或装饰，也不预设固定造型、数量或布局。
+适当缩小单个图形、控制视觉权重，为完整文字保留足够空间、字号与对比，使图文相互呼应而不是让文字被挤到角落。需要时使用适合所选风格的托底增强可读性，不强制每组托底或限定文字与图形的固定占比。不得遮挡、删改或弱化文案，不添加无来源的评分、数字或关系；风格配方明确采用纯文字时遵循该档位，不强行添加图形。`;
 export function compileSlidePrompt(input: { spec: SlideSpec; style: ResolvedStyle }): CompiledPrompt {
   const spec = SlideSpecSchema.parse(input.spec), style = ResolvedStyleSchema.parse(input.style);
   const slots: Record<string, string> = {

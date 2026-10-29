@@ -32,7 +32,11 @@ test('sample receives a SHA-bound visual check before sample approval or deck re
   const request = await readTaskJson(root, reply.work.inputPath) as { instructions: string };
   assert.match(request.instructions, /coreMessage/);
   assert.match(request.instructions, /relationships/);
-  assert.match(request.instructions, /底|backing/i);
+  assert.match(request.instructions, /graphics.*actively.*express/i);
+  assert.match(request.instructions, /meaningful.*not merely.*decorat/i);
+  assert.match(request.instructions, /not fail.*expressive.*graphic/i);
+  assert.match(request.instructions, /no fixed.*ratio/i);
+  assert.match(request.instructions, /text.*legible/i);
   assert.equal((await readTask(root)).pendingDecision, null);
   assert.equal((await readBatchCheckpoint(root, job.jobId)).requestCount, 1);
   const wrong = structuredClone(qa); wrong.pages[0].sha256 = '0'.repeat(64);
@@ -61,6 +65,18 @@ test('failed sample quality blocks approval and returns a revision decision with
   assert.equal(revised.kind, 'work');
 });
 
+
+test('sample QA rejects decorative graphics that do not convey the text meaning', async () => {
+  const { root, reply, job, qa } = await sampleReady();
+  qa.pages[0].hierarchyClear = false;
+  qa.pages[0].notes = '图形仅作装饰，无法说明文字含义或真实关系';
+  const result = await submitWork(root, reply, qa);
+  assert.equal(result.kind, 'decision');
+  if (result.kind !== 'decision') throw Error('quality review expected');
+  assert.equal(result.stage, 'quality-review');
+  await assert.rejects(decideTask(root, { decisionId: result.id, action: 'approve-sample-and-generate-deck', callBudget: 2 }), /sample/i);
+  assert.equal((await readBatchCheckpoint(root, job.jobId)).requestCount, 1);
+});
 
 test('sample QA refuses a changed image even if the supplied SHA matches the original', async () => {
   const { root, reply, artifact, qa } = await sampleReady();

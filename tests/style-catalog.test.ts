@@ -189,6 +189,16 @@ test('business style exposes nine variants and uses the level-three midpoint sho
   }
 });
 
+test('business tier one retains its text-only direction after the shared semantic prompt is compiled', async () => {
+  const recipe = (await loadBuiltInStyleCatalog()).styles.find(style => style.id === 'business')!;
+  for (const palette of recipe.palettes) {
+    const text = compileSlidePrompt({ spec: unrelatedSpec, style: selectStyleVariant(recipe, { level: 1, paletteId: palette.id }) }).text;
+    assert.match(text, /正文不使用图标、流程箭头、关系连线或节点/);
+    assert.match(text, /风格配方明确采用纯文字时遵循该档位，不强行添加图形/);
+    assert.ok(text.includes(unrelatedSpec.requiredText.join('\n')));
+  }
+});
+
 test('business prompts preserve text-led body layouts, factual data boundaries and literal input without advertising fixtures', async () => {
   const catalog = await loadBuiltInStyleCatalog();
   const styles = catalog.styles.filter(style => businessIds.includes(style.id));

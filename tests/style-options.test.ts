@@ -31,12 +31,14 @@ test('selected tier and palette compile once, preserving literal copy and relati
   assert.ok(text.includes(spec.requiredText.join('\n')));
   assert.doesNotMatch(text, /APRICOT|canonical JSON|foreground|midground/);
 });
-test('creative slide prompts prioritize readable text, backing surfaces and balanced semantic graphics', () => {
+test('creative slide prompts preserve semantic visual design without fixed text or graphic quotas', () => {
   const style = catalog.selectStyleVariant(definition, { level: 3, paletteId: 'cool' });
   const text = compileSlidePrompt({ spec, style }).text;
-  assert.match(text, /文字区域约占正文区域的 65%—75%/);
-  assert.match(text, /图形及连接约占 25%—35%/);
-  assert.match(text, /托底/);
+  assert.doesNotMatch(text, /65%—75%|25%—35%|每组标题与完整说明放在/);
+  assert.match(text, /图文共同构思/);
+  assert.match(text, /对应文意/);
+  assert.match(text, /适当缩小单个图形/);
+  assert.match(text, /需要时.*托底/);
   assert.ok(text.indexOf('内容优先与视觉层级') < text.indexOf('LEVEL 3'));
   assert.ok(text.includes(spec.requiredText.join('\n')));
   assert.ok(text.includes(spec.relationships[0]));
@@ -45,9 +47,9 @@ test('compiled prompts make the core message the reading target and graphics sem
   const style = catalog.selectStyleVariant(definition, { level: 3, paletteId: 'cool' });
   const text = compileSlidePrompt({ spec, style }).text;
   assert.match(text, /本页核心信息（仅作为语义指导，不新增画面文字）：从反馈推动改进/);
-  assert.match(text, /先让观众一眼读懂本页核心信息/);
-  assert.match(text, /图形必须直接解释核心信息或真实内容关系/);
-  assert.match(text, /不得成为脱离文案的独立主视觉/);
+  assert.match(text, /一眼读懂本页核心信息/);
+  assert.match(text, /图形.*表达.*含义.*关系/);
+  assert.match(text, /不把图形降为.*装饰/);
 });
 test('slot-like and dollar text remains literal instead of being interpreted by replacements', () => {
   assert.equal(typeof catalog.selectStyleVariant, 'function');
