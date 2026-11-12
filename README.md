@@ -35,4 +35,4 @@ v0.3.0 以 macOS 实际使用为优先；跨平台 CI 通过也不等于 Windows
 按需问答上下文、版本绑定的逐页方案确认、两轮选款及默认样页授权已在当前源码实现，并由源码／编译／独立安装的公共 CLI 流程与生成脚本逻辑验证。选款状态、切换与复制已在 Chrome 和 Codex 内置浏览器的本地服务中检查；Codex 本地文件预览脚本行为及真实对话中的逐页即时展示尚未端到端验收。
 早期 specs 与九种经典预设提案按入口标记保留历史。实现没有 strict/audit 模式、审计链、HMAC、外部权限注册或旧项目迁移。
 
-最新版本说明：[v0.3.6](docs/releases/v0.3.6.md)。正式发布产物与构建状态以 [GitHub Releases](https://github.com/NeoMei/SuperPPT/releases) 为准；安装包不包含设计位图，显示风格图片需要网络。
+最新版本说明：[v0.3.7](docs/releases/v0.3.7.md)。正式发布产物与构建状态以 [GitHub Releases](https://github.com/NeoMei/SuperPPT/releases) 为准；安装包不包含设计位图，显示风格图片需要网络。
