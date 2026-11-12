@@ -35,13 +35,13 @@ description: Use when users want to make a high-detail presentation from a topic
 
 完整材料且目标明确时直接出完整方案，不发起无关问卷。只有缺失信息会显著改变叙事、内容取舍、页数或交付范围时才追问；一次只问当前影响最高的一个问题，不能把受众与目标合并成一个标为“关键一点”的问题或其他单项。只有主题时，先单独询问受众，给 2–3 个选项，将推荐项放在前面并说明理由；下一轮仅在目标仍未知时再问目标。缺少事实来源时也只问该项事实，不夹带偏好题。低影响且可逆的偏好采用合理默认值，并在方案中公开列为假设。缺少必须准确的数字、结论或承诺时必须追问，不能编造；“你决定”只授权采用推荐偏好，不授权补造事实。不强制比较多套方案；只有存在两种以上实质不同的叙事方向时才给两三个组织方案。未获授权时不重构、删减或改写用户已批准的结构和完整文案。
 
-只使用 PlanBundleSchema 已定义的字段。汇报时长等额外约束写入 brief.constraints 和 planning context，不发明 Brief.duration 等字段。不分别确认大纲、逐页说明和风格。用户选择风格、档位或配色只形成选择，不授权生图；必须先披露确切样页 prompt、参考图用途、输出位置和新增 1 次调用预算，再接收明确的生成授权。
+只使用 PlanBundleSchema 已定义的字段。汇报时长等额外约束写入 brief.constraints 和 planning context，不发明 Brief.duration 等字段。不分别确认大纲、逐页说明和风格。用户选择并确认风格、档位与配色即授权 1 次样页生图；在同一 plan-review 内披露确切样页 prompt、参考图用途、输出位置和 1 次调用预算后直接提交生成，不另行发起生图授权询问。
 
 ## 生图与检查
 
-在 plan-review 展示完整方案、选中组合的样页内容 prompt、参考图用途、1 次调用预算和输出位置；选择页仅加载公开参考图，不发送生图请求，用户把文本元组交给 Agent 后，仍由现有决定动作确认选款并授权样页。内容 prompt 从 details.samplePromptsPath 按 styleId/level/paletteId 取出，不把所有组合的长 prompt 展开到对话。
-接收带版本的页面或对话回复时，逐项核对回复自带的方案版本和决定编号与当前 details.contentRevision、当前 decision.id 相同；不匹配就展示当前方案并要求重新确认，禁止把旧回复静默改写成新 decisionId。当前回复已经包含确切三元组和“授权新增生图调用：1 次”，且完整 prompt、参考图用途和 generation 输出位置此前均已披露时，这份回复本身就是明确授权，核对通过后直接用同一个 decisionId 和 callBudget:1 提交，不重复索要确认。纯对话里没有写出 UUID 的“确认”，只有在紧接当前方案、确切已选组合／prompt、用途、输出和预算 1 的明确生成询问时，才承接当前已披露的 decision.id 提交；上下文不明确时重新展示当前方案。例如页面回复为“方案版本：<当前 UUID>；决定编号：<当前 UUID>；选择玻璃，3 档，偏冷（glass/3/cool）；授权新增生图调用：1 次”。
-在 sample-review 展示实际样页、整套 prompt、参考图用途、整套页数、复用页数、新生成页数与新增调用预算、输出位置；确认即授权整套。按 details.callBudget 披露和提交新增预算，不把整套页数当调用数。
+在 plan-review 展示完整方案、选中组合的样页内容 prompt、参考图用途、1 次调用预算和输出位置；选择页仅加载公开参考图，不发送生图请求，用户把文本元组交给 Agent 后由现有决定动作直接提交样页生成，不再索要授权。内容 prompt 从 details.samplePromptsPath 按 styleId/level/paletteId 取出，不把所有组合的长 prompt 展开到对话。
+接收带版本的页面或对话回复时，逐项核对回复自带的方案版本和决定编号与当前 details.contentRevision、当前 decision.id 相同；不匹配就展示当前方案并要求重新确认，禁止把旧回复静默改写成新 decisionId。当前回复已经包含确切三元组，且完整 prompt、参考图用途和 generation 输出位置已在同一 plan-review 披露时，这份回复即生成授权，核对通过后直接用同一个 decisionId 和 callBudget:1 提交，不重复索要确认。纯对话里没有写出 UUID 的“确认”，只有在紧接当前方案、确切已选组合／prompt、用途、输出和预算 1 的明确生成询问时，才承接当前已披露的 decision.id 提交；上下文不明确时重新展示当前方案。例如页面回复为“方案版本：<当前 UUID>；决定编号：<当前 UUID>；选择玻璃，3 档，偏冷（glass/3/cool）”。
+在 sample-review 展示实际样页、整套 prompt、参考图用途、整套页数、复用页数、新生成页数与新增调用预算、输出位置；确认样页即授权整套并直接提交 approve-sample-and-generate-deck，不再另设授权轮。按 details.callBudget 披露和提交新增预算，不把整套页数当调用数。
 用户确认无须修改的样页直接进入正式 PPT 的原对应页，不重画、不换图；只生成未缓存页。三页正常路径共调用三次：样页一次，剩余两页两次。内容、风格、档位、配色或用途改变时重新规划，按新批次缓存状态执行；用户要求重画某页时走 regenerate-page。未通过内容检查的样页不能替用户批准。
 两处同时披露 details.submissionNote 与参考图用途说明 details.referenceDirection（如有）；实际出站文本以 review model 和 beginRequest 返回值为准。用途取已有 brief 的 purpose、audience，不新增分析或确认步骤。
 

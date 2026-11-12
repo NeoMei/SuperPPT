@@ -80,5 +80,5 @@ export function reviewReply(model: ReviewModel, variantKey: string | null, notes
   const identity = `方案版本：${model.revision}\n决定编号：${model.decisionId}`;
   if (notesText) return `请修改方案，暂不生成样页。\n${identity}\n${notesText}`;
   if (!variantKey || !Object.hasOwn(model.variants, variantKey)) return '';
-  return `确认当前内容方案并生成样页。\n${identity}\n${model.variants[variantKey]!.choice}\n授权新增生图调用：1 次。`;
+  return `确认当前内容方案并生成样页。\n${identity}\n${model.variants[variantKey]!.choice}`;
 }

@@ -112,7 +112,7 @@ test('review reply authorizes only a valid complete variant and binds its revisi
   assert.doesNotMatch(revisionRequest, /确认当前内容方案|授权新增生图调用/);
 
   assert.equal(reviewReply(model, variantKey, []),
-    `确认当前内容方案并生成样页。\n方案版本：${revision}\n决定编号：${decisionId}\n${model.variants[variantKey]!.choice}\n授权新增生图调用：1 次。`);
+    `确认当前内容方案并生成样页。\n方案版本：${revision}\n决定编号：${decisionId}\n${model.variants[variantKey]!.choice}`);
 });
 
 test('published review details and compact fallback share the current decision identity and planning context', async () => {
@@ -143,7 +143,7 @@ test('published review details and compact fallback share the current decision i
   });
   assert.match(reply.view, /完整方案/);
   assert.match(reply.view, /图片可能需要联网加载/);
-  assert.match(reply.view, /普通选款不等于授权生成/);
+  assert.match(reply.view, /回复确认选款元组即授权 1 次样页生图/);
   assert.match(reply.view, /不得截断| 文字：/);
 });
 
@@ -372,7 +372,7 @@ test('generated review script gates mutually exclusive replies and exposes the c
   await document.click(revise);
   assert.equal(copied.length, 1);
   assert.equal(copied[0], reviewReply(model, keys[1]!, [{ label: note.dataset.noteLabel!, text: note.value }]));
-  assert.doesNotMatch(copied[0]!, /授权新增生图调用/);
+  assert.doesNotMatch(copied[0]!, /确认当前内容方案并生成样页|授权新增生图调用/);
 
   note.value = '';
   await note.dispatch('input');
@@ -399,7 +399,7 @@ test('generated review script gates mutually exclusive replies and exposes the c
   assert.equal(manual.selected, true);
   assert.match(manual.value, new RegExp(model.revision));
   assert.match(manual.value, new RegExp(model.decisionId));
-  assert.match(manual.value, /授权新增生图调用：1 次/);
+  assert.match(manual.value, /确认当前内容方案并生成样页。/);
   assert.equal(note.readOnly, false);
   assert.equal(firstVariant.disabled, false);
   assert.equal(secondVariant.disabled, false);
