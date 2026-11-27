@@ -39,6 +39,6 @@ test('packed plugin installs independently and runs complete public CLI workflow
   assert.equal(pkg.dependencies.koffi, undefined);
   const testEnv = { ...process.env, SUPERPPT_TEST_ROOT: installed };
   delete (testEnv as NodeJS.ProcessEnv).NODE_TEST_CONTEXT;
-  const result = await run(process.execPath, ['--import', 'tsx', '--test', '--test-reporter=spec', join(root, 'tests/fast-cli.test.ts')], { cwd: root, env: testEnv, timeout: 90000, maxBuffer: 4 * 1024 * 1024 });
-  assert.match(result.stdout, /pass 3/);
+  const result = await run(process.execPath, ['--import', 'tsx', '--test', '--test-reporter=spec', join(root, 'tests/fast-cli.test.ts'), join(root, 'tests/chat-plan-review-assets.test.ts')], { cwd: root, env: testEnv, timeout: 90000, maxBuffer: 4 * 1024 * 1024 });
+  assert.match(result.stdout, /pass 4/);
 });

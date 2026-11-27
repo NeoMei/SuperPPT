@@ -9,6 +9,31 @@ description: Use when users want to make a high-detail presentation from a topic
 内容方案与选款（风格 → 档位 → 配色，同时授权样页）→ 样页回看（同时授权整套）→ 完整 PPTX 回看与交付。
 风格只能单选。详细输入见 [CLI 与机器工作](references/依赖说明.md)。
 
+## Optional host chat interactions
+
+A host with native reply blocks declares `SUPERPPT_CHAT_INTERACTIONS=1` for the
+CLI child process. When a plan-review has `details.chatInteractions: true`, copy
+each returned `openui-lang` block unchanged into the assistant reply. Keep the
+sections in separate replies as the user answers them. A `review-slide:N` answer
+calls `chatSlideComment` from `src/planning/chat-review.js` with the current
+review model and page number, then displays its block. A style choice calls
+`chatStyleVariants` with the current review model, `details.selection`, selected
+style ID and the local remote-assets index. A submitted comment already includes
+the current revision and decision identity; validate them and call `revise-plan`
+with the complete comment. A variant answer includes the current identity, exact
+variant and one-call authorization. Validate them, call `chatStyleVariants` with
+the exact selected variant key and display its full prompt, reference purpose,
+output and budget disclosure. Then call `select-style-and-generate-sample` with
+`callBudget: 1` in the same response without another confirmation. "内容无须修改"
+advances to style choice without revising the plan. Text replies remain available
+when an image is unavailable.
+
+When the capability is absent, use the HTML and ordinary text flow below. Do
+not infer chat support from the host's name or emit reply blocks in that mode.
+On ordinary agents, select a style with a normal text reply, then its tier and
+palette from `details.selection`. Show the selected prompt snapshot, references,
+output and budget before invoking the current decide.
+
 ## 操作节奏
 
 在新建任务前先判断用户是否已提供具体 PPT 主题、正文、资料或明确指定的文件。只有“做一个 PPT / 使用 SuperPPT”等泛化请求、空白输入或没有指明内容时，先用一句话引导用户提供主题、粘贴内容或指定资料；等待用户回复。此时不要假设存在需求.md 或其他文件，不搜索、扫描或读取工作区，不检查依赖或联网版本，不创建任务目录、源文件或执行 start，也不发起生成。用户提供明确主题即可进入规划；完整资料无需额外问卷。用户明确要求恢复或修改既有任务时，按其指定的任务继续，不受新任务输入引导阻断。
