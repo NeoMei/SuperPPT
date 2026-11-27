@@ -6,7 +6,7 @@ import { buildReviewModel } from '../src/planning/review-model.js';
 import { styleSelection } from '../src/styles/selection.js';
 import { chatInteractionEnabled, chatPlanReview, chatSlideComment, chatStyleVariants } from '../src/planning/chat-review.js';
 import { fixturePlan, fixtureTask } from './helpers/fast-task.js';
-import { publishPlan } from '../src/workflow/planning.js';
+import { planReviewReply, publishPlan } from '../src/workflow/planning.js';
 
 test('chat interactions require an explicit capability declaration', () => {
   assert.equal(chatInteractionEnabled({}), false);
@@ -101,6 +101,21 @@ test('published replies switch only the declared host to chat and keep its porta
     assert.match(chat.view, /ImageChoice\("选择风格"/);
     assert.match(chat.view, /第 2 页「第2页」/);
     assert.doesNotMatch(chat.view, /普通选款不等于授权生成/);
+  } finally {
+    delete process.env.SUPERPPT_CHAT_INTERACTIONS;
+  }
+});
+
+test('a historical plan without a review model does not advertise chat interactions', async () => {
+  const { root } = await fixtureTask();
+  const plan = await fixturePlan();
+  process.env.SUPERPPT_CHAT_INTERACTIONS = '1';
+  try {
+    const reply = await planReviewReply(root, plan, 'revision-legacy', 'decision-legacy');
+    assert.equal(reply.kind, 'decision');
+    if (reply.kind !== 'decision') throw new Error('plan review expected');
+    assert.equal((reply.details as { chatInteractions: boolean }).chatInteractions, false);
+    assert.doesNotMatch(reply.view, /```openui-lang/);
   } finally {
     delete process.env.SUPERPPT_CHAT_INTERACTIONS;
   }

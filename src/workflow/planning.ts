@@ -25,7 +25,7 @@ export const samplePrompts = (plan: PlanBundle) => Object.fromEntries(plan.style
 export const selectionPath = (revision: string) => `planning/${revision}/style-selection.html`;
 export const reviewModelPath = (revision: string) => `planning/${revision}/review-model.json`;
 export const planDetails = (plan: PlanBundle, revision: string, publishedSelectionPath?: string, publishedReviewModelPath?: string) => ({
-  chatInteractions: chatInteractionEnabled(process.env),
+  chatInteractions: chatInteractionEnabled(process.env) && Boolean(publishedReviewModelPath),
   contentRevision: revision,
   planPath: `planning/${revision}/plan.json`,
   samplePromptsPath: `planning/${revision}/sample-prompts.json`,
