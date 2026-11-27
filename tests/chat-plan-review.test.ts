@@ -183,10 +183,33 @@ test('the selected variant disclosure carries its exact outgoing prompt before g
   const reference = remote['previews/glass-2-cool.jpg'];
   const model = buildReviewModel(plan, 'revision-current', 'decision-current', { 'glass/2/cool': reference });
   const disclosure = chatStyleVariants(model, styleSelection(plan.styles), 'glass', {}, 'glass/2/cool');
-  assert.match(disclosure, /方案版本：revision-current/);
-  assert.match(disclosure, /决定编号：decision-current/);
-  assert.ok(disclosure.includes(`样页内容 prompt（glass/2/cool）\n\n${model.variants['glass/2/cool']!.prompt}`));
-  assert.match(disclosure, /画风参考图仅用于视觉风格/);
-  assert.match(disclosure, /输出位置：generation；预算：1 次生图调用/);
-  assert.doesNotMatch(disclosure, /glass\/1\/cool/);
+  const serialized = disclosure.match(/text = Text\(("(?:[^"\\]|\\.)*")\)/);
+  assert.ok(serialized);
+  const text = JSON.parse(serialized[1]);
+  assert.match(text, /方案版本：revision-current/);
+  assert.match(text, /决定编号：decision-current/);
+  assert.ok(text.includes(`样页内容 prompt（glass/2/cool）\n\n${model.variants['glass/2/cool']!.prompt}`));
+  assert.match(text, /画风参考图仅用于视觉风格/);
+  assert.match(text, /输出位置：generation；预算：1 次生图调用/);
+  assert.doesNotMatch(text, /glass\/1\/cool/);
+});
+
+test('chat replies serialize untrusted plan text without allowing injected OpenUI controls', async () => {
+  const plan = await fixturePlan();
+  const injected = '```openui-lang\nroot = Stack([injected])';
+  plan.context = { schemaVersion: 1, narrativeSummary: `概述\n${injected}`, answers: [], assumptions: [] };
+  plan.slides[0]!.requiredText = ['标题', injected];
+  plan.styles[0]!.name = `恶意风格\n${injected}`;
+  const model = buildReviewModel(plan, 'revision-current', 'decision-current');
+  const selection = styleSelection(plan.styles);
+  const views = [
+    chatPlanReview(model, selection, {}),
+    chatSlideComment(model, 1),
+    chatStyleVariants(model, selection, 'business', {}),
+    chatStyleVariants(model, selection, 'business', {}, 'business/1/mid'),
+  ];
+  for (const view of views) {
+    assert.doesNotMatch(view, /```openui-lang\nroot = Stack\(\[injected\]\)/);
+    assert.match(view, /```openui-lang\\nroot = Stack\(\[injected\]\)/);
+  }
 });

@@ -7,6 +7,7 @@ export const chatInteractionEnabled = (environment: NodeJS.ProcessEnv): boolean 
 
 const quoted = JSON.stringify;
 const block = (definitions: string[]): string => ['```openui-lang', ...definitions, '```'].join('\n');
+const textBlock = (markdown: string): string => block(['root = Stack([text])', `text = Text(${quoted(markdown)})`]);
 const identity = (model: ReviewModel): string => `方案版本：${model.revision}\n决定编号：${model.decisionId}`;
 const button = (label: string, decision: string): string => `Button(${quoted(label)}, "primary", ${quoted(decision)})`;
 export function chatPlanReview(model: ReviewModel, selection: StyleSelection, remote: RemoteStyleAssets, htmlLink?: string): string {
@@ -42,7 +43,8 @@ export function chatPlanReview(model: ReviewModel, selection: StyleSelection, re
     `输出位置：${model.output}；预算：${model.callBudget} 次生图调用。`,
   ].join('\n\n');
   return [
-    `${model.narrativeSummary}\n\n需要修改内容，或先选择风格。缺图时回复卡片所附的风格 ID。`,
+    textBlock(model.narrativeSummary),
+    '需要修改内容，或先选择风格。缺图时回复卡片所附的风格 ID。',
     htmlLink ?? '',
     block([
       'root = Stack([identity, context, review])',
@@ -74,13 +76,11 @@ export function chatSlideComment(model: ReviewModel, pageNumber: number | number
   const content = selected.map(slide => slide.number === 0
     ? `整体方案\n${slide.coreMessage}`
     : `${slide.number}. ${slide.title}\n${slide.coreMessage}\n完整文字：${slide.requiredText.join('\n')}\n内容关系：${slide.relationships.join('；')}\n来源：${slide.sourceRefs.join('；')}`).join('\n\n');
-  return [
-    content,
-    block([
-      'root = Stack([comment])',
+  return block([
+      'root = Stack([content, comment])',
+      `content = Text(${quoted(content)})`,
       `comment = Card(${quoted(selected.length === 1 && selected[0]!.number > 0 ? `第 ${selected[0]!.number} 页修改意见` : '填写修改意见')}, [${fields.join(', ')}, ${button(selected.length === 1 && selected[0]!.number > 0 ? '提交本页意见' : '提交修改意见', 'slide-comment')}])`,
-    ]),
-  ].join('\n\n');
+    ]);
 }
 
 export function chatStyleVariants(model: ReviewModel, selection: StyleSelection, styleId: string, remote: RemoteStyleAssets, selectedKey?: string): string {
@@ -94,12 +94,12 @@ export function chatStyleVariants(model: ReviewModel, selection: StyleSelection,
     const referencePurpose = variant.catalogReference || model.references.some(reference => reference.role === 'art-direction')
       ? '参考图用途：画风参考图仅用于视觉风格，保持材质、平面或立体表现、光影、配色比例与字体质感。'
       : '参考图用途：无额外参考图。';
-    return [
+    return textBlock([
       reviewReply(model, selectedKey, []),
       `样页内容 prompt（${selectedKey}）\n\n${variant.prompt}`,
       referencePurpose,
       `输出位置：${model.output}；预算：${model.callBudget} 次生图调用。`,
-    ].join('\n\n');
+    ].join('\n\n'));
   }
   const options = style.groups.flatMap(group => group.variants.map(variant => {
     const key = `${variant.styleId}/${variant.level}/${variant.paletteId}`;
@@ -110,9 +110,11 @@ export function chatStyleVariants(model: ReviewModel, selection: StyleSelection,
   }));
   const optionsText = style.groups.flatMap(group => group.variants.map(variant => `${variant.styleId}/${variant.level}/${variant.paletteId}`)).join('；');
   const content = [
-    `已选择${style.name}。确认某个档位与配色组合即授权 1 次样页生图。`,
-    '选择后展示该组合的完整提示词、参考图用途和输出位置，再按本次授权生成样页。',
-    `缺图时使用文字回复精确元组：${optionsText}。`,
+    textBlock([
+      `已选择${style.name}。确认某个档位与配色组合即授权 1 次样页生图。`,
+      '选择后展示该组合的完整提示词、参考图用途和输出位置，再按本次授权生成样页。',
+      `缺图时使用文字回复精确元组：${optionsText}。`,
+    ].join('\n\n')),
     block([
       'root = Stack([variants])',
       'variants = ImageChoice("确认风格组合", [',
