@@ -6,6 +6,7 @@ import { readTask, readTaskJson, updateTask, writeTaskJson } from '../src/projec
 import { taskReply, continueTask } from '../src/workflow/continue.js';
 import { mkdir, readFile, realpath, stat, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
+import { pathToFileURL } from 'node:url';
 import { writeStyleSelectionView } from '../src/styles/selection-view.js';
 import { styleSelection } from '../src/styles/selection.js';
 
@@ -27,7 +28,7 @@ test('published and resumed plan replies expose one usable selector without muta
   assert.equal(details.selection.styles.length, 11);
   assert.equal(details.selectionPath, `planning/${(await readTask(root)).contentRevision}/style-selection.html`);
   const selectorAbsolutePath = await realpath(join(root, details.selectionPath));
-  assert.ok(published.view.includes(`<${selectorAbsolutePath}>`));
+  assert.ok(published.view.includes(pathToFileURL(selectorAbsolutePath).href));
   assert.match(await readFile(join(root, details.selectionPath), 'utf8'), /选择创意拼贴，3 档，基准中线/);
   const before = await readTask(root);
   const resumed = await taskReply(root);

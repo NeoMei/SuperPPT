@@ -11,7 +11,10 @@ import { styleSelection } from '../styles/selection.js';
 import { writeStyleSelectionView } from '../styles/selection-view.js';
 import { taskPath } from '../project/task-store.js';
 import { readPlanningContext } from '../planning/context.js';
-import { buildReviewModel } from '../planning/review-model.js';
+import { buildReviewModel, type ReviewModel } from '../planning/review-model.js';
+import { markdownFileLink } from '../project/markdown-link.js';
+import { loadRemoteStyleAssets, type RemoteStyleAssets } from '../styles/remote-assets.js';
+import { chatInteractionEnabled, chatPlanReview } from '../planning/chat-review.js';
 
 export const variantKey = (style: Pick<ResolvedStyle, 'id' | 'level' | 'paletteId'>) => `${style.id}/${style.level}/${style.paletteId}`;
 export const samplePrompts = (plan: PlanBundle) => Object.fromEntries(plan.styles.flatMap(style =>
@@ -22,6 +25,7 @@ export const samplePrompts = (plan: PlanBundle) => Object.fromEntries(plan.style
 export const selectionPath = (revision: string) => `planning/${revision}/style-selection.html`;
 export const reviewModelPath = (revision: string) => `planning/${revision}/review-model.json`;
 export const planDetails = (plan: PlanBundle, revision: string, publishedSelectionPath?: string, publishedReviewModelPath?: string) => ({
+  chatInteractions: chatInteractionEnabled(process.env) && Boolean(publishedReviewModelPath),
   contentRevision: revision,
   planPath: `planning/${revision}/plan.json`,
   samplePromptsPath: `planning/${revision}/sample-prompts.json`,
@@ -48,10 +52,11 @@ export function renderPlanReview(plan: PlanBundle, selectionAbsolutePath?: strin
   return [`完整方案：${plan.brief.title} · ${plan.brief.targetSlides} 页`, `受众：${plan.brief.audience}；目标：${plan.brief.purpose}`,
     ...plan.outline.slides.map(s => { const detail = plan.slides.find(p => p.slideId === s.id)!; return `${s.order + 1}. ${s.title}：${detail.coreMessage}\n   内容关系：${detail.relationships.join('；')}\n   文字：${detail.requiredText.join('；')}`; }),
     `风格单选：${plan.styles.map(s => s.name).join(' / ')}`,
-    selectionAbsolutePath ? `两轮选款页：[打开本地 HTML](<${selectionAbsolutePath}>)` : '',
+    selectionAbsolutePath ? `两轮选款页：${markdownFileLink('打开本地 HTML', selectionAbsolutePath)}` : '',
     '图片可能需要联网加载。选款顺序：风格 → 档位 → 配色；回复确认选款元组即授权 1 次样页生图；在现有 plan-review 边界披露确切样页 prompt、预算 1 和输出位置后直接提交样页任务，不另行索要授权。',
   ].join('\n');
 }
+
 export async function planReviewReply(root: string, plan: PlanBundle, revision: string, decisionId: string): Promise<WorkflowReply> {
   const path = selectionPath(revision);
   let absolutePath: string | undefined;
@@ -71,7 +76,18 @@ export async function planReviewReply(root: string, plan: PlanBundle, revision: 
   } catch (error: unknown) {
     if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
   }
-  return { kind: 'decision', id: decisionId, stage: 'plan-review', view: renderPlanReview(plan, absolutePath), details: planDetails(plan, revision, absolutePath ? path : undefined, publishedReviewModelPath) };
+  let view: string;
+  if (chatInteractionEnabled(process.env) && publishedReviewModelPath) {
+    const review = await readTaskJson(root, publishedReviewModelPath) as ReviewModel;
+    let remote: RemoteStyleAssets;
+    try {
+      remote = await loadRemoteStyleAssets(builtInStyleAssetsRoot());
+    } catch {
+      remote = {};
+    }
+    view = chatPlanReview(review, styleSelection(plan.styles), remote, absolutePath ? markdownFileLink('详细回看与 HTML 选款', absolutePath) : undefined);
+  } else view = renderPlanReview(plan, absolutePath);
+  return { kind: 'decision', id: decisionId, stage: 'plan-review', view, details: planDetails(plan, revision, absolutePath ? path : undefined, publishedReviewModelPath) };
 }
 export async function publishPlan(root: string, raw: unknown): Promise<WorkflowReply> {
   return withTaskLock(root, async () => {
