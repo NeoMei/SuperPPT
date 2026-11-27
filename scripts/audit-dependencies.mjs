@@ -1,35 +1,14 @@
 import { spawnSync } from "node:child_process";
-import { readdir, readFile } from "node:fs/promises";
-import { join } from "node:path";
-
-const REVIEW_DEADLINE = "2027-01-31";
-// npm may renumber its source IDs; the reviewed GHSA identities stay stable.
-const ALLOWED_ADVISORIES = new Set([
-  "https://github.com/advisories/GHSA-w3rx-r6r6-pgpr",
-  "https://github.com/advisories/GHSA-5p2g-fcmc-qvqq",
-]);
 
 function fail(message) {
   process.stderr.write(`${message}\n`);
   process.exitCode = 1;
 }
 
-async function pptxGenUsesImageSize() {
-  const directory = join(process.cwd(), "node_modules", "pptxgenjs", "dist");
-  for (const entry of await readdir(directory, { recursive: true, withFileTypes: true })) {
-    if (!entry.isFile()) continue;
-    const path = join(entry.parentPath, entry.name);
-    if ((await readFile(path, "utf8")).includes("image-size")) return true;
-  }
-  return false;
-}
-
-async function main() {
-  const npmExecPath = process.env.npm_execpath;
-  if (!npmExecPath) {
-    fail("dependency audit must run through npm so npm_execpath is authenticated");
-    return;
-  }
+const npmExecPath = process.env.npm_execpath;
+if (!npmExecPath) {
+  fail("dependency audit must run through npm so npm_execpath is authenticated");
+} else {
   const audit = spawnSync(process.execPath, [npmExecPath, "audit", "--json"], {
     cwd: process.cwd(),
     encoding: "utf8",
@@ -38,55 +17,7 @@ async function main() {
   if (audit.error) throw audit.error;
   if (audit.status === 0) {
     process.stdout.write("Dependency audit passed with no known vulnerabilities.\n");
-    return;
+  } else {
+    fail(audit.stdout || audit.stderr || "npm audit failed");
   }
-  if (new Date(`${REVIEW_DEADLINE}T00:00:00Z`) <= new Date()) {
-    fail(`image-size audit exception expired on ${REVIEW_DEADLINE}; reassess upstream releases`);
-    return;
-  }
-
-  let report;
-  try {
-    report = JSON.parse(audit.stdout);
-  } catch {
-    fail(`npm audit did not return valid JSON\n${audit.stderr}`);
-    return;
-  }
-  const vulnerabilities = report?.vulnerabilities ?? {};
-  if (Object.keys(vulnerabilities).sort().join(",") !== "image-size,pptxgenjs") {
-    fail(audit.stdout);
-    return;
-  }
-  const imageSizeFindings = vulnerabilities["image-size"]?.via;
-  if (
-    !Array.isArray(imageSizeFindings)
-    || imageSizeFindings.length !== ALLOWED_ADVISORIES.size
-    || imageSizeFindings.some((finding) =>
-      finding === null || typeof finding !== "object"
-      || !ALLOWED_ADVISORIES.has(finding.url)
-      || finding.severity !== "high")
-    || new Set(imageSizeFindings.map((finding) => finding.url)).size !== ALLOWED_ADVISORIES.size
-    || vulnerabilities.pptxgenjs?.via?.join(",") !== "image-size"
-    || report.metadata?.vulnerabilities?.total !== 2
-  ) {
-    fail(audit.stdout);
-    return;
-  }
-
-  const lock = JSON.parse(await readFile(join(process.cwd(), "package-lock.json"), "utf8"));
-  const imageSizeLock = lock.packages?.["node_modules/pptxgenjs/node_modules/image-size"]
-    ?? lock.packages?.["node_modules/image-size"];
-  if (
-    lock.packages?.["node_modules/pptxgenjs"]?.version !== "4.0.1"
-    || imageSizeLock?.version !== "1.2.1"
-    || await pptxGenUsesImageSize()
-  ) {
-    fail("image-size audit exception is no longer proven unreachable");
-    return;
-  }
-  process.stdout.write(
-    `Dependency audit accepted two unreachable image-size advisories; pptxgenjs has no compatible patched dependency release. Review by ${REVIEW_DEADLINE}.\n`,
-  );
 }
-
-main().catch((error) => fail(error instanceof Error ? error.message : String(error)));
