@@ -57,6 +57,14 @@ export async function validateImage(root: string, ref: z.infer<typeof FileRef>):
   await image.raw().toBuffer();
 }
 export { generationReferences, prepareGenerationReferences } from './style-reference.js';
+
+export function pageRequestPrompt(job: BatchJob, slideId: string): string {
+  const page = job.pages.find(p => p.slideId === slideId);
+  if (!page) throw new Error('Unknown job page');
+  const referenceNote = generationReferences(job).some(r => r.role === 'art-direction') ? '\n\n' + referenceDirection : '';
+  return page.prompt + '\n\n' + submissionNote(job.generationIntent) + referenceNote;
+}
+
 // Ordinary progress bookkeeping. Called inside the Agent's batch, not as public CLI routes.
 export async function beginRequest(root: string, jobId: string, slideId: string): Promise<string> {
   return withTaskLock(root, async () => {
@@ -66,10 +74,10 @@ export async function beginRequest(root: string, jobId: string, slideId: string)
     if (cp.completed[slideId]) throw new Error('Successful page must not be generated again');
     if (job.pages.find(p => !cp.completed[p.slideId])?.slideId !== slideId) throw new Error('Generate pages in job order');
     if (!remainingCalls(job.callBudget, cp)) throw new Error('Call budget exhausted');
+    const prompt = pageRequestPrompt(job, slideId);
     cp.requestCount++; cp.inFlightSlideId = slideId;
     await writeTaskJson(root, `${jobPath(jobId)}/checkpoint.json`, cp);
-    // Keep the compiled page verbatim; only the outbound request includes its actual purpose.
-    return job.pages.find(p => p.slideId === slideId)!.prompt + '\n\n' + submissionNote(job.generationIntent) + (generationReferences(job).some(r => r.role === 'art-direction') ? '\n\n' + referenceDirection : '');
+    return prompt;
   });
 }
 export async function finishRequest(root: string, jobId: string, raw: z.input<typeof PageResultSchema>): Promise<void> {

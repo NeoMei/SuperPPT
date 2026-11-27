@@ -50,6 +50,7 @@ description: Use when users want to make a high-detail presentation from a topic
 使用 job.styleLock.recipe 中锁定的 id、level、paletteId、promptTemplate、逐页确切 prompt 和批准样页；样页到整套沿用同一快照，不重新挑配色或重写档位。只替换每页内容关系与完整文案，不再叠加前中后景、微装饰或预设构图，不追加依赖默认风格。宿主原图 raw 与严格 16:9 master 都保留。
 实际提交宿主或 API 时，先调用 prepareGenerationReferences 校验并准备图片；样页使用已披露的精确子风格图，整套使用批准样页，保持同一批次内的参考图不变。原样发送 beginRequest 返回的完整 prompt：它在原内容后附加真实用途和参考图用途说明，让模型自行决定适当表达。该说明不是画面文案；不改内容规划、正文、风格、档位或配色，不增加预筛查或模型调用，也不承诺通过安全过滤。拒绝仍按既有失败流程处理。
 将准备好的图片真实传入宿主参考图参数。API 候选先查已安装依赖的 capabilities.json 中的 referenceImages.apiProviders，支持时用 gen_slide.py 的重复 --reference-image 参数逐张传入。API 模型和请求参数由该依赖管理，宿主工具采用其当前声明的参数。不支持参考图的候选标记 unavailable 后沿既定路由继续；没有能保留参考图的通道则停止。成功结果 referencesUsed 必须记录实际已传图片的 SHA-256。
+若依赖的 requestCheck.apiProviders 声明当前候选支持请求预检，先按[依赖说明](references/依赖说明.md#批次执行)用完整参数执行本地预检，返回 ready 后再调用 beginRequest 登记预算。
 原图不能直接当成可编辑 PPTX。两个依赖保持独立，不复制其实现。
 
 样页生成后先执行 review-images，实际检查样页；通过后才进入 sample-review，失败时进入 quality-review 并由用户提出修订，不自行重画或追加生图调用。review-images 时实际查看全部图片，逐项核对文字、标点、重复／遗漏、标题与正文对应关系、风格、层级与禁用内容。对照每页 coreMessage 和 relationships 检查文字与图形：完整文字须清晰、易读、不被挤压遮挡；所选风格与内容需要创意图形时，图形应主动、有意义地表达文意和真实关系，不能只是装饰或背景。以图文整体是否一眼可懂判断，适度控制图形尺寸，不因图形有表现力或不符合固定面积比例单独判失败；托底仅在改善阅读时采用。需要创意图形的页面只使用装饰、图形语义或关系失真、或文字被边缘化时将 hierarchyClear 设为 false，并在 notes 记录实际观察。各 API 使用依赖声明的默认模型或用户明确指定的覆盖值。模型不可用时按依赖的路由规则处理。API success 仅代表图片文件有效，不能视为文字 QA 通过。若需修改已批准的 prompt，应在原有方案／样页边界展示修订，不在降级适配器里静默压缩。精简设计指令时完整保留 requiredText 与内容关系，优先清晰文字与充分阅读空间，不把长说明挤在大型插图下方。

@@ -5,7 +5,7 @@ import { generateFixture, readyDeck, submitWork } from './helpers/fast-flow.js';
 import { publishPlan } from '../src/workflow/planning.js';
 import { decideTask } from '../src/workflow/decide.js';
 import { readTask, readTaskJson } from '../src/project/task-store.js';
-import { beginRequest, finishRequest, readBatchJob, readBatchCheckpoint } from '../src/generation/task-batch.js';
+import { beginRequest, finishRequest, pageRequestPrompt, readBatchJob, readBatchCheckpoint } from '../src/generation/task-batch.js';
 
 for (const intent of [
   { purpose: '向家长解释脐疝如何形成', audience: '普通家长' },
@@ -21,7 +21,10 @@ for (const intent of [
   const saved = structuredClone(job);
   const prompts = await readTaskJson(root, `planning/${job.contentRevision}/sample-prompts.json`) as Record<string, string>;
   assert.equal(job.pages[0].prompt, prompts[`${plan.styles[0].id}/2/cool`]);
+  const preview = pageRequestPrompt(job, job.pages[0].slideId);
+  assert.equal((await readBatchCheckpoint(root, job.jobId)).requestCount, 0);
   const outgoing = await beginRequest(root, job.jobId, job.pages[0].slideId);
+  assert.equal(outgoing, preview);
   assert.equal(typeof outgoing, 'string');
   assert.ok(outgoing.startsWith(job.pages[0].prompt + '\n\n'));
   const note = outgoing.slice(job.pages[0].prompt.length + 2);
